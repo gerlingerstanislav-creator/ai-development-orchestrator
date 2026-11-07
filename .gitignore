@@ -1,0 +1,27 @@
+# Environment and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies/build
+node_modules/
+dist/
+build/
+.next/
+.venv/
+__pycache__/
+*.pyc
+coverage/
+
+# Runtime and workspaces
+.workspaces/
+.tmp/
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+.DS_Store
