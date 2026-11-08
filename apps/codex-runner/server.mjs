@@ -29,7 +29,7 @@ function runLogin(){
  const collect=(chunk)=>{log=(log+chunk.toString('utf8')).slice(-10000)};
  child.stdout.on('data',collect);child.stderr.on('data',collect);
  child.on('error',e=>{loginState='error';log+='\n'+e.message;});
- child.on('exit',code=>{if(login===child){loginState=code===0?'completed':'error';login=null;}});
+ child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0)log+='\nCodex login завершился: '+(signal||code);login=null;}});
  const deadline=setTimeout(()=>{if(login===child){child.kill('SIGTERM');loginState='expired';}},10*60*1000);
  deadline.unref();
 }
@@ -37,13 +37,13 @@ function deviceInfo(){
  const output=safeText();
  const url=output.match(/https:\/\/[^\s"'<>]+/i)?.[0]||null;
  // Device code is displayed only to the authenticated administrator.
- const code=output.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/)?.[0]||null;
+ const code=output.match(/\b[A-Z0-9]{4}(?:-[A-Z0-9]{4}){1,3}\b/i)?.[0]||null;
  return {state:loginState,url,code,instructions:output,startedAt:started||null};
 }
 http.createServer(async(req,res)=>{
  try {
   if(req.method==='GET'&&req.url==='/status'){
-   const state=await connected();return reply(res,200,{...state,login:loginState==='waiting'?deviceInfo():null});
+   const state=await connected();return reply(res,200,{...state,login:loginState!=='idle'?deviceInfo():null});
   }
   if(req.method==='POST'&&req.url==='/login'){
    if((await connected()).connected)return reply(res,200,{connected:true});
