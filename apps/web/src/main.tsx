@@ -1,4 +1,4 @@
-import React,{useEffect,useState} from 'react';
+import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,X} from 'lucide-react';
 import './style.css';
@@ -43,6 +43,7 @@ function App(){
  const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
  const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
  const [events,setEvents]=useState<{id:string,event:string,detail:string,created_at:string}[]>([]);
+ const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const [projectChatOpen,setProjectChatOpen]=useState(false);
  const [projectMessages,setProjectMessages]=useState<AssistantMessage[]>([]);
  const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
@@ -59,6 +60,8 @@ function App(){
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
  useEffect(()=>{if(selected)void loadProject(selected.id);},[selected?.id]);
+ useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy]);
+ useEffect(()=>{if(taskThreadRef.current)taskThreadRef.current.scrollTop=taskThreadRef.current.scrollHeight;},[taskMessages,taskChatBusy]);
  useEffect(()=>{setProjectChatOpen(false);setProjectMessages([]);setProjectInput('');if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages').then(setProjectMessages).catch(fail);}},[selected?.id]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
@@ -233,7 +236,7 @@ function App(){
  {selected&&!accountSettings&&!activeTask&&!activeDoc&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>AI-помощник проекта</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
-   <div className="assistant-thread" role="log" aria-live="polite">
+   <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
     {projectMessages.length===0&&<p className="assistant-hint">Напиши, например: «Создай задачу на добавление поиска по документации».</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
@@ -285,7 +288,7 @@ function App(){
     </section>
     <aside className="task-conversation">
      <header><MessageCircle size={17}/><strong>Обсуждение с AI</strong></header>
-     <div className="assistant-thread" role="log" aria-live="polite">
+     <div ref={taskThreadRef} className="assistant-thread" role="log" aria-live="polite">
       {taskMessages.length===0&&<p className="assistant-hint">Здесь будет подробный анализ и переписка по задаче. Можно уточнять требования и обсуждать реализацию.</p>}
       {taskMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
        <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span><div>{m.body}</div>
