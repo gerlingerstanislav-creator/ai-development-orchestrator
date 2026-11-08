@@ -246,9 +246,14 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const t=await pool.query('SELECT id,title,description,stage,analysis_state FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(t.rows[0].stage!=='development'||t.rows[0].analysis_state!=='approved')return reply.code(409).send({error:'Подтверди завершение анализа и отправь задачу в разработку'});
+ const relatedIds=(t.rows[0].related_task_ids||[]) as string[];
+ const related=relatedIds.length?(await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[])',[id,relatedIds])).rows:[];
+ const blockers=related.filter(x=>['development','merge_queue'].includes(x.stage));
+ if(blockers.length)return reply.code(409).send({error:'Связанные задачи ещё в разработке или ожидают слияния: '+blockers.map(x=>x.title).join(', ')});
+
  const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,daily_run_limit,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
  const ai=settings.rows[0]||aiDefaults;
  if(!ai.enabled)return reply.code(409).send({error:'Включи ручной запуск AI в настройках проекта'});
@@ -261,7 +266,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
  const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:git.rows[0].target_branch||git.rows[0].default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:ai.max_runtime_seconds,
-  title:t.rows[0].title,description:t.rows[0].description};
+  title:t.rows[0].title,description:t.rows[0].description,relatedTasks:related.map(x=>({title:x.title,description:x.description.slice(0,1500),stage:x.stage}))};
  await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status) VALUES($1,$2,$3,$4,$5,'queued')",
  [runId,id,taskId,uid(req),ai.model]);
  try{
