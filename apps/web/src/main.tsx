@@ -80,7 +80,7 @@ function DocumentMarkdown({source}:{source:string}){
    result.push(<blockquote key={'quote-'+index}>{text.map((x,i)=><React.Fragment key={i}>{i>0&&' '}{markdownInline(x)}</React.Fragment>)}</blockquote>);
    continue;
   }
-  if(/^\s*(?:---+|\\*\\*\\*+)\s*$/.test(line)){result.push(<hr key={'hr-'+index}/>);index++;continue;}
+  if(/^\s*(?:-{3,}|\*{3,})\s*$/.test(line)){result.push(<hr key={'hr-'+index}/>);index++;continue;}
   const paragraphs:string[]=[];
   while(index<rows.length&&rows[index].trim()&&!/^(#{1,6})\s+/.test(rows[index])&&!/^\s*\x60{3}/.test(rows[index])&&!/^\s*([-*+] |\d+\. )/.test(rows[index])&&!/^\s*>\s?/.test(rows[index])){
    paragraphs.push(rows[index++]);
