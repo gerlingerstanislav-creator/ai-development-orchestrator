@@ -53,6 +53,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [view,setView]=useState<'board'|'list'>('board');
  const [activeTask,setActiveTask]=useState<Task|null>(null);
  const [elapsedNow,setElapsedNow]=useState(Date.now());
+ const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
+ const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
+ const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
  useEffect(()=>{
   const modalOpen=!!(activeTask||activeDoc||showProject||showTask||showConnection);
   if(!modalOpen)return;
@@ -66,9 +69,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>window.clearInterval(interval);
  },[aiRuns]);
 
- const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
- const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
- const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
+
  const [error,setError]=useState('');const [busy,setBusy]=useState(false);const [search,setSearch]=useState('');
  const [form,setForm]=useState({name:'',description:'',title:'',type:'task',parent_id:''});
  const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
