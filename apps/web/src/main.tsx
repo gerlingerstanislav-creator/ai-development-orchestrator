@@ -11,11 +11,14 @@ type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
 type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';max_runtime_seconds:number;daily_run_limit:number;enabled:boolean};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string};
+type ProjectRule={id:string,body:string,origin:string,created_at:string};
+type RuleSuggestion={id:string,body:string,task_id:string};
+type DocVersion={id:string,task_ids:string[],created_at:string};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_at?:string};
 type AssistantResponse={message:string;created_task_id?:string|null;summary?:string|null};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
-const defaultStages=['backlog','analysis','development','merge_queue','done'];
+const defaultStages=['backlog','analysis','development','merge_queue','documentation','done'];
 async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  const token=sessionStorage.getItem(key);
  const res=await fetch('/api'+path,{...options,headers:{...(options.body!=null?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});
@@ -30,7 +33,11 @@ function App(){
  const [section,setSection]=useState<'overview'|'tasks'|'docs'|'settings'>('tasks');
  const [accountSettings,setAccountSettings]=useState(false);
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
- const [docs,setDocs]=useState<Doc[]>([]);const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
+ const [docs,setDocs]=useState<Doc[]>([]);
+ const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
+ const [ruleDraft,setRuleDraft]=useState('');const [knowledgeBusy,setKnowledgeBusy]=useState(false);
+ const [documentVersions,setDocumentVersions]=useState<DocVersion[]>([]);const [documentationNotice,setDocumentationNotice]=useState('');
+const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
  const [projectConnections,setProjectConnections]=useState<Connection[]>([]);
  const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,daily_run_limit:3,enabled:false});
  const [aiBusy,setAiBusy]=useState(false);const [aiRuns,setAiRuns]=useState<AiRun[]>([]);const [aiMessage,setAiMessage]=useState('');
@@ -55,8 +62,8 @@ function App(){
  async function loadProjects(){try{setProjects(await api('/projects'));}catch(e){fail(e);}}
  async function loadProject(id:string){
   try{
-   const [t,s,d,c,pc,gl,ai,runs]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs')]);
-   setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setAiMessage('');
+   const [t,s,d,c,pc,gl,ai,runs,pr,suggestions,versions]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions')]);
+   setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
@@ -77,6 +84,30 @@ function App(){
  async function attachConnection(connectionId:string){if(!selected)return;try{await api('/projects/'+selected.id+'/connections',{method:'POST',body:JSON.stringify({connectionId})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function saveGitLink(){if(!selected)return;setGitBusy(true);setGitMessage('');try{const r=await api<GitLink>('/projects/'+selected.id+'/git',{method:'PUT',body:JSON.stringify({repository:gitRepository.trim(),connectionId:gitTokenId,targetBranch:targetBranch.trim()||undefined})});setGitLink(r);setTargetBranch(r.target_branch||r.default_branch);setGitMessage('Доступ проверен. Репозиторий привязан.');}catch(e){fail(e);}finally{setGitBusy(false);}}
  async function removeGitLink(){if(!selected)return;setGitBusy(true);try{await api('/projects/'+selected.id+'/git',{method:'DELETE'});setGitLink(null);setGitMessage('Привязка удалена.');}catch(e){fail(e);}finally{setGitBusy(false);}}
+ async function updateDocumentation(){if(!selected||knowledgeBusy)return;
+  setKnowledgeBusy(true);setDocumentationNotice('');
+  try{
+   const r=await api<{updated_tasks:number}>('/projects/'+selected.id+'/documentation/update',{method:'POST'});
+   setDocumentationNotice('Документация обновлена по '+r.updated_tasks+' задачам. Задачи переведены в «Готово».');
+   await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
+ }
+ async function addRule(e:React.FormEvent){e.preventDefault();if(!selected||!ruleDraft.trim())return;
+  setKnowledgeBusy(true);
+  try{const r=await api<ProjectRule>('/projects/'+selected.id+'/rules',{method:'POST',body:JSON.stringify({body:ruleDraft.trim()})});
+   setRules(old=>[...old,r]);setRuleDraft('');
+  }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
+ }
+ async function removeRule(ruleId:string){if(!selected)return;
+  setKnowledgeBusy(true);try{await api('/projects/'+selected.id+'/rules/'+ruleId,{method:'DELETE'});setRules(old=>old.filter(r=>r.id!==ruleId));}
+  catch(e){fail(e);}finally{setKnowledgeBusy(false);}
+ }
+ async function decideRule(id:string,decision:'approve'|'reject'){if(!selected)return;
+  setKnowledgeBusy(true);
+  try{await api('/projects/'+selected.id+'/rule-suggestions/'+id+'/decision',{method:'POST',body:JSON.stringify({decision})});
+   await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
+ }
  async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const job=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
