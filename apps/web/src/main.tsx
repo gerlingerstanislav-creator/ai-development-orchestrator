@@ -13,7 +13,7 @@ type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'m
 type CodexRateWindow={usedPercent:number;windowDurationMins:number|null;resetsAt:number|null};
 type CodexRateBucket={id:string;name:string|null;primary:CodexRateWindow|null;secondary:CodexRateWindow|null;planType:string|null;reachedType:string|null};
 type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checkedAt:string};
-type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string};
+type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
@@ -52,6 +52,20 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
  const [activeTask,setActiveTask]=useState<Task|null>(null);
+ const [elapsedNow,setElapsedNow]=useState(Date.now());
+ useEffect(()=>{
+  const modalOpen=!!(activeTask||activeDoc||showProject||showTask||showConnection);
+  if(!modalOpen)return;
+  const previous=document.body.style.overflow;
+  document.body.style.overflow='hidden';
+  return()=>{document.body.style.overflow=previous;};
+ },[activeTask,activeDoc,showProject,showTask,showConnection]);
+ useEffect(()=>{
+  if(!aiRuns.some(r=>r.status==='running'||r.status==='queued'))return;
+  const interval=window.setInterval(()=>setElapsedNow(Date.now()),1000);
+  return()=>window.clearInterval(interval);
+ },[aiRuns]);
+
  const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
  const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
  const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
@@ -458,7 +472,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <div>{item.text}</div>
        {item.link&&<a href={item.link} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
       </div>)}
-      {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
+      {aiRuns.filter(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status)).map(r=><div className="task-execution-live" key={'live-'+r.id}>
+   <LoaderCircle size={16}/>
+   <div><strong>{r.status==='queued'?'Ожидает свободного AI-исполнителя':'Разработка выполняется'}</strong>
+    <p>{r.message||'Ожидание ответа Codex'}</p>
+    <small>{r.status==='queued'?'В очереди: ': 'Выполняется: '}{Math.max(0,Math.floor((elapsedNow-new Date(r.started_at||r.created_at||Date.now()).getTime())/60000))} мин.</small>
+   </div>
+  </div>)}
+    {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
       {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
      </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
