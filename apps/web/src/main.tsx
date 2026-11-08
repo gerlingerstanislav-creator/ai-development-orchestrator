@@ -57,15 +57,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [activeTask,setActiveTask]=useState<Task|null>(null);
  const [elapsedNow,setElapsedNow]=useState(Date.now());
  const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
- const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
+ const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');
+ const [selectedDocId,setSelectedDocId]=useState<string|null>(null);
+ const [editingDoc,setEditingDoc]=useState<Doc|null>(null);
+ const [docBusy,setDocBusy]=useState(false);
  const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
  useEffect(()=>{
-  const modalOpen=!!(activeTask||activeDoc||showProject||showTask||showConnection);
+  const modalOpen=!!(activeTask||showProject||showTask||showConnection);
   if(!modalOpen)return;
   const previous=document.body.style.overflow;
   document.body.style.overflow='hidden';
   return()=>{document.body.style.overflow=previous;};
- },[activeTask,activeDoc,showProject,showTask,showConnection]);
+ },[activeTask,showProject,showTask,showConnection]);
  useEffect(()=>{
   if(!aiRuns.some(r=>r.status==='running'||r.status==='queued'))return;
   const interval=window.setInterval(()=>setElapsedNow(Date.now()),1000);
@@ -156,8 +159,47 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function moveTask(task:Task,stage:string){if(!selected||stage===task.stage)return;try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function modeChange(stage:string,mode:string){if(!selected)return;try{await api('/projects/'+selected.id+'/workflow/'+stage,{method:'PATCH',body:JSON.stringify({mode})});await loadProject(selected.id);}catch(e){fail(e);}}
- async function addDoc(parentId:string|null=null){if(!selected)return;try{const added=await api<{id:string}>('/projects/'+selected.id+'/docs',{method:'POST',body:JSON.stringify({title:'Новая страница',body:'',parent_id:parentId})});if(parentId)setCollapsedDocs(items=>items.filter(x=>x!==parentId));await loadProject(selected.id);setActiveDoc({id:added.id,title:'Новая страница',body:'',parent_id:parentId,updated_at:new Date().toISOString()});}catch(e){fail(e);}}
- async function saveDoc(doc:Doc){if(!selected)return;try{await api('/projects/'+selected.id+'/docs/'+doc.id,{method:'PATCH',body:JSON.stringify({title:doc.title,body:doc.body,parent_id:doc.parent_id})});await loadProject(selected.id);setActiveDoc(null);}catch(e){fail(e);}}
+ async function addDoc(parentId:string|null=null){
+  if(!selected||docBusy)return;
+  setDocBusy(true);
+  try{
+   const added=await api<{id:string}>('/projects/'+selected.id+'/docs',{method:'POST',body:JSON.stringify({title:'Новая страница',body:'',parent_id:parentId})});
+   const doc:Doc={id:added.id,title:'Новая страница',body:'',parent_id:parentId,updated_at:new Date().toISOString()};
+   if(parentId)setCollapsedDocs(items=>items.filter(x=>x!==parentId));
+   setDocs(old=>[...old,doc]);
+   setSelectedDocId(doc.id);
+   setEditingDoc({...doc});
+  }catch(e){fail(e);}finally{setDocBusy(false);}
+ }
+ async function saveDoc(){
+  if(!selected||!editingDoc||docBusy)return;
+  const doc={...editingDoc,title:editingDoc.title.trim()};
+  if(!doc.title){setError('У документа должно быть название');return;}
+  setDocBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/docs/'+doc.id,{method:'PATCH',body:JSON.stringify({title:doc.title,body:doc.body,parent_id:doc.parent_id})});
+   setDocs(old=>old.map(d=>d.id===doc.id?{...doc,updated_at:new Date().toISOString()}:d));
+   setEditingDoc(null);
+  }catch(e){fail(e);}finally{setDocBusy(false);}
+ }
+ async function deleteDoc(doc:Doc){
+  if(!selected||docBusy)return;
+  const children=docs.filter(d=>d.parent_id===doc.id);
+  if(children.length){setError('У страницы «'+doc.title+'» есть вложенные документы. Сначала перемести или удали их.');return;}
+  if(!window.confirm('Удалить документ «'+doc.title+'»? Это действие нельзя отменить.'))return;
+  setDocBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/docs/'+doc.id,{method:'DELETE'});
+   setDocs(old=>old.filter(d=>d.id!==doc.id));
+   setSelectedDocId(null);setEditingDoc(null);
+  }catch(e){fail(e);}finally{setDocBusy(false);}
+ }
+ function selectDoc(doc:Doc){
+  if(editingDoc&&(editingDoc.title!==docs.find(d=>d.id===editingDoc.id)?.title||editingDoc.body!==docs.find(d=>d.id===editingDoc.id)?.body||editingDoc.parent_id!==docs.find(d=>d.id===editingDoc.id)?.parent_id)){
+   if(!window.confirm('Изменения документа не сохранены. Перейти без сохранения?'))return;
+  }
+  setSelectedDocId(doc.id);setEditingDoc(null);
+ }
  async function addConnection(e:React.FormEvent){e.preventDefault();setBusy(true);try{const saved=await api<Connection>('/connections',{method:'POST',body:JSON.stringify(cred)});setCred({name:'',provider:'github_token',secret:''});setShowConnection(false);if(selected)await loadProject(selected.id);if(saved.provider==='github_token')setGitTokenId(saved.id);}catch(e){fail(e);}finally{setBusy(false);}}
  async function attachConnection(connectionId:string){if(!selected)return;try{await api('/projects/'+selected.id+'/connections',{method:'POST',body:JSON.stringify({connectionId})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function saveGitLink(){if(!selected)return;setGitBusy(true);setGitMessage('');try{const r=await api<GitLink>('/projects/'+selected.id+'/git',{method:'PUT',body:JSON.stringify({repository:gitRepository.trim(),connectionId:gitTokenId,targetBranch:targetBranch.trim()||undefined})});setGitLink(r);setTargetBranch(r.target_branch||r.default_branch);setGitMessage('Доступ проверен. Репозиторий привязан.');}catch(e){fail(e);}finally{setGitBusy(false);}}
@@ -301,7 +343,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    return <div key={d.id}>
     <div className="doc-node" style={{paddingLeft:8+Math.min(depth,8)*18}}>
      <button className="doc-toggle" type="button" aria-label={collapsed?'Развернуть':'Свернуть'} onClick={()=>setCollapsedDocs(items=>collapsed?items.filter(x=>x!==d.id):[...items,d.id])}>{hasChildren?(collapsed?'▸':'▾'):'·'}</button>
-     <button className="doc-title" type="button" onClick={()=>setActiveDoc({...d})}><FileText size={16}/><span>{d.title}</span></button>
+     <button className={'doc-title '+(selectedDocId===d.id?'selected':'')} type="button" onClick={()=>selectDoc(d)}><FileText size={16}/><span>{d.title}</span></button>
      <button className="doc-add-child" type="button" title="Добавить вложенную страницу" aria-label={'Добавить страницу в '+d.title} onClick={()=>void addDoc(d.id)}><Plus size={15}/></button>
     </div>
     {!collapsed&&hasChildren&&renderDocTree(d.id,depth+1)}
@@ -379,7 +421,46 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board">{stages.map(s=><div className="lane" key={s.stage} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}><div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{filtered.filter(t=>t.stage===s.stage).length}</span>
    {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
    {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}</div><div className="cards">{filtered.filter(t=>t.stage===s.stage).map(t=><button className="task-card" draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)} onClick={()=>void openTask(t)} key={t.id}><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.id}</span><strong>{t.title}</strong><p>{t.description||'Без описания'}</p>{t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}{t.stage==='merge_queue'&&<small className="task-warning">PR ожидает слияния</small>}<span className="task-footer"><span>Задача</span><span>↗</span></span></button>)}{filtered.filter(t=>t.stage===s.stage).length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div></div>)}</div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><b>{t.title}</b><small>#{t.id}</small></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
- {section==='docs'&&<div className="docs"><div className="panel docs-list"><div className="docs-list-heading"><b>Страницы проекта</b><button type="button" title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div><div className="doc-tree">{renderDocTree(null)}</div>{!docs.length&&<p>Создайте первую страницу документации.</p>}</div><div className="panel docs-preview"><BookOpen size={25}/><h3>Документация проекта</h3><p>Страницы можно вкладывать друг в друга. Нажми на страницу для редактирования, плюс справа — для создания дочерней страницы. Родителя можно поменять в редакторе.</p></div></div>}
+ {section==='docs'&&<div className="docs">
+  <aside className="panel docs-list">
+   <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
+   <div className="doc-tree">{renderDocTree(null)}</div>
+   {!docs.length&&<p className="muted">Создай первую страницу документации.</p>}
+  </aside>
+  <section className="panel docs-reading">
+   {selectedDocId&&docs.some(d=>d.id===selectedDocId)?(()=>{
+    const doc=docs.find(d=>d.id===selectedDocId)!;
+    return <>
+     <header className="docs-reading-header">
+      <div>{editingDoc?.id===doc.id?
+       <input className="docs-title-input" aria-label="Название документа" value={editingDoc.title} onChange={e=>setEditingDoc({...editingDoc,title:e.target.value})}/>:
+       <h2>{doc.title}</h2>}
+       <small>Обновлено: {new Date(doc.updated_at).toLocaleString('ru-RU')}</small>
+      </div>
+      <div className="docs-actions">
+       {editingDoc?.id===doc.id?<>
+        <button className="secondary" type="button" disabled={docBusy} onClick={()=>setEditingDoc(null)}>Отмена</button>
+        <button className="primary" type="button" disabled={docBusy||!editingDoc.title.trim()} onClick={()=>void saveDoc()}>Сохранить</button>
+       </>:<>
+        <button className="secondary docs-icon-button" type="button" title="Редактировать документ" aria-label="Редактировать документ" onClick={()=>setEditingDoc({...doc})}><Pencil size={17}/></button>
+        <button className="secondary docs-icon-button docs-delete" type="button" disabled={docBusy} title="Удалить документ" aria-label="Удалить документ" onClick={()=>void deleteDoc(doc)}><Trash2 size={17}/></button>
+       </>}
+      </div>
+     </header>
+     {editingDoc?.id===doc.id? <div className="docs-editing">
+      <label>Расположение<select value={editingDoc.parent_id||''} onChange={e=>setEditingDoc({...editingDoc,parent_id:e.target.value||null})}>
+       <option value="">Корень документации</option>
+       {docs.filter(d=>d.id!==doc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
+      </select></label>
+      <label>Содержание (Markdown)
+       <textarea className="docs-editor-area" rows={22} value={editingDoc.body} onChange={e=>setEditingDoc({...editingDoc,body:e.target.value})} placeholder="Введите текст документа…"/>
+      </label>
+     </div>:
+     <div className="docs-content">{doc.body.trim()?<DocumentMarkdown source={doc.body}/>:<p className="muted">Документ пуст. Нажми карандаш, чтобы добавить содержимое.</p>}</div>}
+    </>;
+   })():<div className="docs-empty"><BookOpen size={30}/><h3>Документация проекта</h3><p>Выбери страницу слева, чтобы прочитать её содержимое.</p></div>}
+  </section>
+ </div>}
  {section==='settings'&&<section className="panel">
   <h3>AI · Настройки выполнения</h3>
   <p className="muted">Модель задаётся для проекта. Агент запускается только вручную из карточки задачи. Одновременно выполняется не более одной задачи.</p>
@@ -435,7 +516,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
 </div>}
  </div>}
  </main>
- {selected&&!accountSettings&&!activeTask&&!activeDoc&&!showTask&&!showProject&&!showConnection&&<>
+ {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>AI-помощник проекта</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
@@ -558,7 +639,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>
   </div>
  </div>}
- {activeDoc&&<div className="overlay" onMouseDown={()=>setActiveDoc(null)}><div className="dialog doc-dialog" onMouseDown={e=>e.stopPropagation()}><div className="modal-heading"><h2>Редактор документа</h2><button onClick={()=>setActiveDoc(null)}><X/></button></div><label>Заголовок<input value={activeDoc.title} onChange={e=>setActiveDoc({...activeDoc,title:e.target.value})}/></label><label>Расположение<select value={activeDoc.parent_id||""} onChange={e=>setActiveDoc({...activeDoc,parent_id:e.target.value||null})}><option value="">Корень документации</option>{docs.filter(d=>d.id!==activeDoc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}</select></label><label>Содержание<textarea rows={17} value={activeDoc.body} onChange={e=>setActiveDoc({...activeDoc,body:e.target.value})}/></label><footer><button className="secondary" onClick={()=>setActiveDoc(null)}>Отмена</button><button className="primary" onClick={()=>void saveDoc(activeDoc)}>Сохранить</button></footer></div></div>}
  {showConnection&&<div className="overlay" onMouseDown={()=>setShowConnection(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={addConnection}><div className="modal-heading"><h2>Новое подключение</h2><button type="button" onClick={()=>setShowConnection(false)}><X/></button></div><p className="muted">{cred.provider==='github_token'?'Подключение GitHub для выбранного проекта. Токен создаётся в GitHub и хранится в сервисе зашифрованным.':'Подключение по API-ключу. ChatGPT Plus / Codex CLI настраивается отдельно в разделе «Настройки аккаунта».'}</p>
  {cred.provider==='github_token'&&<div className="panel" style={{marginBottom:16,padding:16}}>
   <strong>Как получить GitHub token</strong>
