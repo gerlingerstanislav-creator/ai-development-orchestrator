@@ -299,6 +299,13 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(active.rowCount)return reply.code(409).send({error:'В этом проекте уже выполняется AI-задача'});
  const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
+ const branch=git.rows[0].target_branch||git.rows[0].default_branch;
+ const check=await fetch('https://api.github.com/repos/'+git.rows[0].repository+'/branches/'+encodeURIComponent(branch),{
+  headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+  signal:AbortSignal.timeout(12000)});
+ if(!check.ok)return reply.code(409).send({error:check.status===404
+  ?'Ветка '+branch+' не существует в '+git.rows[0].repository+'. Открой настройки GitHub проекта и повторно проверь подключение.'
+  :'Не удалось подтвердить доступ к ветке '+branch+' (GitHub HTTP '+check.status+')'});
  const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:git.rows[0].target_branch||git.rows[0].default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:ai.max_runtime_seconds,
   title:t.rows[0].title,description:t.rows[0].description,projectRules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),relatedTasks:related.map(x=>({title:x.title,description:x.description.slice(0,1500),stage:x.stage}))};
