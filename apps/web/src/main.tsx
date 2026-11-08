@@ -9,6 +9,8 @@ type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',posit
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,connection_id:string,connection_name?:string};
+type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';max_runtime_seconds:number;enabled:boolean};
+type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','testing','done'];
@@ -28,6 +30,8 @@ function App(){
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [docs,setDocs]=useState<Doc[]>([]);const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
  const [projectConnections,setProjectConnections]=useState<Connection[]>([]);
+ const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,enabled:false});
+ const [aiBusy,setAiBusy]=useState(false);const [aiRuns,setAiRuns]=useState<AiRun[]>([]);const [aiMessage,setAiMessage]=useState('');
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
  const [activeTask,setActiveTask]=useState<Task|null>(null);const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
@@ -42,8 +46,8 @@ function App(){
  async function loadProjects(){try{setProjects(await api('/projects'));}catch(e){fail(e);}}
  async function loadProject(id:string){
   try{
-   const [t,s,d,c,pc,gl]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git')]);
-   setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');
+   const [t,s,d,c,pc,gl,ai,runs]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs')]);
+   setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setAiMessage('');
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
@@ -60,6 +64,18 @@ function App(){
  async function attachConnection(connectionId:string){if(!selected)return;try{await api('/projects/'+selected.id+'/connections',{method:'POST',body:JSON.stringify({connectionId})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function saveGitLink(){if(!selected)return;setGitBusy(true);setGitMessage('');try{const r=await api<GitLink>('/projects/'+selected.id+'/git',{method:'PUT',body:JSON.stringify({repository:gitRepository.trim(),connectionId:gitTokenId})});setGitLink(r);setGitMessage('Доступ проверен. Репозиторий привязан.');}catch(e){fail(e);}finally{setGitBusy(false);}}
  async function removeGitLink(){if(!selected)return;setGitBusy(true);try{await api('/projects/'+selected.id+'/git',{method:'DELETE'});setGitLink(null);setGitMessage('Привязка удалена.');}catch(e){fail(e);}finally{setGitBusy(false);}}
+ async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
+ async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
+   const job=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
+   setAiRuns(old=>[job,...old]);setAiMessage('Codex запущен. Результат появится в истории ниже.');
+  }catch(e){fail(e);}finally{setAiBusy(false);}}
+ useEffect(()=>{if(!token||!selected||!aiRuns.some(r=>r.status==='running'||r.status==='queued'))return;
+  const timer=setInterval(async()=>{const active=aiRuns.filter(r=>r.status==='running'||r.status==='queued');
+   const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch{return r;}}));
+   setAiRuns(old=>old.map(r=>updated.find(x=>x.id===r.id)||r));
+  },4000);
+  return()=>clearInterval(timer);
+ },[token,selected?.id,aiRuns]);
  async function openTask(t:Task){setActiveTask({...t});setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
  async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false,error:e instanceof Error?e.message:'Не удалось проверить Codex'});}}
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
@@ -123,8 +139,34 @@ function App(){
  {view==='board'?<div className="board">{stages.map(s=><div className="lane" key={s.stage} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}><div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{filtered.filter(t=>t.stage===s.stage).length}</span></div><div className="cards">{filtered.filter(t=>t.stage===s.stage).map(t=><button className="task-card" draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)} onClick={()=>void openTask(t)} key={t.id}><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><strong>{t.title}</strong><p>{t.description||'Без описания'}</p><span className="task-footer">#{t.id.slice(0,6)} <span>↗</span></span></button>)}{filtered.filter(t=>t.stage===s.stage).length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div></div>)}</div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><b>{t.title}</b><small>#{t.id.slice(0,6)}</small></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='docs'&&<div className="docs"><div className="panel docs-list"><div className="docs-list-heading"><b>Страницы проекта</b><button type="button" title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div><div className="doc-tree">{renderDocTree(null)}</div>{!docs.length&&<p>Создайте первую страницу документации.</p>}</div><div className="panel docs-preview"><BookOpen size={25}/><h3>Документация проекта</h3><p>Страницы можно вкладывать друг в друга. Нажми на страницу для редактирования, плюс справа — для создания дочерней страницы. Родителя можно поменять в редакторе.</p></div></div>}
  {section==='settings'&&<section className="panel">
+  <h3>AI · Настройки выполнения</h3>
+  <p className="muted">Модель задаётся для проекта. Агент запускается только вручную из карточки задачи. Одновременно выполняется не более одной задачи.</p>
+  <div className="settings-grid">
+   <label>Модель по умолчанию<select value={aiSettings.model} onChange={e=>setAiSettings({...aiSettings,model:e.target.value as AiSettings['model']})}>
+    <option value="gpt-6-luna">GPT-6 Luna — экономный вариант</option>
+    <option value="gpt-6-sol">GPT-6 Sol — сложнее задачи</option>
+    <option value="gpt-6.1-sol">GPT-6.1 Sol — более мощная</option>
+   </select></label>
+   <label>Глубина рассуждений<select value={aiSettings.reasoning} onChange={e=>setAiSettings({...aiSettings,reasoning:e.target.value as AiSettings['reasoning']})}>
+    <option value="low">Низкая — экономит лимиты</option><option value="medium">Средняя</option>
+   </select></label>
+   <label>Максимальная длительность задания (сек.)<select value={aiSettings.max_runtime_seconds} onChange={e=>setAiSettings({...aiSettings,max_runtime_seconds:Number(e.target.value)})}>
+    <option value={90}>90 секунд</option><option value={180}>3 минуты</option>
+    <option value={300}>5 минут</option><option value={600}>10 минут</option>
+    <option value={900}>15 минут</option>
+   </select></label>
+  </div>
+  <label style={{display:'flex',flexDirection:'row',alignItems:'center',gap:10}}>
+   <input type="checkbox" checked={aiSettings.enabled} onChange={e=>setAiSettings({...aiSettings,enabled:e.target.checked})} style={{width:18,height:18}}/>
+   Разрешить ручной запуск AI-задач
+  </label>
+  <p className="muted">Лимит времени и выбор модели снижают расход, но не являются точным ограничением токенов. Доступность модели зависит от твоей подписки Codex.</p>
+  <button className="primary" disabled={aiBusy} onClick={()=>void saveAiSettings()}>Сохранить настройки AI</button>
+  {aiMessage&&<p>{aiMessage}</p>}
+ </section>}
+ {section==='settings'&&<section className="panel">
   <h3>GitHub · Репозиторий проекта</h3>
-  <p className="muted">Подключи репозиторий и токен с доступом к нему. На этом этапе проверяем доступ и сохраняем привязку. Автоматические коммиты и Pull Request появятся на следующем этапе.</p>
+  <p className="muted">Подключи репозиторий и токен с доступом к нему. На этом этапе проверяем доступ и сохраняем привязку. Codex может создавать отдельную ветку и черновик Pull Request после ручного запуска задачи.</p>
   <div className="settings-grid">
    <label>Репозиторий (owner/name)<input value={gitRepository} placeholder="gerlingerstanislav-creator/ai-development-orchestrator" onChange={e=>setGitRepository(e.target.value)} /></label>
    <label>GitHub token<select value={gitTokenId} onChange={e=>setGitTokenId(e.target.value)}><option value="">Выбери подключение</option>{connections.filter(c=>c.provider==='github_token').map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>
@@ -138,13 +180,32 @@ function App(){
   </div>
  </section>}
  
- {section==='settings'&&<div className="settings-grid"><div className="panel"><h3>Этапы workflow</h3><p className="muted">Пока все перемещения выполняются вручную. Режимы определяют будущие правила исполнения.</p>{stages.map(s=><div key={s.stage} className="setting-row"><div><strong>{s.label}</strong><small>{s.stage}</small></div><select value={s.mode} onChange={e=>void modeChange(s.stage,e.target.value)}><option value="manual">Ручной</option><option value="approval">С подтверждением</option><option value="automatic">Автоматический</option></select></div>)}</div>
+ {section==='settings'&&aiRuns.length>0&&<section className="panel">
+  <h3>Последние AI-запуски</h3>
+  {aiRuns.slice(0,10).map(r=><div className="setting-row" key={r.id}>
+   <div><strong>{tasks.find(t=>t.id===r.task_id)?.title||r.task_id.slice(0,8)}</strong>
+   <small>{r.model} · {r.status} · {r.message||''}</small></div>
+   {r.pr_url&&<a href={r.pr_url} target="_blank" rel="noreferrer">Pull Request</a>}
+  </div>)}
+ </section>}
+  {section==='settings'&&<div className="settings-grid"><div className="panel"><h3>Этапы workflow</h3><p className="muted">Пока все перемещения выполняются вручную. Режимы определяют будущие правила исполнения.</p>{stages.map(s=><div key={s.stage} className="setting-row"><div><strong>{s.label}</strong><small>{s.stage}</small></div><select value={s.mode} onChange={e=>void modeChange(s.stage,e.target.value)}><option value="manual">Ручной</option><option value="approval">С подтверждением</option><option value="automatic">Автоматический</option></select></div>)}</div>
  <div className="panel"><h3>Подключения</h3><p className="muted">Храним ключи в зашифрованном виде. Пока они не используются для запуска агентов.</p><button className="secondary" onClick={()=>setShowConnection(true)}><KeyRound size={16}/> Добавить подключение</button>{projectConnections.map(c=><div className="setting-row" key={c.id}><div><strong>{c.name}</strong><small>{c.provider}</small></div><span className="badge">Назначено</span></div>)}{connections.filter(c=>!projectConnections.some(p=>p.id===c.id)).map(c=><div key={c.id} className="setting-row"><div><strong>{c.name}</strong><small>{c.provider}</small></div><button className="textbtn" onClick={()=>void attachConnection(c.id)}>Назначить проекту</button></div>)}</div></div>}
  </div>}
  </main>
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
  {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
- {activeTask&&<div className="overlay" onMouseDown={()=>setActiveTask(null)}><div className="dialog task-dialog" onMouseDown={e=>e.stopPropagation()}><div className="modal-heading"><span className="eyebrow">ЗАДАЧА #{activeTask.id.slice(0,6)}</span><button onClick={()=>setActiveTask(null)}><X/></button></div><label>Название<input value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}/></label><label>Описание<textarea rows={8} value={activeTask.description} onChange={e=>setActiveTask({...activeTask,description:e.target.value})}/></label><label>Этап<select value={activeTask.stage} onChange={e=>setActiveTask({...activeTask,stage:e.target.value})}>{stages.map(s=><option key={s.stage} value={s.stage}>{s.label}</option>)}</select></label><h4>История действий</h4><div className="events">{events.map(e=><div key={e.id}><b>{e.event==='created'?'Задача создана':'Изменение этапа'}</b><small>{e.detail} · {new Date(e.created_at).toLocaleString('ru-RU')}</small></div>)}{!events.length&&<span className="muted">История пуста</span>}</div><footer><button className="secondary" onClick={()=>setActiveTask(null)}>Отмена</button><button className="primary" onClick={()=>void saveTask({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})}>Сохранить</button></footer></div></div>}
+ {activeTask&&<div className="overlay" onMouseDown={()=>setActiveTask(null)}><div className="dialog task-dialog" onMouseDown={e=>e.stopPropagation()}><div className="modal-heading"><span className="eyebrow">ЗАДАЧА #{activeTask.id.slice(0,6)}</span><button onClick={()=>setActiveTask(null)}><X/></button></div><label>Название<input value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}/></label><label>Описание<textarea rows={8} value={activeTask.description} onChange={e=>setActiveTask({...activeTask,description:e.target.value})}/></label><label>Этап<select value={activeTask.stage} onChange={e=>setActiveTask({...activeTask,stage:e.target.value})}>{stages.map(s=><option key={s.stage} value={s.stage}>{s.label}</option>)}</select></label><div className="panel" style={{padding:14,marginBottom:12}}>
+  <strong>AI-разработка</strong>
+  <p className="muted" style={{margin:'8px 0'}}>Выбранная модель: {aiSettings.model}. Текущие изменения в полях сначала сохрани кнопкой «Сохранить».</p>
+  <button className="primary" disabled={aiBusy||!aiSettings.enabled||!gitLink||aiRuns.some(r=>r.status==='running'||r.status==='queued')} onClick={()=>void runAiTask()}>Запустить Codex → Pull Request</button>
+  {!aiSettings.enabled&&<p className="muted">Для запуска включи AI в настройках проекта.</p>}
+  {aiRuns.filter(r=>r.task_id===activeTask.id).slice(0,5).map(r=><div key={r.id} style={{marginTop:8}}>
+   <strong>{r.status==='completed'?'Готово':r.status==='failed'?'Ошибка':r.status==='running'?'Выполняется':'В очереди'}</strong> · {r.model}
+   {r.message&&<p className="muted" style={{margin:0}}>{r.message}</p>}
+   {r.pr_url&&<a href={r.pr_url} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
+  </div>)}
+ </div>
+ <h4>История действий</h4><div className="events">{events.map(e=><div key={e.id}><b>{e.event==='created'?'Задача создана':'Изменение этапа'}</b><small>{e.detail} · {new Date(e.created_at).toLocaleString('ru-RU')}</small></div>)}{!events.length&&<span className="muted">История пуста</span>}</div><footer><button className="secondary" onClick={()=>setActiveTask(null)}>Отмена</button><button className="primary" onClick={()=>void saveTask({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})}>Сохранить</button></footer></div></div>}
  {activeDoc&&<div className="overlay" onMouseDown={()=>setActiveDoc(null)}><div className="dialog doc-dialog" onMouseDown={e=>e.stopPropagation()}><div className="modal-heading"><h2>Редактор документа</h2><button onClick={()=>setActiveDoc(null)}><X/></button></div><label>Заголовок<input value={activeDoc.title} onChange={e=>setActiveDoc({...activeDoc,title:e.target.value})}/></label><label>Расположение<select value={activeDoc.parent_id||""} onChange={e=>setActiveDoc({...activeDoc,parent_id:e.target.value||null})}><option value="">Корень документации</option>{docs.filter(d=>d.id!==activeDoc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}</select></label><label>Содержание<textarea rows={17} value={activeDoc.body} onChange={e=>setActiveDoc({...activeDoc,body:e.target.value})}/></label><footer><button className="secondary" onClick={()=>setActiveDoc(null)}>Отмена</button><button className="primary" onClick={()=>void saveDoc(activeDoc)}>Сохранить</button></footer></div></div>}
  {showConnection&&<div className="overlay" onMouseDown={()=>setShowConnection(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={addConnection}><div className="modal-heading"><h2>Новое подключение</h2><button type="button" onClick={()=>setShowConnection(false)}><X/></button></div><p className="muted">{cred.provider==='github_token'?'Подключение GitHub для выбранного проекта. Токен создаётся в GitHub и хранится в сервисе зашифрованным.':'Подключение по API-ключу. ChatGPT Plus / Codex CLI настраивается отдельно в разделе «Настройки аккаунта».'}</p>
  {cred.provider==='github_token'&&<div className="panel" style={{marginBottom:16,padding:16}}>
