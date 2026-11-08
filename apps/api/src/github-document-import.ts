@@ -1,8 +1,4 @@
-import type {Pool} from 'pg';
-import {randomUUID} from 'node:crypto';
-
 export type GitHubDocumentLocation={owner:string;repository:string;branch:string;path:string};
-export type ImportResult={rootId:string;created:number;skipped:number;files:number};
 
 const MAX_FILES=60;
 const MAX_FILE_BYTES=100_000;
@@ -26,6 +22,16 @@ export function extractGitHubDocumentLocation(message:string,context=''):GitHubD
   return {owner,repository,branch,path};
  }
  return null;
+}
+export function wantsDocumentSynthesis(message:string,context:string):boolean{
+ const source=extractGitHubDocumentLocation(message,context);
+ if(!source)return false;
+ const action=/(?:перенес|перенести|импортир|загруз|скопир|забер|добав|помест|сохран|полож|затащ|переработ|подготов|созда|сформир|сдела|состав)/i;
+ const documents=/(?:документ|док[уи]|файл|markdown|\\.md|страниц|материал)/i;
+ const redirect=/(?:не\\s+в\\s+репозиторий|в\\s+проект|в\\s+приложен|на\\s+базе|на\\s+основе|из\\s+репозитор|тут\\s+в\\s+приложен)/i;
+ return action.test(message)&&documents.test(message)&&
+  (/(?:github|репозитор|из\\s+ideas|из\\s+идеи)/i.test(message) ||
+   redirect.test(message)|| (redirect.test(context)&&/(?:перенес|сдела|созда)/i.test(message)));
 }
 export function wantsDocumentImport(message:string,context:string):boolean{
  const source=extractGitHubDocumentLocation(message,context);
@@ -63,7 +69,7 @@ async function githubJson(source:GitHubDocumentLocation,path:string,tokens:strin
  throw new Error('Документы GitHub недоступны (HTTP '+lastStatus+'). Проверь ссылку и разрешение Contents: Read для репозитория '+source.owner+'/'+source.repository+' у подключённого GitHub-токена.');
 }
 
-async function collectMarkdown(source:GitHubDocumentLocation,tokens:string[]){
+export async function readGitHubMarkdownFiles(source:GitHubDocumentLocation,tokens:string[]){
  const folder=await githubJson(source,source.path,tokens);
  const entries:Array<{name:string;path:string;body:string}>=[];
  const pending:Array<{entry:GitHubEntry;depth:number}>=Array.isArray(folder)
@@ -96,35 +102,3 @@ async function collectMarkdown(source:GitHubDocumentLocation,tokens:string[]){
  return entries;
 }
 
-export async function importGitHubDocumentation(pool:Pool,projectId:string,source:GitHubDocumentLocation,tokens:string[]):Promise<ImportResult>{
- const entries=await collectMarkdown(source,tokens);
- if(!entries.length)throw new Error('По указанному пути GitHub нет Markdown-файлов для импорта.');
- const rootSource='github:'+source.owner+'/'+source.repository+'@'+source.branch+':'+source.path;
- const title=source.path.split('/').at(-1)||source.repository;
- const client=await pool.connect();
- try{
-  await client.query('BEGIN');
-  const rootCreated=await client.query(
-   'INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,NULL,$5) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO NOTHING RETURNING id',
-   [randomUUID(),projectId,title+' · '+source.repository,'# '+title+'\n\nДокументы импортированы из GitHub: '+source.owner+'/'+source.repository+', ветка '+source.branch+'.\n\nОригинальные файлы сохранены без пересказа.',rootSource]);
-  let rootId=rootCreated.rows[0]?.id as string|undefined;
-  if(!rootId){
-   const root=await client.query('SELECT id FROM documents WHERE project_id=$1 AND import_source=$2',[projectId,rootSource]);
-   rootId=root.rows[0]?.id;
-  }
-  if(!rootId)throw new Error('Не удалось создать раздел для импортированных документов');
-  let created=0,skipped=0;
-  for(const file of entries){
-   const itemSource=rootSource+'/'+file.path.slice(source.path.length+1);
-   const inserted=await client.query(
-    'INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO NOTHING RETURNING id',
-    [randomUUID(),projectId,file.path.slice(source.path.length+1),file.body,rootId,itemSource]);
-   if(inserted.rowCount)created++;else skipped++;
-  }
-  await client.query('COMMIT');
-  return {rootId,created,skipped,files:entries.length};
- }catch(error){
-  await client.query('ROLLBACK');
-  throw error;
- }finally{client.release();}
-}
