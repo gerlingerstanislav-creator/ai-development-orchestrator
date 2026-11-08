@@ -693,6 +693,16 @@ app.patch('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
  await pool.query('UPDATE documents SET title=$1,body=$2,parent_id=$3,updated_at=now() WHERE id=$4 AND project_id=$5',[data.title,data.body,parentId,docId,id]);
  return {ok:true};
 });
+app.delete('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
+ const {id,docId}=parse(z.object({id:z.string().uuid(),docId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const document=await pool.query('SELECT id FROM documents WHERE id=$1 AND project_id=$2',[docId,id]);
+ if(!document.rowCount)return reply.code(404).send({error:'Документ не найден'});
+ const children=await pool.query('SELECT count(*)::int AS total FROM documents WHERE project_id=$1 AND parent_id=$2',[id,docId]);
+ if(children.rows[0].total>0)return reply.code(409).send({error:'У документа есть вложенные страницы. Сначала перемести или удали дочерние страницы.'});
+ await pool.query('DELETE FROM documents WHERE project_id=$1 AND id=$2',[id,docId]);
+ return {ok:true};
+});
 app.get('/api/connections',async(req)=>{return (await pool.query('SELECT id,name,provider,created_at FROM connections WHERE owner_id=$1 ORDER BY created_at DESC',[uid(req)])).rows;});
 app.post('/api/connections',async(req,reply)=>{
  const {name,provider,secret}=parse(z.object({name:z.string().min(1).max(100),provider:z.enum(['openai_api','github_token']),secret:z.string().min(8).max(2000)}),req.body);
