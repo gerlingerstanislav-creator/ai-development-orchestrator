@@ -220,7 +220,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
       prepared.push({id:op.id,op:'update',title:op.title,body:op.body,parentId:parent});
      }else{
       if(seenKeys.has(op.key))throw Error('Дублирующийся ключ новой страницы');
-      const parent=op.parent_key?ids.get(op.parent_key):op.parent_id||null;
+      const parent:string|null=op.parent_key?(ids.get(op.parent_key)||null):(op.parent_id||null);
       if(op.parent_key&&!parent)throw Error('Родительская страница должна быть создана раньше дочерней');
       if(parent!==null&&!known.has(parent)&&![...ids.values()].includes(parent))throw Error('Неизвестный родитель новой страницы');
       const newId=randomUUID();ids.set(op.key,newId);seenKeys.add(op.key);
