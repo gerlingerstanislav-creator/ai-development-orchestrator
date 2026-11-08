@@ -314,6 +314,12 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(!check.ok)return reply.code(409).send({error:check.status===404
   ?'Ветка '+branch+' не существует в '+git.rows[0].repository+'. Открой настройки GitHub проекта и повторно проверь подключение.'
   :'Не удалось подтвердить доступ к ветке '+branch+' (GitHub HTTP '+check.status+')'});
+ const pullsPermission=await fetch('https://api.github.com/repos/'+git.rows[0].repository+'/pulls?state=open&per_page=1',{
+  headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'},
+  signal:AbortSignal.timeout(12000)});
+ if(pullsPermission.status===403)return reply.code(409).send({error:'GitHub запрещает чтение Pull Request (403). Добавь подключённому токену права Pull requests: Read and write для этого репозитория. Codex не запущен, лимит модели не потрачен.'});
+ if(!pullsPermission.ok)return reply.code(502).send({error:'Не удалось проверить доступ к PR до разработки: GitHub HTTP '+pullsPermission.status});
+
  const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:git.rows[0].target_branch||git.rows[0].default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds,
   title:t.rows[0].title,description:t.rows[0].description,projectRules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),relatedTasks:related.map(x=>({title:x.title,description:x.description.slice(0,1500),stage:x.stage}))};
