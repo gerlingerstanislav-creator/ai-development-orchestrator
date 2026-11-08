@@ -322,3 +322,6 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .task-list-link:hover b{color:#5968df;text-decoration:underline}
 .doc-tree .doc-node a.doc-title{text-decoration:none;padding:7px 3px;border-radius:5px}
 .doc-tree .doc-node a.doc-title:hover{background:#edf0ff}
+
+.chat-message-status{display:block;margin-top:6px;font-size:11px;color:#6c7d9a}
+.chat-message-failed{color:#bd4358}
