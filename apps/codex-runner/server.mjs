@@ -178,6 +178,8 @@ async function createPullRequest(job,branch,summary){
  return result.html_url;
 }
 async function runJob(job,state){
+ const deadline=Date.now()+job.maxRuntimeSeconds*1000;
+ const timeLeft=()=>Math.max(0,deadline-Date.now());
  const workdir=await mkdtemp(join(tmpdir(),'ado-run-'));
  const dir=join(workdir,'repo');
  const auth=Buffer.from('x-access-token:'+job.token).toString('base64');
@@ -211,15 +213,18 @@ async function runJob(job,state){
    'Связанные задачи: '+JSON.stringify(job.relatedTasks||[]).slice(0,6000)
   ].join('\n\n');
   const runCodex=async(instruction)=>{
+   const remaining=timeLeft();
+   if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
    const result=await command('codex',[
     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
     '--ephemeral','--skip-git-repo-check','--sandbox','workspace-write',instruction
-   ],{cwd:dir,env:cliEnv,timeout:job.maxRuntimeSeconds*1000});
+   ],{cwd:dir,env:cliEnv,timeout:remaining});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    return {result,files:await git('status','--porcelain')};
   };
   let attempt=await runCodex(prompt);
   if(!attempt.files.stdout.trim()){
+   if(timeLeft()<45000)throw new Error('Codex завершил первую попытку без изменений. Недостаточно времени для повторного запуска.');
    const assistantText=(attempt.result.stdout||'').slice(-1500);
    const diagnostics=(attempt.result.stderr||'').slice(-1200);
    state.message='Codex не создал файлы. Повторная попытка с явным требованием изменить репозиторий.';
