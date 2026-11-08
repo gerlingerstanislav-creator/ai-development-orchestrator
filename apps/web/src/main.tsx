@@ -500,14 +500,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setMergeReport('Изменения задачи слиты.');
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
- async function mergeReady(){if(!selected||!window.confirm('Последовательно слить все готовые PR в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
-  setMergeBusy(true);try{
-   const result=await api<{results:Array<{taskId:string,status:string,reason?:string}>}>('/projects/'+selected.id+'/merge-ready',{method:'POST'});
+ async function mergeReady(){if(!selected||!window.confirm('Последовательно слить PR с автоматическим разрешением конфликтов?'))return;
+  setMergeBusy(true);
+  try{
+   const batch=await api<{id:string;status:string;message:string;results:Array<{taskId:string,status:string,reason?:string}>}>('/projects/'+selected.id+'/merge-ready',{method:'POST'});
+   setMergeReport('Начато последовательное слияние PR.');
+   let state=batch;
+   while(state.status==='running'){
+    await new Promise(resolve=>setTimeout(resolve,3000));
+    state=await api<typeof batch>('/projects/'+selected.id+'/merge-ready/'+batch.id);
+    setMergeReport(state.message+' · Слито: '+state.results.filter(r=>r.status==='merged').length+'.');
+   }
+   const result=state;
    setTasks(old=>old.map(t=>result.results.some(r=>r.taskId===t.id&&r.status==='merged')?{...t,stage:'documentation'}:t));
    const mergedCount=result.results.filter(r=>r.status==='merged').length;
    const skippedCount=result.results.filter(r=>r.status==='skipped').length;
    const errors=[...new Set(result.results.map(r=>r.reason).filter((value):value is string=>!!value))];
-   setMergeReport('Слито: '+mergedCount+'. Пропущено: '+skippedCount+'.'+(errors.length?' Подробности ошибки показаны в уведомлении.':''));
+   setMergeReport('Слито: '+mergedCount+'. Требуется внимание: '+skippedCount+'.'+(errors.length?' Подробности показаны в уведомлении.':''));
    if(errors.length)fail(new Error(errors.join('\n')));
    if(mergedCount)await loadProject(selected.id);
   }catch(e){fail(e);}finally{setMergeBusy(false);}
