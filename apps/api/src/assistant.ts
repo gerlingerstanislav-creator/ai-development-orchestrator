@@ -227,6 +227,18 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
       prepared.push({id:newId,op:'create',title:op.title,body:op.body,parentId:parent,key:op.key});
      }
     }
+    // Validate the resulting whole document tree before any writes.
+    const parentLinks=new Map<string,string|null>(docs.map((d:any)=>[d.id,d.parent_id||null]));
+    for(const op of prepared)parentLinks.set(op.id,op.parentId);
+    for(const start of parentLinks.keys()){
+     const visited=new Set<string>();
+     let cursor:string|null=start;
+     while(cursor){
+      if(visited.has(cursor))throw Error('Предлагаемая структура документации содержит циклическое вложение');
+      visited.add(cursor);
+      cursor=parentLinks.get(cursor)||null;
+     }
+    }
     const client=await pool.connect();
     try{
      await client.query('BEGIN');
