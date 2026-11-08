@@ -1,5 +1,10 @@
 FROM node:22-bookworm-slim
-RUN npm install -g @openai/codex \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && update-ca-certificates \
+ && test -s /etc/ssl/certs/ca-certificates.crt \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g @openai/codex \
  && mkdir -p /home/node/.codex \
  && chown -R node:node /home/node/.codex
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
