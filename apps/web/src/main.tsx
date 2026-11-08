@@ -165,10 +165,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const timer=setInterval(async()=>{const active=aiRuns.filter(r=>r.status==='running'||r.status==='queued');
    const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch{return r;}}));
    setAiRuns(old=>old.map(r=>updated.find(x=>x.id===r.id)||r));
-   if(updated.some(r=>r.status==='completed')){try{const currentTasks=await api<Task[]>('/projects/'+selected.id+'/tasks');setTasks(currentTasks);setActiveTask(old=>old?currentTasks.find(t=>t.id===old.id)||old:old);}catch(e){fail(e);}}
+   if(activeTask){
+    try{const latestEvents=await api<typeof events>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/events');setEvents(latestEvents);}
+    catch(e){fail(e);}
+   }
+   if(updated.some(r=>r.status==='completed'||r.status==='failed')){try{const currentTasks=await api<Task[]>('/projects/'+selected.id+'/tasks');setTasks(currentTasks);setActiveTask(old=>old?currentTasks.find(t=>t.id===old.id)||old:old);}catch(e){fail(e);}}
   },4000);
   return()=>clearInterval(timer);
- },[token,selected?.id,aiRuns]);
+ },[token,selected?.id,aiRuns,activeTask?.id]);
  async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
   const message=projectInput.trim();setProjectChatBusy(true);
   try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message})});
