@@ -13,8 +13,10 @@ try { await access(config); } catch { await writeFile(config,'cli_auth_credentia
 // Loopback-only CONNECT tunnel: use IPv4 resolution to avoid the Rust CLI's
 // dual-stack DNS failures observed on some Docker/VPN networks.
 // No plaintext TLS content or credentials are read by this tunnel.
+let proxyAttempts=0,proxySuccess=0,proxyLastError='';
 const proxyServer=http.createServer((_req,res)=>{res.writeHead(405);res.end();});
 proxyServer.on('connect',(req,client,head)=>{
+ proxyAttempts++;
  const target=req.url||'';
  const match=/^([a-z0-9.-]+):(443)$/.exec(target);
  const host=match?.[1]||'';
@@ -22,17 +24,28 @@ proxyServer.on('connect',(req,client,head)=>{
  if(!allowed){client.end('HTTP/1.1 403 Forbidden\r\n\r\n');return;}
  const remote=net.connect({host,port:443,family:4,timeout:12000});
  let established=false;
- remote.once('connect',()=>{established=true;client.write('HTTP/1.1 200 Connection Established\r\n\r\n');if(head?.length)remote.write(head);remote.pipe(client);client.pipe(remote);});
- remote.on('error',()=>{if(!established)client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');else client.destroy();});
- remote.on('timeout',()=>remote.destroy());
+ remote.once('connect',()=>{proxySuccess++;established=true;client.write('HTTP/1.1 200 Connection Established\r\n\r\n');if(head?.length)remote.write(head);remote.pipe(client);client.pipe(remote);});
+ remote.on('error',(e)=>{proxyLastError=e.code||e.message||'connection_error';if(!established)client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');else client.destroy();});
+ remote.on('timeout',()=>{proxyLastError='timeout';remote.destroy();});
  client.on('error',()=>remote.destroy());
  client.on('close',()=>remote.destroy());
 });
 proxyServer.listen(4399,'127.0.0.1');
 const proxyUrl='http://127.0.0.1:4399';
 const cliEnv={...process.env,CODEX_HOME:home,HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
+const codexDotenv=join(home,'.env');
+// The Codex binary can load proxy settings from its own .env; provide
+// the same loopback proxy there in addition to the child environment.
+await writeFile(codexDotenv,`HTTP_PROXY=${proxyUrl}\nHTTPS_PROXY=${proxyUrl}\nhttp_proxy=${proxyUrl}\nhttps_proxy=${proxyUrl}\nNO_PROXY=localhost,127.0.0.1,::1\nno_proxy=localhost,127.0.0.1,::1\n`,{mode:0o600});
+async function probeAuthEndpoint(){
+ try{
+  const response=await fetch('https://auth.openai.com/api/accounts/deviceauth/usercode',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(12000)});
+  return 'Node.js HTTPS: HTTP '+response.status;
+ }catch(error){const cause=error?.cause;return 'Node.js HTTPS: '+String(cause?.code||cause?.message||error.message).slice(0,100);}
+}
 
-let login=null, log='',loginState='idle',started=0;
+
+let login=null, log='',loginState='idle',started=0,diagnosis='';
 const safeText=()=>log.replace(/\x1b\[[0-9;]*m/g,'').slice(-3000);
 const reply=(res,status,payload)=>{
  const data=JSON.stringify(payload);
@@ -46,13 +59,13 @@ async function connected() {
 }
 function runLogin(){
  if(login && !login.killed && login.exitCode===null)return;
- log='';loginState='waiting';started=Date.now();
- login=spawn('codex',['login','--device-auth'],{env:cliEnv,stdio:['ignore','pipe','pipe']});
+ log='';diagnosis='';proxyAttempts=0;proxySuccess=0;proxyLastError='';loginState='waiting';started=Date.now();
+ login=spawn('codex',['login','--device-auth'],{env:{...cliEnv,RUST_LOG:'warn,reqwest=debug,hyper_util=debug'},stdio:['ignore','pipe','pipe']});
  const child=login;
  const collect=(chunk)=>{log=(log+chunk.toString('utf8')).slice(-10000)};
  child.stdout.on('data',collect);child.stderr.on('data',collect);
  child.on('error',e=>{loginState='error';log+='\n'+e.message;});
- child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0)log+='\nCodex login завершился: '+(signal||code);login=null;}});
+ child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const connections=proxyAttempts,successes=proxySuccess,proxyError=proxyLastError;void probeAuthEndpoint().then(probe=>{diagnosis=probe+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
  const deadline=setTimeout(()=>{if(login===child){child.kill('SIGTERM');loginState='expired';}},10*60*1000);
  deadline.unref();
 }
@@ -62,7 +75,7 @@ function deviceInfo(){
  // Do not mistake the /api/accounts/deviceauth/usercode error endpoint for a login link.
  const url=output.match(/https:\/\/auth\.openai\.com\/codex\/device\b/i)?.[0]||null;
  const code=url?output.match(/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,6}\b/)?.[0]||null:null;
- return {state:loginState,url,code,instructions:output,startedAt:started||null};
+ return {state:loginState,url,code,instructions:output,diagnosis,startedAt:started||null};
 }
 http.createServer(async(req,res)=>{
  try {
