@@ -249,7 +249,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setTasks(old=>old.map(t=>t.id===taskId?{...t,stage:'merge_queue',pr_url:result.pr_url}:t));
    const [runs,events]=await Promise.all([
     api<AiRun[]>('/projects/'+selected.id+'/ai-runs'),
-    api<typeof events>('/projects/'+selected.id+'/tasks/'+taskId+'/events')
+    api<Array<{id:string;event:string;detail:string;created_at:string}>>('/projects/'+selected.id+'/tasks/'+taskId+'/events')
    ]);
    setAiRuns(runs);setEvents(events);
    setTaskFeedback('PR создан. Разработку повторно запускать не потребовалось.');
