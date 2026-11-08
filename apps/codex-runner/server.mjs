@@ -181,21 +181,49 @@ async function runJob(job,state){
   await git('checkout','-b',branch);
   state.message='Codex изменяет код';
   const prompt=[
-   'Ты работаешь в изолированной копии проекта. Выполни ровно одну задачу по существующему коду.',
+   'Ты AI-разработчик, работаешь в настоящей локальной копии GitHub-репозитория.',
+   'Рабочая директория является корнем репозитория. У тебя ЕСТЬ доступ на чтение и запись файлов в этой директории.',
+   'ОБЯЗАТЕЛЬНО внеси реальные изменения в файлы, используя доступные инструменты. Одного текстового ответа недостаточно.',
+   'Сначала осмотри файлы проекта. Если в репозитории только README или нет исходников, СОЗДАЙ необходимые исходные файлы с нуля.',
+   'Для задачи про простую HTML-страницу достаточно index.html со встроенными CSS и JavaScript; не требуется публикация GitHub Pages.',
+   'Когда задача требует сайт или страницу, создай работающий HTML/JS/CSS, не ограничивайся рекомендациями.',
+   'Не задавай вопросов о GitHub-репозитории: он уже клонирован и привязан к проекту.',
    'Не трогай секреты, .env, credentials или настройки доступа. Не запускай git push, git commit, git checkout.',
    'Не изменяй файлы вне рабочей директории. Не устанавливай пакеты из сети.',
-   'Если задача непонятна, не вноси случайных изменений.',
+   'Постарайся выполнить задачу полностью. Если требования противоречивы, объясни препятствие.',
+   'Проект: '+job.repository+' (целевая ветка: '+job.baseBranch+').',
    'Название задачи: '+job.title,
-   'Утверждённые правила проекта, соблюдай:\n'+String(job.projectRules||'').slice(0,12000),
+   'Утверждённые правила проекта:\n'+String(job.projectRules||'').slice(0,12000),
    'Описание задачи:\n'+job.description.slice(0,18000),
-   'Другие связанные задачи (не повторяй и не перезаписывай их работу): '+JSON.stringify(job.relatedTasks||[]).slice(0,6000)
+   'Связанные задачи: '+JSON.stringify(job.relatedTasks||[]).slice(0,6000)
   ].join('\n\n');
-  const result=await command('codex',[
-   'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-   '--ephemeral','--skip-git-repo-check','--sandbox','workspace-write',prompt
-  ],{cwd:dir,env:cliEnv,timeout:job.maxRuntimeSeconds*1000});
-  const changed=await git('status','--porcelain');
-  if(!changed.stdout.trim())throw new Error('Codex завершил работу без изменений файлов');
+  const runCodex=async(instruction)=>{
+   const result=await command('codex',[
+    'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
+    '--ephemeral','--skip-git-repo-check','--sandbox','workspace-write',instruction
+   ],{cwd:dir,env:cliEnv,timeout:job.maxRuntimeSeconds*1000});
+   // Codex emits tool-use and sandbox diagnostics on stderr.
+   return {result,files:await git('status','--porcelain')};
+  };
+  let attempt=await runCodex(prompt);
+  if(!attempt.files.stdout.trim()){
+   const assistantText=(attempt.result.stdout||'').slice(-1500);
+   const diagnostics=(attempt.result.stderr||'').slice(-1200);
+   state.message='Codex не создал файлы. Повторная попытка с явным требованием изменить репозиторий.';
+   // One focused retry handles cases where Codex interpreted the task as a request
+   // for advice rather than a request to create real source files.
+   attempt=await runCodex(prompt+'\n\nПОВТОРНЫЙ ЗАПУСК: предыдущий ответ не изменил ни одного файла. '+ 
+    'Создай или отредактируй исходные файлы прямо сейчас. Не отвечай без фактических изменений. '+ 
+    'Предыдущий ответ: '+assistantText.slice(-800));
+   if(!attempt.files.stdout.trim()){
+    const finalText=(attempt.result.stdout||'').slice(-1600).replaceAll(job.token,'[REDACTED]');
+    const finalErrors=(attempt.result.stderr||diagnostics).slice(-900).replaceAll(job.token,'[REDACTED]');
+    throw new Error('Codex не изменил файлы после двух попыток. '+
+     'Ответ модели: '+(finalText||assistantText||'нет текста')+
+     (finalErrors?' | Диагностика: '+finalErrors:''));
+   }
+  }
+  const result=attempt.result;
   state.message='Создание коммита';
   await git('add','--all');
   const staged=await git('diff','--cached','--name-only');
@@ -210,7 +238,7 @@ async function runJob(job,state){
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
   state.status='failed';
-  state.message=String(e?.message||e).slice(0,1300).replaceAll(job.token,'[REDACTED]');
+  state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);
  }finally{
   runningJob=null;
   await rm(workdir,{recursive:true,force:true}).catch(()=>{});
