@@ -26,9 +26,12 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const r=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   return r.rows.map(x=>'- '+x.body).join('\n').slice(0,12000);
  }
-  async function checkQuota(id:string,reply:any){
-  const r=await pool.query("SELECT count(*)::int AS n FROM assistant_usage WHERE project_id=$1 AND created_at > now() - interval '24 hours'",[id]);
-  if(r.rows[0].n>=20){reply.code(429).send({error:'Лимит AI-переписки: 20 запросов за 24 часа'});return false;}
+  async function checkQuota(_id:string,reply:any){
+  const settings=await pool.query('SELECT chat_requests_per_24h FROM service_ai_limits WHERE id=1');
+  const limit=Number(settings.rows[0]?.chat_requests_per_24h||0);
+  if(limit===0)return true;
+  const used=await pool.query("SELECT count(*)::int AS n FROM assistant_usage WHERE created_at > now() - interval '24 hours'");
+  if(used.rows[0].n>=limit){reply.code(429).send({error:'Достигнут общий лимит ChatGPT-запросов сервиса за 24 часа'});return false;}
   return true;
  }
  async function completion(prompt:string,config:any){
