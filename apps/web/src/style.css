@@ -221,3 +221,15 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .task-execution-live strong{display:block;font-size:12px;margin-bottom:5px}
 .task-execution-live p{font-size:12px;margin:0 0 6px;overflow-wrap:anywhere}
 .task-execution-live small{font-size:11px;color:#65759c}
+
+
+/* Dense Kanban: only narrow gutters between columns; keep card content readable. */
+.tasks-page .board{gap:3px;column-gap:3px;row-gap:3px}
+.tasks-page .lane{padding:8px 7px;min-width:0}
+.tasks-page .lane-heading{gap:5px;padding:5px 2px 11px}
+.tasks-page .cards{gap:9px}
+.tasks-page .task-card{padding:12px}
+@media(max-width:850px){
+ .tasks-page .board{gap:3px}
+ .tasks-page .lane{padding:7px 6px}
+}
