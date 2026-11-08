@@ -100,6 +100,8 @@ function App(){
   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
  }
  async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
+  try{await api('/projects/'+selected.id+'/tasks/'+activeTask.id,{method:'PATCH',body:JSON.stringify({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})});}
+  catch(e){fail(e);return;}
   if(activeTask.stage==='analysis'){
    setTaskChatBusy(true);try{const instruction='Выполни анализ задачи и составь техническое задание с критериями приёмки.';
     const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message:instruction,mode:'analyze'})});
@@ -227,7 +229,7 @@ function App(){
  <div className="panel"><h3>Подключения</h3><p className="muted">Храним ключи в зашифрованном виде. GitHub token используется исполнителем для отправки ветки и создания Pull Request.</p><button className="secondary" onClick={()=>setShowConnection(true)}><KeyRound size={16}/> Добавить подключение</button>{projectConnections.map(c=><div className="setting-row" key={c.id}><div><strong>{c.name}</strong><small>{c.provider}</small></div><span className="badge">Назначено</span></div>)}{connections.filter(c=>!projectConnections.some(p=>p.id===c.id)).map(c=><div key={c.id} className="setting-row"><div><strong>{c.name}</strong><small>{c.provider}</small></div><button className="textbtn" onClick={()=>void attachConnection(c.id)}>Назначить проекту</button></div>)}</div></div>}
  </div>}
  </main>
- {selected&&!accountSettings&&<>
+ {selected&&!accountSettings&&!activeTask&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>AI-помощник проекта</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
    <div className="assistant-thread" role="log" aria-live="polite">
@@ -269,7 +271,7 @@ function App(){
       {activeTask.stage==='testing'&&<p className="muted">Автоматическое тестирование пока не подключено.</p>}
       {(activeTask.stage==='backlog'||activeTask.stage==='done')&&<p className="muted">Для AI-исполнения перенеси задачу в «Анализ» или «Разработку».</p>}
       {!aiSettings.enabled&&<p className="muted">Сначала включи ручной AI в настройках проекта.</p>}
-      <p className="muted">Несохранённые ручные изменения сохраняются кнопкой «Сохранить» внизу.</p>
+      <p className="muted">Кнопка «Выполнить» сначала сохраняет поля задачи, затем запускает действие.</p>
       {aiRuns.filter(r=>r.task_id===activeTask.id).slice(0,4).map(run=><div className="task-run" key={run.id}>
        <b>{run.status==='completed'?'Готово':run.status==='failed'?'Ошибка':run.status==='running'?'Выполняется':'В очереди'}</b> · {run.model}
        {run.message&&<p>{run.message}</p>}
