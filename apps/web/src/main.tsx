@@ -468,7 +468,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        title={canAdvance(activeTask,stages[i-1].stage,stage.stage)?'Перейти: '+stage.label:'Для этого перехода нужны выполненные условия предыдущего этапа'}
        onClick={()=>void advanceTask(activeTask,stages[i-1].stage,stage.stage)}><ArrowRight size={18}/></button>}
      <div className={'workflow-step '+(stage.stage===activeTask.stage?'current':stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?'passed':'pending')}>
-      {stage.stage===activeTask.stage?<LoaderCircle size={16}/>:stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?<CheckCircle2 size={16}/>:<Clock3 size={16}/>}
+      {stage.stage===activeTask.stage?(activeTask.stage==='done'?<CheckCircle2 size={16}/>:<LoaderCircle size={16}/>):stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?<CheckCircle2 size={16}/>:<Clock3 size={16}/>}
       <span>{stage.label}</span>
      </div>
     </React.Fragment>)}
