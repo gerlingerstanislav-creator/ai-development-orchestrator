@@ -8,6 +8,7 @@ type Task={id:string,title:string,description:string,type:string,stage:string,pa
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
+type GitLink={repository:string,default_branch:string,connection_id:string,connection_name?:string};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','testing','done'];
@@ -26,6 +27,7 @@ function App(){
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [docs,setDocs]=useState<Doc[]>([]);const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
  const [projectConnections,setProjectConnections]=useState<Connection[]>([]);
+ const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
  const [activeTask,setActiveTask]=useState<Task|null>(null);const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
  const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
@@ -39,8 +41,8 @@ function App(){
  async function loadProjects(){try{setProjects(await api('/projects'));}catch(e){fail(e);}}
  async function loadProject(id:string){
   try{
-   const [t,s,d,c,pc]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections')]);
-   setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);
+   const [t,s,d,c,pc,gl]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git')]);
+   setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
@@ -55,6 +57,8 @@ function App(){
  async function saveDoc(doc:Doc){if(!selected)return;try{await api('/projects/'+selected.id+'/docs/'+doc.id,{method:'PATCH',body:JSON.stringify({title:doc.title,body:doc.body,parent_id:doc.parent_id})});await loadProject(selected.id);setActiveDoc(null);}catch(e){fail(e);}}
  async function addConnection(e:React.FormEvent){e.preventDefault();setBusy(true);try{await api('/connections',{method:'POST',body:JSON.stringify(cred)});setCred({name:'',provider:'openai_api',secret:''});setShowConnection(false);if(selected)await loadProject(selected.id);}catch(e){fail(e);}finally{setBusy(false);}}
  async function attachConnection(connectionId:string){if(!selected)return;try{await api('/projects/'+selected.id+'/connections',{method:'POST',body:JSON.stringify({connectionId})});await loadProject(selected.id);}catch(e){fail(e);}}
+ async function saveGitLink(){if(!selected)return;setGitBusy(true);setGitMessage('');try{const r=await api<GitLink>('/projects/'+selected.id+'/git',{method:'PUT',body:JSON.stringify({repository:gitRepository.trim(),connectionId:gitTokenId})});setGitLink(r);setGitMessage('Доступ проверен. Репозиторий привязан.');}catch(e){fail(e);}finally{setGitBusy(false);}}
+ async function removeGitLink(){if(!selected)return;setGitBusy(true);try{await api('/projects/'+selected.id+'/git',{method:'DELETE'});setGitLink(null);setGitMessage('Привязка удалена.');}catch(e){fail(e);}finally{setGitBusy(false);}}
  async function openTask(t:Task){setActiveTask({...t});setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
  async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false,error:e instanceof Error?e.message:'Не удалось проверить Codex'});}}
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
@@ -95,6 +99,21 @@ function App(){
  {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button></div>
  {view==='board'?<div className="board">{stages.map(s=><div className="lane" key={s.stage} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}><div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{filtered.filter(t=>t.stage===s.stage).length}</span></div><div className="cards">{filtered.filter(t=>t.stage===s.stage).map(t=><button className="task-card" draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)} onClick={()=>void openTask(t)} key={t.id}><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><strong>{t.title}</strong><p>{t.description||'Без описания'}</p><span className="task-footer">#{t.id.slice(0,6)} <span>↗</span></span></button>)}{filtered.filter(t=>t.stage===s.stage).length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div></div>)}</div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><b>{t.title}</b><small>#{t.id.slice(0,6)}</small></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='docs'&&<div className="docs"><div className="panel docs-list"><div className="docs-list-heading"><b>Страницы проекта</b><button type="button" title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div><div className="doc-tree">{renderDocTree(null)}</div>{!docs.length&&<p>Создайте первую страницу документации.</p>}</div><div className="panel docs-preview"><BookOpen size={25}/><h3>Документация проекта</h3><p>Страницы можно вкладывать друг в друга. Нажми на страницу для редактирования, плюс справа — для создания дочерней страницы. Родителя можно поменять в редакторе.</p></div></div>}
+ {section==='settings'&&<section className="panel">
+  <h3>GitHub · Репозиторий проекта</h3>
+  <p className="muted">Подключи репозиторий и токен с доступом к нему. На этом этапе проверяем доступ и сохраняем привязку. Автоматические коммиты и Pull Request появятся на следующем этапе.</p>
+  <div className="settings-grid">
+   <label>Репозиторий (owner/name)<input value={gitRepository} placeholder="gerlingerstanislav-creator/ai-development-orchestrator" onChange={e=>setGitRepository(e.target.value)} /></label>
+   <label>GitHub token<select value={gitTokenId} onChange={e=>setGitTokenId(e.target.value)}><option value="">Выбери подключение</option>{connections.filter(c=>c.provider==='github_token').map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>
+  </div>
+  {connections.every(c=>c.provider!=='github_token')&&<p className="muted">Сначала добавь подключение типа GitHub token ниже в разделе «Подключения».</p>}
+  {gitLink&&<p className="muted">Привязан: <strong>{gitLink.repository}</strong> · основная ветка: <strong>{gitLink.default_branch}</strong></p>}
+  {gitMessage&&<p>{gitMessage}</p>}
+  <div className="codex-actions">
+   <button className="primary" disabled={gitBusy||!gitTokenId||!gitRepository.trim()} onClick={()=>void saveGitLink()}>Проверить и сохранить</button>
+   {gitLink&&<button className="secondary" disabled={gitBusy} onClick={()=>void removeGitLink()}>Отвязать репозиторий</button>}
+  </div>
+ </section>}
  {section==='settings'&&<section className="panel codex-panel">
  <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
  {codex?.error&&<p className="error">{codex.error}</p>}
