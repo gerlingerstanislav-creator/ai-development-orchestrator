@@ -8,6 +8,7 @@ type Task={id:string,title:string,description:string,type:string,stage:string,pa
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
+type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','testing','done'];
 async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
@@ -31,6 +32,7 @@ function App(){
  const [error,setError]=useState('');const [busy,setBusy]=useState(false);const [search,setSearch]=useState('');
  const [form,setForm]=useState({name:'',description:'',title:'',type:'task',parent_id:''});
  const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
+ const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
  const [events,setEvents]=useState<{id:string,event:string,detail:string,created_at:string}[]>([]);
  const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){setError(e instanceof Error?e.message:'Неизвестная ошибка');}
@@ -54,7 +56,11 @@ function App(){
  async function addConnection(e:React.FormEvent){e.preventDefault();setBusy(true);try{await api('/connections',{method:'POST',body:JSON.stringify(cred)});setCred({name:'',provider:'openai_api',secret:''});setShowConnection(false);if(selected)await loadProject(selected.id);}catch(e){fail(e);}finally{setBusy(false);}}
  async function attachConnection(connectionId:string){if(!selected)return;try{await api('/projects/'+selected.id+'/connections',{method:'POST',body:JSON.stringify({connectionId})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function openTask(t:Task){setActiveTask({...t});setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
- function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setProjects([]);}
+ async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false,error:e instanceof Error?e.message:'Не удалось проверить Codex'});}}
+ async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
+ useEffect(()=>{if(token&&selected&&section==='settings'){void refreshCodex();}},[token,selected?.id,section]);
+ useEffect(()=>{if(!token||section!=='settings'||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,section,codex?.login?.state]);
+ function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setProjects([]);setCodex(null);}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
   return docs.filter(d=>d.parent_id===parentId).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
@@ -89,6 +95,25 @@ function App(){
  {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button></div>
  {view==='board'?<div className="board">{stages.map(s=><div className="lane" key={s.stage} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}><div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{filtered.filter(t=>t.stage===s.stage).length}</span></div><div className="cards">{filtered.filter(t=>t.stage===s.stage).map(t=><button className="task-card" draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)} onClick={()=>void openTask(t)} key={t.id}><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><strong>{t.title}</strong><p>{t.description||'Без описания'}</p><span className="task-footer">#{t.id.slice(0,6)} <span>↗</span></span></button>)}{filtered.filter(t=>t.stage===s.stage).length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div></div>)}</div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><b>{t.title}</b><small>#{t.id.slice(0,6)}</small></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='docs'&&<div className="docs"><div className="panel docs-list"><div className="docs-list-heading"><b>Страницы проекта</b><button type="button" title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div><div className="doc-tree">{renderDocTree(null)}</div>{!docs.length&&<p>Создайте первую страницу документации.</p>}</div><div className="panel docs-preview"><BookOpen size={25}/><h3>Документация проекта</h3><p>Страницы можно вкладывать друг в друга. Нажми на страницу для редактирования, плюс справа — для создания дочерней страницы. Родителя можно поменять в редакторе.</p></div></div>}
+ {section==='settings'&&<section className="panel codex-panel">
+ <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
+ {codex?.error&&<p className="error">{codex.error}</p>}
+ {codex?.connected?<p className="muted">{codex.detail||'Авторизация ChatGPT активна.'}</p>:<p className="muted">Для входа может потребоваться включить вход по коду устройства в настройках безопасности ChatGPT.</p>}
+ {codex?.login?.state==='waiting'&&!codex.connected&&<div className="codex-device">
+  <b>Подключение ChatGPT</b>
+  <p>Открой ссылку, войди в свой аккаунт ChatGPT Plus и введи одноразовый код. Код появится после запуска авторизации.</p>
+  {codex.login.url&&<a href={codex.login.url} target="_blank" rel="noreferrer">{codex.login.url}</a>}
+  {codex.login.code&&<strong className="codex-code">{codex.login.code}</strong>}
+  <pre>{codex.login.instructions||'Ожидание кода…'}</pre>
+ </div>}
+ <div className="codex-actions">
+  {!codex?.connected&&<button className="primary" disabled={codexBusy} onClick={()=>void codexAction('login')}>Подключить ChatGPT Plus</button>}
+  <button className="secondary" disabled={codexBusy} onClick={()=>void refreshCodex()}>Проверить состояние</button>
+  {codex?.connected&&<><button className="secondary" disabled={codexBusy} onClick={()=>void codexAction('test')}>Проверить запросом</button><button className="secondary" disabled={codexBusy} onClick={()=>void codexAction('logout')}>Отключить</button></>}
+ </div>
+ {codexTest&&<div className="codex-test">{codexTest}</div>}
+ </section>}
+ 
  {section==='settings'&&<div className="settings-grid"><div className="panel"><h3>Этапы workflow</h3><p className="muted">Пока все перемещения выполняются вручную. Режимы определяют будущие правила исполнения.</p>{stages.map(s=><div key={s.stage} className="setting-row"><div><strong>{s.label}</strong><small>{s.stage}</small></div><select value={s.mode} onChange={e=>void modeChange(s.stage,e.target.value)}><option value="manual">Ручной</option><option value="approval">С подтверждением</option><option value="automatic">Автоматический</option></select></div>)}</div>
  <div className="panel"><h3>Подключения</h3><p className="muted">Храним ключи в зашифрованном виде. Пока они не используются для запуска агентов.</p><button className="secondary" onClick={()=>setShowConnection(true)}><KeyRound size={16}/> Добавить подключение</button>{projectConnections.map(c=><div className="setting-row" key={c.id}><div><strong>{c.name}</strong><small>{c.provider}</small></div><span className="badge">Назначено</span></div>)}{connections.filter(c=>!projectConnections.some(p=>p.id===c.id)).map(c=><div key={c.id} className="setting-row"><div><strong>{c.name}</strong><small>{c.provider}</small></div><button className="textbtn" onClick={()=>void attachConnection(c.id)}>Назначить проекту</button></div>)}</div></div>}
  </div>}
