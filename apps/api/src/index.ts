@@ -354,7 +354,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
     }
     return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
    }
-   return {...current,status:remote.status,message:phase};
+   return {...current,status:remote.status,message:phase,started_at:remote.startedAt||null};
   }catch(e){
    const problem=e instanceof Error?e.message:'ошибка';
    if(problem.includes('Задача не найдена (возможно, исполнитель перезапущен)')){
