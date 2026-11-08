@@ -22,6 +22,7 @@ services:
       CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY}
       PORT: 3001
       CODEX_RUNNER_URL: http://codex:4300
+      RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
     depends_on:
       db: {condition: service_healthy}
   codex:
@@ -31,6 +32,7 @@ services:
     init: true
     environment:
       CODEX_HOME: /home/node/.codex
+      RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
     volumes:
       - codex_auth:/home/node/.codex
     restart: unless-stopped
