@@ -230,7 +230,7 @@ function App(){
  <div className="panel"><h3>Подключения</h3><p className="muted">Храним ключи в зашифрованном виде. GitHub token используется исполнителем для отправки ветки и создания Pull Request.</p><button className="secondary" onClick={()=>setShowConnection(true)}><KeyRound size={16}/> Добавить подключение</button>{projectConnections.map(c=><div className="setting-row" key={c.id}><div><strong>{c.name}</strong><small>{c.provider}</small></div><span className="badge">Назначено</span></div>)}{connections.filter(c=>!projectConnections.some(p=>p.id===c.id)).map(c=><div key={c.id} className="setting-row"><div><strong>{c.name}</strong><small>{c.provider}</small></div><button className="textbtn" onClick={()=>void attachConnection(c.id)}>Назначить проекту</button></div>)}</div></div>}
  </div>}
  </main>
- {selected&&!accountSettings&&!activeTask&&<>
+ {selected&&!accountSettings&&!activeTask&&!activeDoc&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>AI-помощник проекта</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
    <div className="assistant-thread" role="log" aria-live="polite">
