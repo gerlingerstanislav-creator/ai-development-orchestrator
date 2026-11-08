@@ -241,6 +241,21 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    }catch(e){setTaskFeedback(e instanceof Error?e.message:'Разработка не началась');fail(e);}
   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
  }
+ async function recoverTaskPr(){if(!selected||!activeTask)return;
+  const taskId=activeTask.id;setAiBusy(true);setTaskFeedback('');
+  try{
+   const result=await api<{ok:boolean;pr_url:string}>('/projects/'+selected.id+'/tasks/'+taskId+'/recover-pr',{method:'POST'});
+   setActiveTask(old=>old?.id===taskId?{...old,stage:'merge_queue',pr_url:result.pr_url}:old);
+   setTasks(old=>old.map(t=>t.id===taskId?{...t,stage:'merge_queue',pr_url:result.pr_url}:t));
+   const [runs,events]=await Promise.all([
+    api<AiRun[]>('/projects/'+selected.id+'/ai-runs'),
+    api<typeof events>('/projects/'+selected.id+'/tasks/'+taskId+'/events')
+   ]);
+   setAiRuns(runs);setEvents(events);
+   setTaskFeedback('PR создан. Разработку повторно запускать не потребовалось.');
+  }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось восстановить PR');fail(e);}
+  finally{setAiBusy(false);}
+ }
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
   setMergeBusy(true);try{
    await api('/projects/'+selected.id+'/tasks/'+task.id+'/merge',{method:'POST'});
@@ -433,6 +448,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <div className="task-modal-actions">
      {activeTask.stage==='analysis'&&<button className="primary" disabled={taskChatBusy||!aiSettings.enabled||!gitLink||activeTask.analysis_state!=='ready_for_development'} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>}
      {activeTask.stage==='analysis'&&<button className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>}
+     {activeTask.stage==='development'&&activeTask.git_branch&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void recoverTaskPr()}>Создать PR из ветки</button>}
      {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
