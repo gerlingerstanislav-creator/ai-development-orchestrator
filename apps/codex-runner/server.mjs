@@ -57,7 +57,7 @@ http.createServer(async(req,res)=>{
   }
   if(req.method==='POST'&&req.url==='/test'){
    if(!(await connected()).connected)return reply(res,409,{error:'Codex ещё не подключён'});
-   const {stdout,stderr}=await execFileAsync('codex',['exec','--ephemeral','--sandbox','read-only','Ответь ровно: подключение работает'],{timeout:120000,maxBuffer:30000,cwd:'/opt/codex-runner'});
+   const {stdout,stderr}=await execFileAsync('codex',['exec','--ephemeral','--skip-git-repo-check','--sandbox','read-only','Ответь ровно: подключение работает'],{timeout:120000,maxBuffer:30000,cwd:'/opt/codex-runner'});
    return reply(res,200,{ok:true,message:stdout.trim().slice(0,1000)});
   }
   return reply(res,404,{error:'Not found'});
