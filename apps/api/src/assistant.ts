@@ -78,7 +78,8 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'Проект: '+project.rows[0].name,'Описание: '+project.rows[0].description.slice(0,2000),
     'История:\n'+conversation,'Запрос:\n'+message].join('\n\n');
   }
-  const raw=await completion(prompt,config);
+  let raw:string;
+  try{raw=await completion(prompt,config);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
   let taskId:string|null=null,answer=raw;
   if(create){
    const data=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(3).max(10000)}).parse(jsonObject(raw));
@@ -119,7 +120,8 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   ].join('\n\n'):[
    'Ты инженерный AI-помощник в задаче. На русском ответь по существу. Не утверждай, что менял код.',context
   ].join('\n\n');
-  const raw=await completion(prompt,config);
+  let raw:string;
+  try{raw=await completion(prompt,config);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
   let summary:string|null=null,answer=raw;
   if(mode==='analyze'){
    const analyzed=z.object({summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(10).max(16000)}).parse(jsonObject(raw));
