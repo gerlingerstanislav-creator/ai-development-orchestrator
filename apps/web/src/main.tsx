@@ -487,9 +487,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function mergeReady(){if(!selected||!window.confirm('Последовательно слить все готовые PR в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
   setMergeBusy(true);try{
    const result=await api<{results:Array<{taskId:string,status:string,reason?:string}>}>('/projects/'+selected.id+'/merge-ready',{method:'POST'});
-   setTasks(old=>old.map(t=>result.results.some(r=>r.taskId===t.id&&r.status==='merged')?{...t,stage:'done'}:t));
-   setMergeReport('Слито: '+result.results.filter(r=>r.status==='merged').length+'. Пропущено: '+result.results.filter(r=>r.status==='skipped').length+
-    (result.results.filter(r=>r.reason).length?'\n'+result.results.filter(r=>r.reason).map(r=>r.reason).join('\n'):''));
+   setTasks(old=>old.map(t=>result.results.some(r=>r.taskId===t.id&&r.status==='merged')?{...t,stage:'documentation'}:t));
+   const mergedCount=result.results.filter(r=>r.status==='merged').length;
+   const skippedCount=result.results.filter(r=>r.status==='skipped').length;
+   const errors=[...new Set(result.results.map(r=>r.reason).filter((value):value is string=>!!value))];
+   setMergeReport('Слито: '+mergedCount+'. Пропущено: '+skippedCount+'.'+(errors.length?' Подробности ошибки показаны в уведомлении.':''));
+   if(errors.length)fail(new Error(errors.join('\n')));
+   if(mergedCount)await loadProject(selected.id);
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
  async function openTask(t:Task){if(selected)navigate(projectUrl(selected.id,'tasks')+'/'+t.id);}
