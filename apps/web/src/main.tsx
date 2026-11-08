@@ -391,59 +391,83 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
  {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
- {activeTask&&<div className="overlay" onMouseDown={()=>setActiveTask(null)}>
+ {activeTask&&<div className="overlay" onMouseDown={()=>{if(!editingField)setActiveTask(null);}}>
   <div className="dialog task-dialog task-dialog-wide" onMouseDown={e=>e.stopPropagation()}>
-   <div className="modal-heading"><span className="eyebrow">ЗАДАЧА #{activeTask.id.slice(0,6)}</span><button onClick={()=>setActiveTask(null)} title="Закрыть задачу"><X/></button></div>
+   <div className="task-modal-top">
+    <div className="task-modal-heading">
+     <span className="eyebrow">ЗАДАЧА #{activeTask.id.slice(0,6)} · {stages.find(s=>s.stage===activeTask.stage)?.label||activeTask.stage}</span>
+     <div className="task-editable task-title-editable">
+      {editingField==='title'?
+       <input autoFocus value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}
+        onBlur={e=>void autoSaveField('title',e.currentTarget.value)}
+        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){setEditingField(null);}}}/>:
+       <><h2>{activeTask.title}</h2><button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
+     </div>
+    </div>
+    <div className="task-modal-actions">
+     {activeTask.stage==='analysis'&&<button className="primary" disabled={taskChatBusy||!aiSettings.enabled||!gitLink||activeTask.analysis_state!=='ready_for_development'} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>}
+     {activeTask.stage==='analysis'&&<button className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>}
+     {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
+     {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
+     {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
+     {savingField&&<span className="muted">Сохранение…</span>}
+     <button className="task-close" onClick={()=>setActiveTask(null)} title="Закрыть задачу"><X size={20}/></button>
+    </div>
+   </div>
    <div className="task-dialog-columns">
     <section className="task-details">
-     <label>Название<input value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}/></label>
-     <label>Описание / краткое ТЗ<textarea rows={12} value={activeTask.description} onChange={e=>setActiveTask({...activeTask,description:e.target.value})}/></label>
-     <label>Этап<select value={activeTask.stage} onChange={e=>setActiveTask({...activeTask,stage:e.target.value})}>{stages.map(st=><option key={st.stage} value={st.stage}>{st.label}</option>)}</select></label>
-     {activeTask.stage==='analysis'&&<>
-       <p className="muted"><strong>{activeTask.analysis_state==='needs_clarification'?'Ожидает уточнений':activeTask.analysis_state==='ready_for_development'?'Анализ завершён':'Анализ не завершён'}</strong></p>
-       {Boolean(activeTask.clarification_questions?.length)&&<div className="task-ai-action"><strong>Открытые вопросы</strong>{activeTask.clarification_questions?.map((q,i)=><p key={i}>{i+1}. {q}</p>)}</div>}
-       {activeTask.related_task_ids?.length? <p className="muted">Связанные задачи: {activeTask.related_task_ids.map(id=>tasks.find(t=>t.id===id)?.title||id.slice(0,8)).join(', ')}</p>:null}
-       <button className="primary" disabled={taskChatBusy||!aiSettings.enabled||!gitLink||activeTask.analysis_state!=='ready_for_development'} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>
-     </>}
-     {activeTask.git_branch&&<p className="muted">Ветка: <code>{activeTask.git_branch}</code></p>}
-     {activeTask.pr_url&&<p><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть Pull Request</a></p>}
-     {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить</button>}
-     {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ждёт пакетного обновления документации.</p>}
-     <section className="task-ai-action">
-      <div className="task-ai-heading"><strong>Исполнение</strong><small>Модель: {aiSettings.model}</small></div>
-      <button className="primary" disabled={!aiSettings.enabled||taskChatBusy||aiBusy||!['analysis','development'].includes(activeTask.stage)||(activeTask.stage==='development'&&(!gitLink||aiRuns.some(r=>r.status==='running'||r.status==='queued')))} onClick={()=>void executeTask()}>
-       Выполнить
-      </button>
-      {activeTask.stage==='analysis'&&<p className="muted">AI составит ТЗ в описании слева и подробный разбор в переписке справа.</p>}
-      {activeTask.stage==='development'&&<p className="muted">Codex создаст отдельную ветку и черновик PR. После подготовки PR задача перейдёт в «Ожидает слияния».</p>}
-      {activeTask.stage==='testing'&&<p className="muted">Автоматическое тестирование пока не подключено.</p>}
-      {(activeTask.stage==='backlog'||activeTask.stage==='done')&&<p className="muted">Для AI-исполнения перенеси задачу в «Анализ» или «Разработку».</p>}
-      {!aiSettings.enabled&&<p className="muted">Сначала включи ручной AI в настройках проекта.</p>}
-      <p className="muted">Кнопка «Выполнить» сначала сохраняет поля задачи, затем запускает действие.</p>
-      {aiRuns.filter(r=>r.task_id===activeTask.id).slice(0,4).map(run=><div className="task-run" key={run.id}>
-       <b>{run.status==='completed'?'Готово':run.status==='failed'?'Ошибка':run.status==='running'?'Выполняется':'В очереди'}</b> · {run.model}
-       {run.message&&<p>{run.message}</p>}
-       {run.pr_url&&<a href={run.pr_url} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
-      </div>)}
-     </section>
-     <h4>История действий</h4>
-     <div className="events">{events.map(ev=><div key={ev.id}><b>{ev.event==='created'?'Задача создана':ev.event==='analyzed'?'Анализ выполнен':'Изменение задачи'}</b><small>{ev.detail} · {new Date(ev.created_at).toLocaleString('ru-RU')}</small></div>)}{!events.length&&<span className="muted">История пуста</span>}</div>
-     <footer className="task-details-footer"><button className="secondary" onClick={()=>setActiveTask(null)}>Отмена</button><button className="primary" onClick={()=>void saveTask({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})}>Сохранить</button></footer>
+     <div className="task-editable task-description-editable">
+      <div className="task-field-label">Описание / техническое задание</div>
+      {editingField==='description'?
+       <textarea autoFocus rows={17} value={activeTask.description} onChange={e=>setActiveTask({...activeTask,description:e.target.value})}
+        onBlur={e=>void autoSaveField('description',e.currentTarget.value)}/>:
+       <><div className="task-readonly">{activeTask.description||'Описание пока пустое'}</div>
+        <button className="pencil" title="Изменить описание" onClick={()=>setEditingField('description')}><Pencil size={15}/></button></>}
+     </div>
+     <div className="task-metadata">
+      <span>Этап: <strong>{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</strong></span>
+      <span>Модель: <strong>{aiSettings.model}</strong></span>
+     </div>
+     {activeTask.stage==='analysis'&&<div className="task-questions">
+      <strong>{activeTask.analysis_state==='needs_clarification'?'Нужно уточнить требования':activeTask.analysis_state==='ready_for_development'?'Анализ завершён':'Требуется анализ'}</strong>
+      {!!activeTask.clarification_questions?.length&&<ol>{activeTask.clarification_questions.map((q,i)=><li key={i}>{q}</li>)}</ol>}
+      {activeTask.analysis_state==='ready_for_development'&&<p className="muted">Блокирующих вопросов нет. Можно отправлять в разработку.</p>}
+     </div>}
+     {!!activeTask.related_task_ids?.length&&<p className="muted">Связанные задачи: {activeTask.related_task_ids.map(id=>tasks.find(t=>t.id===id)?.title||id.slice(0,8)).join(', ')}</p>}
+     {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
+     {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
+     {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
     <aside className="task-conversation">
-     <header><MessageCircle size={17}/><strong>Обсуждение с AI</strong></header>
+     <header><MessageCircle size={17}/><strong>Переписка и ход работы</strong><small>{taskChatBusy?'AI отвечает…':aiRuns.some(r=>r.task_id===activeTask.id&&r.status==='running')?'Выполняется':'История сохранена'}</small></header>
      <div ref={taskThreadRef} className="assistant-thread" role="log" aria-live="polite">
-      {taskMessages.length===0&&<p className="assistant-hint">Здесь будет подробный анализ и переписка по задаче. Можно уточнять требования и обсуждать реализацию.</p>}
-      {taskMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
-       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span><div>{m.body}</div>
+      {timeline(activeTask.id).length===0&&<p className="assistant-hint">Здесь будут вопросы, ответы AI, действия и ход разработки.</p>}
+      {timeline(activeTask.id).map(item=><div key={item.id} className={'assistant-bubble '+(item.kind==='user'?'mine':item.kind==='event'?'activity-event':item.kind==='run'?'activity-run':'bot')}>
+       <span className="assistant-author">{item.kind==='user'?'Вы':item.kind==='assistant'?'AI':item.kind==='run'?item.title:item.title} · {new Date(item.time).toLocaleString('ru-RU')}</span>
+       <div>{item.text}</div>
+       {item.link&&<a href={item.link} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
       </div>)}
-      {taskChatBusy&&<p className="assistant-hint">Codex отвечает…</p>}
+      {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
+      {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
      </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
-      <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)} placeholder="Обсуди задачу, задай вопрос..." aria-label="Сообщение в чат задачи"/>
+      <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
+       onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
+       placeholder="Задай вопрос или ответь на все уточнения… (Shift+Enter — новая строка)" aria-label="Сообщение в чат задачи"/>
       <button className="primary" type="submit" disabled={taskChatBusy||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
      </form>
     </aside>
+   </div>
+   <div className="task-workflow" aria-label="Этапы выполнения">
+    {stages.map((stage,i)=><React.Fragment key={stage.stage}>
+     {i>0&&<button className="workflow-arrow" disabled={!canAdvance(activeTask,stages[i-1].stage,stage.stage)}
+       title={canAdvance(activeTask,stages[i-1].stage,stage.stage)?'Перейти: '+stage.label:'Для этого перехода нужны выполненные условия предыдущего этапа'}
+       onClick={()=>void advanceTask(activeTask,stages[i-1].stage,stage.stage)}><ArrowRight size={18}/></button>}
+     <div className={'workflow-step '+(stage.stage===activeTask.stage?'current':stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?'passed':'pending')}>
+      {stage.stage===activeTask.stage?<LoaderCircle size={16}/>:stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?<CheckCircle2 size={16}/>:<Clock3 size={16}/>}
+      <span>{stage.label}</span>
+     </div>
+    </React.Fragment>)}
    </div>
   </div>
  </div>}
