@@ -303,8 +303,8 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const maxRuntimeSeconds=1800; // Technical safeguard only; not a usage quota.
  const git=await pool.query("SELECT g.repository,g.default_branch,g.target_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2 AND c.provider='github_token'",[id,uid(req)]);
  if(!git.rowCount)return reply.code(409).send({error:'Сначала привяжи GitHub-репозиторий с токеном'});
- const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND status IN ('queued','running') LIMIT 1",[id]);
- if(active.rowCount)return reply.code(409).send({error:'В этом проекте уже выполняется AI-задача'});
+ const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
+ if(active.rowCount)return reply.code(409).send({error:'Эта задача уже выполняется или находится в очереди'});
  const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
  const branch=git.rows[0].target_branch||git.rows[0].default_branch;
@@ -320,14 +320,14 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status) VALUES($1,$2,$3,$4,$5,'queued')",
  [runId,id,taskId,uid(req),ai.model]);
  try{
-  await agentCall('/jobs','POST',job);
-  await pool.query("UPDATE ai_task_runs SET status='running' WHERE id=$1",[runId]);
+  const worker=await agentCall('/jobs','POST',job);
+  await pool.query('UPDATE ai_task_runs SET status=$2,message=$3 WHERE id=$1',[runId,worker.status==='queued'?'queued':'running',String(worker.message||'Запуск принят')]);
  }catch(e){
   const err=e as Error&{statusCode?:number};
   await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,err.message]);
   return reply.code(err.statusCode||503).send({error:err.message});
  }
- return reply.code(202).send({id:runId,task_id:taskId,status:'running',model:ai.model});
+ return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:ai.model,created_at:new Date().toISOString()});
 });
 app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
@@ -339,6 +339,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
   try{
    const remote=await agentCall('/jobs/'+runId);
    const phase=String(remote.message||'').slice(0,1600);
+   if(remote.status!==current.status)await pool.query('UPDATE ai_task_runs SET status=$2 WHERE id=$1',[runId,remote.status]);
    if(phase && phase!==current.message){
     await pool.query('UPDATE ai_task_runs SET message=$2 WHERE id=$1',[runId,phase]);
     await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
