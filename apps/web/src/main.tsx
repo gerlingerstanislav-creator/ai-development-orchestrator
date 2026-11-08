@@ -211,8 +211,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [projectChatOpen,setProjectChatOpen]=useState(false);
  useEffect(()=>{if(projectChatOpen)projectInputRef.current?.focus();},[projectChatOpen]);
  const [projectMessages,setProjectMessages]=useState<AssistantMessage[]>([]);
+ const [projectPendingId,setProjectPendingId]=useState<string|null>(null);
  const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
+ const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
  function timeline(taskId:string):ActivityItem[]{
   return [
@@ -429,7 +431,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
   const projectId=selected.id,message=projectInput.trim(),optimisticId='pending-'+crypto.randomUUID();
   setProjectMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
-  setProjectInput('');setProjectChatBusy(true);
+  setProjectInput('');setProjectPendingId(optimisticId);setProjectChatBusy(true);
   try{
    const response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({message})});
    setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
@@ -438,12 +440,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){
    setProjectMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
    fail(e);
-  }finally{setProjectChatBusy(false);}
+  }finally{setProjectChatBusy(false);setProjectPendingId(null);}
  }
  async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
   const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim(),optimisticId='pending-'+crypto.randomUUID();
   setTaskMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
-  setTaskInput('');setTaskChatBusy(true);
+  setTaskInput('');setTaskPendingId(optimisticId);setTaskChatBusy(true);
   try{
    const response=await api<AssistantResponse>('/projects/'+projectId+'/tasks/'+taskId+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
    setTaskMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
@@ -452,7 +454,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){
    setTaskMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
    fail(e);
-  }finally{setTaskChatBusy(false);}
+  }finally{setTaskChatBusy(false);setTaskPendingId(null);}
  }
  async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
   const taskId=activeTask.id;
@@ -703,7 +705,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
       <div>{m.body}</div>
-      {m.pending&&<small className="chat-message-status">Отправляется…</small>}
+      {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
       {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setProjectChatOpen(false);}}>Открыть документ</button>}
@@ -788,7 +790,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {timeline(activeTask.id).map(item=><div key={item.id} className={'assistant-bubble '+(item.kind==='user'?'mine':item.kind==='event'?'activity-event':item.kind==='run'?'activity-run':'bot')}>
        <span className="assistant-author">{item.kind==='user'?'Вы':item.kind==='assistant'?'AI':item.kind==='run'?item.title:item.title} · {new Date(item.time).toLocaleString('ru-RU')}</span>
        <div>{item.text}</div>
-       {item.pending&&<small className="chat-message-status">Отправляется…</small>}
+       {item.id==='msg-'+taskPendingId&&taskChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
        {item.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
        {item.link&&<a href={item.link} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
       </div>)}
