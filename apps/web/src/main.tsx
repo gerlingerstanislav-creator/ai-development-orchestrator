@@ -25,6 +25,71 @@ type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run';text:string;t
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','merge_queue','documentation','done'];
+
+function markdownInline(source:string):React.ReactNode[]{
+ const pattern=/(\[([^\]]+)\]\((https?:\/\/[^ )]+)\)|\*\*([^*]+)\*\*|\x60([^\x60]+)\x60)/g;
+ const nodes:React.ReactNode[]=[];
+ let last=0,match:RegExpExecArray|null;
+ while((match=pattern.exec(source))!==null){
+  if(match.index>last)nodes.push(source.slice(last,match.index));
+  if(match[2]&&match[3])nodes.push(<a key={match.index} href={match[3]} target="_blank" rel="noopener noreferrer">{match[2]}</a>);
+  else if(match[4])nodes.push(<strong key={match.index}>{match[4]}</strong>);
+  else if(match[5])nodes.push(<code key={match.index}>{match[5]}</code>);
+  last=pattern.lastIndex;
+ }
+ if(last<source.length)nodes.push(source.slice(last));
+ return nodes;
+}
+function DocumentMarkdown({source}:{source:string}){
+ const rows=source.replace(/\r\n/g,'\n').split('\n');
+ const result:React.ReactNode[]=[];
+ let index=0;
+ while(index<rows.length){
+  const line=rows[index];
+  if(!line.trim()){index++;continue;}
+  if(/^\s*\x60{3}/.test(line)){
+   const language=line.trim().slice(3);
+   const code:string[]=[];
+   index++;
+   while(index<rows.length&&!/^\s*\x60{3}/.test(rows[index]))code.push(rows[index++]);
+   if(index<rows.length)index++;
+   result.push(<pre key={'block-'+index} className="docs-code"><code data-language={language}>{code.join('\n')}</code></pre>);
+   continue;
+  }
+  const heading=/^(#{1,6})\s+(.+)$/.exec(line);
+  if(heading){
+   const level=heading[1].length;
+   const contents=markdownInline(heading[2]);
+   const props={key:'heading-'+index,className:'docs-heading docs-h'+level};
+   result.push(level===1?<h1 {...props}>{contents}</h1>:level===2?<h2 {...props}>{contents}</h2>:level===3?<h3 {...props}>{contents}</h3>:<h4 {...props}>{contents}</h4>);
+   index++;continue;
+  }
+  if(/^\s*([-*+] |\d+\. )/.test(line)){
+   const ordered=/^\s*\d+\. /.test(line);
+   const items:React.ReactNode[]=[];
+   while(index<rows.length&&/^\s*([-*+] |\d+\. )/.test(rows[index])){
+    items.push(<li key={'li-'+index}>{markdownInline(rows[index].replace(/^\s*(?:[-*+] |\d+\. )/,''))}</li>);
+    index++;
+   }
+   result.push(ordered?<ol key={'list-'+index}>{items}</ol>:<ul key={'list-'+index}>{items}</ul>);
+   continue;
+  }
+  if(/^\s*>\s?/.test(line)){
+   const text:string[]=[];
+   while(index<rows.length&&/^\s*>\s?/.test(rows[index]))text.push(rows[index++].replace(/^\s*>\s?/,''));
+   result.push(<blockquote key={'quote-'+index}>{text.map((x,i)=><React.Fragment key={i}>{i>0&&' '}{markdownInline(x)}</React.Fragment>)}</blockquote>);
+   continue;
+  }
+  if(/^\s*(?:---+|\\*\\*\\*+)\s*$/.test(line)){result.push(<hr key={'hr-'+index}/>);index++;continue;}
+  const paragraphs:string[]=[];
+  while(index<rows.length&&rows[index].trim()&&!/^(#{1,6})\s+/.test(rows[index])&&!/^\s*\x60{3}/.test(rows[index])&&!/^\s*([-*+] |\d+\. )/.test(rows[index])&&!/^\s*>\s?/.test(rows[index])){
+   paragraphs.push(rows[index++]);
+  }
+  if(paragraphs.length)result.push(<p key={'p-'+index}>{paragraphs.map((text,i)=><React.Fragment key={i}>{i>0&&' '}{markdownInline(text)}</React.Fragment>)}</p>);
+ }
+ return <article className="docs-markdown">{result}</article>;
+}
+
 async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  const token=sessionStorage.getItem(key);
  const res=await fetch('/api'+path,{...options,headers:{...(options.body!=null?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});
