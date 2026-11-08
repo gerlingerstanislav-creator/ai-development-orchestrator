@@ -151,6 +151,9 @@ function App(){
   e.preventDefault();navigate(path);
  }
   useEffect(()=>{
+  if(window.location.pathname==='/' || window.location.pathname==='/projects/'){
+   window.history.replaceState(null,'','/projects');
+  }
   const onPop=()=>setRoute(parseAppRoute(window.location.pathname));
   window.addEventListener('popstate',onPop);
   return()=>window.removeEventListener('popstate',onPop);
@@ -614,7 +617,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <textarea className="docs-editor-area" rows={22} value={editingDoc.body} onChange={e=>setEditingDoc({...editingDoc,body:e.target.value})} placeholder="Введите текст документа…"/>
       </label>
      </div>:
-     <div className="docs-content">{doc.body.trim()?<DocumentMarkdown source={doc.body}/>:<p className="muted">Документ пуст. Нажми карандаш, чтобы добавить содержимое.</p>}</div>}
+     <div key={doc.id} className="docs-content">{doc.body.trim()?<DocumentMarkdown source={doc.body}/>:<p className="muted">Документ пуст. Нажми карандаш, чтобы добавить содержимое.</p>}</div>}
     </>;
    })():<div className="docs-empty"><BookOpen size={30}/><h3>Документация проекта</h3><p>Выбери страницу слева, чтобы прочитать её содержимое.</p></div>}
   </section>
