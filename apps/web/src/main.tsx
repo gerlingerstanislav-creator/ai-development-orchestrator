@@ -160,7 +160,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const job=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
    setAiRuns(old=>[job,...old]);setAiMessage('Codex запущен. Результат появится в истории ниже.');
-  }catch(e){fail(e);}finally{setAiBusy(false);}}
+  }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось начать разработку');fail(e);}finally{setAiBusy(false);}}
  useEffect(()=>{if(!token||!selected||!aiRuns.some(r=>r.status==='running'||r.status==='queued'))return;
   const timer=setInterval(async()=>{const active=aiRuns.filter(r=>r.status==='running'||r.status==='queued');
    const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch{return r;}}));
@@ -180,7 +180,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const message=taskInput.trim();setTaskChatBusy(true);
   try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
    setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:message},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message}]);
-   setTaskInput('');if(activeTask.stage==='analysis'){const updated=await api<Task[]>('/projects/'+selected.id+'/tasks');setTasks(updated);const task=updated.find(t=>t.id===activeTask.id);if(task)setActiveTask(task);}
+   setTaskInput('');await refreshTaskActivity(selected.id,activeTask.id);
   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
  }
  async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
@@ -206,7 +206,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     const run=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
     setAiRuns(old=>[run,...old]);
     setAiMessage('Разработка запущена автоматически после подтверждения анализа.');
-   }catch(e){fail(e);}
+   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Разработка не началась');fail(e);}
   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
  }
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
@@ -380,7 +380,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {projectChatBusy&&<p className="assistant-hint">Codex готовит ответ…</p>}
    </div>
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
-    <textarea rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder="Напиши запрос или попроси создать задачу" aria-label="Сообщение AI-помощнику"/>
+    <textarea rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder="Напиши запрос или попроси создать задачу (Shift+Enter — новая строка)" aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
     <button className="primary" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={16}/> Отправить</button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
