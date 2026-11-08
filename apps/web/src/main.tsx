@@ -271,11 +271,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['rules','Правила',FileText],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>{setAccountSettings(false);setSection(k);}}><Icon size={18}/>{label}</button>)}
   </>}
   <div className="sidebar-label">АККАУНТ</div>
-  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>{setAccountSettings(true);setServiceSettings(true);}}><Settings2 size={18}/> Настройки аккаунта</button>
+  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>setAccountSettings(true)}><Settings2 size={18}/> Настройки аккаунта</button>
 
   <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
  </aside>
- <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{serviceSettings?<><span className="slash">/</span><strong>Настройки сервиса</strong></>:accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
+ <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
  {error&&<div className="error global" onClick={()=>setError('')}>{error} <X size={16}/></div>}
  {accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
