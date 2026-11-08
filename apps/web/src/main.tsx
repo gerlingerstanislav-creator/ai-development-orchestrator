@@ -353,7 +353,7 @@ function App(){
   <ol style={{paddingLeft:20,marginBottom:8,lineHeight:1.65}}>
    <li>Открой <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">создание Fine-grained token в GitHub</a>.</li>
    <li>Выбери владельца и <b>Only select repositories</b> — только нужный репозиторий.</li>
-   <li>В Repository permissions установи <b>Contents: Read and write</b> и <b>Pull requests: Read and write</b> (Metadata: Read — автоматически).</li>
+   <li>В Repository permissions установи <b>Contents: Read and write</b>, <b>Pull requests: Read and write</b> и <b>Checks: Read</b> (Metadata: Read — автоматически).</li>
    <li>Создай токен, скопируй его и вставь в поле «Секрет» ниже.</li>
    <li>После сохранения выбери токен в блоке «GitHub · Репозиторий проекта» и нажми «Проверить и сохранить».</li>
   </ol>
