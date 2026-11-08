@@ -107,3 +107,10 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .task-conversation>header{height:46px;flex:0 0 auto;display:flex;align-items:center;gap:9px;padding:0 14px;background:white;border-bottom:1px solid #e5e8f0}
 .task-conversation .assistant-thread{padding:14px}
 @media(max-width:850px){.task-dialog-wide{padding:14px;width:min(97vw,700px);max-height:96vh}.task-dialog-columns{display:flex;flex-direction:column;height:calc(96vh - 84px);overflow-y:auto}.task-details{overflow:visible}.task-conversation{min-height:380px}.project-chat{right:12px;bottom:78px}.chat-fab{right:12px;bottom:12px}}
+
+/* PR merge queue and clarification markers */
+.stage-dot.merge_queue{background:#7798d3}
+.lane-heading:has(.merge_queue){flex-wrap:wrap}
+.lane-heading .secondary{font-size:11px;padding:5px 8px;min-height:26px;width:100%;white-space:nowrap}
+.task-warning{font-size:11px;color:#916026;background:#fff7e9;border-radius:6px;padding:4px 7px}
+.merge-report{white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:10px;padding:10px 12px;font-size:12px}
