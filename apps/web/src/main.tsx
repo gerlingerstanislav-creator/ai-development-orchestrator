@@ -100,13 +100,14 @@ function App(){
   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
  }
  async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
-  try{await api('/projects/'+selected.id+'/tasks/'+activeTask.id,{method:'PATCH',body:JSON.stringify({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})});}
+  const taskId=activeTask.id;
+  try{await api('/projects/'+selected.id+'/tasks/'+taskId,{method:'PATCH',body:JSON.stringify({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})});}
   catch(e){fail(e);return;}
   if(activeTask.stage==='analysis'){
    setTaskChatBusy(true);try{const instruction='Выполни анализ задачи и составь техническое задание с критериями приёмки.';
-    const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message:instruction,mode:'analyze'})});
+    const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+taskId+'/assistant',{method:'POST',body:JSON.stringify({message:instruction,mode:'analyze'})});
     setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:instruction},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message}]);
-    if(response.summary){setActiveTask(old=>old?.id===activeTask.id?{...old,description:response.summary||old.description}:old);setTasks(old=>old.map(t=>t.id===activeTask.id?{...t,description:response.summary||t.description}:t));}
+    if(response.summary){setActiveTask(old=>old?.id===taskId?{...old,description:response.summary||old.description}:old);setTasks(old=>old.map(t=>t.id===taskId?{...t,description:response.summary||t.description}:t));}
    }catch(e){fail(e);}finally{setTaskChatBusy(false);}
   }else if(activeTask.stage==='development'){await runAiTask();}
  }
