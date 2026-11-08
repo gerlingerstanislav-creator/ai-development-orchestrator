@@ -65,14 +65,14 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const conversation=await history(id,null);
   // Explicit project-document actions always outrank references to GitHub in older messages.
   // A clarification like "I mean documents in our project" continues the last document command.
-  const documentAction=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи|сделай|сформируй)\\s+(?:(?:нов(?:ый|ую|ое)|отдельн(?:ый|ую|ое))\\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел(?:\\s+документации)?|описание\\s+проекта)(?![а-яёa-z])|(?:документ|страниц[ауеы]|документаци[юи]|раздел)\\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i;
+  const documentAction=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи|сделай|сформируй)\s+(?:(?:нов(?:ый|ую|ое)|отдельн(?:ый|ую|ое))\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел(?:\s+документации)?|описание\s+проекта)(?![а-яёa-z])|(?:документ|страниц[ауеы]|документаци[юи]|раздел)\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i;
   const explicitDocumentCreation=documentAction.test(message);
-  const lastUserRequest=conversation.split('\\n\\n').filter(x=>x.startsWith('user: ')).slice(-1)[0]?.slice(6)||'';
-  const documentClarification=/(?:я\\s+(?:говорю|имел)|имею\\s+в\\s+виду|именно|в\\s+нашем\\s+(?:сервисе|приложении|проекте)|внутри\\s+(?:сервиса|проекта))/i.test(message)
+  const lastUserRequest=conversation.split('\n\n').filter(x=>x.startsWith('user: ')).slice(-1)[0]?.slice(6)||'';
+  const documentClarification=/(?:я\s+(?:говорю|имел)|имею\s+в\s+виду|именно|в\s+нашем\s+(?:сервисе|приложении|проекте)|внутри\s+(?:сервиса|проекта))/i.test(message)
    &&/(?:документ|документаци|страниц|раздел)/i.test(message)
    &&documentAction.test(lastUserRequest);
   const localDocumentIntent=(explicitDocumentCreation||documentClarification)
-   &&!/(?:из\\s+(?:github|репозитория)|на\\s+основе\\s+(?:документов|файлов)|импортир|перенеси\\s+из)/i.test(message);
+   &&!/(?:из\s+(?:github|репозитория)|на\s+основе\s+(?:документов|файлов)|импортир|перенеси\s+из)/i.test(message);
   const location=extractGitHubDocumentLocation(message,conversation);
   // A missing source or unclear action is a conversation, not a reason to
   // hallucinate unavailable integrations or silently create the wrong object.
