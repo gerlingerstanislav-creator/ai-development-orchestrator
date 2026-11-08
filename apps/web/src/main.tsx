@@ -111,10 +111,47 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!res.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
 }
+type ProjectSection='overview'|'tasks'|'docs'|'rules'|'settings';
+type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string};
+const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+function parseAppRoute(pathname:string):AppRoute{
+ const parts=pathname.split('/').filter(Boolean);
+ if(parts.length===0||parts.length===1&&parts[0]==='projects')return {kind:'projects'};
+ if(parts.length===2&&parts[0]==='account'&&parts[1]==='settings')return {kind:'account'};
+ if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
+  const projectId=parts[1];
+  if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
+  if(parts.length===3&&['overview','tasks','docs','rules','settings'].includes(parts[2]))
+   return {kind:'project',projectId,section:parts[2] as ProjectSection};
+  if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
+   return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
+  if(parts.length===4&&parts[2]==='docs'&&uuidPattern.test(parts[3]))
+   return {kind:'project',projectId,section:'docs',docId:parts[3]};
+ }
+ return {kind:'not-found'};
+}
+function projectUrl(projectId:string,section:ProjectSection='tasks'){
+ return '/projects/'+encodeURIComponent(projectId)+'/'+section;
+}
 function App(){
  const [token,setToken]=useState(sessionStorage.getItem(key)||'');
  const [login,setLogin]=useState(''); const [password,setPassword]=useState('');
- const [projects,setProjects]=useState<Project[]>([]);const [selected,setSelected]=useState<Project|null>(null);
+ const [route,setRoute]=useState<AppRoute>(()=>parseAppRoute(window.location.pathname));
+ const [projectsLoaded,setProjectsLoaded]=useState(false);
+ const [loadedProjectId,setLoadedProjectId]=useState<string|null>(null);
+ function navigate(path:string,replace=false){
+  const target=new URL(path,window.location.origin);
+  if(target.pathname===window.location.pathname&&target.search===window.location.search)return;
+  if(replace)window.history.replaceState(null,'',target.pathname+target.search);
+  else window.history.pushState(null,'',target.pathname+target.search);
+  setRoute(parseAppRoute(target.pathname));
+ }
+ useEffect(()=>{
+  const onPop=()=>setRoute(parseAppRoute(window.location.pathname));
+  window.addEventListener('popstate',onPop);
+  return()=>window.removeEventListener('popstate',onPop);
+ },[]);
+  const [projects,setProjects]=useState<Project[]>([]);const [selected,setSelected]=useState<Project|null>(null);
  const [section,setSection]=useState<'overview'|'tasks'|'docs'|'rules'|'settings'>('tasks');
  const [accountSettings,setAccountSettings]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
@@ -210,14 +247,49 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){setError(e instanceof Error?e.message:'Неизвестная ошибка');}
- async function loadProjects(){try{setProjects(await api('/projects'));}catch(e){fail(e);}}
+ async function loadProjects(){try{setProjects(await api('/projects'));setProjectsLoaded(true);}catch(e){fail(e);}}
  async function loadProject(id:string){
   try{
    const [t,s,d,c,pc,gl,ai,runs,pr,suggestions,versions]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions')]);
-   setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);
+   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
+ useEffect(()=>{
+  if(!token||!projectsLoaded)return;
+  if(route.kind==='not-found'){navigate('/projects',true);setError('Адрес страницы не найден');return;}
+  if(route.kind==='account'){
+   setAccountSettings(true);setSelected(null);setActiveTask(null);setEditingDoc(null);setSelectedDocId(null);
+   return;
+  }
+  if(route.kind==='projects'){
+   setAccountSettings(false);setSelected(null);setActiveTask(null);setEditingDoc(null);setSelectedDocId(null);
+   return;
+  }
+  const p=projects.find(item=>item.id===route.projectId);
+  if(!p){navigate('/projects',true);setError('Проект не найден или у тебя нет к нему доступа');return;}
+  setAccountSettings(false);
+  setSelected(current=>current?.id===p.id?current:p);
+  setSection(route.section||'tasks');
+ },[token,projectsLoaded,route,projects]);
+ useEffect(()=>{
+  if(route.kind!=='project'||selected?.id!==route.projectId||loadedProjectId!==route.projectId)return;
+  if(route.taskId){
+   const task=tasks.find(t=>t.id===route.taskId);
+   if(task){
+    if(activeTask?.id!==task.id){
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);
+     void api<Array<{id:string;event:string;detail:string;created_at:string}>>('/projects/'+selected.id+'/tasks/'+task.id+'/events').then(setEvents).catch(fail);
+    }
+   }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
+  }else if(activeTask){setActiveTask(null);}
+  if(route.docId){
+   const doc=docs.find(d=>d.id===route.docId);
+   if(doc){if(selectedDocId!==doc.id){setSelectedDocId(doc.id);setEditingDoc(null);}}
+   else{navigate(projectUrl(selected.id,'docs'),true);setError('Документ не найден');}
+  }else if(selectedDocId){setSelectedDocId(null);setEditingDoc(null);}
+ },[route,selected?.id,loadedProjectId,tasks,docs,activeTask?.id,selectedDocId]);
+
  useEffect(()=>{if(selected)void loadProject(selected.id);},[selected?.id]);
  useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy]);
  useEffect(()=>{
