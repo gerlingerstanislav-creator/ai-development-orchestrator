@@ -46,7 +46,7 @@ app.setErrorHandler((error,_,reply) => {
  return reply.code(500).send({error:'Ошибка сервера'});
 });
 app.post('/api/login',async(req,reply)=>{
- const {email,password}=parse(z.object({email:z.string().email(),password:z.string()}),req.body);
+ const {email,password}=parse(z.object({email:z.string().trim().min(3).max(254).regex(/^[^\s@]+@[^\s@]+$/),password:z.string()}),req.body);
  const u=await pool.query('SELECT * FROM users WHERE email=$1',[email.toLowerCase()]);
  if(!u.rowCount || !(await compare(password,u.rows[0].password_hash))) return reply.code(401).send({error:'Неверный логин или пароль'});
  return {token:await new SignJWT({email:u.rows[0].email}).setProtectedHeader({alg:'HS256'}).setSubject(u.rows[0].id).setIssuedAt().setExpirationTime('12h').sign(jwtKey)};
