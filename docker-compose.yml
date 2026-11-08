@@ -21,8 +21,20 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY}
       PORT: 3001
+      CODEX_RUNNER_URL: http://codex:4300
     depends_on:
       db: {condition: service_healthy}
+  codex:
+    build:
+      context: .
+      dockerfile: apps/codex-runner/Dockerfile
+    init: true
+    environment:
+      CODEX_HOME: /home/node/.codex
+    volumes:
+      - codex_auth:/home/node/.codex
+    restart: unless-stopped
+    # Internal only: no host port. Never mount the Docker socket here.
   web:
     build:
       context: .
@@ -31,3 +43,4 @@ services:
     depends_on: [api]
 volumes:
   db_data:
+  codex_auth:
