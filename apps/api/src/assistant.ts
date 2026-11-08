@@ -2,12 +2,13 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {extractGitHubDocumentLocation,importGitHubDocumentation,wantsDocumentImport} from './github-document-import.js';
 
 type Dependencies={
  pool:Pool; uid:(req:any)=>string;
  access:(req:any,reply:any,projectId:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
- codexUrl:string; runnerKey:string;
+ codexUrl:string; runnerKey:string; decryptToken:(encrypted:string)=>string;
 };
 const messageSchema=z.object({message:z.string().trim().min(3).max(4000)});
 function jsonObject(text:string):Record<string,unknown>{
@@ -17,7 +18,7 @@ function jsonObject(text:string):Record<string,unknown>{
  catch{throw new Error('AI вернул некорректный JSON. Повтори запрос.');}
 }
 export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
- const {pool,uid,access,requireAdmin,codexUrl,runnerKey}=deps;
+ const {pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken}=deps;
  async function configuration(id:string){
   const r=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
   return r.rows[0]||{model:'gpt-6-luna',reasoning:'low',enabled:false};
@@ -61,6 +62,32 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const {message}=messageSchema.parse(req.body);
+  const conversation=await history(id,null);
+  const location=extractGitHubDocumentLocation(message,conversation);
+  const explicitImport=/(?:перенес|перенести|импортир|загруз|скопир|забер|добав|помест|сохран|полож|затащ)/i.test(message)
+    &&/(?:документ|файл|markdown|\\.md\\b|страниц)/i.test(message)
+    &&/(?:github|репозитор|из\\s+идеи|из\\s+ideas)/i.test(message+' '+conversation);
+  const importRequest=wantsDocumentImport(message,conversation)||explicitImport;
+  if(importRequest){
+   if(!location)return reply.code(409).send({error:'Для переноса документов пришли ссылку GitHub на каталог Markdown-файлов, например https://github.com/owner/repo/tree/main/docs'});
+   try{
+    const connected=await pool.query("SELECT secret_encrypted FROM connections WHERE owner_id=$1 AND provider='github_token' ORDER BY created_at DESC LIMIT 8",[uid(req)]);
+    const tokens:string[]=[];
+    for(const c of connected.rows){try{tokens.push(decryptToken(c.secret_encrypted));}catch{continue;}}
+    const result=await importGitHubDocumentation(pool,id,location,tokens);
+    const answer='Документация перенесена из '+location.owner+'/'+location.repository+' в раздел «Документация» этого проекта. '+(result.created
+     ?'Создано страниц: '+result.created+'. ':'')+(result.skipped
+     ?'Уже импортированных страниц без перезаписи: '+result.skipped+'. ':'')+
+     'Исходные Markdown-файлы сохранены без пересказа.';
+    await store(id,null,uid(req),'user',message);
+    await store(id,null,null,'assistant',answer,null,result.rootId);
+    await countCall(id,uid(req));
+    return {message:answer,created_task_id:null,created_document_id:result.rootId,imported_documents:result.created};
+   }catch(error){
+    const reason=error instanceof Error?error.message:'Неизвестная ошибка GitHub';
+    return reply.code(409).send({error:'Не удалось импортировать документацию: '+reason.slice(0,600)});
+   }
+  }
   const config=await configuration(id);
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   const create=/(создай|создать|добавь|заведи|оформи)\s+.{0,100}(задач[уаи]|таск)|(задач[уаи]|таск)\s+.{0,100}(создай|создать|добавь|заведи|оформи)/i.test(message);
@@ -69,7 +96,6 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const createDocument=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи)\s+(?:нов(?:ый|ую|ое)\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел\s+документации|описание\s+проекта)(?![а-яёa-z])|(?:документ|страниц[ауеы]|документаци[юи])\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i.test(message);
 
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
-  const conversation=await history(id,null);
   const rules=await rulesContext(id);
   const repoLink=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
   const repoContext=repoLink
