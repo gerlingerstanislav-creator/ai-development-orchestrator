@@ -264,7 +264,7 @@ function App(){
      <section className="task-ai-action">
       <div className="task-ai-heading"><strong>Исполнение</strong><small>Модель: {aiSettings.model}</small></div>
       <button className="primary" disabled={!aiSettings.enabled||taskChatBusy||aiBusy||!['analysis','development'].includes(activeTask.stage)||(activeTask.stage==='development'&&(!gitLink||aiRuns.some(r=>r.status==='running'||r.status==='queued')))} onClick={()=>void executeTask()}>
-       {activeTask.stage==='analysis'?'Выполнить анализ':activeTask.stage==='development'?'Выполнить разработку':'Выполнить'}
+       Выполнить
       </button>
       {activeTask.stage==='analysis'&&<p className="muted">AI составит ТЗ в описании слева и подробный разбор в переписке справа.</p>}
       {activeTask.stage==='development'&&<p className="muted">Codex создаст отдельную ветку и черновик PR. Дождись результата перед слиянием.</p>}
