@@ -226,6 +226,7 @@ async function runJob(job,state){
    'Когда задача требует сайт или страницу, создай работающий HTML/JS/CSS, не ограничивайся рекомендациями.',
    'Не задавай вопросов о GitHub-репозитории: он уже клонирован и привязан к проекту.',
    'Не трогай секреты, .env, credentials или настройки доступа. Не запускай git push, git commit, git checkout.',
+   'Не используй GitHub MCP, GitHub API или другие удалённые инструменты для записи файлов: все изменения выполняй ТОЛЬКО в локальной рабочей папке. За commit, push и PR отвечает оркестратор.',
    'Не изменяй файлы вне рабочей директории. Не устанавливай пакеты из сети.',
    'Постарайся выполнить задачу полностью. Если требования противоречивы, объясни препятствие.',
    'Проект: '+job.repository+' (целевая ветка: '+job.baseBranch+').',
@@ -243,7 +244,7 @@ async function runJob(job,state){
     // Docker is the isolation boundary. Nested Linux sandbox needs namespaces
     // forbidden by Docker defaults; never expose GitHub token to Codex.
     '--sandbox','danger-full-access','--ask-for-approval','never',instruction
-   ],{cwd:dir,env:cliEnv,timeout:remaining});
+   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    return {result,files:await git('status','--porcelain')};
   };
