@@ -68,10 +68,11 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   // hallucinate unavailable integrations or silently create the wrong object.
   const docImportIntent=/(?:документ|док[уи]|файл|markdown|страниц|документаци)/i.test(message+' '+conversation)
    &&/(?:github|репозитор|из ideas|из идеи|на основе|на базе)/i.test(message+' '+conversation)
-   &&/(?:перенес|перенести|импортир|загруз|скопир|взял|возьми|забер|собер|созда|сформир|сдела|генерир|переработ|подготов|перетащ)/i.test(message);
+   &&/(?:перенес|перенести|импортир|загруз|скопир|взял|возьми|забер|собер|созда|сформир|сдела|генерир|переработ|подготов|перетащ)/i.test(message)
+   &&!/(?:создай|создать|добавь|добавить)\s+.{0,60}(?:задач|таск)/i.test(message);
   const sourceSpecified=!!location;
   if(docImportIntent&&!sourceSpecified){
-   const answer='Могу сделать это в разделе «Документация» текущего проекта. Уточни источник: пришли ссылку на папку GitHub с исходными Markdown-файлами (например, https://github.com/owner/repo/tree/main/docs) либо скажи, что брать документы из подключённого репозитория проекта. Также могу (1) переработать материалы в новый структурированный набор — рекомендую этот вариант, или (2) скопировать исходные файлы без изменений. Как поступим?';
+   const answer='Могу сделать это в разделе «Документация» текущего проекта. Уточни источник: пришли ссылку на папку GitHub с исходными Markdown-файлами (например, https://github.com/owner/repo/tree/main/docs) либо укажи путь к каталогу Markdown в подключённом репозитории. Также могу (1) переработать материалы в новый структурированный набор — рекомендую этот вариант, или (2) скопировать исходные файлы без изменений. Как поступим?';
    await store(id,null,uid(req),'user',message);
    await store(id,null,null,'assistant',answer);
    return {message:answer,created_task_id:null,created_document_id:null};
