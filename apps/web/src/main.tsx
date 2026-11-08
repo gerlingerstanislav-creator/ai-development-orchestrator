@@ -4,7 +4,7 @@ import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,Lay
 import './style.css';
 
 type Project={id:string,name:string,description:string};
-type Task={id:string,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],git_branch?:string|null,pr_url?:string|null};
+type Task={id:string,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
@@ -250,6 +250,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }else if(activeTask.stage==='development'){await runAiTask();}
  }
 
+ async function setDependency(task:Task,parent:string|null){
+  if(!selected)return;
+  try{
+   const result=await api<{depends_on_task_id:string|null}>('/projects/'+selected.id+'/tasks/'+task.id+'/dependency',{method:'PUT',body:JSON.stringify({depends_on_task_id:parent})});
+   setTasks(old=>old.map(t=>t.id===task.id?{...t,depends_on_task_id:result.depends_on_task_id}:t));
+   setActiveTask(old=>old?.id===task.id?{...old,depends_on_task_id:result.depends_on_task_id}:old);
+   const log=await api<Array<{id:string;event:string;detail:string;created_at:string}>>('/projects/'+selected.id+'/tasks/'+task.id+'/events');
+   setEvents(log);
+  }catch(e){fail(e);}
+ }
  async function approveDevelopment(){if(!selected||!activeTask)return;setTaskChatBusy(true);
   try{
    await api('/projects/'+selected.id+'/tasks/'+activeTask.id,{method:'PATCH',body:JSON.stringify({title:activeTask.title,description:activeTask.description})});
@@ -492,7 +502,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {!!activeTask.clarification_questions?.length&&<ol>{activeTask.clarification_questions.map((q,i)=><li key={i}>{q}</li>)}</ol>}
       {activeTask.analysis_state==='ready_for_development'&&<p className="muted">Блокирующих вопросов нет. Можно отправлять в разработку.</p>}
      </div>}
+     <div className="task-dependency">
+      <label>Зависит от задачи
+       <select value={activeTask.depends_on_task_id||''} disabled={!!activeTask.git_branch||['merge_queue','documentation','done'].includes(activeTask.stage)}
+        onChange={e=>void setDependency(activeTask,e.target.value||null)}>
+        <option value="">Нет кодовой зависимости</option>
+        {tasks.filter(t=>t.id!==activeTask.id).map(t=><option key={t.id} value={t.id}>{t.title} · {stages.find(x=>x.stage===t.stage)?.label||t.stage}</option>)}
+       </select>
+      </label>
+      {activeTask.depends_on_task_id&&<p className="muted">После подготовки PR родительской задачи разработка начнётся от её ветки. Если родитель уже слит — от целевой ветки проекта.</p>}
+     </div>
      {!!activeTask.related_task_ids?.length&&<p className="muted">Связанные задачи: {activeTask.related_task_ids.map(id=>tasks.find(t=>t.id===id)?.title||id.slice(0,8)).join(', ')}</p>}
+     {activeTask.pr_base_branch&&<div className="task-git-ref"><span>База PR</span><code>{activeTask.pr_base_branch}</code></div>}
      {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
