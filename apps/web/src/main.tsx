@@ -13,7 +13,7 @@ const key='ado-token';
 const defaultStages=['backlog','analysis','development','testing','done'];
 async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  const token=sessionStorage.getItem(key);
- const res=await fetch('/api'+path,{...options,headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});
+ const res=await fetch('/api'+path,{...options,headers:{...(options.body!=null?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});
  const data=await res.json().catch(()=>({}));
  if(!res.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
