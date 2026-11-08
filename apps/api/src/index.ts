@@ -244,7 +244,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
   await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,err.message]);
   return reply.code(err.statusCode||503).send({error:err.message});
  }
- return reply.code(202).send({id:runId,status:'running',model:ai.model});
+ return reply.code(202).send({id:runId,task_id:taskId,status:'running',model:ai.model});
 });
 app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
@@ -262,7 +262,12 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
    }
    return {...current,status:remote.status,message:remote.message||''};
   }catch(e){
-   return {...current,message:'Нет связи с исполнителем: '+(e instanceof Error?e.message:'ошибка')};
+   const problem=e instanceof Error?e.message:'ошибка';
+   if(problem.includes('Задача не найдена (возможно, исполнитель перезапущен)')){
+    await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,'Исполнитель перезапустился; повтори запуск задачи']);
+    return {...current,status:'failed',message:'Исполнитель перезапустился; повтори запуск задачи'};
+   }
+   return {...current,message:'Нет связи с исполнителем: '+problem};
   }
  }
  return current;
