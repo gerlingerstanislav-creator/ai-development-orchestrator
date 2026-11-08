@@ -78,10 +78,11 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    existingIds=existing.rows.map((t:{id:string})=>t.id);
    const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 10',[id]);
    prompt=['Составь одну задачу разработки по запросу пользователя. Ответь ТОЛЬКО JSON без Markdown.',
-    'Формат: {"title":"краткое название","description":"конкретное ТЗ и критерии приёмки","questions":["только блокирующие вопросы"],"related_ids":["UUID существующих похожих задач"],"relation_reason":"объяснение потенциальных пересечений","suggested_rules":["только универсальные правила для проекта, если выявлена повторяющаяся закономерность"]}.',
+    'Формат: {"title":"краткое название","description":"конкретное ТЗ и критерии приёмки","questions":["только блокирующие вопросы"],"related_ids":["UUID существующих похожих задач"],"depends_on_task_id":"UUID задачи, от незавершённого кода которой действительно зависит новая задача, иначе null","relation_reason":"объяснение потенциальных пересечений","suggested_rules":["только универсальные правила для проекта, если выявлена повторяющаяся закономерность"]}.',
     'Сначала проверь всю постановку на неопределённости и сформируй сразу ПОЛНЫЙ список всех существенных блокирующих вопросов одним ответом. Не задавай их по одному в последовательных диалогах.',
     'Не задавай вопросы, ответ на которые уже есть в контексте или настройках проекта. Если запрос достаточно ясен, questions должен быть [].',
     'Из списка задач выбирай только реальные UUID, не выдумывай идентификаторы.',
+    'Информационная похожесть НЕ означает кодовую зависимость. Заполняй depends_on_task_id только если для реализации новой задачи требуется код или функциональность другой ещё не слитой задачи. Выбирай один непосредственный родитель из доступных UUID. Связанные задачи без зависимости остаются в related_ids.',
     'При похожей задаче не объединяй карточки автоматически, только предложи связь.',
     'Не выдумывай детали и не создавай несколько задач.',
     'Утверждённые правила проекта (соблюдай, не меняй):\n'+rules,
@@ -106,18 +107,21 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     title:z.string().trim().min(3).max(180),description:z.string().trim().min(3).max(10000),
     questions:z.array(z.string().min(3).max(600)).max(20).default([]),
     related_ids:z.array(z.string().uuid()).max(10).default([]),
+    depends_on_task_id:z.string().uuid().nullable().default(null),
     relation_reason:z.string().max(1500).optional(),
     suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
    }).parse(jsonObject(raw));
    taskId=randomUUID();
    const related=data.related_ids.filter(x=>existingIds.includes(x));
+   const dependency=data.depends_on_task_id&&existingIds.includes(data.depends_on_task_id)?data.depends_on_task_id:null;
    const state=data.questions.length?'needs_clarification':'ready_for_development';
-   await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state,clarification_questions,related_task_ids) VALUES($1,$2,$3,$4,'task','analysis',$5,$6,$7)",
-     [taskId,id,data.title,data.description,state,JSON.stringify(data.questions),JSON.stringify(related)]);
+   await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state,clarification_questions,related_task_ids,depends_on_task_id,dependency_source) VALUES($1,$2,$3,$4,'task','analysis',$5,$6,$7,$8,'ai')",
+     [taskId,id,data.title,data.description,state,JSON.stringify(data.questions),JSON.stringify(related),dependency]);
    await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
      [randomUUID(),taskId,uid(req),'created','Создано через AI-чат и проанализировано']);
    const analysisNote=(data.questions.length?'Нужно уточнить:\n'+data.questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'Вопросов, блокирующих разработку, нет. Можно отправлять задачу в разработку.')+
-    (related.length?'\n\nПотенциально связанные задачи: '+related.join(', ')+'\n'+(data.relation_reason||''):'');
+    (related.length?'\n\nПотенциально связанные задачи: '+related.join(', ')+'\n'+(data.relation_reason||''):'')+
+    (dependency?'\n\nКодовая зависимость: задача '+dependency+'. Новая ветка будет создана от ветки этой задачи, если она ещё не слита.':'');
    for(const rule of data.suggested_rules){
     const exists=await pool.query("SELECT 1 FROM project_rules WHERE project_id=$1 AND lower(body)=lower($2) UNION ALL SELECT 1 FROM project_rule_suggestions WHERE project_id=$1 AND lower(body)=lower($2) AND status='pending' LIMIT 1",[id,rule]);
     if(!exists.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
@@ -142,7 +146,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const {message,mode}=messageSchema.extend({mode:z.enum(['chat','analyze']).default('chat')}).parse(req.body);
-  const result=await pool.query('SELECT title,description,stage,analysis_state,clarification_questions FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
+  const result=await pool.query('SELECT title,description,stage,analysis_state,clarification_questions,depends_on_task_id,dependency_source,git_branch FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
   if(!result.rowCount)return reply.code(404).send({error:'Задача не найдена'});
   const task=result.rows[0];
   if(mode==='analyze'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
@@ -155,12 +159,14 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id]);
   const context=['Утверждённые правила проекта:\n'+rules,'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,6500),'Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
    'Открытые вопросы: '+JSON.stringify(task.clarification_questions),
+   'Текущая кодовая зависимость: '+String(task.depends_on_task_id||'нет'),
    'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,9000),
    'История:\n'+await history(id,taskId),'Сообщение пользователя:\n'+message].join('\n\n');
   const refining=task.stage==='analysis';
   const prompt=refining?[
    'Ты системный аналитик. Ответ пользователя может уточнять открытые вопросы или содержать дополнительное требование. Обнови ТЗ, не теряя ранее согласованные требования.',
-   'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"],"suggested_rules":["только универсальные полезные правила для будущих задач"]}.',
+   'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"],"depends_on_task_id":"UUID прямой кодовой зависимости либо null","suggested_rules":["только универсальные полезные правила для будущих задач"]}.',
+   'Не путай информационную связь с зависимостью по коду. Выбирай depends_on_task_id только при явной необходимости использовать незавершённые изменения другой задачи.',
    'Проанализируй сразу ВСЕ возможные блокирующие вопросы, возвращай их единым списком questions. Не дроби уточнения на серию последовательных вопросов. Не спрашивай известные настройки проекта.',
    'Если нет блокирующих вопросов, верни пустой массив questions. Не придумывай ответы. Не объединяй карточки без разрешения.',
    context
@@ -176,6 +182,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(3).max(16000),
     questions:z.array(z.string().min(3).max(600)).max(20).default([]),
     related_ids:z.array(z.string().uuid()).max(10).default([]),
+    depends_on_task_id:z.string().uuid().nullable().default(null),
     suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
    }).parse(jsonObject(raw));
    summary=analyzed.summary;questions=analyzed.questions;
@@ -183,6 +190,14 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    const related=analyzed.related_ids.filter(x=>other.rows.some(o=>o.id===x));
    await pool.query("UPDATE tasks SET description=$1,clarification_questions=$2,related_task_ids=$3,analysis_state=$4,updated_at=now() WHERE id=$5 AND project_id=$6",
     [summary,JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
+   if(!task.git_branch&&task.dependency_source==='ai'){
+    const dep=analyzed.depends_on_task_id;
+    if(!dep || other.rows.some(o=>o.id===dep)){
+     // Avoid cycles by walking the proposed parent chain, including existing AI links.
+     const cycle=dep?await pool.query('WITH RECURSIVE chain AS (SELECT id,depends_on_task_id,ARRAY[id] AS trail FROM tasks WHERE project_id=$1 AND id=$2 UNION ALL SELECT t.id,t.depends_on_task_id,c.trail||t.id FROM tasks t JOIN chain c ON t.id=c.depends_on_task_id WHERE t.project_id=$1 AND NOT t.id=ANY(c.trail)) SELECT 1 FROM chain WHERE id=$3 LIMIT 1',[id,dep,taskId]):{rowCount:0};
+     if(!cycle.rowCount)await pool.query("UPDATE tasks SET depends_on_task_id=$3 WHERE id=$1 AND project_id=$2",[taskId,id,dep]);
+    }
+   }
    for(const rule of analyzed.suggested_rules){
     const dup=await pool.query("SELECT 1 FROM project_rules WHERE project_id=$1 AND lower(body)=lower($2) UNION ALL SELECT 1 FROM project_rule_suggestions WHERE project_id=$1 AND lower(body)=lower($2) AND status='pending' LIMIT 1",[id,rule]);
     if(!dup.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
