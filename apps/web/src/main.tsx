@@ -1,6 +1,6 @@
 import React,{useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,X} from 'lucide-react';
+import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,X} from 'lucide-react';
 import './style.css';
 
 type Project={id:string,name:string,description:string};
@@ -227,6 +227,28 @@ function App(){
  <div className="panel"><h3>Подключения</h3><p className="muted">Храним ключи в зашифрованном виде. GitHub token используется исполнителем для отправки ветки и создания Pull Request.</p><button className="secondary" onClick={()=>setShowConnection(true)}><KeyRound size={16}/> Добавить подключение</button>{projectConnections.map(c=><div className="setting-row" key={c.id}><div><strong>{c.name}</strong><small>{c.provider}</small></div><span className="badge">Назначено</span></div>)}{connections.filter(c=>!projectConnections.some(p=>p.id===c.id)).map(c=><div key={c.id} className="setting-row"><div><strong>{c.name}</strong><small>{c.provider}</small></div><button className="textbtn" onClick={()=>void attachConnection(c.id)}>Назначить проекту</button></div>)}</div></div>}
  </div>}
  </main>
+ {selected&&!accountSettings&&<>
+  {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
+   <header className="project-chat-heading"><div><strong>AI-помощник проекта</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
+   <div className="assistant-thread" role="log" aria-live="polite">
+    {projectMessages.length===0&&<p className="assistant-hint">Напиши, например: «Создай задачу на добавление поиска по документации».</p>}
+    {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
+      <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
+      <div>{m.body}</div>
+      {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
+    </div>)}
+    {projectChatBusy&&<p className="assistant-hint">Codex готовит ответ…</p>}
+   </div>
+   <form className="assistant-composer" onSubmit={sendProjectMessage}>
+    <textarea rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder="Напиши запрос или попроси создать задачу" aria-label="Сообщение AI-помощнику"/>
+    <button className="primary" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={16}/> Отправить</button>
+   </form>
+   {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
+  </section>}
+  <button className="chat-fab" onClick={()=>setProjectChatOpen(open=>!open)} title={projectChatOpen?'Закрыть чат':'Открыть AI-чат'} aria-label={projectChatOpen?'Закрыть чат':'Открыть AI-чат'}>
+   {projectChatOpen?<X size={22}/>:<MessageCircle size={22}/>}
+  </button>
+ </>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
  {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
  {activeTask&&<div className="overlay" onMouseDown={()=>setActiveTask(null)}><div className="dialog task-dialog" onMouseDown={e=>e.stopPropagation()}><div className="modal-heading"><span className="eyebrow">ЗАДАЧА #{activeTask.id.slice(0,6)}</span><button onClick={()=>setActiveTask(null)}><X/></button></div><label>Название<input value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}/></label><label>Описание<textarea rows={8} value={activeTask.description} onChange={e=>setActiveTask({...activeTask,description:e.target.value})}/></label><label>Этап<select value={activeTask.stage} onChange={e=>setActiveTask({...activeTask,stage:e.target.value})}>{stages.map(s=><option key={s.stage} value={s.stage}>{s.label}</option>)}</select></label><div className="panel" style={{padding:14,marginBottom:12}}>
