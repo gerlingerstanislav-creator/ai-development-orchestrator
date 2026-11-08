@@ -8,7 +8,7 @@ type Task={id:string,title:string,description:string,type:string,stage:string,pa
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
-type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;startedAt?:number|null}|null};
+type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','testing','done'];
 async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
@@ -105,6 +105,7 @@ function App(){
   {codex.login.url&&<a href={codex.login.url} target="_blank" rel="noreferrer">{codex.login.url}</a>}
   {codex.login.code&&<strong className="codex-code">{codex.login.code}</strong>}
   <pre>{codex.login.instructions||'Ожидание ответа Codex CLI…'}</pre>
+  {codex.login.diagnosis&&<p className="codex-diagnosis"><strong>Проверка соединения:</strong> {codex.login.diagnosis}</p>}
  </div>}
  <div className="codex-actions">
   {!codex?.connected&&<button className="primary" disabled={codexBusy} onClick={()=>void codexAction('login')}>Подключить ChatGPT Plus</button>}
