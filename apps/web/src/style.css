@@ -34,3 +34,24 @@
 .compact-project-page .docs{gap:10px}
 .compact-project-page .docs .panel{min-height:calc(100vh - 150px)}
 @media(max-width:700px){.compact-project-page{padding:10px 8px}.compact-project-page .docs .panel{min-height:0}}
+
+/* Unified compact typography and controls */
+:root{font-size:13px}
+body{font-size:13px;line-height:1.45}
+button,input,textarea,select{font-family:inherit;font-size:13px}
+.primary,.secondary{font-size:13px;font-weight:600;line-height:1.25;padding:8px 12px;min-height:34px;gap:7px;border-radius:7px}
+.primary svg,.secondary svg{width:15px;height:15px}
+input,textarea,select{padding:8px 10px;border-radius:7px}
+input:not([type="checkbox"]),select{min-height:34px}
+label{font-size:12px;gap:6px;margin-bottom:13px}
+.nav{font-size:13px;padding:10px 11px}
+.topbar{font-size:13px}
+.page-heading h1{font-size:22px;letter-spacing:-.45px}
+.page-heading p{font-size:13px}
+.panel h3{font-size:15px}
+.dialog h2{font-size:18px}
+.task-card strong,.setting-row strong,.docs-list b{font-size:13px}
+.segmented button{font-size:12px;padding:7px 10px;min-height:30px}
+.tasks-page .toolbar .search{height:34px}
+.tasks-page .toolbar .create-task{min-height:34px}
+.doc-tree .doc-node .doc-title{font-size:13px}
