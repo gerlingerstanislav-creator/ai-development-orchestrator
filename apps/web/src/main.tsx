@@ -268,14 +268,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>{setAccountSettings(false);setServiceSettings(false);setSection(k);}}><Icon size={18}/>{label}</button>)}
   </>}
   <div className="sidebar-label">АККАУНТ</div>
-  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>{setAccountSettings(true);setServiceSettings(false);}}><Settings2 size={18}/> Настройки аккаунта</button>
-  <button className={'nav '+(serviceSettings?'active':'')} onClick={()=>{setServiceSettings(true);setAccountSettings(false);}}><Settings2 size={18}/> Настройки сервиса</button>
+  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>{setAccountSettings(true);setServiceSettings(true);}}><Settings2 size={18}/> Настройки аккаунта</button>
+
   <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
  </aside>
  <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);setServiceSettings(false);}}>Мои проекты</span>{serviceSettings?<><span className="slash">/</span><strong>Настройки сервиса</strong></>:accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
  {error&&<div className="error global" onClick={()=>setError('')}>{error} <X size={16}/></div>}
- {serviceSettings?<div className="page compact-project-page">
-  <section className="panel">
+ {accountSettings?<div className="page compact-project-page">
+<section className="panel">
    <h3>Ограничения ChatGPT / Codex для всего сервиса</h3>
    <p className="muted">Эти значения общие для всех проектов и пользователей. Ноль означает отсутствие дневного ограничения. Они не являются бюджетом токенов подписки.</p>
    <div className="settings-grid">
@@ -287,7 +287,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <button className="primary" disabled={serviceBusy} onClick={()=>void saveServiceLimits()}>Сохранить ограничения</button>
    {serviceNotice&&<p>{serviceNotice}</p>}
   </section>
- </div>:accountSettings?<div className="page compact-project-page">
+
  <section className="panel codex-panel">
  <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
  {codex?.error&&<p className="error">{codex.error}</p>}
