@@ -3,7 +3,7 @@ import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
 import bcrypt from 'bcryptjs';
 const { compare, hash } = bcrypt;
-import { randomUUID, randomBytes, createCipheriv } from 'node:crypto';
+import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
 import { z } from 'zod';
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
@@ -35,6 +35,9 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS connections (id uuid primary key, owner_id uuid not null references users(id), name text not null, provider text not null, secret_encrypted text not null, created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS project_connections (project_id uuid references projects(id) on delete cascade, connection_id uuid references connections(id) on delete cascade, primary key(project_id,connection_id));
  CREATE TABLE IF NOT EXISTS project_git_repositories (project_id uuid primary key references projects(id) on delete cascade, connection_id uuid not null references connections(id), repository text not null, default_branch text not null, updated_at timestamptz not null default now());
+ CREATE TABLE IF NOT EXISTS project_ai_settings (project_id uuid primary key references projects(id) on delete cascade, model text not null default 'gpt-6-luna', reasoning text not null default 'low', max_runtime_seconds int not null default 300, enabled boolean not null default false, updated_at timestamptz not null default now());
+ CREATE TABLE IF NOT EXISTS ai_task_runs (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid not null references tasks(id) on delete cascade, triggered_by uuid not null references users(id), model text not null, status text not null default 'queued', branch text, pr_url text, message text not null default '', created_at timestamptz not null default now(), completed_at timestamptz);
+ CREATE INDEX IF NOT EXISTS idx_ai_task_runs_project_created ON ai_task_runs(project_id,created_at DESC);
  `);
  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
  const password = process.env.ADMIN_PASSWORD;
@@ -140,7 +143,6 @@ app.put('/api/projects/:id/git',async(req:any,reply)=>{
  const r=await pool.query('SELECT provider,secret_encrypted FROM connections WHERE id=$1 AND owner_id=$2',[connectionId,uid(req)]);
  if(!r.rowCount || r.rows[0].provider!=='github_token')return reply.code(400).send({error:'Выбери своё подключение типа GitHub token'});
  const packed=Buffer.from(r.rows[0].secret_encrypted,'base64');
- const {createDecipheriv}=await import('node:crypto');
  const decipher=createDecipheriv('aes-256-gcm',encryptionKey,packed.subarray(0,12));
  decipher.setAuthTag(packed.subarray(12,28));
  const token=Buffer.concat([decipher.update(packed.subarray(28)),decipher.final()]).toString('utf8');
@@ -155,6 +157,115 @@ app.delete('/api/projects/:id/git',async(req:any,reply)=>{
  if(!await access(req,reply,id))return;
  await pool.query('DELETE FROM project_git_repositories WHERE project_id=$1',[id]);
  return {ok:true};
+});
+
+
+// A limited allowlist and manual trigger prevent runaway usage.
+const allowedModels=z.enum(['gpt-6-luna','gpt-6-sol','gpt-6.1-sol']);
+const projectAiSchema=z.object({
+ model:allowedModels,
+ reasoning:z.enum(['low','medium']),
+ max_runtime_seconds:z.number().int().min(90).max(900),
+ enabled:z.boolean()
+});
+const aiDefaults={model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,enabled:false};
+const runnerKey=process.env.RUNNER_SHARED_SECRET||'';
+if(!runnerKey || runnerKey.length<32)throw Error('Set RUNNER_SHARED_SECRET (32+ chars)');
+async function agentCall(path:string,method:'GET'|'POST'='GET',body?:unknown){
+ const resp=await fetch(codexUrl+path,{
+  method,
+  headers:{'X-Runner-Secret':runnerKey,...(body?{'Content-Type':'application/json'}:{})},
+  body:body?JSON.stringify(body):undefined,
+  signal:AbortSignal.timeout(15000)
+ });
+ const data=await resp.json().catch(()=>({error:'Некорректный ответ исполнителя'}));
+ if(!resp.ok)throw Object.assign(new Error(String(data.error||'Ошибка исполнителя').slice(0,600)),{statusCode:resp.status===409?409:503});
+ return data as any;
+}
+async function requireAdmin(req:any,reply:any){
+ const u=await pool.query('SELECT email FROM users WHERE id=$1',[uid(req)]);
+ if(u.rows[0]?.email!==process.env.ADMIN_EMAIL?.trim().toLowerCase()){
+  reply.code(403).send({error:'На первом этапе запуск AI разрешён только администратору'});
+  return false;
+ }
+ return true;
+}
+function decryptToken(packedText:string){
+ const bytes=Buffer.from(packedText,'base64');
+ const d=createDecipheriv('aes-256-gcm',encryptionKey,bytes.subarray(0,12));
+ d.setAuthTag(bytes.subarray(12,28));
+ return Buffer.concat([d.update(bytes.subarray(28)),d.final()]).toString('utf8');
+}
+app.get('/api/projects/:id/ai-settings',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const row=await pool.query('SELECT model,reasoning,max_runtime_seconds,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
+ return row.rows[0]||aiDefaults;
+});
+app.put('/api/projects/:id/ai-settings',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ if(!await requireAdmin(req,reply))return;
+ const p=projectAiSchema.parse(req.body);
+ await pool.query("INSERT INTO project_ai_settings(project_id,model,reasoning,max_runtime_seconds,enabled) VALUES($1,$2,$3,$4,$5) ON CONFLICT(project_id) DO UPDATE SET model=EXCLUDED.model,reasoning=EXCLUDED.reasoning,max_runtime_seconds=EXCLUDED.max_runtime_seconds,enabled=EXCLUDED.enabled,updated_at=now()",
+ [id,p.model,p.reasoning,p.max_runtime_seconds,p.enabled]);
+ return p;
+});
+app.get('/api/projects/:id/ai-runs',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const runs=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
+ return runs.rows;
+});
+app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ if(!await requireAdmin(req,reply))return;
+ const t=await pool.query('SELECT id,title,description FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+ const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
+ const ai=settings.rows[0]||aiDefaults;
+ if(!ai.enabled)return reply.code(409).send({error:'Включи ручной запуск AI в настройках проекта'});
+ const git=await pool.query("SELECT g.repository,g.default_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2 AND c.provider='github_token'",[id,uid(req)]);
+ if(!git.rowCount)return reply.code(409).send({error:'Сначала привяжи GitHub-репозиторий с токеном'});
+ const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND status IN ('queued','running') LIMIT 1",[id]);
+ if(active.rowCount)return reply.code(409).send({error:'В этом проекте уже выполняется AI-задача'});
+ const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
+ const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:git.rows[0].default_branch,
+  token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:ai.max_runtime_seconds,
+  title:t.rows[0].title,description:t.rows[0].description};
+ await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status) VALUES($1,$2,$3,$4,$5,'queued')",
+ [runId,id,taskId,uid(req),ai.model]);
+ try{
+  await agentCall('/jobs','POST',job);
+  await pool.query("UPDATE ai_task_runs SET status='running' WHERE id=$1",[runId]);
+ }catch(e){
+  const err=e as Error&{statusCode?:number};
+  await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,err.message]);
+  return reply.code(err.statusCode||503).send({error:err.message});
+ }
+ return reply.code(202).send({id:runId,status:'running',model:ai.model});
+});
+app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
+ const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const run=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,id]);
+ if(!run.rowCount)return reply.code(404).send({error:'Запуск не найден'});
+ const current=run.rows[0];
+ if(current.status==='running'||current.status==='queued'){
+  try{
+   const remote=await agentCall('/jobs/'+runId);
+   if(['completed','failed'].includes(remote.status)){
+    await pool.query('UPDATE ai_task_runs SET status=$2,branch=$3,pr_url=$4,message=$5,completed_at=now() WHERE id=$1',
+     [runId,remote.status,remote.branch||null,remote.prUrl||null,String(remote.message||'').slice(0,2000)]);
+    return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
+   }
+   return {...current,status:remote.status,message:remote.message||''};
+  }catch(e){
+   return {...current,message:'Нет связи с исполнителем: '+(e instanceof Error?e.message:'ошибка')};
+  }
+ }
+ return current;
 });
 
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
