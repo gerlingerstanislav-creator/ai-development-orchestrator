@@ -197,7 +197,6 @@ async function runJob(job,state){
  // Stable branch identity: one Git branch per task; different agents cannot
  // work in that branch concurrently (startNextJobs locks repository+taskId).
  const branch=job.taskId;
- state.branch=branch;
  try{
   state.message='Клонирование репозитория';
   await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
@@ -213,9 +212,13 @@ async function runJob(job,state){
    await git('checkout','-b',branch,'refs/remotes/origin/'+branch);
   }else if(remoteBranch.status===404){
    await git('checkout','-b',branch);
+   state.message='Создание ветки задачи в GitHub';
+   // Publish even before Codex edits, so failures retain a stable task branch.
+   await git('push','-u','origin','HEAD:refs/heads/'+branch);
   }else{
    throw new Error('Не удалось проверить ветку задачи: GitHub HTTP '+remoteBranch.status);
   }
+  state.branch=branch;
   state.message='Codex изменяет код';
   const prompt=[
    'Ты AI-разработчик, работаешь в настоящей локальной копии GitHub-репозитория.',
