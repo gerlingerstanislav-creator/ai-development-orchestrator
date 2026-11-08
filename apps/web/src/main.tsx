@@ -99,12 +99,12 @@ function App(){
  <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
  {codex?.error&&<p className="error">{codex.error}</p>}
  {codex?.connected?<p className="muted">{codex.detail||'Авторизация ChatGPT активна.'}</p>:<p className="muted">Для входа может потребоваться включить вход по коду устройства в настройках безопасности ChatGPT.</p>}
- {codex?.login?.state==='waiting'&&!codex.connected&&<div className="codex-device">
-  <b>Подключение ChatGPT</b>
-  <p>Открой ссылку, войди в свой аккаунт ChatGPT Plus и введи одноразовый код. Код появится после запуска авторизации.</p>
+ {codex?.login&&!codex.connected&&<div className="codex-device">
+  <b>{codex.login.state==='waiting'?'Подключение ChatGPT':codex.login.state==='error'?'Ошибка запуска авторизации':codex.login.state==='expired'?'Время авторизации истекло':'Авторизация Codex'}</b>
+  <p>{codex.login.state==='waiting'?'Открой ссылку, войди в ChatGPT Plus и введи одноразовый код.':'Проверь сообщение ниже. При необходимости нажми «Подключить ChatGPT Plus» ещё раз.'}</p>
   {codex.login.url&&<a href={codex.login.url} target="_blank" rel="noreferrer">{codex.login.url}</a>}
   {codex.login.code&&<strong className="codex-code">{codex.login.code}</strong>}
-  <pre>{codex.login.instructions||'Ожидание кода…'}</pre>
+  <pre>{codex.login.instructions||'Ожидание ответа Codex CLI…'}</pre>
  </div>}
  <div className="codex-actions">
   {!codex?.connected&&<button className="primary" disabled={codexBusy} onClick={()=>void codexAction('login')}>Подключить ChatGPT Plus</button>}
