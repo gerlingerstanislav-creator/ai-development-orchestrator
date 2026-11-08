@@ -114,3 +114,51 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .lane-heading .secondary{font-size:11px;padding:5px 8px;min-height:26px;width:100%;white-space:nowrap}
 .task-warning{font-size:11px;color:#916026;background:#fff7e9;border-radius:6px;padding:4px 7px}
 .merge-report{white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:10px;padding:10px 12px;font-size:12px}
+
+
+/* Refined task card: inline editable fields, unified activity stream, sticky workflow */
+.task-dialog-wide{width:min(1320px,98vw);max-height:min(95vh,1000px);padding:0;overflow:hidden;display:flex;flex-direction:column}
+.task-modal-top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:17px 22px;border-bottom:1px solid #e6e9f0;flex:0 0 auto}
+.task-modal-heading{flex:1;min-width:0}
+.task-modal-heading .eyebrow{font-size:11px;color:#8a94a8;letter-spacing:.04em}
+.task-modal-heading h2{font-size:19px;line-height:1.3;margin:3px 0 0;overflow-wrap:anywhere}
+.task-modal-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.task-close{padding:5px;border:0;background:transparent;color:#7d8ca3}
+.task-editable{position:relative}
+.task-editable .pencil{opacity:0;transition:opacity .15s ease;border:0;background:#edf0ff;color:#5464d7;border-radius:6px;padding:5px;display:grid;place-items:center;position:absolute;right:4px;top:2px}
+.task-editable:hover .pencil,.task-editable .pencil:focus-visible{opacity:1}
+.task-title-editable{padding-right:34px}
+.task-description-editable{padding:6px 25px 20px 0;min-height:120px}
+.task-description-editable .pencil{top:4px}
+.task-field-label{font-weight:700;color:#7f8ba1;font-size:11px;margin:0 0 11px}
+.task-readonly{font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.75;color:#29364b}
+.task-title-editable input,.task-description-editable textarea{width:100%;background:#fff}
+.task-description-editable textarea{resize:vertical;min-height:240px}
+.task-dialog-columns{flex:1;min-height:0;height:auto;overflow:hidden;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.12fr);gap:0}
+.task-dialog-wide .task-details{padding:20px 23px;overflow-y:auto}
+.task-dialog-wide .task-conversation{border:0;border-radius:0;border-left:1px solid #e6e9f0;min-height:0}
+.task-conversation>header{height:48px;gap:8px}
+.task-conversation>header small{margin-left:auto;color:#8d98a8;font-size:10px}
+.task-conversation .assistant-thread{padding:17px;min-height:160px}
+.assistant-bubble.activity-event{align-self:center;max-width:100%;background:#f0f2f6;border:none;color:#707b8d;font-size:11px;text-align:center;padding:7px 10px}
+.assistant-bubble.activity-run{align-self:stretch;max-width:100%;border-color:#d9e2f6;background:#f6f8ff}
+.assistant-bubble.activity-run a{display:block;margin-top:9px}
+.assistant-hint{display:flex;align-items:center;gap:8px}
+.task-metadata{display:flex;gap:15px;flex-wrap:wrap;border-top:1px solid #e7eaf1;padding:15px 0;color:#77849a;font-size:11px}
+.task-metadata strong{color:#36445a}
+.task-questions{padding:13px 14px;border-radius:9px;background:#f6f8fd;border:1px solid #e6eaf1;margin-bottom:14px}
+.task-questions ol{margin:10px 0 0;padding-left:20px}
+.task-questions li{margin:7px 0}
+.task-questions p{margin:9px 0 0}
+.task-git-ref{display:flex;gap:12px;align-items:baseline;margin:10px 0;overflow-wrap:anywhere}
+.task-git-ref>span{width:55px;color:#8590a2;font-size:11px}
+.task-feedback{border:1px solid #f1c7bd;background:#fff6f4;border-radius:8px;padding:9px;color:#ac4b3d}
+.task-workflow{flex:0 0 auto;border-top:1px solid #e6e9f0;background:#fff;padding:14px 18px;display:flex;align-items:center;justify-content:center;gap:8px;overflow-x:auto}
+.workflow-step{display:flex;gap:7px;align-items:center;white-space:nowrap;min-width:max-content;font-size:11px;color:#9aa6b8;padding:6px 7px;border-radius:7px}
+.workflow-step.passed{color:#328561}
+.workflow-step.current{background:#e9eeff;color:#485bd0;font-weight:700}
+.workflow-arrow{border:0;background:#f5f7fb;color:#9da7b8;border-radius:7px;padding:5px;display:grid;place-items:center;flex:0 0 auto}
+.workflow-arrow:not(:disabled){cursor:pointer;background:#e9eeff;color:#4b61d2}
+.workflow-arrow:not(:disabled):hover{background:#dbe2ff}
+.workflow-arrow:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:850px){.task-modal-top{flex-direction:column;align-items:stretch;padding:12px 15px}.task-modal-actions{justify-content:flex-start}.task-dialog-columns{display:flex;flex-direction:column;overflow-y:auto}.task-dialog-wide .task-details{overflow:visible}.task-dialog-wide .task-conversation{flex:0 0 420px;border-left:0;border-top:1px solid #e6e9f0}.task-workflow{justify-content:flex-start;padding:9px}}
