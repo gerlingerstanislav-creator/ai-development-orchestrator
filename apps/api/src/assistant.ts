@@ -64,6 +64,18 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const {message}=messageSchema.parse(req.body);
   const conversation=await history(id,null);
   const location=extractGitHubDocumentLocation(message,conversation);
+  // A missing source or unclear action is a conversation, not a reason to
+  // hallucinate unavailable integrations or silently create the wrong object.
+  const docImportIntent=/(?:документ|док[уи]|файл|markdown|страниц|документаци)/i.test(message+' '+conversation)
+   &&/(?:github|репозитор|из ideas|из идеи|на основе|на базе)/i.test(message+' '+conversation)
+   &&/(?:перенес|перенести|импортир|загруз|скопир|взял|возьми|забер|собер|созда|сформир|сдела|генерир|переработ|подготов|перетащ)/i.test(message);
+  const sourceSpecified=!!location;
+  if(docImportIntent&&!sourceSpecified){
+   const answer='Могу сделать это в разделе «Документация» текущего проекта. Уточни источник: пришли ссылку на папку GitHub с исходными Markdown-файлами (например, https://github.com/owner/repo/tree/main/docs) либо скажи, что брать документы из подключённого репозитория проекта. Также могу (1) переработать материалы в новый структурированный набор — рекомендую этот вариант, или (2) скопировать исходные файлы без изменений. Как поступим?';
+   await store(id,null,uid(req),'user',message);
+   await store(id,null,null,'assistant',answer);
+   return {message:answer,created_task_id:null,created_document_id:null};
+  }
   const synthesize=wantsDocumentSynthesis(message,conversation)||
    !!location&&/(?:перенес|импортир|загруз|созда|сформир|сдела|подготов)/i.test(message)&&
    /(?:документ|страниц|на основе|на базе|из репозитория)/i.test(message);
@@ -195,6 +207,12 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'История:\n'+conversation,'Запрос:\n'+message].join('\n\n');
   }else{
    prompt=['Ты ассистент проекта разработки. Отвечай кратко, по делу и на русском.',
+    'Если намерение пользователя, объект действия или источник данных неясны — задай один конкретный уточняющий вопрос или предложи 2–3 практических варианта с рекомендацией. Не делай вид, что понял, и не заменяй действие пустым советом.',
+    'Учитывай историю диалога: уточнение пользователя относится к предыдущему запросу. Не проси повторить уже известные детали.',
+    'В приложении поддерживается создание задач, создание Markdown-документов, а также чтение GitHub Markdown и составление НОВОГО комплекта документов в разделе «Документация» проекта на основе этих материалов.',
+    'Исходные документы можно прочитать по URL GitHub на папку или файл. Для закрытого репозитория нужен доступ подключённого GitHub токена. Это не означает запись обратно в репозиторий.',
+    'Не утверждай, что необходима отдельная «сессия документов» или «поддерживаемое хранилище документов» — раздел уже существует в PostgreSQL. Не придумывай несуществующих ограничений и возможностей.',
+    'Если доступ к GitHub не подтверждён, объясни, что проверка произойдёт при импорте; не утверждай, что доступа нет без проверки.',
     'Не создавай задачу, если пользователь не попросил об этом явно.',
     'Правила проекта:\n'+rules,
     'GitHub проекта: '+repoContext,
