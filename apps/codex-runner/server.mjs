@@ -118,15 +118,22 @@ const activeJobs=new Map();
 const MAX_PARALLEL_DEVELOPMENT=3;
 const MAX_PARALLEL_CHAT=4;
 const jobQueue=[];
+const activeBranches=new Set();
 let runningJobs=0;
 let activeChatRequests=0;
 function startNextJobs(){
- while(runningJobs<MAX_PARALLEL_DEVELOPMENT&&jobQueue.length){
-  const {job,state}=jobQueue.shift();
+ for(let i=0;i<jobQueue.length && runningJobs<MAX_PARALLEL_DEVELOPMENT;){
+  const {job,state}=jobQueue[i];
+  const branchKey=job.repository+':'+job.taskId;
+  if(activeBranches.has(branchKey)){i++;continue;}
+  jobQueue.splice(i,1);
+  activeBranches.add(branchKey);
   runningJobs++;
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Запуск разработки в изолированной рабочей папке';
-  void runJob(job,state).finally(()=>{runningJobs--;startNextJobs();});
+  void runJob(job,state).finally(()=>{
+   activeBranches.delete(branchKey);runningJobs--;startNextJobs();
+  });
  }
  for(let i=0;i<jobQueue.length;i++)jobQueue[i].state.message='Ожидает свободного исполнителя (очередь '+(i+1)+')';
 }
@@ -187,13 +194,28 @@ async function runJob(job,state){
   GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',
   GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+auth};
  const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000});
- const branch='ai/task-'+job.taskId.slice(0,8)+'-'+job.id.slice(0,8);
+ // Stable branch identity: one Git branch per task; different agents cannot
+ // work in that branch concurrently (startNextJobs locks repository+taskId).
+ const branch=job.taskId;
  state.branch=branch;
  try{
   state.message='Клонирование репозитория';
   await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
    {cwd:workdir,env:gitEnv,timeout:75000});
-  await git('checkout','-b',branch);
+  // Continue the same branch after failures/restarts if it already exists.
+  const remoteBranch=await fetch('https://api.github.com/repos/'+job.repository+'/branches/'+encodeURIComponent(branch),{
+   headers:{Authorization:'Bearer '+job.token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+   signal:AbortSignal.timeout(20000)
+  });
+  if(remoteBranch.ok){
+   state.message='Продолжение существующей ветки '+branch;
+   await git('fetch','--depth','1','origin','refs/heads/'+branch+':refs/remotes/origin/'+branch);
+   await git('checkout','-b',branch,'refs/remotes/origin/'+branch);
+  }else if(remoteBranch.status===404){
+   await git('checkout','-b',branch);
+  }else{
+   throw new Error('Не удалось проверить ветку задачи: GitHub HTTP '+remoteBranch.status);
+  }
   state.message='Codex изменяет код';
   const prompt=[
    'Ты AI-разработчик, работаешь в настоящей локальной копии GitHub-репозитория.',
@@ -217,7 +239,10 @@ async function runJob(job,state){
    if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
    const result=await command('codex',[
     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-    '--ephemeral','--skip-git-repo-check','--sandbox','workspace-write',instruction
+    '--ephemeral','--skip-git-repo-check',
+    // Docker is the isolation boundary. Nested Linux sandbox needs namespaces
+    // forbidden by Docker defaults; never expose GitHub token to Codex.
+    '--sandbox','danger-full-access','--ask-for-approval','never',instruction
    ],{cwd:dir,env:cliEnv,timeout:remaining});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    return {result,files:await git('status','--porcelain')};
@@ -252,7 +277,15 @@ async function runJob(job,state){
   state.message='Отправка ветки GitHub';
   await git('push','-u','origin','HEAD:refs/heads/'+branch);
   state.message='Создание черновика Pull Request';
-  const prUrl=await createPullRequest(job,branch,result.stdout||'Изменения подготовлены.');
+  const existingPr=await fetch('https://api.github.com/repos/'+job.repository+'/pulls?state=open&head='+
+   encodeURIComponent(job.repository.split('/')[0]+':'+branch),{
+   headers:{Authorization:'Bearer '+job.token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+   signal:AbortSignal.timeout(20000)
+  });
+  if(!existingPr.ok)throw new Error('Не удалось проверить существующий PR: GitHub HTTP '+existingPr.status);
+  const openPrs=await existingPr.json();
+  const samePr=openPrs.find(pr=>pr.base?.ref===job.baseBranch);
+  const prUrl=samePr?.html_url||await createPullRequest(job,branch,result.stdout||'Изменения подготовлены.');
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
   state.status='failed';
