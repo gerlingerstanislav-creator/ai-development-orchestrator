@@ -251,18 +251,52 @@ function App(){
  </>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
  {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
- {activeTask&&<div className="overlay" onMouseDown={()=>setActiveTask(null)}><div className="dialog task-dialog" onMouseDown={e=>e.stopPropagation()}><div className="modal-heading"><span className="eyebrow">ЗАДАЧА #{activeTask.id.slice(0,6)}</span><button onClick={()=>setActiveTask(null)}><X/></button></div><label>Название<input value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}/></label><label>Описание<textarea rows={8} value={activeTask.description} onChange={e=>setActiveTask({...activeTask,description:e.target.value})}/></label><label>Этап<select value={activeTask.stage} onChange={e=>setActiveTask({...activeTask,stage:e.target.value})}>{stages.map(s=><option key={s.stage} value={s.stage}>{s.label}</option>)}</select></label><div className="panel" style={{padding:14,marginBottom:12}}>
-  <strong>AI-разработка</strong>
-  <p className="muted" style={{margin:'8px 0'}}>Выбранная модель: {aiSettings.model}. Текущие изменения в полях сначала сохрани кнопкой «Сохранить».</p>
-  <button className="primary" disabled={aiBusy||!aiSettings.enabled||!gitLink||aiRuns.some(r=>r.status==='running'||r.status==='queued')} onClick={()=>void runAiTask()}>Запустить Codex → Pull Request</button>
-  {!aiSettings.enabled&&<p className="muted">Для запуска включи AI в настройках проекта.</p>}
-  {aiRuns.filter(r=>r.task_id===activeTask.id).slice(0,5).map(r=><div key={r.id} style={{marginTop:8}}>
-   <strong>{r.status==='completed'?'Готово':r.status==='failed'?'Ошибка':r.status==='running'?'Выполняется':'В очереди'}</strong> · {r.model}
-   {r.message&&<p className="muted" style={{margin:0}}>{r.message}</p>}
-   {r.pr_url&&<a href={r.pr_url} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
-  </div>)}
- </div>
- <h4>История действий</h4><div className="events">{events.map(e=><div key={e.id}><b>{e.event==='created'?'Задача создана':'Изменение этапа'}</b><small>{e.detail} · {new Date(e.created_at).toLocaleString('ru-RU')}</small></div>)}{!events.length&&<span className="muted">История пуста</span>}</div><footer><button className="secondary" onClick={()=>setActiveTask(null)}>Отмена</button><button className="primary" onClick={()=>void saveTask({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})}>Сохранить</button></footer></div></div>}
+ {activeTask&&<div className="overlay" onMouseDown={()=>setActiveTask(null)}>
+  <div className="dialog task-dialog task-dialog-wide" onMouseDown={e=>e.stopPropagation()}>
+   <div className="modal-heading"><span className="eyebrow">ЗАДАЧА #{activeTask.id.slice(0,6)}</span><button onClick={()=>setActiveTask(null)} title="Закрыть задачу"><X/></button></div>
+   <div className="task-dialog-columns">
+    <section className="task-details">
+     <label>Название<input value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}/></label>
+     <label>Описание / краткое ТЗ<textarea rows={12} value={activeTask.description} onChange={e=>setActiveTask({...activeTask,description:e.target.value})}/></label>
+     <label>Этап<select value={activeTask.stage} onChange={e=>setActiveTask({...activeTask,stage:e.target.value})}>{stages.map(st=><option key={st.stage} value={st.stage}>{st.label}</option>)}</select></label>
+     <section className="task-ai-action">
+      <div className="task-ai-heading"><strong>Исполнение</strong><small>Модель: {aiSettings.model}</small></div>
+      <button className="primary" disabled={!aiSettings.enabled||taskChatBusy||aiBusy||!['analysis','development'].includes(activeTask.stage)||(activeTask.stage==='development'&&(!gitLink||aiRuns.some(r=>r.status==='running'||r.status==='queued')))} onClick={()=>void executeTask()}>
+       {activeTask.stage==='analysis'?'Выполнить анализ':activeTask.stage==='development'?'Выполнить разработку':'Выполнить'}
+      </button>
+      {activeTask.stage==='analysis'&&<p className="muted">AI составит ТЗ в описании слева и подробный разбор в переписке справа.</p>}
+      {activeTask.stage==='development'&&<p className="muted">Codex создаст отдельную ветку и черновик PR. Дождись результата перед слиянием.</p>}
+      {activeTask.stage==='testing'&&<p className="muted">Автоматическое тестирование пока не подключено.</p>}
+      {(activeTask.stage==='backlog'||activeTask.stage==='done')&&<p className="muted">Для AI-исполнения перенеси задачу в «Анализ» или «Разработку».</p>}
+      {!aiSettings.enabled&&<p className="muted">Сначала включи ручной AI в настройках проекта.</p>}
+      <p className="muted">Несохранённые ручные изменения сохраняются кнопкой «Сохранить» внизу.</p>
+      {aiRuns.filter(r=>r.task_id===activeTask.id).slice(0,4).map(run=><div className="task-run" key={run.id}>
+       <b>{run.status==='completed'?'Готово':run.status==='failed'?'Ошибка':run.status==='running'?'Выполняется':'В очереди'}</b> · {run.model}
+       {run.message&&<p>{run.message}</p>}
+       {run.pr_url&&<a href={run.pr_url} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
+      </div>)}
+     </section>
+     <h4>История действий</h4>
+     <div className="events">{events.map(ev=><div key={ev.id}><b>{ev.event==='created'?'Задача создана':ev.event==='analyzed'?'Анализ выполнен':'Изменение задачи'}</b><small>{ev.detail} · {new Date(ev.created_at).toLocaleString('ru-RU')}</small></div>)}{!events.length&&<span className="muted">История пуста</span>}</div>
+     <footer className="task-details-footer"><button className="secondary" onClick={()=>setActiveTask(null)}>Отмена</button><button className="primary" onClick={()=>void saveTask({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})}>Сохранить</button></footer>
+    </section>
+    <aside className="task-conversation">
+     <header><MessageCircle size={17}/><strong>Обсуждение с AI</strong></header>
+     <div className="assistant-thread" role="log" aria-live="polite">
+      {taskMessages.length===0&&<p className="assistant-hint">Здесь будет подробный анализ и переписка по задаче. Можно уточнять требования и обсуждать реализацию.</p>}
+      {taskMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
+       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span><div>{m.body}</div>
+      </div>)}
+      {taskChatBusy&&<p className="assistant-hint">Codex отвечает…</p>}
+     </div>
+     <form className="assistant-composer" onSubmit={sendTaskMessage}>
+      <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)} placeholder="Обсуди задачу, задай вопрос..." aria-label="Сообщение в чат задачи"/>
+      <button className="primary" type="submit" disabled={taskChatBusy||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
+     </form>
+    </aside>
+   </div>
+  </div>
+ </div>}
  {activeDoc&&<div className="overlay" onMouseDown={()=>setActiveDoc(null)}><div className="dialog doc-dialog" onMouseDown={e=>e.stopPropagation()}><div className="modal-heading"><h2>Редактор документа</h2><button onClick={()=>setActiveDoc(null)}><X/></button></div><label>Заголовок<input value={activeDoc.title} onChange={e=>setActiveDoc({...activeDoc,title:e.target.value})}/></label><label>Расположение<select value={activeDoc.parent_id||""} onChange={e=>setActiveDoc({...activeDoc,parent_id:e.target.value||null})}><option value="">Корень документации</option>{docs.filter(d=>d.id!==activeDoc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}</select></label><label>Содержание<textarea rows={17} value={activeDoc.body} onChange={e=>setActiveDoc({...activeDoc,body:e.target.value})}/></label><footer><button className="secondary" onClick={()=>setActiveDoc(null)}>Отмена</button><button className="primary" onClick={()=>void saveDoc(activeDoc)}>Сохранить</button></footer></div></div>}
  {showConnection&&<div className="overlay" onMouseDown={()=>setShowConnection(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={addConnection}><div className="modal-heading"><h2>Новое подключение</h2><button type="button" onClick={()=>setShowConnection(false)}><X/></button></div><p className="muted">{cred.provider==='github_token'?'Подключение GitHub для выбранного проекта. Токен создаётся в GitHub и хранится в сервисе зашифрованным.':'Подключение по API-ключу. ChatGPT Plus / Codex CLI настраивается отдельно в разделе «Настройки аккаунта».'}</p>
  {cred.provider==='github_token'&&<div className="panel" style={{marginBottom:16,padding:16}}>
