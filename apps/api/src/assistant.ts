@@ -1,10 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import type pg from 'pg';
+import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
 type Dependencies={
- pool:pg.Pool; uid:(req:any)=>string;
+ pool:Pool; uid:(req:any)=>string;
  access:(req:any,reply:any,projectId:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
  codexUrl:string; runnerKey:string;
