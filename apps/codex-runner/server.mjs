@@ -1,5 +1,6 @@
 import http from 'node:http';
 import net from 'node:net';
+import tls from 'node:tls';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, writeFile, access } from 'node:fs/promises';
@@ -32,11 +33,41 @@ proxyServer.on('connect',(req,client,head)=>{
 });
 proxyServer.listen(4399,'127.0.0.1');
 const proxyUrl='http://127.0.0.1:4399';
-const cliEnv={...process.env,CODEX_HOME:home,HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
+const cliEnv={...process.env,CODEX_HOME:home,SSL_CERT_FILE:'/etc/ssl/certs/ca-certificates.crt',HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
 const codexDotenv=join(home,'.env');
 // The Codex binary can load proxy settings from its own .env; provide
 // the same loopback proxy there in addition to the child environment.
 await writeFile(codexDotenv,`HTTP_PROXY=${proxyUrl}\nHTTPS_PROXY=${proxyUrl}\nhttp_proxy=${proxyUrl}\nhttps_proxy=${proxyUrl}\nNO_PROXY=localhost,127.0.0.1,::1\nno_proxy=localhost,127.0.0.1,::1\n`,{mode:0o600});
+async function probeProxyEndpoint(){
+ // Replicate the HTTP CONNECT + verified TLS path used by Codex.
+ // Never report response bodies or OAuth credentials.
+ return await new Promise(resolve=>{
+  let done=false;
+  const finish=message=>{if(done)return;done=true;resolve(message);};
+  const req=http.request({host:'127.0.0.1',port:4399,method:'CONNECT',path:'auth.openai.com:443',timeout:12000});
+  req.on('connect',(response,socket)=>{
+   if(response.statusCode!==200){socket.destroy();finish('Прокси: CONNECT HTTP '+response.statusCode);return;}
+   const secure=tls.connect({socket,servername:'auth.openai.com',rejectUnauthorized:true});
+   secure.setTimeout(12000);
+   secure.once('secureConnect',()=>{
+    secure.write('POST /api/accounts/deviceauth/usercode HTTP/1.1\r\nHost: auth.openai.com\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}');
+   });
+   let responseText='';
+   secure.on('data',chunk=>{
+    responseText+=(chunk.toString('utf8')).slice(0,256);
+    const match=responseText.match(/^HTTP\/1\.[01] (\d{3})/);
+    if(match){secure.destroy();finish('Прокси + TLS: HTTP '+match[1]);}
+   });
+   secure.on('end',()=>{if(!done)finish('Прокси + TLS: нет HTTP-ответа');});
+   secure.on('error',e=>finish('Прокси + TLS: '+String(e.code||e.message).slice(0,90)));
+   secure.on('timeout',()=>{secure.destroy();finish('Прокси + TLS: таймаут');});
+  });
+  req.on('error',e=>finish('Прокси CONNECT: '+String(e.code||e.message).slice(0,90)));
+  req.on('timeout',()=>{req.destroy();finish('Прокси CONNECT: таймаут');});
+  req.end();
+ });
+}
+
 async function probeAuthEndpoint(){
  try{
   const response=await fetch('https://auth.openai.com/api/accounts/deviceauth/usercode',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(12000)});
@@ -65,7 +96,7 @@ function runLogin(){
  const collect=(chunk)=>{log=(log+chunk.toString('utf8')).slice(-10000)};
  child.stdout.on('data',collect);child.stderr.on('data',collect);
  child.on('error',e=>{loginState='error';log+='\n'+e.message;});
- child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const connections=proxyAttempts,successes=proxySuccess,proxyError=proxyLastError;void probeAuthEndpoint().then(probe=>{diagnosis=probe+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
+ child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const connections=proxyAttempts,successes=proxySuccess,proxyError=proxyLastError;void Promise.all([probeAuthEndpoint(),probeProxyEndpoint()]).then(([probe,tunnel])=>{diagnosis=probe+'; '+tunnel+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
  const deadline=setTimeout(()=>{if(login===child){child.kill('SIGTERM');loginState='expired';}},10*60*1000);
  deadline.unref();
 }
