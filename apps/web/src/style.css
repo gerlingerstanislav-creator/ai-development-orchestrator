@@ -162,3 +162,6 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .workflow-arrow:not(:disabled):hover{background:#dbe2ff}
 .workflow-arrow:disabled{opacity:.45;cursor:not-allowed}
 @media(max-width:850px){.task-modal-top{flex-direction:column;align-items:stretch;padding:12px 15px}.task-modal-actions{justify-content:flex-start}.task-dialog-columns{display:flex;flex-direction:column;overflow-y:auto}.task-dialog-wide .task-details{overflow:visible}.task-dialog-wide .task-conversation{flex:0 0 420px;border-left:0;border-top:1px solid #e6e9f0}.task-workflow{justify-content:flex-start;padding:9px}}
+
+.workflow-step.current svg{animation:workflow-spin 1.8s linear infinite}
+@keyframes workflow-spin{to{transform:rotate(360deg)}}
