@@ -67,6 +67,12 @@ async function access(req:any,reply:any,projectId:string) {
  if(!await canAccess(projectId,uid(req))){reply.code(403).send({error:'Нет доступа к проекту'});return false;}return true;
 }
 app.get('/api/health',async()=>({ok:true}));
+// Codex uses a personal ChatGPT entitlement. Keep access restricted to the bootstrap administrator.
+app.addHook('preHandler',async(req,reply)=>{
+ if(!req.url.startsWith('/api/codex/'))return;
+ const email=(await pool.query('SELECT email FROM users WHERE id=$1',[(req as any).userId])).rows[0]?.email;
+ if(!email || email!==process.env.ADMIN_EMAIL?.trim().toLowerCase())return reply.code(403).send({error:'Только администратор может подключать Codex'});
+});
 // Local-only Codex runner. The service is not exposed on a host port.
 // Requests reach it only after the ordinary application session check.
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
