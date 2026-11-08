@@ -153,7 +153,7 @@ async function createPullRequest(job,branch,summary){
    title:'AI: '+job.title.slice(0,180),
    body:'Автоматически подготовлено Codex по задаче '+job.taskId+'\n\nМодель: '+job.model+
    '\n\n'+summary.slice(0,1500)+'\n\nПроверьте изменения и тесты перед слиянием.',
-   head:branch,base:job.baseBranch,draft:true
+   head:branch,base:job.baseBranch,draft:false
   }),
   signal:AbortSignal.timeout(25000)
  });
