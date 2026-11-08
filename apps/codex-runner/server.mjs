@@ -131,7 +131,7 @@ function startNextJobs(){
   runningJobs++;
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Запуск разработки в изолированной рабочей папке';
-  void runJob(job,state).finally(()=>{
+  void (job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
    activeBranches.delete(branchKey);runningJobs--;startNextJobs();
   });
  }
@@ -319,6 +319,77 @@ async function runJob(job,state){
   await rm(workdir,{recursive:true,force:true}).catch(()=>{});
  }
 }
+
+/** Merge the current target branch into a PR branch, using Codex only for real conflicts.
+ * The worker holds the per-task branch lock while resolving and pushing.
+ * Codex never receives the GitHub token; git commands carry it through env.
+ */
+async function runConflictJob(job,state){
+ const workspace=await mkdtemp(join(tmpdir(),'ado-conflict-'));
+ const dir=join(workspace,'repo');
+ const auth=Buffer.from('x-access-token:'+job.token).toString('base64');
+ const gitEnv={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',
+  GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',
+  GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+auth};
+ const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:90000});
+ try{
+  state.message='Получение свежих веток PR и целевой ветки';
+  await command('git',['clone','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],{cwd:workspace,env:gitEnv,timeout:90000});
+  await git('fetch','origin',job.baseBranch);
+  const headBefore=(await git('rev-parse','HEAD')).stdout.trim();
+  const targetSha=(await git('rev-parse','FETCH_HEAD')).stdout.trim();
+  let conflicts=[];
+  try{await git('-c','user.name=AI Development Orchestrator','-c','user.email=ai-orchestrator@users.noreply.github.com','merge','--no-edit','FETCH_HEAD');}
+  catch(error){
+   const unmerged=(await git('diff','--name-only','--diff-filter=U')).stdout.trim();
+   conflicts=unmerged.split('\n').filter(Boolean);
+   if(!conflicts.length)throw error;
+  }
+  if(conflicts.length){
+   state.message='Codex устраняет '+conflicts.length+' конфликт(ов) в локальной копии';
+   const prompt=[
+    'Ты устраняешь Git merge conflicts после объединения целевой ветки с PR.',
+    'Работай ТОЛЬКО в этой локальной копии. Не выполняй git commit, push, checkout, reset или команды с GitHub API.',
+    'Изучи обе версии конфликтующих участков, исходную задачу и окружающий код.',
+    'Сохрани все совместимые изменения целевой ветки и PR. Не удаляй функциональность ради завершения merge.',
+    'Если невозможно достоверно определить правильное поведение без решения пользователя, напиши NEEDS_USER: и конкретный вопрос. Не подменяй неоднозначность произвольным решением.',
+    'Иначе разреши каждый конфликт, удали конфликтные маркеры и, по возможности, запусти локальные проверки.',
+    'Не создавай и не изменяй .env, credential или файлы авторизации.',
+    'Задача: '+job.title,
+    'Требования: '+job.description.slice(0,12000),
+    'Конфликтующие файлы: '+conflicts.join(', ').slice(0,5000)
+   ].join('\n\n');
+   const result=await command('codex',[
+     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
+     '--json','--ephemeral','--skip-git-repo-check','--sandbox','danger-full-access',prompt
+   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
+   const parsed=codexJsonResult(result.stdout);
+   state.usage=parsed.usage;
+   const answer=parsed.message||'';
+   if(/NEEDS_USER\s*:/i.test(answer))throw new Error('Требуется решение пользователя: '+answer.slice(answer.search(/NEEDS_USER\s*:/i)+11,answer.search(/NEEDS_USER\s*:/i)+850));
+   await git('add','--all');
+   const stillUnmerged=(await git('ls-files','-u')).stdout.trim();
+   if(stillUnmerged)throw new Error('Не все конфликты разрешены автоматически. Нужна проверка: '+conflicts.join(', '));
+   const changed=(await git('diff','--cached','--name-only')).stdout.split('\n').filter(Boolean);
+   if(changed.some(x=>/(^|\/)(\.env(\.|$)|auth\.json$|\.git\/|credentials(\.|\/|$))/.test(x)))
+    throw new Error('Разрешение затронуло секретные файлы, автоматическое слияние отменено');
+   await git('diff','--cached','--check');
+   // A resolved file may have no staged diff if the chosen side matches HEAD.
+   await command('git',['-c','user.name=AI Development Orchestrator','-c','user.email=ai-orchestrator@users.noreply.github.com',
+    'commit','-m','Resolve PR conflicts with '+job.baseBranch],{cwd:dir,env:gitEnv,timeout:30000});
+  }
+  // Refuse to overwrite concurrent edits to the PR branch.
+  const remoteHead=(await git('ls-remote','origin','refs/heads/'+job.taskId)).stdout.split(/\s+/)[0];
+  if(remoteHead!==headBefore)throw new Error('Ветка PR изменилась во время разрешения конфликтов. Повтори операцию.');
+  const remoteTarget=(await git('ls-remote','origin','refs/heads/'+job.baseBranch)).stdout.split(/\s+/)[0];
+  if(remoteTarget!==targetSha)throw new Error('Целевая ветка изменилась во время разрешения конфликтов. Повтори операцию.');
+  await git('push','origin','HEAD:refs/heads/'+job.taskId);
+  state.status='completed';state.message='Конфликты устранены, ветка PR обновлена';
+  state.branch=job.taskId;state.resolvedFiles=conflicts;
+ }catch(error){
+  state.status='failed';state.message=String(error?.message||error).replaceAll(job.token,'[REDACTED]').slice(0,1800);
+ }finally{await rm(workspace,{recursive:true,force:true}).catch(()=>{});}
+}
 async function readJson(req){
  let text='';
  for await(const chunk of req){
@@ -428,6 +499,7 @@ http.createServer(async(req,res)=>{
   if(req.url==='/jobs'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    const job=await readJson(req);
+   if(job.kind && job.kind!=='resolve-conflict')return reply(res,400,{error:'Недопустимый тип задания'});
    if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
     typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
     typeof job.repository!=='string'|| !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(job.repository) ||
