@@ -15,7 +15,8 @@ type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_at?:string};
-type AssistantResponse={message:string;created_task_id?:string|null;summary?:string|null};
+type AssistantResponse={message:string;created_task_id?:string|null;summary?:string|null;questions?:string[]};
+type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run';text:string;time:string;title?:string;link?:string;status?:string};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','merge_queue','documentation','done'];
@@ -59,6 +60,44 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
+ function timeline(taskId:string):ActivityItem[]{
+  return [
+   ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString()})),
+   ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:ev.event==='created'?'Задача создана':ev.event==='analyzed'?'Анализ обновлён':ev.event==='merged'?'PR слит':ev.event==='documentation_updated'?'Документация обновлена':'Изменение задачи',text:ev.detail,time:ev.created_at})),
+   ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined}))
+  ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
+ }
+ async function refreshTaskActivity(projectId:string,taskId:string){
+  try{
+   const [ts,ev,ms]=await Promise.all([
+    api<Task[]>('/projects/'+projectId+'/tasks'),
+    api<typeof events>('/projects/'+projectId+'/tasks/'+taskId+'/events'),
+    api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
+   ]);
+   setTasks(ts);setEvents(ev);setTaskMessages(ms);
+   setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
+  }catch(e){fail(e);}
+ }
+ function canAdvance(task:Task,from:string,to:string){
+  if(task.stage!==from)return false;
+  if(from==='backlog'&&to==='analysis')return true;
+  if(from==='analysis'&&to==='development')return task.analysis_state==='ready_for_development'&&!taskChatBusy&&!!gitLink&&aiSettings.enabled;
+  if(from==='development'&&to==='merge_queue')return !aiBusy&&!aiRuns.some(r=>r.task_id===task.id&&['running','queued'].includes(r.status));
+  if(from==='merge_queue'&&to==='documentation')return !mergeBusy;
+  if(from==='documentation'&&to==='done')return !knowledgeBusy;
+  return false;
+ }
+ async function advanceTask(task:Task,from:string,to:string){
+  if(!selected||!canAdvance(task,from,to))return;
+  if(from==='backlog'){
+   try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage:'analysis'})});
+    await refreshTaskActivity(selected.id,task.id);
+   }catch(e){fail(e);}
+  }else if(from==='analysis')await approveDevelopment();
+  else if(from==='development')await runAiTask();
+  else if(from==='merge_queue')await mergeTask(task);
+  else if(from==='documentation')await updateDocumentation();
+ }
  const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){setError(e instanceof Error?e.message:'Неизвестная ошибка');}
  async function loadProjects(){try{setProjects(await api('/projects'));}catch(e){fail(e);}}
