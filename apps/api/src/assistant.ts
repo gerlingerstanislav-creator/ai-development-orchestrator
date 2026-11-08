@@ -22,7 +22,11 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const r=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
   return r.rows[0]||{model:'gpt-6-luna',reasoning:'low',enabled:false};
  }
- async function checkQuota(id:string,reply:any){
+ async function rulesContext(id:string){
+  const r=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
+  return r.rows.map(x=>'- '+x.body).join('\n').slice(0,12000);
+ }
+  async function checkQuota(id:string,reply:any){
   const r=await pool.query("SELECT count(*)::int AS n FROM assistant_usage WHERE project_id=$1 AND created_at > now() - interval '24 hours'",[id]);
   if(r.rows[0].n>=20){reply.code(429).send({error:'Лимит AI-переписки: 20 запросов за 24 часа'});return false;}
   return true;
@@ -63,6 +67,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const create=/(создай|создать|добавь|заведи|оформи)\s+.{0,100}(задач[уаи]|таск)|(задач[уаи]|таск)\s+.{0,100}(создай|создать|добавь|заведи|оформи)/i.test(message);
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const conversation=await history(id,null);
+  const rules=await rulesContext(id);
   let prompt:string;
   let existingIds:string[]=[];
   if(create){
@@ -75,6 +80,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'Из списка задач выбирай только реальные UUID, не выдумывай идентификаторы.',
     'При похожей задаче не объединяй карточки автоматически, только предложи связь.',
     'Не выдумывай детали и не создавай несколько задач.',
+    'Утверждённые правила проекта (соблюдай, не меняй):\n'+rules,
     'Проект: '+project.rows[0].name,
     'Другие задачи (UUID, название и описание): '+JSON.stringify(existing.rows).slice(0,9000),
     'Документы проекта: '+JSON.stringify(docs.rows).slice(0,9000),
@@ -82,6 +88,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   }else{
    prompt=['Ты ассистент проекта разработки. Отвечай кратко, по делу и на русском.',
     'Не создавай задачу, если пользователь не попросил об этом явно.',
+    'Правила проекта:\n'+rules,
     'Проект: '+project.rows[0].name,'Описание: '+project.rows[0].description.slice(0,2000),
     'История:\n'+conversation,'Запрос:\n'+message].join('\n\n');
   }
@@ -132,14 +139,15 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   if(!await checkQuota(id,reply))return;
   const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
-  const context=['Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
+  const rules=await rulesContext(id);
+  const context=['Утверждённые правила проекта:\n'+rules,'Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
    'Открытые вопросы: '+JSON.stringify(task.clarification_questions),
    'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,9000),
    'История:\n'+await history(id,taskId),'Сообщение пользователя:\n'+message].join('\n\n');
   const refining=task.stage==='analysis';
   const prompt=refining?[
    'Ты системный аналитик. Ответ пользователя может уточнять открытые вопросы или содержать дополнительное требование. Обнови ТЗ, не теряя ранее согласованные требования.',
-   'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"]}.',
+   'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"],"suggested_rules":["только универсальные полезные правила для будущих задач"]}.',
    'Если нет блокирующих вопросов, верни пустой массив questions. Не придумывай ответы. Не объединяй карточки без разрешения.',
    context
   ].join('\n\n'):[
@@ -153,13 +161,18 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    const analyzed=z.object({
     summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(3).max(16000),
     questions:z.array(z.string().min(3).max(600)).max(8).default([]),
-    related_ids:z.array(z.string().uuid()).max(10).default([])
+    related_ids:z.array(z.string().uuid()).max(10).default([]),
+    suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
    }).parse(jsonObject(raw));
    summary=analyzed.summary;questions=analyzed.questions;
    answer=analyzed.details+(questions.length?'\n\nОстались вопросы:\n'+questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'\n\nБлокирующих вопросов нет. Можно отправлять задачу в разработку.');
    const related=analyzed.related_ids.filter(x=>other.rows.some(o=>o.id===x));
    await pool.query("UPDATE tasks SET description=$1,clarification_questions=$2,related_task_ids=$3,analysis_state=$4,updated_at=now() WHERE id=$5 AND project_id=$6",
     [summary,JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
+   for(const rule of analyzed.suggested_rules){
+    const dup=await pool.query("SELECT 1 FROM project_rules WHERE project_id=$1 AND lower(body)=lower($2) UNION ALL SELECT 1 FROM project_rule_suggestions WHERE project_id=$1 AND lower(body)=lower($2) AND status='pending' LIMIT 1",[id,rule]);
+    if(!dup.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
+   }
    await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
     [randomUUID(),taskId,uid(req),'analyzed','ТЗ и открытые вопросы обновлены по результатам AI-анализа']);
   }
