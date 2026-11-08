@@ -26,15 +26,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const r=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   return r.rows.map(x=>'- '+x.body).join('\n').slice(0,12000);
  }
-  async function checkQuota(_id:string,reply:any){
-  const settings=await pool.query('SELECT chat_requests_per_24h FROM service_ai_limits WHERE id=1');
-  const limit=Number(settings.rows[0]?.chat_requests_per_24h||0);
-  if(limit===0)return true;
-  const used=await pool.query("SELECT count(*)::int AS n FROM assistant_usage WHERE created_at > now() - interval '24 hours'");
-  if(used.rows[0].n>=limit){reply.code(429).send({error:'Достигнут общий лимит ChatGPT-запросов сервиса за 24 часа'});return false;}
-  return true;
- }
- async function completion(prompt:string,config:any){
+  async function completion(prompt:string,config:any){
   const response=await fetch(codexUrl+'/assistant',{method:'POST',
    headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
    body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt}),
@@ -66,7 +58,6 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const {message}=messageSchema.parse(req.body);
   const config=await configuration(id);
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
-  if(!await checkQuota(id,reply))return;
   const create=/(создай|создать|добавь|заведи|оформи)\s+.{0,100}(задач[уаи]|таск)|(задач[уаи]|таск)\s+.{0,100}(создай|создать|добавь|заведи|оформи)/i.test(message);
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const conversation=await history(id,null);
@@ -152,7 +143,6 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(mode==='analyze'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
   const config=await configuration(id);
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
-  if(!await checkQuota(id,reply))return;
   const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
   const link=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
   const repoContext=link?'Подключённый репозиторий: '+link.repository+'; целевая ветка: '+(link.target_branch||link.default_branch)+'. НЕ задавай вопросы о репозитории, выборе GitHub Pages и целевой ветке без прямого запроса пользователя.':'GitHub-репозиторий не подключён.';
