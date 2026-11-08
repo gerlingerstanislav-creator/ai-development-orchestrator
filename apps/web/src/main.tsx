@@ -209,6 +209,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
  const [projectChatOpen,setProjectChatOpen]=useState(false);
+ const [projectChatMode,setProjectChatMode]=useState<'project'|'documentation'>('project');
  useEffect(()=>{if(projectChatOpen)projectInputRef.current?.focus();},[projectChatOpen]);
  const [projectMessages,setProjectMessages]=useState<AssistantMessage[]>([]);
  const [projectPendingId,setProjectPendingId]=useState<string|null>(null);
@@ -306,7 +307,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!element)return;
   element.scrollTop=element.scrollHeight;
  },[taskMessages,taskChatBusy,events,aiRuns,activeTask?.id,taskFeedback]);
- useEffect(()=>{setProjectChatOpen(false);setProjectMessages([]);setProjectInput('');if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages').then(setProjectMessages).catch(fail);}},[selected?.id]);
+ useEffect(()=>{setProjectMessages([]);setProjectInput('');setProjectPendingId(null);if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages?mode='+projectChatMode).then(setProjectMessages).catch(fail);}},[selected?.id,projectChatMode]);
+ useEffect(()=>{setProjectChatOpen(false);setProjectChatMode('project');},[selected?.id]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -428,12 +430,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   },4000);
   return()=>clearInterval(timer);
  },[token,selected?.id,aiRuns,activeTask?.id]);
+ function openDocumentationChat(){
+  setProjectChatMode('documentation');
+  setProjectChatOpen(true);
+ }
  async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
-  const projectId=selected.id,message=projectInput.trim(),optimisticId='pending-'+crypto.randomUUID();
+  const projectId=selected.id,message=projectInput.trim(),mode=projectChatMode,optimisticId='pending-'+crypto.randomUUID();
   setProjectMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
   setProjectInput('');setProjectPendingId(optimisticId);setProjectChatBusy(true);
   try{
-   const response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({message})});
+   const response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({message,mode})});
    setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
     {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
    if(response.created_task_id||response.created_document_id)await loadProject(projectId);
@@ -605,7 +611,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Мои проекты</h1><p>Создавайте проекты и управляйте разработкой в одном месте.</p></div><button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button></div>
  <div className="project-grid">{projects.map(p=><a key={p.id} href={projectUrl(p.id)} className="project-card" onClick={e=>followLink(e,projectUrl(p.id))}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></a>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div></div>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
-  {section==='docs'&&<div className="toolbar"><button className="primary" onClick={()=>void addDoc()}><Plus size={17}/> Новая страница</button></div>}
+  {section==='docs'&&<div className="toolbar docs-chat-toolbar"><button className="primary" onClick={openDocumentationChat}><MessageCircle size={17}/> Обсудить документацию</button><span className="muted">AI помогает структурировать материалы, создавать страницы и импортировать Markdown из GitHub.</span></div>}
  {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
  {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>{setProjectInput(old=>old.trim()?old:'Создай задачу: ');setProjectChatOpen(true);}}><FileText size={17}/></button></div></div>
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board">{stages.map(s=><div className="lane" key={s.stage} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}><div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{filtered.filter(t=>t.stage===s.stage).length}</span>
@@ -708,9 +714,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </main>
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
-   <header className="project-chat-heading"><div><strong>AI-помощник проекта</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
+   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Редактор документации':'AI-помощник проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
-    {projectMessages.length===0&&<p className="assistant-hint">Напиши, например: «Создай задачу на добавление поиска по документации».</p>}
+    {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Расскажи об идее проекта, требованиях или пришли ссылку на GitHub-каталог с Markdown. Я буду раскладывать подтверждённые детали по документам и уточнять недостающие.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
       <div>{m.body}</div>
@@ -722,13 +728,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {projectChatBusy&&<p className="assistant-hint">Codex готовит ответ…</p>}
    </div>
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
-    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder="Сообщение, задача или документ… (Shift+Enter — новая строка)" aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
+    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
     <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
   </section>}
-  <button className="chat-fab" onClick={()=>setProjectChatOpen(open=>!open)} title={projectChatOpen?'Закрыть чат':'Открыть AI-чат'} aria-label={projectChatOpen?'Закрыть чат':'Открыть AI-чат'}>
-   {projectChatOpen?<X size={22}/>:<MessageCircle size={22}/>}
+  <button className="chat-fab" onClick={()=>{if(projectChatMode==='documentation'){setProjectChatMode('project');setProjectChatOpen(true);}else setProjectChatOpen(open=>!open);}} title={projectChatOpen&&projectChatMode==='project'?'Закрыть чат':'Открыть AI-чат'} aria-label={projectChatOpen?'Закрыть чат':'Открыть AI-чат'}>
+   {projectChatOpen&&projectChatMode==='project'?<X size={22}/>:<MessageCircle size={22}/>}
   </button>
  </>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
