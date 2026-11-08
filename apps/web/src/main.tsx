@@ -1,6 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,X} from 'lucide-react';
+import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Clock3,ArrowRightCircle,X} from 'lucide-react';
 import './style.css';
 
 type Project={id:string,name:string,description:string};
@@ -44,7 +44,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [targetBranch,setTargetBranch]=useState('');const [mergeBusy,setMergeBusy]=useState(false);const [mergeReport,setMergeReport]=useState('');
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
- const [activeTask,setActiveTask]=useState<Task|null>(null);const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
+ const [activeTask,setActiveTask]=useState<Task|null>(null);
+ const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
+ const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');const [activeDoc,setActiveDoc]=useState<Doc|null>(null);
  const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
  const [error,setError]=useState('');const [busy,setBusy]=useState(false);const [search,setSearch]=useState('');
  const [form,setForm]=useState({name:'',description:'',title:'',type:'task',parent_id:''});
@@ -75,7 +77,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();setSelected(p);setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
  async function createTask(e:React.FormEvent){e.preventDefault();if(!selected)return;setBusy(true);try{await api('/projects/'+selected.id+'/tasks',{method:'POST',body:JSON.stringify({title:form.title,description:form.description,type:form.type,parent_id:form.parent_id||null})});await loadProject(selected.id);setShowTask(false);setForm({...form,title:'',description:'',parent_id:''});}catch(e){fail(e);}finally{setBusy(false);}}
- async function saveTask(values:{title:string,description:string,stage:string}){if(!selected||!activeTask)return;try{await api('/projects/'+selected.id+'/tasks/'+activeTask.id,{method:'PATCH',body:JSON.stringify(values)});setActiveTask(null);await loadProject(selected.id);}catch(e){fail(e);}}
+ async function autoSaveField(field:'title'|'description',value:string){if(!selected||!activeTask)return;
+  const taskId=activeTask.id;
+  setEditingField(null);setSavingField(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+taskId,{method:'PATCH',body:JSON.stringify({[field]:value})});
+   setTasks(old=>old.map(t=>t.id===taskId?{...t,[field]:value}:t));
+  }catch(e){setTaskFeedback(e instanceof Error?e.message:'Ошибка автосохранения');fail(e);}finally{setSavingField(false);}
+ }
  async function moveTask(task:Task,stage:string){if(!selected||stage===task.stage)return;try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function modeChange(stage:string,mode:string){if(!selected)return;try{await api('/projects/'+selected.id+'/workflow/'+stage,{method:'PATCH',body:JSON.stringify({mode})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function addDoc(parentId:string|null=null){if(!selected)return;try{const added=await api<{id:string}>('/projects/'+selected.id+'/docs',{method:'POST',body:JSON.stringify({title:'Новая страница',body:'',parent_id:parentId})});if(parentId)setCollapsedDocs(items=>items.filter(x=>x!==parentId));await loadProject(selected.id);setActiveDoc({id:added.id,title:'Новая страница',body:'',parent_id:parentId,updated_at:new Date().toISOString()});}catch(e){fail(e);}}
@@ -177,7 +186,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     (result.results.filter(r=>r.reason).length?'\n'+result.results.filter(r=>r.reason).map(r=>r.reason).join('\n'):''));
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
- async function openTask(t:Task){setActiveTask({...t});setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
+ async function openTask(t:Task){setActiveTask({...t});setEditingField(null);setTaskFeedback('');setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
  async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false,error:e instanceof Error?e.message:'Не удалось проверить Codex'});}}
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
