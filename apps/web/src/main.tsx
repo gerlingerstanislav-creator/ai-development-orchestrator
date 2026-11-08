@@ -300,7 +300,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{setProjectChatOpen(false);setProjectMessages([]);setProjectInput('');if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages').then(setProjectMessages).catch(fail);}},[selected?.id]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
- async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();setSelected(p);setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
+ async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
  async function createTask(e:React.FormEvent){e.preventDefault();if(!selected)return;setBusy(true);try{await api('/projects/'+selected.id+'/tasks',{method:'POST',body:JSON.stringify({title:form.title,description:form.description,type:form.type,parent_id:form.parent_id||null})});await loadProject(selected.id);setShowTask(false);setForm({...form,title:'',description:'',parent_id:''});}catch(e){fail(e);}finally{setBusy(false);}}
  async function autoSaveField(field:'title'|'description',value:string){if(!selected||!activeTask)return;
   const taskId=activeTask.id;
@@ -320,7 +320,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const doc:Doc={id:added.id,title:'Новая страница',body:'',parent_id:parentId,updated_at:new Date().toISOString()};
    if(parentId)setCollapsedDocs(items=>items.filter(x=>x!==parentId));
    setDocs(old=>[...old,doc]);
-   setSelectedDocId(doc.id);
+   navigate(projectUrl(selected.id,'docs')+'/'+doc.id);
    setEditingDoc({...doc});
   }catch(e){fail(e);}finally{setDocBusy(false);}
  }
@@ -344,14 +344,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   try{
    await api('/projects/'+selected.id+'/docs/'+doc.id,{method:'DELETE'});
    setDocs(old=>old.filter(d=>d.id!==doc.id));
-   setSelectedDocId(null);setEditingDoc(null);
+   navigate(projectUrl(selected.id,'docs'));setEditingDoc(null);
   }catch(e){fail(e);}finally{setDocBusy(false);}
  }
  function selectDoc(doc:Doc){
   if(editingDoc&&(editingDoc.title!==docs.find(d=>d.id===editingDoc.id)?.title||editingDoc.body!==docs.find(d=>d.id===editingDoc.id)?.body||editingDoc.parent_id!==docs.find(d=>d.id===editingDoc.id)?.parent_id)){
    if(!window.confirm('Изменения документа не сохранены. Перейти без сохранения?'))return;
   }
-  setSelectedDocId(doc.id);setEditingDoc(null);
+  if(selected)navigate(projectUrl(selected.id,'docs')+'/'+doc.id);
+  setEditingDoc(null);
  }
  async function addConnection(e:React.FormEvent){e.preventDefault();setBusy(true);try{const saved=await api<Connection>('/connections',{method:'POST',body:JSON.stringify(cred)});setCred({name:'',provider:'github_token',secret:''});setShowConnection(false);if(selected)await loadProject(selected.id);if(saved.provider==='github_token')setGitTokenId(saved.id);}catch(e){fail(e);}finally{setBusy(false);}}
  async function attachConnection(connectionId:string){if(!selected)return;try{await api('/projects/'+selected.id+'/connections',{method:'POST',body:JSON.stringify({connectionId})});await loadProject(selected.id);}catch(e){fail(e);}}
@@ -484,12 +485,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     (result.results.filter(r=>r.reason).length?'\n'+result.results.filter(r=>r.reason).map(r=>r.reason).join('\n'):''));
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
- async function openTask(t:Task){setActiveTask({...t});setEditingField(null);setTaskFeedback('');setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
+ async function openTask(t:Task){if(selected)navigate(projectUrl(selected.id,'tasks')+'/'+t.id);}
  async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false});fail(e);}}
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
- function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setCodex(null);}
+ function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setProjectsLoaded(false);setLoadedProjectId(null);setCodex(null);navigate('/projects',true);}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
   return docs.filter(d=>d.parent_id===parentId).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
@@ -508,16 +509,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
   <div className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
-  <button className={'nav '+(!selected&&!accountSettings?'active':'')} onClick={()=>{setAccountSettings(false);setSelected(null);}}><LayoutGrid size={18}/> Мои проекты</button>
+  <button className={'nav '+(!selected&&!accountSettings?'active':'')} onClick={()=>navigate('/projects')}><LayoutGrid size={18}/> Мои проекты</button>
   {selected&&<><div className="sidebar-label">{selected.name.toUpperCase()}</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['rules','Правила',FileText],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>{setAccountSettings(false);setSection(k);}}><Icon size={18}/>{label}</button>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['rules','Правила',FileText],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>navigate(projectUrl(selected.id,k))}><Icon size={18}/>{label}</button>)}
   </>}
   <div className="sidebar-label">АККАУНТ</div>
-  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>setAccountSettings(true)}><Settings2 size={18}/> Настройки аккаунта</button>
+  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>navigate('/account/settings')}><Settings2 size={18}/> Настройки аккаунта</button>
 
   <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
  </aside>
- <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
+ <main className="main"><header className="topbar"><span className="crumb" onClick={()=>navigate('/projects')}>Мои проекты</span>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
  
  {accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
@@ -566,7 +567,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {codexTest&&<div className="codex-test">{codexTest}</div>}
  </section>
  </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Мои проекты</h1><p>Создавайте проекты и управляйте разработкой в одном месте.</p></div><button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button></div>
- <div className="project-grid">{projects.map(p=><button key={p.id} className="project-card" onClick={()=>{setSelected(p);setSection('tasks');}}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></button>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div></div>
+ <div className="project-grid">{projects.map(p=><button key={p.id} className="project-card" onClick={()=>navigate(projectUrl(p.id))}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></button>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div></div>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
   {section==='docs'&&<div className="toolbar"><button className="primary" onClick={()=>void addDoc()}><Plus size={17}/> Новая страница</button></div>}
  {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
@@ -678,7 +679,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
       <div>{m.body}</div>
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
-      {m.created_document_id&&<button className="textbtn" onClick={()=>{setSection('docs');setSelectedDocId(m.created_document_id||null);setEditingDoc(null);setProjectChatOpen(false);}}>Открыть документ</button>}
+      {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setProjectChatOpen(false);}}>Открыть документ</button>}
     </div>)}
     {projectChatBusy&&<p className="assistant-hint">Codex готовит ответ…</p>}
    </div>
@@ -694,7 +695,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
  {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
- {activeTask&&<div className="overlay" onMouseDown={()=>{if(!editingField)setActiveTask(null);}}>
+ {activeTask&&<div className="overlay" onMouseDown={()=>{if(!editingField&&selected)navigate(projectUrl(selected.id,'tasks'));}}>
   <div className="dialog task-dialog task-dialog-wide" onMouseDown={e=>e.stopPropagation()}>
    <div className="task-modal-top">
     <div className="task-modal-heading">
@@ -715,7 +716,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
-     <button className="task-close" onClick={()=>setActiveTask(null)} title="Закрыть задачу"><X size={20}/></button>
+     <button className="task-close" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу"><X size={20}/></button>
     </div>
    </div>
    <div className="task-dialog-columns">
