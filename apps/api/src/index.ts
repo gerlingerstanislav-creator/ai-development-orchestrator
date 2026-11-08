@@ -35,6 +35,7 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS related_task_ids jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS depends_on_task_id uuid REFERENCES tasks(id) ON DELETE SET NULL;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS dependency_source text NOT NULL DEFAULT 'manual';
  CREATE INDEX IF NOT EXISTS idx_tasks_depends_on ON tasks(project_id,depends_on_task_id);
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS git_branch text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url text;
@@ -563,7 +564,7 @@ async function updateDependency(projectId:string,taskId:string,parentId:string|n
     'SELECT 1 FROM parents WHERE id=$3 LIMIT 1',[parentId,projectId,taskId]);
   if(chain.rowCount)throw Object.assign(new Error('Обнаружен цикл зависимостей'),{statusCode:409});
  }
- await pool.query('UPDATE tasks SET depends_on_task_id=$3,updated_at=now() WHERE project_id=$1 AND id=$2',[projectId,taskId,parentId]);
+ await pool.query('UPDATE tasks SET depends_on_task_id=$3,dependency_source='manual',updated_at=now() WHERE project_id=$1 AND id=$2',[projectId,taskId,parentId]);
  await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
   [randomUUID(),taskId,actorId,'dependency_changed',parentId?'Зависит от '+parentId:'Зависимость удалена']);
  return {ok:true,depends_on_task_id:parentId};
