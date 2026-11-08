@@ -191,7 +191,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось начать разработку');fail(e);}finally{setAiBusy(false);}}
  useEffect(()=>{if(!token||!selected||!aiRuns.some(r=>r.status==='running'||r.status==='queued'))return;
   const timer=setInterval(async()=>{const active=aiRuns.filter(r=>r.status==='running'||r.status==='queued');
-   const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch{return r;}}));
+   const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch(e){return {...r,message:'Не удалось обновить статус: '+(e instanceof Error?e.message:'ошибка сети')};}}));
    setAiRuns(old=>old.map(r=>updated.find(x=>x.id===r.id)||r));
    if(activeTask){
     try{const latestEvents=await api<typeof events>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/events');setEvents(latestEvents);}
