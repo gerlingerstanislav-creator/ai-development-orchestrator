@@ -19,8 +19,8 @@ type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|n
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_at?:string};
-type AssistantResponse={message:string;created_task_id?:string|null;summary?:string|null;questions?:string[]};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string};
+type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[]};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run';text:string;time:string;title?:string;link?:string;status?:string};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
@@ -155,7 +155,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  },[aiRuns]);
 
 
- const [error,setError]=useState('');const [busy,setBusy]=useState(false);const [search,setSearch]=useState('');
+ const [error,setError]=useState('');
+ useEffect(()=>{if(!error)return;const timeout=window.setTimeout(()=>setError(''),9500);return()=>window.clearTimeout(timeout);},[error]);
+ const [busy,setBusy]=useState(false);const [search,setSearch]=useState('');
  const [form,setForm]=useState({name:'',description:'',title:'',type:'task',parent_id:''});
  const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
  const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
@@ -313,7 +315,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function refreshRateLimits(){
   setRateLimitsBusy(true);setRateLimitsError('');
   try{const data=await api<CodexRateLimits>('/codex/rate-limits');setRateLimits(data);}
-  catch(e){setRateLimits(null);setRateLimitsError(e instanceof Error?e.message:'Не удалось получить лимиты Codex');}
+  catch(e){setRateLimits(null);setRateLimitsError('');fail(e);}
   finally{setRateLimitsBusy(false);}
  }
  useEffect(()=>{if(token&&accountSettings){void refreshRateLimits();void refreshTokenUsage();}},[token,accountSettings]);
@@ -347,8 +349,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
   const message=projectInput.trim();setProjectChatBusy(true);
   try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message})});
-   setProjectMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:message},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message,created_task_id:response.created_task_id}]);
-   setProjectInput('');if(response.created_task_id)await loadProject(selected.id);
+   setProjectMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:message},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id}]);
+   setProjectInput('');if(response.created_task_id||response.created_document_id)await loadProject(selected.id);
   }catch(e){fail(e);}finally{setProjectChatBusy(false);}
  }
  async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
@@ -430,7 +432,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   });
  }
  const filtered=tasks.filter(t=>t.title.toLowerCase().includes(search.toLowerCase()));
- if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button>{error&&<div className="error">{error}</div>}</form></div>;
+ if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
   <div className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
@@ -444,7 +446,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
  </aside>
  <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
- {error&&<div className="error global" onClick={()=>setError('')}>{error} <X size={16}/></div>}
+ 
  {accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
   <div className="row-line"><h3>Использованные токены Codex</h3><button className="secondary" onClick={()=>void refreshTokenUsage()}>Обновить</button></div>
@@ -604,12 +606,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
       <div>{m.body}</div>
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
+      {m.created_document_id&&<button className="textbtn" onClick={()=>{setSection('docs');setSelectedDocId(m.created_document_id||null);setEditingDoc(null);setProjectChatOpen(false);}}>Открыть документ</button>}
     </div>)}
     {projectChatBusy&&<p className="assistant-hint">Codex готовит ответ…</p>}
    </div>
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
-    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder="Напиши запрос или попроси создать задачу (Shift+Enter — новая строка)" aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
-    <button className="primary" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={16}/> Отправить</button>
+    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder="Сообщение, задача или документ… (Shift+Enter — новая строка)" aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
+    <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
   </section>}
@@ -731,6 +734,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <small className="muted">Не отправляй токен в чат, не добавляй его в Git и не выдавай доступ ко всем репозиториям.</small>
  </div>}
  <label>Название подключения<input required placeholder={cred.provider==='github_token'?'GitHub — мой репозиторий':'OpenAI API — основной'} value={cred.name} onChange={e=>setCred({...cred,name:e.target.value})}/></label><label>Тип<select value={cred.provider} onChange={e=>setCred({...cred,provider:e.target.value})}><option value="openai_api">OpenAI API</option><option value="github_token">GitHub token</option></select></label><label>{cred.provider==='github_token'?'Секрет — GitHub personal access token':'Секрет — API-ключ'}<input required type="password" autoComplete="off" placeholder={cred.provider==='github_token'?'github_pat_...':'Вставь ключ'} value={cred.secret} onChange={e=>setCred({...cred,secret:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowConnection(false)}>Отмена</button><button className="primary" disabled={busy}>Сохранить</button></footer></form></div>}
+ {error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}
  </div>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
