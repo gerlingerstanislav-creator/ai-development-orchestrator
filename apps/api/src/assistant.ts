@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import {extractGitHubDocumentLocation,importGitHubDocumentation,wantsDocumentImport} from './github-document-import.js';
+import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,wantsDocumentSynthesis} from './github-document-import.js';
 
 type Dependencies={
  pool:Pool; uid:(req:any)=>string;
@@ -64,28 +64,86 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const {message}=messageSchema.parse(req.body);
   const conversation=await history(id,null);
   const location=extractGitHubDocumentLocation(message,conversation);
-  const explicitImport=/(?:перенес|перенести|импортир|загруз|скопир|забер|добав|помест|сохран|полож|затащ)/i.test(message)
-    &&/(?:документ|файл|markdown|\\.md\\b|страниц)/i.test(message)
-    &&/(?:github|репозитор|из\\s+идеи|из\\s+ideas)/i.test(message+' '+conversation);
-  const importRequest=wantsDocumentImport(message,conversation)||explicitImport;
-  if(importRequest){
-   if(!location)return reply.code(409).send({error:'Для переноса документов пришли ссылку GitHub на каталог Markdown-файлов, например https://github.com/owner/repo/tree/main/docs'});
+  const synthesize=wantsDocumentSynthesis(message,conversation)||
+   !!location&&/(?:перенес|импортир|загруз|созда|сформир|сдела|подготов)/i.test(message)&&
+   /(?:документ|страниц|на основе|на базе|из репозитория)/i.test(message);
+  if(synthesize){
+   if(!location)return reply.code(409).send({error:'Для создания документов на основе GitHub пришли ссылку на исходный каталог, например https://github.com/owner/repo/tree/main/docs'});
+   const config=await configuration(id);
+   if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта: для переработки документации требуется Codex.'});
    try{
     const connected=await pool.query("SELECT secret_encrypted FROM connections WHERE owner_id=$1 AND provider='github_token' ORDER BY created_at DESC LIMIT 8",[uid(req)]);
     const tokens:string[]=[];
     for(const c of connected.rows){try{tokens.push(decryptToken(c.secret_encrypted));}catch{continue;}}
-    const result=await importGitHubDocumentation(pool,id,location,tokens);
-    const answer='Документация перенесена из '+location.owner+'/'+location.repository+' в раздел «Документация» этого проекта. '+(result.created
-     ?'Создано страниц: '+result.created+'. ':'')+(result.skipped
-     ?'Уже импортированных страниц без перезаписи: '+result.skipped+'. ':'')+
-     'Исходные Markdown-файлы сохранены без пересказа.';
+    const files=await readGitHubMarkdownFiles(location,tokens);
+    if(!files.length)return reply.code(409).send({error:'В указанном каталоге нет Markdown-файлов.'});
+    const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
+    const existingDocs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 20',[id]);
+    const rules=await rulesContext(id);
+    // Feed source documents to Codex, not an assumed summary. Bound per file size
+    // so every input file is represented even for large collections.
+    const perFile=Math.max(4000,Math.floor(115000/files.length));
+    const sourceText=files.map((file,i)=>{
+     const excerpt=file.body.slice(0,perFile);
+     return '### Source '+(i+1)+': '+file.path+'\n'+excerpt+
+      (excerpt.length<file.body.length?'\n[ФАЙЛ ДЛИННЕЕ ЛИМИТА КОНТЕКСТА — ПРОДОЛЖЕНИЕ НЕ ВКЛЮЧЕНО]':'');
+    }).join('\n\n');
+    const prompt=[
+     'Ты системный аналитик и технический писатель. Переработай существующие документы из GitHub в НОВЫЙ СОГЛАСОВАННЫЙ НАБОР ДОКУМЕНТОВ для текущего проекта в приложении.',
+     'Не копируй документы один к одному. Синтезируй структуру, устрани повторы, распредели информацию по тематическим страницам. Сохрани факты и ограничения исходников. Не выдавай исходную идею за уже реализованную систему.',
+     'Верни ТОЛЬКО корректный JSON без Markdown-обёртки, формат {"collection_title":"Название раздела","documents":[{"title":"Название новой страницы","body":"Полный Markdown","sources":["пути исходных файлов"]}],"notes":"кратко об ограничениях и предположениях"}.',
+     'Создай 3-6 содержательных документов. Предложенные темы: обзор проекта, функциональные требования, пользовательские сценарии, архитектура/ограничения, MVP и план развития. Подстрой под содержание исходников.',
+     'Каждый документ должен содержать самостоятельный Markdown с заголовками и конкретными фактами. Для неточных или противоречивых пунктов добавь явное указание, что требуется решение.',
+     'Запрещено записывать файлы обратно в GitHub. Это содержимое для внутреннего раздела «Документация» приложения. Пользователь явно запросил НОВЫЙ набор, а не импорт исходных файлов.',
+     'Имена файлов источников допустимы только из списка ниже. Добавь в конец каждого документа раздел «Источники» с ссылками/именами использованных файлов. Новые факты не выдумывай.',
+     'Название текущего проекта: '+String(project.rows[0]?.name||''),
+     'Описание текущего проекта: '+String(project.rows[0]?.description||'').slice(0,3000),
+     'Правила: '+rules.slice(0,6000),
+     'Уже созданные страницы в проекте: '+JSON.stringify(existingDocs.rows.map((d:any)=>({title:d.title,excerpt:String(d.body).slice(0,600)}))).slice(0,6000),
+     'Инструкция пользователя: '+message,
+     'Исходный репозиторий: '+location.owner+'/'+location.repository+' (ветка '+location.branch+', каталог '+location.path+')',
+     'Исходные Markdown-файлы ('+files.length+'):\n'+sourceText
+    ].join('\n\n');
+    const result=await completion(prompt,config);
+    await storeTokenUsage(id,null,config.model,result.usage);
+    const structure=z.object({
+     collection_title:z.string().trim().min(3).max(180),
+     documents:z.array(z.object({
+      title:z.string().trim().min(3).max(180),
+      body:z.string().trim().min(100).max(15000),
+      sources:z.array(z.string()).default([])
+     })).min(2).max(8),
+     notes:z.string().max(2000).default('')
+    }).parse(jsonObject(result.text));
+    const client=await pool.connect();
+    let rootId:string;
+    const sourceKey='github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path;
+    try{
+     await client.query('BEGIN');
+     const root=await client.query(
+      "INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,NULL,$5) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title RETURNING id",
+      [randomUUID(),id,structure.collection_title,
+       '# '+structure.collection_title+'\n\nДокументация составлена AI на основе '+files.length+' Markdown-файлов из '+location.owner+'/'+location.repository+'.\n\n'+structure.notes,
+       sourceKey]);
+     rootId=root.rows[0].id;
+     for(const [idx,doc] of structure.documents.entries()){
+      const docKey=sourceKey+'/generated/'+idx;
+      const sources=doc.sources.filter(name=>files.some(file=>file.path===name));
+      const body=doc.body+(sources.length?'\n\n---\n**Исходные материалы:** '+sources.join(', '):'');
+      await client.query(
+       "INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO NOTHING",
+       [randomUUID(),id,doc.title,body,rootId,docKey]);
+     }
+     await client.query('COMMIT');
+    }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+    const answer='Создан новый набор документов на основе материалов из '+location.owner+'/'+location.repository+': '+structure.documents.length+' тематических страниц. AI переработал исходные материалы и разместил их в разделе «Документация» проекта. '+(structure.notes?'\n\nПримечания: '+structure.notes:'');
     await store(id,null,uid(req),'user',message);
-    await store(id,null,null,'assistant',answer,null,result.rootId);
+    await store(id,null,null,'assistant',answer,null,rootId!);
     await countCall(id,uid(req));
-    return {message:answer,created_task_id:null,created_document_id:result.rootId,imported_documents:result.created};
+    return {message:answer,created_task_id:null,created_document_id:rootId!,generated_documents:structure.documents.length};
    }catch(error){
-    const reason=error instanceof Error?error.message:'Неизвестная ошибка GitHub';
-    return reply.code(409).send({error:'Не удалось импортировать документацию: '+reason.slice(0,600)});
+    const reason=error instanceof Error?error.message:'Неизвестная ошибка';
+    return reply.code(409).send({error:'Не удалось создать набор документов: '+reason.slice(0,600)});
    }
   }
   const config=await configuration(id);
