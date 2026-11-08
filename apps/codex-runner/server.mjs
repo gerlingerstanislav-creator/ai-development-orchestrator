@@ -115,8 +115,21 @@ function deviceInfo(){
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
-let runningJob=null;
-let chatBusy=false;
+const MAX_PARALLEL_DEVELOPMENT=3;
+const MAX_PARALLEL_CHAT=4;
+const jobQueue=[];
+let runningJobs=0;
+let activeChatRequests=0;
+function startNextJobs(){
+ while(runningJobs<MAX_PARALLEL_DEVELOPMENT&&jobQueue.length){
+  const {job,state}=jobQueue.shift();
+  runningJobs++;
+  state.status='running';state.startedAt=new Date().toISOString();
+  state.message='Запуск разработки в изолированной рабочей папке';
+  void runJob(job,state).finally(()=>{runningJobs--;startNextJobs();});
+ }
+ for(let i=0;i<jobQueue.length;i++)jobQueue[i].state.message='Ожидает свободного исполнителя (очередь '+(i+1)+')';
+}
 const jobKey=process.env.RUNNER_SHARED_SECRET||'';
 if(jobKey.length<32)throw Error('RUNNER_SHARED_SECRET required');
 function authorized(req){
@@ -240,7 +253,6 @@ async function runJob(job,state){
   state.status='failed';
   state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);
  }finally{
-  runningJob=null;
   await rm(workdir,{recursive:true,force:true}).catch(()=>{});
  }
 }
@@ -329,13 +341,13 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   if(chatBusy||runningJob)return reply(res,409,{error:'Codex занят. Дождись завершения текущего запроса.'});
+   if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});
    const data=await readJson(req);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
       !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
       !['low','medium'].includes(data.reasoning))
      return reply(res,400,{error:'Некорректные параметры AI-запроса'});
-   chatBusy=true;
+   activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
     const result=await command('codex',[
@@ -347,11 +359,10 @@ http.createServer(async(req,res)=>{
     return reply(res,200,{message:message.slice(0,16000)});
    }catch(error){
     return reply(res,503,{error:'Codex: '+String(error?.message||error).slice(0,900)});
-   }finally{chatBusy=false;}
+   }finally{activeChatRequests--;}
   }
   if(req.url==='/jobs'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   if(runningJob||chatBusy)return reply(res,409,{error:'Исполнитель занят другим AI-запросом'});
    const job=await readJson(req);
    if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
     typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
@@ -363,11 +374,12 @@ http.createServer(async(req,res)=>{
     typeof job.token!=='string'||job.token.length<20||
     typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
     return reply(res,400,{error:'Некорректные параметры задачи'});
-   const state={id:job.id,status:'running',message:'Задача принята',branch:null,prUrl:null};
+   if(activeJobs.has(job.id))return reply(res,409,{error:'Запуск с таким ID уже существует'});
+   const state={id:job.id,status:'queued',message:'Задача принята в очередь',branch:null,prUrl:null,createdAt:new Date().toISOString(),startedAt:null};
    activeJobs.set(job.id,state);
-   if(activeJobs.size>40){for(const [key,v] of activeJobs){if(v.status!=='running'){activeJobs.delete(key);break;}}}
-   runningJob=job.id;
-   void runJob(job,state);
+   if(activeJobs.size>200){for(const [key,v] of activeJobs){if(v.status==='completed'||v.status==='failed'){activeJobs.delete(key);break;}}}
+   jobQueue.push({job,state});
+   startNextJobs();
    return reply(res,202,state);
   }
   if(req.method==='GET'&& /^\/jobs\/[a-f0-9-]{36}$/.test(req.url||'')){
