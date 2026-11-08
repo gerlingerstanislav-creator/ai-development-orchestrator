@@ -13,6 +13,8 @@ type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'m
 type CodexRateWindow={usedPercent:number;windowDurationMins:number|null;resetsAt:number|null};
 type CodexRateBucket={id:string;name:string|null;primary:CodexRateWindow|null;secondary:CodexRateWindow|null;planType:string|null;reachedType:string|null};
 type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checkedAt:string};
+type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:string;requests:number};
+type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
@@ -37,6 +39,7 @@ function App(){
  const [section,setSection]=useState<'overview'|'tasks'|'docs'|'rules'|'settings'>('tasks');
  const [accountSettings,setAccountSettings]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
+ const [tokenUsage,setTokenUsage]=useState<TokenUsageResponse|null>(null);
  const [rateLimitsBusy,setRateLimitsBusy]=useState(false);
  const [rateLimitsError,setRateLimitsError]=useState('');
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
@@ -131,7 +134,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{if(token)void loadProjects();},[token]);
  useEffect(()=>{if(selected)void loadProject(selected.id);},[selected?.id]);
  useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy]);
- useEffect(()=>{if(taskThreadRef.current)taskThreadRef.current.scrollTop=taskThreadRef.current.scrollHeight;},[taskMessages,taskChatBusy]);
+ useEffect(()=>{
+  const element=taskThreadRef.current;
+  if(!element)return;
+  element.scrollTop=element.scrollHeight;
+ },[taskMessages,taskChatBusy,events,aiRuns,activeTask?.id,taskFeedback]);
  useEffect(()=>{setProjectChatOpen(false);setProjectMessages([]);setProjectInput('');if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages').then(setProjectMessages).catch(fail);}},[selected?.id]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
@@ -177,13 +184,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
  }
+ async function refreshTokenUsage(){
+  try{setTokenUsage(await api<TokenUsageResponse>('/ai/token-usage'));}catch(e){fail(e);}
+ }
  async function refreshRateLimits(){
   setRateLimitsBusy(true);setRateLimitsError('');
   try{const data=await api<CodexRateLimits>('/codex/rate-limits');setRateLimits(data);}
   catch(e){setRateLimits(null);setRateLimitsError(e instanceof Error?e.message:'Не удалось получить лимиты Codex');}
   finally{setRateLimitsBusy(false);}
  }
- useEffect(()=>{if(token&&accountSettings){void refreshRateLimits();}},[token,accountSettings]);
+ useEffect(()=>{if(token&&accountSettings){void refreshRateLimits();void refreshTokenUsage();}},[token,accountSettings]);
  async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const job=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
@@ -309,6 +319,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {error&&<div className="error global" onClick={()=>setError('')}>{error} <X size={16}/></div>}
  {accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
+  <div className="row-line"><h3>Использованные токены Codex</h3><button className="secondary" onClick={()=>void refreshTokenUsage()}>Обновить</button></div>
+  <p className="muted">Фактический расход токенов, сообщённый Codex CLI в JSON-событиях. Учёт начнётся с новых запросов после обновления; прошлые запуски без сохранённой статистики не включены.</p>
+  {tokenUsage?<div className="token-usage-grid">
+   <div><small>Входящие</small><strong>{Number(tokenUsage.totals.input_tokens).toLocaleString('ru-RU')}</strong></div>
+   <div><small>Из кеша</small><strong>{Number(tokenUsage.totals.cached_input_tokens).toLocaleString('ru-RU')}</strong></div>
+   <div><small>Исходящие</small><strong>{Number(tokenUsage.totals.output_tokens).toLocaleString('ru-RU')}</strong></div>
+   <div><small>Запросов с учётом</small><strong>{tokenUsage.totals.requests}</strong></div>
+  </div>:<p className="muted">Пока нет данных об использовании.</p>}
+ </section>
+  <section className="panel codex-panel">
   <div className="row-line"><h3>Лимиты Codex · ChatGPT</h3><button className="secondary" disabled={rateLimitsBusy} onClick={()=>void refreshRateLimits()}>{rateLimitsBusy?'Обновление…':'Обновить'}</button></div>
   <p className="muted">Данные текущего подключённого аккаунта Codex: использованная доля лимита и время его сброса. Это не лимит сообщений обычного ChatGPT и не ручные ограничения сервиса.</p>
   {rateLimitsError&&<p className="error">{rateLimitsError}</p>}
