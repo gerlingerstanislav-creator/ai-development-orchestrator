@@ -55,3 +55,19 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .tasks-page .toolbar .search{height:34px}
 .tasks-page .toolbar .create-task{min-height:34px}
 .doc-tree .doc-node .doc-title{font-size:13px}
+
+/* Codex connection controls on project settings */
+.codex-panel{margin-bottom:12px;padding:18px}
+.codex-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:15px}
+.codex-heading h3{margin:0 0 6px}
+.codex-heading p{margin:0 0 14px}
+.codex-state{white-space:nowrap;font-size:12px;padding:5px 9px;border:1px solid #e0e3eb;border-radius:12px;background:#f5f6fa;color:#687485}
+.codex-state.online{color:#238655;background:#eef9f2;border-color:#bde9d0}
+.codex-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.codex-device{padding:14px;margin:7px 0 14px;background:#f7f8fc;border:1px solid #e4e9f3;border-radius:9px}
+.codex-device p{font-size:12px;color:#626e83;margin:7px 0}
+.codex-device a{display:block;overflow-wrap:anywhere;margin-bottom:10px}
+.codex-code{font-size:21px;letter-spacing:2px;display:block;margin:10px 0}
+.codex-device pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:170px;overflow:auto;font-size:12px;color:#3f4c64;margin:10px 0 0}
+.codex-test{margin-top:12px;padding:10px;border-radius:8px;background:#f3f6ff;white-space:pre-wrap}
+@media(max-width:700px){.codex-heading{flex-direction:column;gap:6px}}
