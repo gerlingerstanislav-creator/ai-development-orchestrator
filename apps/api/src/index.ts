@@ -304,6 +304,59 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  return current;
 });
 
+
+async function mergeTaskPr(projectId:string,taskId:string,userId:string){
+ const info=await pool.query("SELECT t.id,t.title,t.stage,t.pr_number,t.pr_url,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
+ [taskId,projectId,userId]);
+ if(!info.rowCount)throw Object.assign(new Error('Задача или подключение GitHub не найдены'),{statusCode:404});
+ const row=info.rows[0];
+ if(row.stage!=='merge_queue'||!row.pr_number)throw Object.assign(new Error('Задача не находится в очереди слияния или не содержит PR'),{statusCode:409});
+ const token=decryptToken(row.secret_encrypted);
+ const base='https://api.github.com/repos/'+row.repository;
+ const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
+ const pull=await fetch(base+'/pulls/'+row.pr_number,{headers,signal:AbortSignal.timeout(15000)});
+ if(!pull.ok)throw Object.assign(new Error('Не удалось получить PR: GitHub HTTP '+pull.status),{statusCode:502});
+ const pr=await pull.json() as any;
+ if(pr.merged){
+  await pool.query("UPDATE tasks SET stage='done',updated_at=now() WHERE id=$1",[taskId]);
+  return {taskId,status:'merged',url:row.pr_url};
+ }
+ if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
+ if(pr.base?.ref!==(row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
+ if(pr.mergeable!==true || ['dirty','blocked','unknown'].includes(pr.mergeable_state))
+  throw Object.assign(new Error('PR содержит конфликт или ещё не готов к слиянию; обнови статус GitHub'),{statusCode:409});
+ const checks=await fetch(base+'/commits/'+encodeURIComponent(pr.head.sha)+'/check-runs?per_page=100',{headers,signal:AbortSignal.timeout(15000)});
+ if(!checks.ok)throw Object.assign(new Error('Не удалось проверить CI в GitHub: HTTP '+checks.status),{statusCode:502});
+ const checkData=await checks.json() as any;
+ const bad=(checkData.check_runs||[]).filter((c:any)=>c.status!=='completed'||!['success','neutral','skipped'].includes(c.conclusion));
+ if(bad.length)throw Object.assign(new Error('PR ожидает проверок CI или есть ошибки: '+bad.map((c:any)=>c.name).slice(0,5).join(', ')),{statusCode:409});
+ const merge=await fetch(base+'/pulls/'+row.pr_number+'/merge',{method:'PUT',headers:{...headers,'Content-Type':'application/json'},
+  body:JSON.stringify({sha:pr.head.sha,merge_method:'merge',commit_title:'Merge AI task: '+String(row.title).slice(0,150)}),
+  signal:AbortSignal.timeout(25000)});
+ const merged=await merge.json().catch(()=>({})) as any;
+ if(!merge.ok || !merged.merged)throw Object.assign(new Error('GitHub отклонил слияние: '+String(merged.message||merge.status).slice(0,240)),{statusCode:409});
+ await pool.query("UPDATE tasks SET stage='done',updated_at=now() WHERE id=$1",[taskId]);
+ await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'merged',$4)",[randomUUID(),taskId,userId,row.pr_url]);
+ return {taskId,status:'merged',url:row.pr_url};
+}
+app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ try{return await mergeTaskPr(id,taskId,uid(req));}
+ catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message});}
+});
+app.post('/api/projects/:id/merge-ready',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const tasks=await pool.query("SELECT id FROM tasks WHERE project_id=$1 AND stage='merge_queue' ORDER BY created_at LIMIT 30",[id]);
+ const results=[];
+ for(const row of tasks.rows){
+  try{results.push(await mergeTaskPr(id,row.id,uid(req)));}
+  catch(e){results.push({taskId:row.id,status:'skipped',reason:e instanceof Error?e.message:'Неизвестная ошибка'});}
+ }
+ return {results};
+});
+
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
 app.get('/api/projects',async(req)=>{const r=await pool.query('SELECT p.* FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 ORDER BY p.created_at DESC',[uid(req)]);return r.rows;});
 app.post('/api/projects',async(req,reply)=>{
