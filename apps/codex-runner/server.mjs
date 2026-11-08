@@ -116,6 +116,7 @@ function deviceInfo(){
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
 let runningJob=null;
+let chatBusy=false;
 const jobKey=process.env.RUNNER_SHARED_SECRET||'';
 if(jobKey.length<32)throw Error('RUNNER_SHARED_SECRET required');
 function authorized(req){
@@ -237,9 +238,31 @@ http.createServer(async(req,res)=>{
    try{await execFileAsync('codex',['logout'],{timeout:10000,env:cliEnv});}catch{}
    return reply(res,200,{connected:false});
   }
+  if(req.url==='/assistant'&&req.method==='POST'){
+   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
+   if(chatBusy||runningJob)return reply(res,409,{error:'Codex занят. Дождись завершения текущего запроса.'});
+   const data=await readJson(req);
+   if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
+      !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
+      !['low','medium'].includes(data.reasoning))
+     return reply(res,400,{error:'Некорректные параметры AI-запроса'});
+   chatBusy=true;
+   try{
+    if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
+    const result=await command('codex',[
+      'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
+      '--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
+    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:105000});
+    const message=result.stdout.trim();
+    if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
+    return reply(res,200,{message:message.slice(0,16000)});
+   }catch(error){
+    return reply(res,503,{error:'Codex: '+String(error?.message||error).slice(0,900)});
+   }finally{chatBusy=false;}
+  }
   if(req.url==='/jobs'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   if(runningJob)return reply(res,409,{error:'Исполнитель уже обрабатывает другую задачу'});
+   if(runningJob||chatBusy)return reply(res,409,{error:'Исполнитель занят другим AI-запросом'});
    const job=await readJson(req);
    if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
     typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
