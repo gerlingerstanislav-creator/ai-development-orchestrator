@@ -249,3 +249,44 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .tasks-page .toolbar .create-task-text{width:34px;min-width:34px;min-height:34px;padding:0;aspect-ratio:1/1;flex:0 0 34px;display:inline-flex;align-items:center;justify-content:center}
 .tasks-page .toolbar .create-task-text svg{width:17px;height:17px}
 @media(max-width:700px){.tasks-page .toolbar .task-create-actions{margin-left:auto}.tasks-page .toolbar .create-task{margin-left:0}}
+
+/* Documentation: left navigation persists; reading and editing share the right pane. */
+.compact-project-page .docs{display:grid;grid-template-columns:minmax(220px,280px) minmax(0,1fr);gap:10px;align-items:start}
+.compact-project-page .docs .panel{min-height:calc(100vh - 150px)}
+.docs .docs-list{padding:14px 9px;position:sticky;top:10px;max-height:calc(100vh - 90px);overflow:auto}
+.doc-tree .doc-node .doc-title.selected{background:#e9edff;color:#4656be;font-weight:700}
+.docs-reading{padding:0!important;min-width:0;overflow:hidden;display:flex;flex-direction:column}
+.docs-reading-header{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:20px 24px;border-bottom:1px solid #e9edf3}
+.docs-reading-header>div:first-child{min-width:0;flex:1}
+.docs-reading-header h2{font-size:22px;line-height:1.3;margin:0 0 7px;overflow-wrap:anywhere}
+.docs-reading-header small{display:block;color:#8c97a8;font-size:11px}
+.docs-reading-header .docs-title-input{font-size:19px;font-weight:700;max-width:650px;margin-bottom:8px}
+.docs-actions{display:flex;align-items:center;gap:7px;flex:0 0 auto}
+.docs-reading-header .docs-icon-button{width:36px;height:36px;min-height:36px;padding:0;display:grid;place-items:center}
+.docs-reading-header .docs-delete{color:#bf5265}
+.docs-reading-header .docs-delete:hover{color:#a3223f;background:#fff0f3;border-color:#ffd6df}
+.docs-content{padding:26px 30px 65px;overflow:auto;min-height:360px;max-height:calc(100vh - 225px)}
+.docs-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;min-height:350px;text-align:center;color:#8b95a6;padding:30px}
+.docs-empty svg{color:#5968df}
+.docs-empty h3{color:#39465d;margin:9px 0 0}
+.docs-editing{padding:22px 26px 35px;overflow:auto;max-height:calc(100vh - 215px)}
+.docs-editing label{display:flex;flex-direction:column;align-items:stretch;max-width:100%;margin-bottom:18px}
+.docs-editing select{max-width:450px}
+.docs-editing .docs-editor-area{width:100%;min-height:420px;resize:vertical;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;line-height:1.6;tab-size:2}
+.docs-markdown{font-size:14px;line-height:1.7;color:#354052;max-width:1000px;overflow-wrap:anywhere}
+.docs-markdown p{margin:0 0 16px}
+.docs-markdown .docs-heading{color:#252f42;letter-spacing:-.025em;margin:27px 0 12px}
+.docs-markdown .docs-h1{font-size:25px}
+.docs-markdown .docs-h2{font-size:21px}
+.docs-markdown .docs-h3{font-size:17px}
+.docs-markdown .docs-h4{font-size:15px}
+.docs-markdown .docs-heading:first-child{margin-top:0}
+.docs-markdown ul,.docs-markdown ol{margin:0 0 17px;padding-left:26px}
+.docs-markdown li{padding-left:3px;margin-bottom:6px}
+.docs-markdown code{font-size:.92em;background:#eef1f7;padding:2px 5px;border-radius:4px}
+.docs-markdown .docs-code{background:#202938;color:#e2e8f0;padding:17px 20px;border-radius:9px;overflow-x:auto;margin:4px 0 19px;line-height:1.55}
+.docs-markdown .docs-code code{color:inherit;background:none;padding:0}
+.docs-markdown a{color:#5364db;text-decoration:underline;text-underline-offset:2px}
+.docs-markdown blockquote{padding:10px 16px;background:#f5f7fb;border-left:3px solid #8894ea;margin:12px 0 19px;color:#596578}
+.docs-markdown hr{border:0;border-top:1px solid #e6eaf0;margin:25px 0}
+@media(max-width:800px){.compact-project-page .docs{grid-template-columns:1fr}.docs .docs-list{position:static;min-height:0!important;max-height:280px}.compact-project-page .docs .panel{min-height:0}.docs-reading-header{padding:14px}.docs-content{padding:18px;max-height:none}.docs-editing{padding:15px;max-height:none}}
