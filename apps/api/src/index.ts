@@ -195,7 +195,7 @@ app.put('/api/projects/:id/git',async(req:any,reply)=>{
    // creates that default branch. Never initialize an existing repository.
    const init=await fetch(baseUrl+'/contents/README.md',{method:'PUT',headers:{...ghHeaders,'Content-Type':'application/json'},
     body:JSON.stringify({message:'Initial commit: initialize repository for AI Development Orchestrator',
-      content:Buffer.from('# '+info.name.split('/')[1]+'\\n\\nПроект подключён к AI Development Orchestrator.\\n').toString('base64')}),
+      content:Buffer.from('# '+info.name.split('/')[1]+'\n\nПроект подключён к AI Development Orchestrator.\n').toString('base64')}),
     signal:AbortSignal.timeout(20000)});
    if(!init.ok){
     const details=await init.json().catch(()=>({})) as any;
