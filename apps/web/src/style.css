@@ -165,3 +165,16 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 
 .workflow-step.current svg{animation:workflow-spin 1.8s linear infinite}
 @keyframes workflow-spin{to{transform:rotate(360deg)}}
+
+
+/* Live Codex account allowances (not locally configured quotas). */
+.row-line{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.row-line h3{margin:0}
+.codex-limit-bucket{border-top:1px solid #e7eaf2;margin-top:15px;padding-top:13px}
+.codex-limit-bucket>strong{font-size:13px}
+.codex-limit-window{padding:9px 0 4px}
+.codex-limit-window .row-line{color:#65738a;font-size:12px}
+.codex-limit-window .row-line strong{color:#2e415a;font-size:13px}
+.codex-limit-track{width:100%;height:9px;overflow:hidden;background:#e8ecf5;border-radius:10px;margin:8px 0 6px}
+.codex-limit-track>div{height:100%;background:#5969db;border-radius:10px;transition:width .2s ease}
+.codex-limit-window small{color:#8693a6}
