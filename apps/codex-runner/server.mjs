@@ -184,9 +184,27 @@ async function createPullRequest(job,branch,summary){
  const result=await response.json();
  return result.html_url;
 }
+function codexJsonResult(output){
+ let message='',usage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
+ for(const line of String(output||'').split('\n')){
+  let event;try{event=JSON.parse(line);}catch{continue;}
+  if(event.type==='item.completed'&&event.item?.type==='agent_message'&&typeof event.item.text==='string')message=event.item.text;
+  if(event.type==='turn.completed'&&event.usage){
+   const u=event.usage;
+   usage={input_tokens:Number(u.input_tokens)||0,cached_input_tokens:Number(u.cached_input_tokens)||0,output_tokens:Number(u.output_tokens)||0};
+  }
+ }
+ return {message,usage};
+}
+function addUsage(a,b){
+ return {input_tokens:(a.input_tokens||0)+(b.input_tokens||0),
+  cached_input_tokens:(a.cached_input_tokens||0)+(b.cached_input_tokens||0),
+  output_tokens:(a.output_tokens||0)+(b.output_tokens||0)};
+}
 async function runJob(job,state){
  const deadline=Date.now()+job.maxRuntimeSeconds*1000;
  const timeLeft=()=>Math.max(0,deadline-Date.now());
+ let cumulativeUsage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
  const workdir=await mkdtemp(join(tmpdir(),'ado-run-'));
  const dir=join(workdir,'repo');
  const auth=Buffer.from('x-access-token:'+job.token).toString('base64');
@@ -243,18 +261,21 @@ async function runJob(job,state){
    if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
    const result=await command('codex',[
     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-    '--ephemeral','--skip-git-repo-check',
+    '--json','--ephemeral','--skip-git-repo-check',
     // Docker is the isolation boundary. Nested Linux sandbox needs namespaces
     // forbidden by Docker defaults; never expose GitHub token to Codex.
     '--sandbox','danger-full-access',instruction
    ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining});
    // Codex emits tool-use and sandbox diagnostics on stderr.
-   return {result,files:await git('status','--porcelain')};
+   const parsed=codexJsonResult(result.stdout);
+   cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
+   state.usage=cumulativeUsage;
+   return {result,answer:parsed.message,files:await git('status','--porcelain')};
   };
   let attempt=await runCodex(prompt);
   if(!attempt.files.stdout.trim()){
    if(timeLeft()<45000)throw new Error('Codex завершил первую попытку без изменений. Недостаточно времени для повторного запуска.');
-   const assistantText=(attempt.result.stdout||'').slice(-1500);
+   const assistantText=(attempt.answer||'').slice(-1500);
    const diagnostics=(attempt.result.stderr||'').slice(-1200);
    state.message='Codex не создал файлы. Повторная попытка с явным требованием изменить репозиторий.';
    // One focused retry handles cases where Codex interpreted the task as a request
@@ -263,7 +284,7 @@ async function runJob(job,state){
     'Создай или отредактируй исходные файлы прямо сейчас. Не отвечай без фактических изменений. '+ 
     'Предыдущий ответ: '+assistantText.slice(-800));
    if(!attempt.files.stdout.trim()){
-    const finalText=(attempt.result.stdout||'').slice(-1600).replaceAll(job.token,'[REDACTED]');
+    const finalText=(attempt.answer||'').slice(-1600).replaceAll(job.token,'[REDACTED]');
     const finalErrors=(attempt.result.stderr||diagnostics).slice(-900).replaceAll(job.token,'[REDACTED]');
     throw new Error('Codex не изменил файлы после двух попыток. '+
      'Ответ модели: '+(finalText||assistantText||'нет текста')+
@@ -289,7 +310,7 @@ async function runJob(job,state){
   if(!existingPr.ok)throw new Error('Не удалось проверить существующий PR: GitHub HTTP '+existingPr.status);
   const openPrs=await existingPr.json();
   const samePr=openPrs.find(pr=>pr.base?.ref===job.baseBranch);
-  const prUrl=samePr?.html_url||await createPullRequest(job,branch,result.stdout||'Изменения подготовлены.');
+  const prUrl=samePr?.html_url||await createPullRequest(job,branch,attempt.answer||'Изменения подготовлены.');
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
   state.status='failed';
@@ -394,11 +415,12 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
     const result=await command('codex',[
       'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-      '--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
+      '--json','--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
     ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:105000});
-    const message=result.stdout.trim();
+    const parsed=codexJsonResult(result.stdout);
+    const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
-    return reply(res,200,{message:message.slice(0,16000)});
+    return reply(res,200,{message:message.slice(0,16000),usage:parsed.usage});
    }catch(error){
     return reply(res,503,{error:'Codex: '+String(error?.message||error).slice(0,900)});
    }finally{activeChatRequests--;}
