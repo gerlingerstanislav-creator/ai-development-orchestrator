@@ -86,6 +86,7 @@ function App(){
   const timer=setInterval(async()=>{const active=aiRuns.filter(r=>r.status==='running'||r.status==='queued');
    const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch{return r;}}));
    setAiRuns(old=>old.map(r=>updated.find(x=>x.id===r.id)||r));
+   if(updated.some(r=>r.status==='completed')){try{const currentTasks=await api<Task[]>('/projects/'+selected.id+'/tasks');setTasks(currentTasks);setActiveTask(old=>old?currentTasks.find(t=>t.id===old.id)||old:old);}catch(e){fail(e);}}
   },4000);
   return()=>clearInterval(timer);
  },[token,selected?.id,aiRuns]);
@@ -121,6 +122,11 @@ function App(){
    await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/approve-development',{method:'POST'});
    const updated={...activeTask,stage:'development',analysis_state:'approved'};
    setActiveTask(updated);setTasks(old=>old.map(t=>t.id===updated.id?updated:t));
+   try{
+    const run=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
+    setAiRuns(old=>[run,...old]);
+    setAiMessage('Разработка запущена автоматически после подтверждения анализа.');
+   }catch(e){fail(e);}
   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
  }
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
