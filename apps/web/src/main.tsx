@@ -9,7 +9,7 @@ type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',posit
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,connection_id:string,connection_name?:string};
-type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';max_runtime_seconds:number;enabled:boolean};
+type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';max_runtime_seconds:number;daily_run_limit:number;enabled:boolean};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
@@ -30,7 +30,7 @@ function App(){
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [docs,setDocs]=useState<Doc[]>([]);const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
  const [projectConnections,setProjectConnections]=useState<Connection[]>([]);
- const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,enabled:false});
+ const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,daily_run_limit:3,enabled:false});
  const [aiBusy,setAiBusy]=useState(false);const [aiRuns,setAiRuns]=useState<AiRun[]>([]);const [aiMessage,setAiMessage]=useState('');
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
@@ -155,12 +155,15 @@ function App(){
     <option value={300}>5 минут</option><option value={600}>10 минут</option>
     <option value={900}>15 минут</option>
    </select></label>
+   <label>Запусков за 24 часа<select value={aiSettings.daily_run_limit} onChange={e=>setAiSettings({...aiSettings,daily_run_limit:Number(e.target.value)})}>
+    {[1,2,3,5,10].map(n=><option key={n} value={n}>{n}</option>)}
+   </select></label>
   </div>
   <label style={{display:'flex',flexDirection:'row',alignItems:'center',gap:10}}>
    <input type="checkbox" checked={aiSettings.enabled} onChange={e=>setAiSettings({...aiSettings,enabled:e.target.checked})} style={{width:18,height:18}}/>
    Разрешить ручной запуск AI-задач
   </label>
-  <p className="muted">Лимит времени и выбор модели снижают расход, но не являются точным ограничением токенов. Доступность модели зависит от твоей подписки Codex.</p>
+  <p className="muted">Лимит запусков за 24 часа, время и модель снижают расход, но не являются точным ограничением токенов. Доступность модели зависит от твоей подписки Codex.</p>
   <button className="primary" disabled={aiBusy} onClick={()=>void saveAiSettings()}>Сохранить настройки AI</button>
   {aiMessage&&<p>{aiMessage}</p>}
  </section>}
