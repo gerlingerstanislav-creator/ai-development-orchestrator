@@ -63,6 +63,16 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const {message}=messageSchema.parse(req.body);
   const conversation=await history(id,null);
+  // Explicit project-document actions always outrank references to GitHub in older messages.
+  // A clarification like "I mean documents in our project" continues the last document command.
+  const documentAction=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи|сделай|сформируй)\s+(?:(?:нов(?:ый|ую|ое)|отдельн(?:ый|ую|ое))\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел(?:\s+документации)?|описание\s+проекта)(?![а-яёa-z])|(?:документ|страниц[ауеы]|документаци[юи]|раздел)\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i;
+  const explicitDocumentCreation=documentAction.test(message);
+  const lastUserRequest=conversation.split('\n\n').filter(x=>x.startsWith('user: ')).slice(-1)[0]?.slice(6)||'';
+  const documentClarification=/(?:я\s+(?:говорю|имел)|имею\s+в\s+виду|именно|в\s+нашем\s+(?:сервисе|приложении|проекте)|внутри\s+(?:сервиса|проекта))/i.test(message)
+   &&/(?:документ|документаци|страниц|раздел)/i.test(message)
+   &&(documentAction.test(lastUserRequest)||(/(?:нет доступного инструмента|не могу создать|для этого нужна|создания документов)/i.test(conversation)&&/(?:документ|раздел|страниц)/i.test(conversation)));
+  const localDocumentIntent=(explicitDocumentCreation||documentClarification)
+   &&!/(?:из\s+(?:github|репозитория)|на\s+основе\s+(?:документов|файлов)|импортир|перенеси\s+из)/i.test(message);
   const location=extractGitHubDocumentLocation(message,conversation);
   // A missing source or unclear action is a conversation, not a reason to
   // hallucinate unavailable integrations or silently create the wrong object.
@@ -71,7 +81,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    &&/(?:перенес|перенести|импортир|загруз|скопир|взял|возьми|забер|собер|созда|сформир|сдела|генерир|переработ|подготов|перетащ)/i.test(message)
    &&!/(?:создай|создать|добавь|добавить)\s+.{0,60}(?:задач|таск)/i.test(message);
   const sourceSpecified=!!location;
-  if(docImportIntent&&!sourceSpecified){
+  if(docImportIntent&&!sourceSpecified&&!localDocumentIntent){
    const answer='Могу сделать это в разделе «Документация» текущего проекта. Уточни источник: пришли ссылку на папку GitHub с исходными Markdown-файлами (например, https://github.com/owner/repo/tree/main/docs) либо укажи путь к каталогу Markdown в подключённом репозитории. Также могу (1) переработать материалы в новый структурированный набор — рекомендую этот вариант, или (2) скопировать исходные файлы без изменений. Как поступим?';
    await store(id,null,uid(req),'user',message);
    await store(id,null,null,'assistant',answer);
@@ -80,7 +90,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const synthesize=wantsDocumentSynthesis(message,conversation)||
    !!location&&/(?:перенес|импортир|загруз|созда|сформир|сдела|подготов)/i.test(message)&&
    /(?:документ|страниц|на основе|на базе|из репозитория)/i.test(message);
-  if(synthesize){
+  if(synthesize&&!localDocumentIntent){
    if(!location)return reply.code(409).send({error:'Для создания документов на основе GitHub пришли ссылку на исходный каталог, например https://github.com/owner/repo/tree/main/docs'});
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта: для переработки документации требуется Codex.'});
@@ -164,7 +174,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const create=/(создай|создать|добавь|заведи|оформи)\s+.{0,100}(задач[уаи]|таск)|(задач[уаи]|таск)\s+.{0,100}(создай|создать|добавь|заведи|оформи)/i.test(message);
   // Document commands take priority over task detection. Mentioning documentation
   // in a task request alone must NOT create a document.
-  const createDocument=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи)\s+(?:нов(?:ый|ую|ое)\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел\s+документации|описание\s+проекта)(?![а-яёa-z])|(?:документ|страниц[ауеы]|документаци[юи])\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i.test(message);
+  const createDocument=localDocumentIntent;
 
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const rules=await rulesContext(id);
@@ -181,12 +191,14 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'Не создавай задачу разработки. Подготовь содержательный документ на русском с заголовками и разделами.',
     'Не выдумывай факты о проекте. Когда информации мало, явно отмечай предположения и открытые вопросы.',
     'Разрешено выбрать parent_id исключительно из приведённых UUID. Если подходящего родителя нет, используй null.',
+    'Если просят создать новый раздел документации, создай корневую страницу (parent_id: null) с осмысленным заголовком и содержимым. Если пользователь уточняет ранее заданную команду, выполни исходную команду с учётом уточнения.',
     'Название проекта: '+project.rows[0].name,
     'Описание проекта: '+project.rows[0].description.slice(0,3000),
     'Правила проекта:\n'+rules,
     'Настройки GitHub:\n'+repoContext,
     'Существующая документация: '+JSON.stringify(existingDocs.rows.map((doc:any)=>({...doc,body:String(doc.body).slice(0,2500)}))).slice(0,11000),
     'История чата:\n'+conversation,
+    'Исходная команда, которую уточняет пользователь: '+(documentClarification?lastUserRequest:'нет'),
     'Запрос пользователя:\n'+message].join('\n\n');
   }else if(create){
    const existing=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);

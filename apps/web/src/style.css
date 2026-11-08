@@ -325,3 +325,13 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 
 .chat-message-status{display:block;margin-top:6px;font-size:11px;color:#6c7d9a}
 .chat-message-failed{color:#bd4358}
+
+/* Quiet live activity indicator for tasks currently processed by Codex. */
+.task-name-line{display:flex;align-items:center;gap:9px;min-width:0}
+.task-name-line strong,.task-name-line b{min-width:0;flex:0 1 auto}
+.agent-equalizer{display:inline-flex;align-items:center;justify-content:center;gap:3px;height:15px;flex:0 0 16px;vertical-align:middle}
+.agent-equalizer i{display:block;width:3px;height:8px;background:#939ba9;border-radius:2px;animation:agent-equalizer 900ms ease-in-out infinite}
+.agent-equalizer i:nth-child(2){animation-delay:150ms}
+.agent-equalizer i:nth-child(3){animation-delay:300ms}
+@keyframes agent-equalizer{0%,100%{height:4px;opacity:.55}50%{height:13px;opacity:1}}
+@media(prefers-reduced-motion:reduce){.agent-equalizer i{animation:none;height:9px}}
