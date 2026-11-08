@@ -540,7 +540,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>;
   });
  }
- const filtered=tasks.filter(t=>t.title.toLowerCase().includes(search.toLowerCase()));
+ const filtered=tasks.filter(t=>t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,'')));
  if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
@@ -786,7 +786,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       </label>
       {activeTask.depends_on_task_id&&<p className="muted">После подготовки PR родительской задачи разработка начнётся от её ветки. Если родитель уже слит — от целевой ветки проекта.</p>}
      </div>
-     {!!activeTask.related_task_ids?.length&&<p className="muted">Связанные задачи: {activeTask.related_task_ids.map(id=>tasks.find(t=>t.id===id)?.title||id.slice(0,8)).join(', ')}</p>}
+     {!!activeTask.related_task_ids?.length&&<p className="muted">Связанные задачи: {activeTask.related_task_ids.map(id=>tasks.find(t=>t.id===id)?('#'+tasks.find(t=>t.id===id)!.display_number+' · '+tasks.find(t=>t.id===id)!.title):id.slice(0,8)).join(', ')}</p>}
      {activeTask.pr_base_branch&&<div className="task-git-ref"><span>База PR</span><code>{activeTask.pr_base_branch}</code></div>}
      {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
