@@ -105,7 +105,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(create){
    const data=z.object({
     title:z.string().trim().min(3).max(180),description:z.string().trim().min(3).max(10000),
-    questions:z.array(z.string().min(3).max(600)).max(8).default([]),
+    questions:z.array(z.string().min(3).max(600)).max(20).default([]),
     related_ids:z.array(z.string().uuid()).max(10).default([]),
     relation_reason:z.string().max(1500).optional(),
     suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
@@ -176,7 +176,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(refining){
    const analyzed=z.object({
     summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(3).max(16000),
-    questions:z.array(z.string().min(3).max(600)).max(8).default([]),
+    questions:z.array(z.string().min(3).max(600)).max(20).default([]),
     related_ids:z.array(z.string().uuid()).max(10).default([]),
     suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
    }).parse(jsonObject(raw));
