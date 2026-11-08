@@ -330,6 +330,12 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  if(current.status==='running'||current.status==='queued'){
   try{
    const remote=await agentCall('/jobs/'+runId);
+   const phase=String(remote.message||'').slice(0,1600);
+   if(phase && phase!==current.message){
+    await pool.query('UPDATE ai_task_runs SET message=$2 WHERE id=$1',[runId,phase]);
+    await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+      [randomUUID(),current.task_id,uid(req),remote.status==='failed'?'ai_failed':remote.status==='completed'?'ai_completed':'ai_progress',phase]);
+   }
    if(['completed','failed'].includes(remote.status)){
     await pool.query('UPDATE ai_task_runs SET status=$2,branch=$3,pr_url=$4,message=$5,completed_at=now() WHERE id=$1',
      [runId,remote.status,remote.branch||null,remote.prUrl||null,String(remote.message||'').slice(0,2000)]);
@@ -339,7 +345,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
     }
     return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
    }
-   return {...current,status:remote.status,message:remote.message||''};
+   return {...current,status:remote.status,message:phase};
   }catch(e){
    const problem=e instanceof Error?e.message:'ошибка';
    if(problem.includes('Задача не найдена (возможно, исполнитель перезапущен)')){
