@@ -11,6 +11,8 @@ type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,connection_id:string,connection_name?:string};
 type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';max_runtime_seconds:number;daily_run_limit:number;enabled:boolean};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_at?:string};
+type AssistantResponse={message:string;created_task_id?:string|null;summary?:string|null};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','testing','done'];
@@ -41,6 +43,11 @@ function App(){
  const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
  const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
  const [events,setEvents]=useState<{id:string,event:string,detail:string,created_at:string}[]>([]);
+ const [projectChatOpen,setProjectChatOpen]=useState(false);
+ const [projectMessages,setProjectMessages]=useState<AssistantMessage[]>([]);
+ const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
+ const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
+ const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
  const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){setError(e instanceof Error?e.message:'Неизвестная ошибка');}
  async function loadProjects(){try{setProjects(await api('/projects'));}catch(e){fail(e);}}
@@ -52,6 +59,8 @@ function App(){
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
  useEffect(()=>{if(selected)void loadProject(selected.id);},[selected?.id]);
+ useEffect(()=>{setProjectChatOpen(false);setProjectMessages([]);setProjectInput('');if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages').then(setProjectMessages).catch(fail);}},[selected?.id]);
+ useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();setSelected(p);setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
  async function createTask(e:React.FormEvent){e.preventDefault();if(!selected)return;setBusy(true);try{await api('/projects/'+selected.id+'/tasks',{method:'POST',body:JSON.stringify({title:form.title,description:form.description,type:form.type,parent_id:form.parent_id||null})});await loadProject(selected.id);setShowTask(false);setForm({...form,title:'',description:'',parent_id:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -76,6 +85,29 @@ function App(){
   },4000);
   return()=>clearInterval(timer);
  },[token,selected?.id,aiRuns]);
+ async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
+  const message=projectInput.trim();setProjectChatBusy(true);
+  try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message})});
+   setProjectMessages(old=>[...old,{id:'u-'+Date.now(),role:'user',body:message},{id:'a-'+Date.now(),role:'assistant',body:response.message,created_task_id:response.created_task_id}]);
+   setProjectInput('');if(response.created_task_id)await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setProjectChatBusy(false);}
+ }
+ async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
+  const message=taskInput.trim();setTaskChatBusy(true);
+  try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
+   setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user',body:message},{id:'a-'+Date.now(),role:'assistant',body:response.message}]);
+   setTaskInput('');
+  }catch(e){fail(e);}finally{setTaskChatBusy(false);}
+ }
+ async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
+  if(activeTask.stage==='analysis'){
+   setTaskChatBusy(true);try{const instruction='Выполни анализ задачи и составь техническое задание с критериями приёмки.';
+    const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message:instruction,mode:'analyze'})});
+    setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user',body:instruction},{id:'a-'+Date.now(),role:'assistant',body:response.message}]);
+    if(response.summary){setActiveTask(old=>old?.id===activeTask.id?{...old,description:response.summary||old.description}:old);setTasks(old=>old.map(t=>t.id===activeTask.id?{...t,description:response.summary||t.description}:t));}
+   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
+  }else if(activeTask.stage==='development'){await runAiTask();}
+ }
  async function openTask(t:Task){setActiveTask({...t});setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
  async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false,error:e instanceof Error?e.message:'Не удалось проверить Codex'});}}
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
