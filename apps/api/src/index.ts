@@ -34,6 +34,8 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS analysis_state text NOT NULL DEFAULT 'new';
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS related_task_ids jsonb NOT NULL DEFAULT '[]'::jsonb;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS depends_on_task_id uuid REFERENCES tasks(id) ON DELETE SET NULL;
+ CREATE INDEX IF NOT EXISTS idx_tasks_depends_on ON tasks(project_id,depends_on_task_id);
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS git_branch text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number int;
@@ -544,6 +546,34 @@ app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
  await pool.query('INSERT INTO tasks(id,project_id,title,description,type,parent_id,position) VALUES($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2))',[taskId,id,data.title,data.description,data.type,data.parent_id||null]);
  await pool.query('INSERT INTO task_events(id,task_id,actor_id,event) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,uid(req),'created']);
  return reply.code(201).send({id:taskId});
+});
+async function updateDependency(projectId:string,taskId:string,parentId:string|null,actorId:string){
+ if(parentId===taskId)throw Object.assign(new Error('Задача не может зависеть от самой себя'),{statusCode:409});
+ const task=await pool.query('SELECT id,stage,git_branch FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]);
+ if(!task.rowCount)throw Object.assign(new Error('Задача не найдена'),{statusCode:404});
+ if(['merge_queue','documentation','done'].includes(task.rows[0].stage)||task.rows[0].git_branch)
+  throw Object.assign(new Error('Нельзя менять базовую зависимость после создания ветки. Сначала завершите текущую разработку.'),{statusCode:409});
+ if(parentId){
+  const parent=await pool.query('SELECT id FROM tasks WHERE project_id=$1 AND id=$2',[projectId,parentId]);
+  if(!parent.rowCount)throw Object.assign(new Error('Задача-основание не найдена в этом проекте'),{statusCode:404});
+  const chain=await pool.query('WITH RECURSIVE parents AS ('+
+    'SELECT id,depends_on_task_id,ARRAY[id] AS trail FROM tasks WHERE id=$1 AND project_id=$2 '+
+    'UNION ALL SELECT t.id,t.depends_on_task_id,p.trail||t.id FROM tasks t JOIN parents p ON t.id=p.depends_on_task_id '+
+    'WHERE NOT t.id=ANY(p.trail) AND t.project_id=$2) '+
+    'SELECT 1 FROM parents WHERE id=$3 LIMIT 1',[parentId,projectId,taskId]);
+  if(chain.rowCount)throw Object.assign(new Error('Обнаружен цикл зависимостей'),{statusCode:409});
+ }
+ await pool.query('UPDATE tasks SET depends_on_task_id=$3,updated_at=now() WHERE project_id=$1 AND id=$2',[projectId,taskId,parentId]);
+ await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+  [randomUUID(),taskId,actorId,'dependency_changed',parentId?'Зависит от '+parentId:'Зависимость удалена']);
+ return {ok:true,depends_on_task_id:parentId};
+}
+app.put('/api/projects/:id/tasks/:taskId/dependency',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {depends_on_task_id}=parse(z.object({depends_on_task_id:z.string().uuid().nullable()}),req.body);
+ try{return await updateDependency(id,taskId,depends_on_task_id,uid(req));}
+ catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||409).send({error:err.message});}
 });
 app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
