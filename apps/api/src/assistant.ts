@@ -122,36 +122,62 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const {message,mode}=messageSchema.extend({mode:z.enum(['chat','analyze']).default('chat')}).parse(req.body);
-  const result=await pool.query('SELECT title,description,stage FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
+  const result=await pool.query('SELECT title,description,stage,analysis_state,clarification_questions FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
   if(!result.rowCount)return reply.code(404).send({error:'Задача не найдена'});
   const task=result.rows[0];
   if(mode==='analyze'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
   const config=await configuration(id);
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   if(!await checkQuota(id,reply))return;
+  const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
   const context=['Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
-   'История:\n'+await history(id,taskId),'Запрос:\n'+message].join('\n\n');
-  const prompt=mode==='analyze'?[
-   'Ты системный аналитик. Проанализируй задачу. Ответь на русском.',
-   'Верни ТОЛЬКО JSON: {"summary":"сухое ТЗ: что реализовать, конкретные шаги и критерии приёмки","details":"подробный анализ, риски, вопросы и последовательность реализации"}.',
-   'Не меняй код и не утверждай, что задача выполнена. Не выдумывай неизвестные требования.',context
+   'Открытые вопросы: '+JSON.stringify(task.clarification_questions),
+   'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,9000),
+   'История:\n'+await history(id,taskId),'Сообщение пользователя:\n'+message].join('\n\n');
+  const refining=task.stage==='analysis';
+  const prompt=refining?[
+   'Ты системный аналитик. Ответ пользователя может уточнять открытые вопросы или содержать дополнительное требование. Обнови ТЗ, не теряя ранее согласованные требования.',
+   'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"]}.',
+   'Если нет блокирующих вопросов, верни пустой массив questions. Не придумывай ответы. Не объединяй карточки без разрешения.',
+   context
   ].join('\n\n'):[
-   'Ты инженерный AI-помощник в задаче. На русском ответь по существу. Не утверждай, что менял код.',context
+   'Ты инженерный AI-помощник внутри задачи. Ответь на русском по существу. Не утверждай, что менял код.',context
   ].join('\n\n');
   let raw:string;
   try{raw=await completion(prompt,config);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
   let summary:string|null=null,answer=raw;
-  if(mode==='analyze'){
-   const analyzed=z.object({summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(10).max(16000)}).parse(jsonObject(raw));
-   summary=analyzed.summary;answer=analyzed.details;
-   await pool.query('UPDATE tasks SET description=$1,updated_at=now() WHERE id=$2 AND project_id=$3',[summary,taskId,id]);
+  let questions:string[]=[];
+  if(refining){
+   const analyzed=z.object({
+    summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(3).max(16000),
+    questions:z.array(z.string().min(3).max(600)).max(8).default([]),
+    related_ids:z.array(z.string().uuid()).max(10).default([])
+   }).parse(jsonObject(raw));
+   summary=analyzed.summary;questions=analyzed.questions;
+   answer=analyzed.details+(questions.length?'\n\nОстались вопросы:\n'+questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'\n\nБлокирующих вопросов нет. Можно отправлять задачу в разработку.');
+   const related=analyzed.related_ids.filter(x=>other.rows.some(o=>o.id===x));
+   await pool.query("UPDATE tasks SET description=$1,clarification_questions=$2,related_task_ids=$3,analysis_state=$4,updated_at=now() WHERE id=$5 AND project_id=$6",
+    [summary,JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
    await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
-    [randomUUID(),taskId,uid(req),'analyzed','AI-анализ обновил описание задачи']);
+    [randomUUID(),taskId,uid(req),'analyzed','ТЗ и открытые вопросы обновлены по результатам AI-анализа']);
   }
   await store(id,taskId,uid(req),'user',mode==='analyze'?message+'\n\nИсходное описание до анализа:\n'+task.description:message);
   await store(id,taskId,null,'assistant',answer);
   await countCall(id,uid(req));
-  return {message:answer,summary};
+  return {message:answer,summary,questions};
+ });
+
+
+ app.post('/api/projects/:id/tasks/:taskId/approve-development',async(req:any,reply)=>{
+  const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const task=await pool.query('SELECT stage,analysis_state,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+  if(task.rows[0].stage!=='analysis'||task.rows[0].analysis_state!=='ready_for_development'||(task.rows[0].clarification_questions||[]).length)
+   return reply.code(409).send({error:'Сначала ответь на блокирующие вопросы AI-аналитика'});
+  await pool.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE id=$1 AND project_id=$2",[taskId,id]);
+  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Анализ → Разработка')",[randomUUID(),taskId,uid(req)]);
+  return {ok:true};
  });
 
 }
