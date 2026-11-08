@@ -12,3 +12,18 @@
 .tasks-page .lane-heading{padding:5px 2px 13px;gap:6px}
 @media(max-width:1200px){.tasks-page .board{grid-template-columns:repeat(5,minmax(200px,1fr))}}
 @media(max-width:700px){.tasks-page{padding:10px 8px}.tasks-page .toolbar{flex-wrap:wrap}.tasks-page .toolbar .search{flex-basis:100%}.tasks-page .toolbar .create-task{margin-left:auto}}
+
+/* Nested documentation navigation */
+.docs-list{gap:10px;min-width:0;padding:16px 10px}
+.docs-list-heading{display:flex;align-items:center;justify-content:space-between;padding:2px 9px 8px}
+.docs-list-heading button{border:0;background:transparent;color:#5968d9;padding:5px;display:flex}
+.docs .doc-tree{min-width:0;max-height:calc(100vh - 250px);overflow:auto}
+.doc-tree .doc-node{display:flex;align-items:center;gap:2px;border-radius:7px;min-width:0}
+.doc-tree .doc-node:hover{background:#f4f6fc}
+.doc-tree .doc-node button{background:transparent;border:0;padding:7px 3px;border-radius:5px}
+.doc-tree .doc-node .doc-toggle{flex:0 0 19px;color:#8090a4}
+.doc-tree .doc-node .doc-title{display:flex;align-items:center;text-align:left;gap:7px;min-width:0;flex:1;color:#394458;font-size:12px}
+.doc-tree .doc-node .doc-title span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.doc-tree .doc-node .doc-add-child{flex:0 0 23px;display:flex;justify-content:center;color:#5868df;opacity:0}
+.doc-tree .doc-node:hover .doc-add-child,.doc-tree .doc-node:focus-within .doc-add-child{opacity:1}
+@media(hover:none){.doc-tree .doc-node .doc-add-child{opacity:1}}
