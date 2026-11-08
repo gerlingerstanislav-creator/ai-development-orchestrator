@@ -439,7 +439,7 @@ http.createServer(async(req,res)=>{
     typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
     return reply(res,400,{error:'Некорректные параметры задачи'});
    if(activeJobs.has(job.id))return reply(res,409,{error:'Запуск с таким ID уже существует'});
-   const state={id:job.id,status:'queued',message:'Задача принята в очередь',branch:null,prUrl:null,createdAt:new Date().toISOString(),startedAt:null};
+   const state={id:job.id,status:'queued',message:'Задача принята в очередь',branch:null,baseBranch:job.baseBranch,prUrl:null,createdAt:new Date().toISOString(),startedAt:null};
    activeJobs.set(job.id,state);
    if(activeJobs.size>200){for(const [key,v] of activeJobs){if(v.status==='completed'||v.status==='failed'){activeJobs.delete(key);break;}}}
    jobQueue.push({job,state});
