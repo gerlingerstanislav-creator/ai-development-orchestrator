@@ -13,13 +13,14 @@ const jwtKey = new TextEncoder().encode(process.env.JWT_SECRET || '');
 const keyText = process.env.CREDENTIALS_KEY || '';
 const encryptionKey = Buffer.from(keyText, 'hex');
 if (!process.env.JWT_SECRET || jwtKey.length < 32 || encryptionKey.length !== 32) throw Error('Set secure JWT_SECRET and 64-char hex CREDENTIALS_KEY');
-const validStages = z.enum(['backlog','analysis','development','testing','merge_queue','done']);
+const validStages = z.enum(['backlog','analysis','development','testing','merge_queue','documentation','done']);
 const validMode = z.enum(['automatic','approval','manual']);
 const workflowDefaults = [
   ['backlog','Бэклог','manual'],
   ['analysis','Анализ','approval'],
   ['development','Разработка','approval'],
   ['merge_queue','Ожидает слияния','manual'],
+  ['documentation','Документация','manual'],
   ['done','Готово','manual']
 ] as const;
 async function dbInit() {
@@ -35,10 +36,16 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS git_branch text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number int;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS documentation_updated_at timestamptz;
  CREATE TABLE IF NOT EXISTS task_events (id uuid primary key, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), event text not null, detail text not null default '', created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS documents (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, body text not null default '', updated_at timestamptz not null default now());
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS parent_id uuid REFERENCES documents(id) ON DELETE SET NULL;
  CREATE INDEX IF NOT EXISTS idx_documents_project_parent ON documents(project_id, parent_id);
+ CREATE TABLE IF NOT EXISTS document_versions (id uuid primary key, document_id uuid not null references documents(id) on delete cascade, task_ids jsonb not null default '[]'::jsonb, body text not null, created_at timestamptz not null default now());
+ CREATE TABLE IF NOT EXISTS project_rules (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, body text not null, origin text not null default 'manual', source_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+ CREATE INDEX IF NOT EXISTS idx_project_rules_project ON project_rules(project_id,created_at);
+ CREATE TABLE IF NOT EXISTS project_rule_suggestions (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, body text not null, status text not null default 'pending', created_at timestamptz not null default now());
+ CREATE INDEX IF NOT EXISTS idx_rule_suggestions_project ON project_rule_suggestions(project_id,status);
  CREATE TABLE IF NOT EXISTS connections (id uuid primary key, owner_id uuid not null references users(id), name text not null, provider text not null, secret_encrypted text not null, created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS project_connections (project_id uuid references projects(id) on delete cascade, connection_id uuid references connections(id) on delete cascade, primary key(project_id,connection_id));
  CREATE TABLE IF NOT EXISTS project_git_repositories (project_id uuid primary key references projects(id) on delete cascade, connection_id uuid not null references connections(id), repository text not null, default_branch text not null, updated_at timestamptz not null default now());
@@ -47,9 +54,13 @@ async function dbInit() {
  INSERT INTO workflow_stages(project_id,stage,label,mode,position)
  SELECT p.id,'merge_queue','Ожидает слияния','manual',4 FROM projects p
  ON CONFLICT(project_id,stage) DO NOTHING;
+ INSERT INTO workflow_stages(project_id,stage,label,mode,position)
+ SELECT p.id,'documentation','Документация','manual',5 FROM projects p
+ ON CONFLICT(project_id,stage) DO NOTHING;
  DELETE FROM workflow_stages s WHERE s.stage='testing' AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id=s.project_id AND t.stage='testing');
  UPDATE workflow_stages SET position=4 WHERE stage='merge_queue';
- UPDATE workflow_stages SET position=5 WHERE stage='done';
+ UPDATE workflow_stages SET position=5 WHERE stage='documentation';
+ UPDATE workflow_stages SET position=6 WHERE stage='done';
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  CREATE INDEX IF NOT EXISTS idx_assistant_messages_project ON assistant_messages(project_id,task_id,created_at);
  CREATE TABLE IF NOT EXISTS assistant_usage (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, actor_id uuid not null references users(id), created_at timestamptz not null default now());
@@ -324,7 +335,7 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  if(!pull.ok)throw Object.assign(new Error('Не удалось получить PR: GitHub HTTP '+pull.status),{statusCode:502});
  const pr=await pull.json() as any;
  if(pr.merged){
-  await pool.query("UPDATE tasks SET stage='done',updated_at=now() WHERE id=$1",[taskId]);
+  await pool.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE id=$1",[taskId]);
   return {taskId,status:'merged',url:row.pr_url};
  }
  if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
