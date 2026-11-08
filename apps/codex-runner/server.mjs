@@ -339,7 +339,7 @@ async function runConflictJob(job,state){
   const headBefore=(await git('rev-parse','HEAD')).stdout.trim();
   const targetSha=(await git('rev-parse','FETCH_HEAD')).stdout.trim();
   let conflicts=[];
-  try{await git('merge','--no-edit','FETCH_HEAD');}
+  try{await git('-c','user.name=AI Development Orchestrator','-c','user.email=ai-orchestrator@users.noreply.github.com','merge','--no-edit','FETCH_HEAD');}
   catch(error){
    const unmerged=(await git('diff','--name-only','--diff-filter=U')).stdout.trim();
    conflicts=unmerged.split('\n').filter(Boolean);
