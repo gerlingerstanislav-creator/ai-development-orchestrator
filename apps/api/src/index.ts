@@ -234,6 +234,16 @@ app.put('/api/projects/:id/git',async(req:any,reply)=>{
  const prAccess=await fetch(baseUrl+'/pulls?state=open&per_page=1',{headers:ghHeaders,signal:AbortSignal.timeout(12000)});
  if(prAccess.status===403)return reply.code(409).send({error:'Подключение GitHub не сохранено: токен не имеет доступа к Pull Requests (HTTP 403). На github.com/settings/personal-access-tokens включи Repository permissions → Pull requests → Read and write для '+info.name+' и повтори проверку.'});
  if(!prAccess.ok)return reply.code(502).send({error:'Не удалось проверить права доступа к Pull Requests: GitHub HTTP '+prAccess.status});
+ const branchInfo=await branchCheck.json() as any;
+ const sha=String(branchInfo.commit?.sha||'');
+ if(sha){
+  for(const permission of [{path:'/commits/'+encodeURIComponent(sha)+'/check-runs?per_page=1',name:'Checks: Read'},{path:'/commits/'+encodeURIComponent(sha)+'/status',name:'Commit statuses: Read'}]){
+   const check=await fetch(baseUrl+permission.path,{headers:ghHeaders,signal:AbortSignal.timeout(12000)});
+   if(check.status===403)return reply.code(409).send({error:'GitHub-подключение не готово к слиянию PR: токен не имеет права '+permission.name+' для '+info.name+'. Открой https://github.com/settings/personal-access-tokens → Repository permissions и выдай Checks: Read и Commit statuses: Read. Затем повтори сохранение подключения.'});
+   if(!check.ok)return reply.code(502).send({error:'Не удалось проверить разрешение GitHub '+permission.name+': HTTP '+check.status});
+  }
+ }
+
   await pool.query('INSERT INTO project_git_repositories(project_id,connection_id,repository,default_branch,target_branch) VALUES($1,$2,$3,$4,$5) ON CONFLICT(project_id) DO UPDATE SET connection_id=$2,repository=$3,default_branch=$4,target_branch=$5,updated_at=now()',[id,connectionId,info.name,info.branch,branch]);
 
  return {repository:info.name,default_branch:info.branch,target_branch:branch,connection_id:connectionId,can_push:info.canPush,private:info.private,initialized};
