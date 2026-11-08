@@ -273,7 +273,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setSection(route.section||'tasks');
  },[token,projectsLoaded,route,projects]);
  useEffect(()=>{
-  if(route.kind!=='project'||selected?.id!==route.projectId||loadedProjectId!==route.projectId)return;
+  if(route.kind!=='project'||!selected||selected.id!==route.projectId||loadedProjectId!==route.projectId)return;
   if(route.taskId){
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
