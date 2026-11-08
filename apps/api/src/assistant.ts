@@ -92,7 +92,8 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const synthesize=wantsDocumentSynthesis(message,conversation)||
    !!location&&/(?:перенес|импортир|загруз|созда|сформир|сдела|подготов)/i.test(message)&&
    /(?:документ|страниц|на основе|на базе|из репозитория)/i.test(message);
-  if((synthesize||documentationMode&&!!location&&!localDocumentIntent)&&!localDocumentIntent){
+  const explicitImport=/(?:импортир|перенес|загруз|скопир|забер|взять|возьми|на\s+основе|из\s+репозитория|github\.com\/)/i.test(message);
+  if((synthesize||documentationMode&&!!location&&explicitImport)&&!localDocumentIntent){
    if(!location)return reply.code(409).send({error:'Для создания документов на основе GitHub пришли ссылку на исходный каталог, например https://github.com/owner/repo/tree/main/docs'});
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта: для переработки документации требуется Codex.'});
@@ -156,7 +157,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
       const sources=doc.sources.filter(name=>files.some(file=>file.path===name));
       const body=doc.body+(sources.length?'\n\n---\n**Исходные материалы:** '+sources.join(', '):'');
       await client.query(
-       "INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO NOTHING",
+       "INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,parent_id=EXCLUDED.parent_id,updated_at=now()",
        [randomUUID(),id,doc.title,body,rootId,docKey]);
      }
      await client.query('COMMIT');
