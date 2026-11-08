@@ -27,10 +27,10 @@ export function wantsDocumentSynthesis(message:string,context:string):boolean{
  const source=extractGitHubDocumentLocation(message,context);
  if(!source)return false;
  const action=/(?:перенес|перенести|импортир|загруз|скопир|забер|добав|помест|сохран|полож|затащ|переработ|подготов|созда|сформир|сдела|состав)/i;
- const documents=/(?:документ|док[уи]|файл|markdown|\\.md|страниц|материал)/i;
- const redirect=/(?:не\\s+в\\s+репозиторий|в\\s+проект|в\\s+приложен|на\\s+базе|на\\s+основе|из\\s+репозитор|тут\\s+в\\s+приложен)/i;
+ const documents=/(?:документ|док[уи]|файл|markdown|\.md|страниц|материал)/i;
+ const redirect=/(?:не\s+в\s+репозиторий|в\s+проект|в\s+приложен|на\s+базе|на\s+основе|из\s+репозитор|тут\s+в\s+приложен)/i;
  return action.test(message)&&documents.test(message)&&
-  (/(?:github|репозитор|из\\s+ideas|из\\s+идеи)/i.test(message) ||
+  (/(?:github|репозитор|из\s+ideas|из\s+идеи)/i.test(message) ||
    redirect.test(message)|| (redirect.test(context)&&/(?:перенес|сдела|созда)/i.test(message)));
 }
 export function wantsDocumentImport(message:string,context:string):boolean{
