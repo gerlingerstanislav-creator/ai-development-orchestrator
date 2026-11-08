@@ -481,13 +481,50 @@ async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):
   [id,pr.html_url,'PR автоматически создан из готовых изменений без нового запроса к Codex',taskId,branch]);
  return {pr_url:pr.html_url,branch,recovered:true};
 }
+async function restackChildren(projectId:string,parentId:string,parentHeadSha:string,parentBase:string,repository:string,token:string,actorId:string){
+ const children=await pool.query("SELECT id,pr_number,pr_base_branch FROM tasks WHERE project_id=$1 AND depends_on_task_id=$2 AND stage='merge_queue' AND pr_number IS NOT NULL",[projectId,parentId]);
+ if(!children.rowCount)return;
+ const base='https://api.github.com/repos/'+repository;
+ const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
+ const compare=await fetch(base+'/compare/'+encodeURIComponent(parentHeadSha)+'...'+encodeURIComponent(parentBase),{headers,signal:AbortSignal.timeout(15000)});
+ const ancestry=await compare.json().catch(()=>({})) as any;
+ const safe=compare.ok&&['ahead','identical'].includes(ancestry.status);
+ for(const child of children.rows){
+  if(child.pr_base_branch===parentBase)continue;
+  try{
+   if(!safe)throw new Error('Нельзя автоматически сменить базу: коммит родительской ветки не содержится в '+parentBase+'. Нужна безопасная пересборка ветки.');
+   const updated=await fetch(base+'/pulls/'+child.pr_number,{method:'PATCH',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({base:parentBase}),signal:AbortSignal.timeout(15000)});
+   const data=await updated.json().catch(()=>({})) as any;
+   if(!updated.ok)throw new Error('GitHub HTTP '+updated.status+': '+String(data.message||'').slice(0,150));
+   await pool.query('UPDATE tasks SET pr_base_branch=$2,updated_at=now() WHERE id=$1',[child.id,parentBase]);
+   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),child.id,actorId,'pr_restacked','PR переключён на '+parentBase+' после слияния родителя '+parentId]);
+  }catch(e){
+   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),child.id,actorId,'pr_restack_failed','PR ожидает смены базовой ветки: '+(e instanceof Error?e.message:String(e)).slice(0,320)]);
+  }
+ }
+}
 async function mergeTaskPr(projectId:string,taskId:string,userId:string){
- const info=await pool.query("SELECT t.id,t.title,t.stage,t.pr_number,t.pr_url,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
+ const info=await pool.query("SELECT t.id,t.title,t.stage,t.pr_number,t.pr_url,t.depends_on_task_id,t.pr_base_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
  [taskId,projectId,userId]);
  if(!info.rowCount)throw Object.assign(new Error('Задача или подключение GitHub не найдены'),{statusCode:404});
  const row=info.rows[0];
  if(row.stage!=='merge_queue'||!row.pr_number)throw Object.assign(new Error('Задача не находится в очереди слияния или не содержит PR'),{statusCode:409});
  const token=decryptToken(row.secret_encrypted);
+ if(row.depends_on_task_id){
+  const parent=await pool.query('SELECT id,title,stage,pr_number,pr_base_branch FROM tasks WHERE project_id=$1 AND id=$2',[projectId,row.depends_on_task_id]);
+  if(parent.rowCount && !['documentation','done'].includes(parent.rows[0].stage))
+   throw Object.assign(new Error('Сначала слей родительскую задачу «'+parent.rows[0].title+'»'),{statusCode:409});
+  if(parent.rowCount && parent.rows[0].pr_number && row.pr_base_branch===row.depends_on_task_id){
+   const parentPr=await fetch('https://api.github.com/repos/'+row.repository+'/pulls/'+parent.rows[0].pr_number,{
+    headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},signal:AbortSignal.timeout(15000)});
+   if(parentPr.ok){
+    const info=await parentPr.json() as any;
+    if(info.merged)await restackChildren(projectId,row.depends_on_task_id,info.head.sha,info.base.ref,row.repository,token,userId);
+   }
+   const current=await pool.query('SELECT pr_base_branch FROM tasks WHERE id=$1',[taskId]);
+   row.pr_base_branch=current.rows[0]?.pr_base_branch;
+  }
+ }
  const base='https://api.github.com/repos/'+row.repository;
  const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
  const pull=await fetch(base+'/pulls/'+row.pr_number,{headers,signal:AbortSignal.timeout(15000)});
@@ -495,10 +532,11 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  const pr=await pull.json() as any;
  if(pr.merged){
   await pool.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE id=$1",[taskId]);
+  await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
   return {taskId,status:'merged',url:row.pr_url};
  }
  if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
- if(pr.base?.ref!==(row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
+ if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
  if(pr.mergeable!==true || ['dirty','blocked','unknown'].includes(pr.mergeable_state))
   throw Object.assign(new Error('PR содержит конфликт или ещё не готов к слиянию; обнови статус GitHub'),{statusCode:409});
  const checks=await fetch(base+'/commits/'+encodeURIComponent(pr.head.sha)+'/check-runs?per_page=100',{headers,signal:AbortSignal.timeout(15000)});
@@ -511,7 +549,8 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
   signal:AbortSignal.timeout(25000)});
  const merged=await merge.json().catch(()=>({})) as any;
  if(!merge.ok || !merged.merged)throw Object.assign(new Error('GitHub отклонил слияние: '+String(merged.message||merge.status).slice(0,240)),{statusCode:409});
- await pool.query("UPDATE tasks SET stage='done',updated_at=now() WHERE id=$1",[taskId]);
+ await pool.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE id=$1",[taskId]);
+ await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'merged',$4)",[randomUUID(),taskId,userId,row.pr_url]);
  return {taskId,status:'merged',url:row.pr_url};
 }
@@ -524,7 +563,14 @@ app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
 app.post('/api/projects/:id/merge-ready',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const tasks=await pool.query("SELECT id FROM tasks WHERE project_id=$1 AND stage='merge_queue' ORDER BY created_at LIMIT 30",[id]);
+ const tasks=await pool.query("SELECT id,depends_on_task_id FROM tasks WHERE project_id=$1 AND stage='merge_queue' ORDER BY created_at LIMIT 30",[id]);
+ const byId=new Map(tasks.rows.map((t:any)=>[t.id,t.depends_on_task_id]));
+ const depth=(taskId:string,seen=new Set<string>()):number=>{
+  if(seen.has(taskId))return 0;seen.add(taskId);
+  const parent=byId.get(taskId) as string|undefined;
+  return parent?1+depth(parent,seen):0;
+ };
+ tasks.rows.sort((a:any,b:any)=>depth(a.id)-depth(b.id));
  const results=[];
  for(const row of tasks.rows){
   try{results.push(await mergeTaskPr(id,row.id,uid(req)));}
