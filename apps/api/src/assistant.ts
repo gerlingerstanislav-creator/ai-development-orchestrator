@@ -75,7 +75,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    existingIds=existing.rows.map((t:{id:string})=>t.id);
    const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 10',[id]);
    prompt=['Составь одну задачу разработки по запросу пользователя. Ответь ТОЛЬКО JSON без Markdown.',
-    'Формат: {"title":"краткое название","description":"конкретное ТЗ и критерии приёмки","questions":["только блокирующие вопросы"],"related_ids":["UUID существующих похожих задач"],"relation_reason":"объяснение потенциальных пересечений"}.',
+    'Формат: {"title":"краткое название","description":"конкретное ТЗ и критерии приёмки","questions":["только блокирующие вопросы"],"related_ids":["UUID существующих похожих задач"],"relation_reason":"объяснение потенциальных пересечений","suggested_rules":["только универсальные правила для проекта, если выявлена повторяющаяся закономерность"]}.',
     'Не задавай вопросы, ответ на которые уже есть в контексте. Если запрос достаточно ясен, questions должен быть [].',
     'Из списка задач выбирай только реальные UUID, не выдумывай идентификаторы.',
     'При похожей задаче не объединяй карточки автоматически, только предложи связь.',
@@ -100,7 +100,8 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     title:z.string().trim().min(3).max(180),description:z.string().trim().min(3).max(10000),
     questions:z.array(z.string().min(3).max(600)).max(8).default([]),
     related_ids:z.array(z.string().uuid()).max(10).default([]),
-    relation_reason:z.string().max(1500).optional()
+    relation_reason:z.string().max(1500).optional(),
+    suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
    }).parse(jsonObject(raw));
    taskId=randomUUID();
    const related=data.related_ids.filter(x=>existingIds.includes(x));
@@ -111,6 +112,10 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      [randomUUID(),taskId,uid(req),'created','Создано через AI-чат и проанализировано']);
    const analysisNote=(data.questions.length?'Нужно уточнить:\n'+data.questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'Вопросов, блокирующих разработку, нет. Можно отправлять задачу в разработку.')+
     (related.length?'\n\nПотенциально связанные задачи: '+related.join(', ')+'\n'+(data.relation_reason||''):'');
+   for(const rule of data.suggested_rules){
+    const exists=await pool.query("SELECT 1 FROM project_rules WHERE project_id=$1 AND lower(body)=lower($2) UNION ALL SELECT 1 FROM project_rule_suggestions WHERE project_id=$1 AND lower(body)=lower($2) AND status='pending' LIMIT 1",[id,rule]);
+    if(!exists.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
+   }
    await store(id,taskId,null,'assistant',analysisNote);
    answer='Создана задача в колонке «Анализ»: '+data.title+'\n\n'+(data.questions.length?'Вопросы находятся в чате задачи.':'ТЗ готово к подтверждению.')+
       (related.length?'\nОбнаружены связанные задачи: '+related.length:'');
