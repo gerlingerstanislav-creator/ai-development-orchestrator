@@ -130,7 +130,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
     [randomUUID(),taskId,uid(req),'analyzed','AI-анализ обновил описание задачи']);
   }
-  await store(id,taskId,uid(req),'user',message);
+  await store(id,taskId,uid(req),'user',mode==='analyze'?message+'\n\nИсходное описание до анализа:\n'+task.description:message);
   await store(id,taskId,null,'assistant',answer);
   await countCall(id,uid(req));
   return {message:answer,summary};
