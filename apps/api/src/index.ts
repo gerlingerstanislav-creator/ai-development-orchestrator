@@ -34,6 +34,7 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_documents_project_parent ON documents(project_id, parent_id);
  CREATE TABLE IF NOT EXISTS connections (id uuid primary key, owner_id uuid not null references users(id), name text not null, provider text not null, secret_encrypted text not null, created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS project_connections (project_id uuid references projects(id) on delete cascade, connection_id uuid references connections(id) on delete cascade, primary key(project_id,connection_id));
+ CREATE TABLE IF NOT EXISTS project_git_repositories (project_id uuid primary key references projects(id) on delete cascade, connection_id uuid not null references connections(id), repository text not null, default_branch text not null, updated_at timestamptz not null default now());
  `);
  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
  const password = process.env.ADMIN_PASSWORD;
@@ -103,6 +104,56 @@ app.post('/api/codex/logout',async(_req,reply)=>{
 app.post('/api/codex/test',async(_req,reply)=>{
  try{return await codexCall('/test','POST');}
  catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Тест Codex не прошёл'});}
+});
+
+// Project GitHub binding: tokens are reused from the encrypted connections store,
+// never copied to project tables or returned to the browser.
+const repositoryNameSchema=z.string().trim().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(200);
+async function gitHubRepository(token:string,name:string) {
+ const controller=new AbortController();
+ const timeout=setTimeout(()=>controller.abort(),12000);
+ try {
+  const response=await fetch('https://api.github.com/repos/'+name,{
+   headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'},
+   signal:controller.signal
+  });
+  if(response.status===401)throw Object.assign(new Error('Токен GitHub недействителен'),{statusCode:400});
+  if(response.status===403)throw Object.assign(new Error('GitHub запретил доступ: проверь разрешения токена и лимиты'),{statusCode:400});
+  if(response.status===404)throw Object.assign(new Error('Репозиторий не найден или токен не имеет к нему доступа'),{statusCode:400});
+  if(!response.ok)throw Object.assign(new Error('GitHub вернул HTTP '+response.status),{statusCode:502});
+  const data=await response.json() as any;
+  if(data.full_name?.toLowerCase()!==name.toLowerCase() || data.archived || data.disabled)throw Object.assign(new Error('Репозиторий недоступен для работы'),{statusCode:400});
+  return {name:data.full_name as string,branch:data.default_branch as string,canPush:data.permissions?.push===true,private:data.private===true};
+ }finally{clearTimeout(timeout);}
+}
+app.get('/api/projects/:id/git',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const r=await pool.query('SELECT g.repository,g.default_branch,g.connection_id,c.name AS connection_name FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2',[id,uid(req)]);
+ return r.rows[0]||null;
+});
+app.put('/api/projects/:id/git',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const {repository,connectionId}=parse(z.object({repository:repositoryNameSchema,connectionId:z.string().uuid()}),req.body);
+ const r=await pool.query('SELECT provider,secret_encrypted FROM connections WHERE id=$1 AND owner_id=$2',[connectionId,uid(req)]);
+ if(!r.rowCount || r.rows[0].provider!=='github_token')return reply.code(400).send({error:'Выбери своё подключение типа GitHub token'});
+ const packed=Buffer.from(r.rows[0].secret_encrypted,'base64');
+ const {createDecipheriv}=await import('node:crypto');
+ const decipher=createDecipheriv('aes-256-gcm',encryptionKey,packed.subarray(0,12));
+ decipher.setAuthTag(packed.subarray(12,28));
+ const token=Buffer.concat([decipher.update(packed.subarray(28)),decipher.final()]).toString('utf8');
+ let info;
+ try{info=await gitHubRepository(token,repository);}
+ catch(e){const err=e as Error & {statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message||'Ошибка проверки GitHub'});}
+ await pool.query('INSERT INTO project_git_repositories(project_id,connection_id,repository,default_branch) VALUES($1,$2,$3,$4) ON CONFLICT(project_id) DO UPDATE SET connection_id=$2,repository=$3,default_branch=$4,updated_at=now()',[id,connectionId,info.name,info.branch]);
+ return {repository:info.name,default_branch:info.branch,connection_id:connectionId,can_push:info.canPush,private:info.private};
+});
+app.delete('/api/projects/:id/git',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ await pool.query('DELETE FROM project_git_repositories WHERE project_id=$1',[id]);
+ return {ok:true};
 });
 
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
