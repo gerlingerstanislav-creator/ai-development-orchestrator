@@ -10,7 +10,9 @@ type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:st
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
 type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';enabled:boolean};
-type ServiceLimits={chat_requests_per_24h:number;development_runs_per_24h:number;max_runtime_seconds:number};
+type CodexRateWindow={usedPercent:number;windowDurationMins:number|null;resetsAt:number|null};
+type CodexRateBucket={id:string;name:string|null;primary:CodexRateWindow|null;secondary:CodexRateWindow|null;planType:string|null;reachedType:string|null};
+type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checkedAt:string};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string};
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
@@ -32,11 +34,11 @@ function App(){
  const [token,setToken]=useState(sessionStorage.getItem(key)||'');
  const [login,setLogin]=useState(''); const [password,setPassword]=useState('');
  const [projects,setProjects]=useState<Project[]>([]);const [selected,setSelected]=useState<Project|null>(null);
- const [section,setSection]=useState<'overview'|'tasks'|'docs'|'settings'>('tasks');
+ const [section,setSection]=useState<'overview'|'tasks'|'docs'|'rules'|'settings'>('tasks');
  const [accountSettings,setAccountSettings]=useState(false);
- const [serviceSettings,setServiceSettings]=useState(false);
- const [serviceLimits,setServiceLimits]=useState<ServiceLimits>({chat_requests_per_24h:0,development_runs_per_24h:0,max_runtime_seconds:1800});
- const [serviceBusy,setServiceBusy]=useState(false);const [serviceNotice,setServiceNotice]=useState('');
+ const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
+ const [rateLimitsBusy,setRateLimitsBusy]=useState(false);
+ const [rateLimitsError,setRateLimitsError]=useState('');
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [docs,setDocs]=useState<Doc[]>([]);
  const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
@@ -160,12 +162,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
  }
- async function saveServiceLimits(){setServiceBusy(true);setServiceNotice('');
-  try{const saved=await api<ServiceLimits>('/service/ai-limits',{method:'PUT',body:JSON.stringify(serviceLimits)});
-   setServiceLimits(saved);setServiceNotice('Ограничения сервиса сохранены.');
-  }catch(e){fail(e);}finally{setServiceBusy(false);}
+ async function refreshRateLimits(){
+  setRateLimitsBusy(true);setRateLimitsError('');
+  try{const data=await api<CodexRateLimits>('/codex/rate-limits');setRateLimits(data);}
+  catch(e){setRateLimits(null);setRateLimitsError(e instanceof Error?e.message:'Не удалось получить лимиты Codex');}
+  finally{setRateLimitsBusy(false);}
  }
- useEffect(()=>{if(token&&serviceSettings){void api<ServiceLimits>('/service/ai-limits').then(setServiceLimits).catch(fail);}},[token,serviceSettings]);
+ useEffect(()=>{if(token&&accountSettings){void refreshRateLimits();}},[token,accountSettings]);
  async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const job=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
@@ -244,7 +247,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
- function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setServiceSettings(false);setProjects([]);setCodex(null);}
+ function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setCodex(null);}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
   return docs.filter(d=>d.parent_id===parentId).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
@@ -263,31 +266,34 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
   <div className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
-  <button className={'nav '+(!selected&&!accountSettings&&!serviceSettings?'active':'')} onClick={()=>{setAccountSettings(false);setServiceSettings(false);setSelected(null);}}><LayoutGrid size={18}/> Мои проекты</button>
+  <button className={'nav '+(!selected&&!accountSettings?'active':'')} onClick={()=>{setAccountSettings(false);setSelected(null);}}><LayoutGrid size={18}/> Мои проекты</button>
   {selected&&<><div className="sidebar-label">{selected.name.toUpperCase()}</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>{setAccountSettings(false);setServiceSettings(false);setSection(k);}}><Icon size={18}/>{label}</button>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['rules','Правила',FileText],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>{setAccountSettings(false);setSection(k);}}><Icon size={18}/>{label}</button>)}
   </>}
   <div className="sidebar-label">АККАУНТ</div>
   <button className={'nav '+(accountSettings?'active':'')} onClick={()=>{setAccountSettings(true);setServiceSettings(true);}}><Settings2 size={18}/> Настройки аккаунта</button>
 
   <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
  </aside>
- <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);setServiceSettings(false);}}>Мои проекты</span>{serviceSettings?<><span className="slash">/</span><strong>Настройки сервиса</strong></>:accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
+ <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{serviceSettings?<><span className="slash">/</span><strong>Настройки сервиса</strong></>:accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
  {error&&<div className="error global" onClick={()=>setError('')}>{error} <X size={16}/></div>}
  {accountSettings?<div className="page compact-project-page">
-<section className="panel">
-   <h3>Ограничения ChatGPT / Codex для всего сервиса</h3>
-   <p className="muted">Эти значения общие для всех проектов и пользователей. Ноль означает отсутствие дневного ограничения. Они не являются бюджетом токенов подписки.</p>
-   <div className="settings-grid">
-    <label>Сообщений AI за 24 часа (все проекты)<input type="number" min={0} max={10000} value={serviceLimits.chat_requests_per_24h} onChange={e=>setServiceLimits({...serviceLimits,chat_requests_per_24h:Number(e.target.value)})}/></label>
-    <label>Запусков разработки за 24 часа (все проекты)<input type="number" min={0} max={10000} value={serviceLimits.development_runs_per_24h} onChange={e=>setServiceLimits({...serviceLimits,development_runs_per_24h:Number(e.target.value)})}/></label>
-    <label>Технический таймаут одной разработки, секунд<input type="number" min={120} max={7200} value={serviceLimits.max_runtime_seconds} onChange={e=>setServiceLimits({...serviceLimits,max_runtime_seconds:Number(e.target.value)})}/></label>
-   </div>
-   <p className="muted">Таймаут нужен для остановки зависшего процесса. Для контроля реального потребления токенов потребуется отдельная интеграция с учётом использования Codex.</p>
-   <button className="primary" disabled={serviceBusy} onClick={()=>void saveServiceLimits()}>Сохранить ограничения</button>
-   {serviceNotice&&<p>{serviceNotice}</p>}
-  </section>
-
+ <section className="panel codex-panel">
+  <div className="row-line"><h3>Лимиты Codex · ChatGPT</h3><button className="secondary" disabled={rateLimitsBusy} onClick={()=>void refreshRateLimits()}>{rateLimitsBusy?'Обновление…':'Обновить'}</button></div>
+  <p className="muted">Данные текущего подключённого аккаунта Codex: использованная доля лимита и время его сброса. Это не лимит сообщений обычного ChatGPT и не ручные ограничения сервиса.</p>
+  {rateLimitsError&&<p className="error">{rateLimitsError}</p>}
+  {rateLimits&&!rateLimits.windows.length&&<p className="muted">Codex не предоставил доступных окон лимитов для этого аккаунта.</p>}
+  {rateLimits?.windows.map(bucket=><div className="codex-limit-bucket" key={bucket.id}>
+   <strong>{bucket.name||bucket.id}{bucket.planType?' · '+bucket.planType:''}</strong>
+   {[bucket.primary,bucket.secondary].map((win,i)=>win&&<div key={i} className="codex-limit-window">
+    <div className="row-line"><span>{win.windowDurationMins?win.windowDurationMins>=1440?Math.round(win.windowDurationMins/1440)+' дн.':win.windowDurationMins>=60?(win.windowDurationMins/60).toFixed(1)+' ч.':win.windowDurationMins+' мин.':'Окно'}</span>
+     <strong>{Math.round(100-win.usedPercent)}% доступно</strong></div>
+    <div className="codex-limit-track"><div style={{width:Math.min(100,Math.max(0,100-win.usedPercent))+'%'}}/></div>
+    <small>{win.resetsAt?'Обновится: '+new Date(win.resetsAt*1000).toLocaleString('ru-RU'):'Время сброса не указано'}</small>
+   </div>)}
+  </div>)}
+  {rateLimits&&<p className="muted">Обновлено: {new Date(rateLimits.checkedAt).toLocaleString('ru-RU')}{rateLimits.resetCredits!==null?' · Доступно сбросов лимита: '+rateLimits.resetCredits:''}</p>}
+ </section>
  <section className="panel codex-panel">
  <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
  {codex?.error&&<p className="error">{codex.error}</p>}
@@ -338,7 +344,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <button className="primary" disabled={aiBusy} onClick={()=>void saveAiSettings()}>Сохранить настройки AI</button>
   {aiMessage&&<p>{aiMessage}</p>}
  </section>}
- {section==='settings'&&<section className="panel">
+ {section==='rules'&&<section className="panel">
   <h3>Правила проекта</h3>
   <p className="muted">Правила отделены от документации. AI учитывает утверждённые правила при постановке, анализе и разработке. Новые предложения AI требуют твоего подтверждения.</p>
   <form onSubmit={addRule}>
@@ -352,21 +358,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>)}</>}
  </section>}
  {section==='settings'&&<section className="panel">
-  <h3>Документация после слияния</h3>
-  <p className="muted">Слитые задачи попадают в колонку «Документация». По кнопке над колонкой AI обновляет страницу «Реализованные возможности» пачкой, сохраняет версию и переводит задачи в «Готово». Другие страницы не перезаписываются.</p>
-  <p><strong>Ожидают обновления:</strong> {tasks.filter(t=>t.stage==='documentation').length}</p>
-  <button className="primary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={()=>void updateDocumentation()}>Обновить документацию</button>
-  {documentVersions.length>0&&<p className="muted">Последнее обновление: {new Date(documentVersions[0].created_at).toLocaleString('ru-RU')}. История версий сохраняется.</p>}
- </section>}
- {section==='settings'&&<section className="panel">
-  <h3>GitHub · Репозиторий проекта</h3>
+  <div className="row-line"><h3>GitHub · Репозиторий проекта</h3><button className="secondary" onClick={()=>setShowConnection(true)}><KeyRound size={15}/> Добавить GitHub token</button></div>
   <p className="muted">Подключи репозиторий и токен с правами Contents: Read and write и Pull requests: Read and write. Codex создаёт отдельную ветку и черновик PR после ручного запуска задачи.</p>
   <div className="settings-grid">
    <label>Репозиторий (owner/name)<input value={gitRepository} placeholder="gerlingerstanislav-creator/ai-development-orchestrator" onChange={e=>setGitRepository(e.target.value)} /></label>
    <label>Целевая ветка PR<input value={targetBranch} placeholder={gitLink?.default_branch||'main'} onChange={e=>setTargetBranch(e.target.value)} /></label>
    <label>GitHub token<select value={gitTokenId} onChange={e=>setGitTokenId(e.target.value)}><option value="">Выбери подключение</option>{connections.filter(c=>c.provider==='github_token').map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>
   </div>
-  {connections.every(c=>c.provider!=='github_token')&&<p className="muted">Сначала добавь подключение типа GitHub token ниже в разделе «Подключения».</p>}
+  {connections.every(c=>c.provider!=='github_token')&&<p className="muted">Добавь GitHub token кнопкой выше, затем выбери его здесь.</p>}
   {gitLink&&<p className="muted">Привязан: <strong>{gitLink.repository}</strong> · целевая ветка PR: <strong>{gitLink.target_branch||gitLink.default_branch}</strong></p>}
   {gitMessage&&<p>{gitMessage}</p>}
   <div className="codex-actions">
@@ -375,16 +374,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
  </section>}
  
- {section==='settings'&&aiRuns.length>0&&<section className="panel">
-  <h3>Последние AI-запуски</h3>
-  {aiRuns.slice(0,10).map(r=><div className="setting-row" key={r.id}>
-   <div><strong>{tasks.find(t=>t.id===r.task_id)?.title||r.task_id.slice(0,8)}</strong>
-   <small>{r.model} · {r.status} · {r.message||''}</small></div>
-   {r.pr_url&&<a href={r.pr_url} target="_blank" rel="noreferrer">Pull Request</a>}
-  </div>)}
- </section>}
   {section==='settings'&&<div className="settings-grid"><div className="panel"><h3>Этапы workflow</h3><p className="muted">Пока все перемещения выполняются вручную. Режимы определяют будущие правила исполнения.</p>{stages.map(s=><div key={s.stage} className="setting-row"><div><strong>{s.label}</strong><small>{s.stage}</small></div><select value={s.mode} onChange={e=>void modeChange(s.stage,e.target.value)}><option value="manual">Ручной</option><option value="approval">С подтверждением</option><option value="automatic">Автоматический</option></select></div>)}</div>
- <div className="panel"><h3>Подключения</h3><p className="muted">Храним ключи в зашифрованном виде. GitHub token используется исполнителем для отправки ветки и создания Pull Request.</p><button className="secondary" onClick={()=>setShowConnection(true)}><KeyRound size={16}/> Добавить подключение</button>{projectConnections.map(c=><div className="setting-row" key={c.id}><div><strong>{c.name}</strong><small>{c.provider}</small></div><span className="badge">Назначено</span></div>)}{connections.filter(c=>!projectConnections.some(p=>p.id===c.id)).map(c=><div key={c.id} className="setting-row"><div><strong>{c.name}</strong><small>{c.provider}</small></div><button className="textbtn" onClick={()=>void attachConnection(c.id)}>Назначить проекту</button></div>)}</div></div>}
+</div>}
  </div>}
  </main>
  {selected&&!accountSettings&&!activeTask&&!activeDoc&&!showTask&&!showProject&&!showConnection&&<>
