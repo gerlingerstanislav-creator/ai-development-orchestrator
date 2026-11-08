@@ -66,7 +66,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const create=/(создай|создать|добавь|заведи|оформи)\s+.{0,100}(задач[уаи]|таск)|(задач[уаи]|таск)\s+.{0,100}(создай|создать|добавь|заведи|оформи)/i.test(message);
   // Document commands take priority over task detection. Mentioning documentation
   // in a task request alone must NOT create a document.
-  const createDocument=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи)\s+(?:нов(?:ый|ую|ое)\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел\s+документации|описание\s+проекта)\b|(?:документ|страниц[ауеы]|документаци[юи])\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i.test(message);
+  const createDocument=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи)\s+(?:нов(?:ый|ую|ое)\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел\s+документации|описание\s+проекта)(?![а-яёa-z])|(?:документ|страниц[ауеы]|документаци[юи])\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i.test(message);
 
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const conversation=await history(id,null);
