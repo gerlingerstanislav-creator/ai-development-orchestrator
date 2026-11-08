@@ -246,7 +246,7 @@ async function runJob(job,state){
     '--ephemeral','--skip-git-repo-check',
     // Docker is the isolation boundary. Nested Linux sandbox needs namespaces
     // forbidden by Docker defaults; never expose GitHub token to Codex.
-    '--sandbox','danger-full-access','--ask-for-approval','never',instruction
+    '--sandbox','danger-full-access',instruction
    ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    return {result,files:await git('status','--porcelain')};
