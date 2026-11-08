@@ -190,14 +190,16 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'Формат: {"title":"название документа","body":"полноценное содержимое Markdown","parent_id":"UUID существующей родительской страницы или null"}.',
     'Не создавай задачу разработки. Подготовь содержательный документ на русском с заголовками и разделами.',
     'Не выдумывай факты о проекте. Когда информации мало, явно отмечай предположения и открытые вопросы.',
-    'Разрешено выбрать parent_id исключительно из приведённых UUID. Если подходящего родителя нет, используй null.',\n    'Если просят создать новый раздел документации, создай корневую страницу (parent_id: null) с осмысленным заголовком и содержимым. Если пользователь уточняет ранее заданную команду, выполни исходную команду с учётом уточнения.',
+    'Разрешено выбрать parent_id исключительно из приведённых UUID. Если подходящего родителя нет, используй null.',
+    'Если просят создать новый раздел документации, создай корневую страницу (parent_id: null) с осмысленным заголовком и содержимым. Если пользователь уточняет ранее заданную команду, выполни исходную команду с учётом уточнения.',
     'Название проекта: '+project.rows[0].name,
     'Описание проекта: '+project.rows[0].description.slice(0,3000),
     'Правила проекта:\n'+rules,
     'Настройки GitHub:\n'+repoContext,
     'Существующая документация: '+JSON.stringify(existingDocs.rows.map((doc:any)=>({...doc,body:String(doc.body).slice(0,2500)}))).slice(0,11000),
     'История чата:\n'+conversation,
-    'Исходная команда, которую уточняет пользователь: '+(documentClarification?lastUserRequest:'нет'),\n    'Запрос пользователя:\n'+message].join('\n\n');
+    'Исходная команда, которую уточняет пользователь: '+(documentClarification?lastUserRequest:'нет'),
+    'Запрос пользователя:\n'+message].join('\n\n');
   }else if(create){
    const existing=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
    existingIds=existing.rows.map((t:{id:string})=>t.id);
