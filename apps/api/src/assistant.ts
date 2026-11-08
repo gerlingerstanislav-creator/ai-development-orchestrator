@@ -65,12 +65,17 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const conversation=await history(id,null);
   let prompt:string;
   if(create){
-   const existing=await pool.query('SELECT title FROM tasks WHERE project_id=$1 ORDER BY created_at DESC LIMIT 25',[id]);
+   const existing=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
+   const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 10',[id]);
    prompt=['Составь одну задачу разработки по запросу пользователя. Ответь ТОЛЬКО JSON без Markdown.',
-    'Формат: {"title":"краткое название","description":"конкретное требование и критерии приёмки"}',
+    'Формат: {"title":"краткое название","description":"конкретное ТЗ и критерии приёмки","questions":["только блокирующие вопросы"],"related_ids":["UUID существующих похожих задач"],"relation_reason":"объяснение потенциальных пересечений"}.',
+    'Не задавай вопросы, ответ на которые уже есть в контексте. Если запрос достаточно ясен, questions должен быть [].',
+    'Из списка задач выбирай только реальные UUID, не выдумывай идентификаторы.',
+    'При похожей задаче не объединяй карточки автоматически, только предложи связь.',
     'Не выдумывай детали и не создавай несколько задач.',
     'Проект: '+project.rows[0].name,
-    'Уже существующие задачи: '+existing.rows.map(x=>x.title).join(' | '),
+    'Другие задачи (UUID, название и описание): '+JSON.stringify(existing.rows).slice(0,9000),
+    'Документы проекта: '+JSON.stringify(docs.rows).slice(0,9000),
     'История:\n'+conversation,'Запрос:\n'+message].join('\n\n');
   }else{
    prompt=['Ты ассистент проекта разработки. Отвечай кратко, по делу и на русском.',
@@ -82,11 +87,24 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   try{raw=await completion(prompt,config);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
   let taskId:string|null=null,answer=raw;
   if(create){
-   const data=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(3).max(10000)}).parse(jsonObject(raw));
+   const data=z.object({
+    title:z.string().trim().min(3).max(180),description:z.string().trim().min(3).max(10000),
+    questions:z.array(z.string().min(3).max(600)).max(8).default([]),
+    related_ids:z.array(z.string().uuid()).max(10).default([]),
+    relation_reason:z.string().max(1500).optional()
+   }).parse(jsonObject(raw));
    taskId=randomUUID();
-   await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage) VALUES($1,$2,$3,$4,'task','backlog')",[taskId,id,data.title,data.description]);
-   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'created','Создано из AI-чата проекта']);
-   answer='Создана задача: '+data.title+'\n\n'+data.description;
+   const related=data.related_ids.filter(x=>existing.rows.some(t=>t.id===x));
+   const state=data.questions.length?'needs_clarification':'ready_for_development';
+   await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state,clarification_questions,related_task_ids) VALUES($1,$2,$3,$4,'task','analysis',$5,$6,$7)",
+     [taskId,id,data.title,data.description,state,JSON.stringify(data.questions),JSON.stringify(related)]);
+   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+     [randomUUID(),taskId,uid(req),'created','Создано через AI-чат и проанализировано']);
+   const analysisNote=(data.questions.length?'Нужно уточнить:\n'+data.questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'Вопросов, блокирующих разработку, нет. Можно отправлять задачу в разработку.')+
+    (related.length?'\n\nПотенциально связанные задачи: '+related.join(', ')+'\n'+(data.relation_reason||''):'');
+   await store(id,taskId,null,'assistant',analysisNote);
+   answer='Создана задача в колонке «Анализ»: '+data.title+'\n\n'+(data.questions.length?'Вопросы находятся в чате задачи.':'ТЗ готово к подтверждению.')+
+      (related.length?'\nОбнаружены связанные задачи: '+related.length:'');
   }
   await store(id,null,uid(req),'user',message);
   await store(id,null,null,'assistant',answer,taskId);
