@@ -225,7 +225,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(!await requireAdmin(req,reply))return;
  const t=await pool.query('SELECT id,title,description FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
- const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
+ const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,daily_run_limit,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
  const ai=settings.rows[0]||aiDefaults;
  if(!ai.enabled)return reply.code(409).send({error:'Включи ручной запуск AI в настройках проекта'});
  const usage=await pool.query("SELECT count(*)::int AS count FROM ai_task_runs WHERE project_id=$1 AND created_at > now() - interval '24 hours'",[id]);
