@@ -285,10 +285,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }else if(activeTask){setActiveTask(null);}
   if(route.docId){
    const doc=docs.find(d=>d.id===route.docId);
-   if(doc){if(selectedDocId!==doc.id){setSelectedDocId(doc.id);setEditingDoc(null);}}
+   if(doc){if(selectedDocId!==doc.id){setSelectedDocId(doc.id);if(editingDoc?.id!==doc.id)setEditingDoc(null);}}
    else{navigate(projectUrl(selected.id,'docs'),true);setError('Документ не найден');}
   }else if(selectedDocId){setSelectedDocId(null);setEditingDoc(null);}
- },[route,selected?.id,loadedProjectId,tasks,docs,activeTask?.id,selectedDocId]);
+ },[route,selected?.id,loadedProjectId,tasks,docs,activeTask?.id,selectedDocId,editingDoc?.id]);
 
  useEffect(()=>{if(selected)void loadProject(selected.id);},[selected?.id]);
  useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy]);
