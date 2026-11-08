@@ -178,3 +178,39 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .codex-limit-track{width:100%;height:9px;overflow:hidden;background:#e8ecf5;border-radius:10px;margin:8px 0 6px}
 .codex-limit-track>div{height:100%;background:#5969db;border-radius:10px;transition:width .2s ease}
 .codex-limit-window small{color:#8693a6}
+
+
+/* Consistent page rhythm: vertical gutters match horizontal spacing. */
+:root{--page-gutter:24px;--section-gap:24px;--card-gap:18px}
+.compact-project-page,.tasks-page{padding:var(--page-gutter);padding-bottom:calc(var(--page-gutter) + 8px)}
+.compact-project-page>.panel{margin:0 0 var(--section-gap)}
+.compact-project-page>.panel:last-child{margin-bottom:0}
+.compact-project-page>.settings-grid{margin-top:var(--section-gap);gap:var(--section-gap)}
+.compact-project-page>.settings-grid:first-child{margin-top:0}
+.compact-project-page .toolbar{margin-bottom:var(--section-gap)}
+.compact-project-page .docs{gap:var(--section-gap)}
+.compact-project-page .overview .panel{margin-bottom:var(--section-gap)}
+.compact-project-page .overview .stats{gap:var(--card-gap)}
+.compact-project-page .panel>h3,.compact-project-page .panel>.row-line{margin-bottom:16px}
+.compact-project-page .panel>p.muted{margin-bottom:20px}
+.compact-project-page .panel>.settings-grid{gap:var(--card-gap);margin-bottom:18px}
+.compact-project-page .setting-row{padding:19px 0}
+.compact-project-page .setting-row:first-of-type{margin-top:10px}
+.tasks-page .toolbar{margin-bottom:var(--card-gap)}
+.tasks-page .board{gap:var(--card-gap)}
+.tasks-page .lane{padding:14px}
+.tasks-page .cards{gap:13px}
+.tasks-page .task-card{padding:16px}
+.tasks-page .merge-report{margin-bottom:var(--card-gap)}
+.task-dialog-wide .task-details{padding:var(--page-gutter)}
+.task-dialog-wide .task-questions{margin:18px 0}
+.task-dialog-wide .task-metadata{margin-top:20px}
+.task-dialog-wide .task-git-ref{margin:16px 0}
+.project-chat .assistant-thread,.task-conversation .assistant-thread{gap:14px}
+@media(max-width:850px){
+ :root{--page-gutter:16px;--section-gap:16px;--card-gap:12px}
+ .compact-project-page,.tasks-page{padding:var(--page-gutter)}
+ .compact-project-page .panel{padding:18px}
+ .tasks-page .board{gap:var(--card-gap)}
+ .task-dialog-wide .task-details{padding:var(--page-gutter)}
+}
