@@ -413,7 +413,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
  async function openTask(t:Task){setActiveTask({...t});setEditingField(null);setTaskFeedback('');setEvents([]);if(selected){try{setEvents(await api('/projects/'+selected.id+'/tasks/'+t.id+'/events'));}catch(e){fail(e);}}}
- async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false,error:e instanceof Error?e.message:'Не удалось проверить Codex'});}}
+ async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false});fail(e);}}
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
@@ -461,7 +461,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <section className="panel codex-panel">
   <div className="row-line"><h3>Лимиты Codex · ChatGPT</h3><button className="secondary" disabled={rateLimitsBusy} onClick={()=>void refreshRateLimits()}>{rateLimitsBusy?'Обновление…':'Обновить'}</button></div>
   <p className="muted">Данные текущего подключённого аккаунта Codex: использованная доля лимита и время его сброса. Это не лимит сообщений обычного ChatGPT и не ручные ограничения сервиса.</p>
-  {rateLimitsError&&<p className="error">{rateLimitsError}</p>}
+
   {rateLimits&&!rateLimits.windows.length&&<p className="muted">Codex не предоставил доступных окон лимитов для этого аккаунта.</p>}
   {rateLimits?.windows.map(bucket=><div className="codex-limit-bucket" key={bucket.id}>
    <strong>{bucket.name||bucket.id}{bucket.planType?' · '+bucket.planType:''}</strong>
