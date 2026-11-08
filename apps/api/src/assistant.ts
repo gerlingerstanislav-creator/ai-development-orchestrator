@@ -37,13 +37,13 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(typeof data.message!=='string'||!data.message.trim())throw new Error('Codex вернул пустой ответ');
   return {text:data.message.trim().slice(0,16000),usage:data.usage as {input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined};
  }
- async function history(id:string,taskId:string|null){
-  const r=await pool.query('SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NOT DISTINCT FROM $2 ORDER BY created_at DESC LIMIT 10',[id,taskId]);
+ async function history(id:string,taskId:string|null,channel:'project'|'documentation'='project'){
+  const r=await pool.query('SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NOT DISTINCT FROM $2 AND channel=$3 ORDER BY created_at DESC LIMIT 10',[id,taskId,channel]);
   return r.rows.reverse().map(x=>x.role+': '+x.body.slice(0,1600)).join('\n\n');
  }
- async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null){
-  await pool.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
-   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument]);
+ async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null,channel:'project'|'documentation'='project'){
+  await pool.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel]);
  }
  async function storeTokenUsage(id:string,taskId:string|null,model:string,usage:{input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined){
   if(!usage)return;
@@ -56,13 +56,15 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
  app.get('/api/projects/:id/assistant/messages',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
-  return (await pool.query('SELECT id,role,body,created_task_id,created_document_id,created_at FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL ORDER BY created_at ASC LIMIT 100',[id])).rows;
+  const {mode}=z.object({mode:z.enum(['project','documentation']).default('project')}).parse(req.query);
+  return (await pool.query('SELECT id,role,body,created_task_id,created_document_id,created_at FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at ASC LIMIT 100',[id,mode])).rows;
  });
  app.post('/api/projects/:id/assistant',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {message}=messageSchema.parse(req.body);
-  const conversation=await history(id,null);
+  const {message,mode}=messageSchema.extend({mode:z.enum(['project','documentation']).default('project')}).parse(req.body);
+  const documentationMode=mode==='documentation';
+  const conversation=await history(id,null,mode);
   // Explicit project-document actions always outrank references to GitHub in older messages.
   // A clarification like "I mean documents in our project" continues the last document command.
   const documentAction=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи|сделай|сформируй)\s+(?:(?:нов(?:ый|ую|ое)|отдельн(?:ый|ую|ое))\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел(?:\s+документации)?|описание\s+проекта)(?![а-яёa-z])|(?:документ|страниц[ауеы]|документаци[юи]|раздел)\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i;
@@ -81,16 +83,16 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    &&/(?:перенес|перенести|импортир|загруз|скопир|взял|возьми|забер|собер|созда|сформир|сдела|генерир|переработ|подготов|перетащ)/i.test(message)
    &&!/(?:создай|создать|добавь|добавить)\s+.{0,60}(?:задач|таск)/i.test(message);
   const sourceSpecified=!!location;
-  if(docImportIntent&&!sourceSpecified&&!localDocumentIntent){
+  if((docImportIntent||documentationMode&&/(?:импорт|загруз|перенес|из\\s+другого|источник)/i.test(message))&&!sourceSpecified&&!localDocumentIntent){
    const answer='Могу сделать это в разделе «Документация» текущего проекта. Уточни источник: пришли ссылку на папку GitHub с исходными Markdown-файлами (например, https://github.com/owner/repo/tree/main/docs) либо укажи путь к каталогу Markdown в подключённом репозитории. Также могу (1) переработать материалы в новый структурированный набор — рекомендую этот вариант, или (2) скопировать исходные файлы без изменений. Как поступим?';
-   await store(id,null,uid(req),'user',message);
-   await store(id,null,null,'assistant',answer);
+   await store(id,null,uid(req),'user',message,null,null,mode);
+   await store(id,null,null,'assistant',answer,null,null,mode);
    return {message:answer,created_task_id:null,created_document_id:null};
   }
   const synthesize=wantsDocumentSynthesis(message,conversation)||
    !!location&&/(?:перенес|импортир|загруз|созда|сформир|сдела|подготов)/i.test(message)&&
    /(?:документ|страниц|на основе|на базе|из репозитория)/i.test(message);
-  if(synthesize&&!localDocumentIntent){
+  if((synthesize||documentationMode&&!!location&&!localDocumentIntent)&&!localDocumentIntent){
    if(!location)return reply.code(409).send({error:'Для создания документов на основе GitHub пришли ссылку на исходный каталог, например https://github.com/owner/repo/tree/main/docs'});
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта: для переработки документации требуется Codex.'});
@@ -160,13 +162,89 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      await client.query('COMMIT');
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
     const answer='Создан новый набор документов на основе материалов из '+location.owner+'/'+location.repository+': '+structure.documents.length+' тематических страниц. AI переработал исходные материалы и разместил их в разделе «Документация» проекта. '+(structure.notes?'\n\nПримечания: '+structure.notes:'');
-    await store(id,null,uid(req),'user',message);
-    await store(id,null,null,'assistant',answer,null,rootId!);
+    await store(id,null,uid(req),'user',message,null,null,mode);
+    await store(id,null,null,'assistant',answer,null,rootId!,mode);
     await countCall(id,uid(req));
     return {message:answer,created_task_id:null,created_document_id:rootId!,generated_documents:structure.documents.length};
    }catch(error){
     const reason=error instanceof Error?error.message:'Неизвестная ошибка';
     return reply.code(409).send({error:'Не удалось создать набор документов: '+reason.slice(0,600)});
+   }
+  }
+  // Documentation workspace: discuss requirements and atomically apply structured edits.
+  // The model is a planner, not a database writer; only validated operations are executed.
+  if(documentationMode){
+   const config=await configuration(id);
+   if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта'});
+   const project=(await pool.query('SELECT name,description FROM projects WHERE id=$1',[id])).rows[0];
+   const docs=(await pool.query('SELECT id,title,body,parent_id FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 80',[id])).rows;
+   const rules=await rulesContext(id);
+   const prompt=[
+    'Ты AI-редактор документации проекта. Ведёшь диалог, выясняешь требования и после каждого содержательного ответа СОЗДАЁШЬ или ОБНОВЛЯЕШЬ тематические страницы документации внутри приложения.',
+    'Верни только JSON: {"reply":"ответ пользователю и при необходимости уточняющий вопрос","operations":[{"op":"create","key":"new-overview","title":"Название","body":"Markdown","parent_id":null,"parent_key":null},{"op":"update","id":"UUID существующего документа","title":"Название","body":"ПОЛНОЕ новое содержимое Markdown","parent_id":null}]}',
+    'Не удаляй страницы. Существующие документы обновляй бережно: сохраняй подтверждённые сведения, не перезаписывай их гипотезами.',
+    'Создавай новые страницы только при достаточном содержании. Если информации мало, задай один конкретный вопрос и верни operations: [].',
+    'Каждую новую страницу можно вложить в уже существующий документ через parent_id (UUID), или в созданную В ЭТОМ ЖЕ ОТВЕТЕ страницу через parent_key (её key). Все созданные key должны быть уникальными. Сначала родители, потом потомки.',
+    'Поле id для update выбирай только из существующих UUID. Для create id не нужно. Не используй ключи, которых не существует.',
+    'Не утверждай, что сохранил изменения, если operations пуст. Не пиши в GitHub. Размещай содержимое только в документации проекта.',
+    'Не выдумывай факты. Непроверенное обозначай как гипотезу или вопрос, не смешивая с утверждёнными решениями.',
+    'Если пользователь присылает ссылку на внешний источник, не придумывай его содержимое и попроси поддерживаемую GitHub-ссылку на каталог Markdown, если она не передана.',
+    'Проект: '+String(project?.name||''),
+    'Описание: '+String(project?.description||'').slice(0,3500),
+    'Правила: '+rules.slice(0,6000),
+    'Существующие страницы: '+JSON.stringify(docs.map((d:any)=>({...d,body:String(d.body).slice(0,5000)}))).slice(0,54000),
+    'Диалог:\n'+conversation.slice(-12000),
+    'Последнее сообщение:\n'+message
+   ].join('\n\n');
+   try{
+    const result=await completion(prompt,config);
+    const output=z.object({
+     reply:z.string().trim().min(1).max(4000),
+     operations:z.array(z.discriminatedUnion('op',[
+      z.object({op:z.literal('create'),key:z.string().regex(/^[a-zA-Z0-9_-]{1,60}$/),title:z.string().trim().min(2).max(180),body:z.string().trim().min(10).max(15000),parent_id:z.string().uuid().nullable().optional(),parent_key:z.string().nullable().optional()}),
+      z.object({op:z.literal('update'),id:z.string().uuid(),title:z.string().trim().min(2).max(180),body:z.string().trim().min(10).max(15000),parent_id:z.string().uuid().nullable().optional()})
+     ])).max(12)
+    }).parse(jsonObject(result.text));
+    const known=new Set<string>(docs.map((d:any)=>d.id));
+    const ids=new Map<string,string>();
+    const prepared:Array<{id:string;op:'create'|'update';title:string;body:string;parentId:string|null;key?:string}>=[];
+    const seenKeys=new Set<string>();
+    for(const op of output.operations){
+     if(op.op==='update'){
+      if(!known.has(op.id))throw Error('AI сослался на несуществующую страницу документации');
+      const original=docs.find((d:any)=>d.id===op.id);
+      const parent=op.parent_id===undefined?(original?.parent_id||null):op.parent_id;
+      if(parent!==null&&!known.has(parent))throw Error('Неизвестный родитель документа');
+      if(parent===op.id)throw Error('Документ не может быть вложен в самого себя');
+      prepared.push({id:op.id,op:'update',title:op.title,body:op.body,parentId:parent});
+     }else{
+      if(seenKeys.has(op.key))throw Error('Дублирующийся ключ новой страницы');
+      const parent=op.parent_key?ids.get(op.parent_key):op.parent_id||null;
+      if(op.parent_key&&!parent)throw Error('Родительская страница должна быть создана раньше дочерней');
+      if(parent!==null&&!known.has(parent)&&![...ids.values()].includes(parent))throw Error('Неизвестный родитель новой страницы');
+      const newId=randomUUID();ids.set(op.key,newId);seenKeys.add(op.key);
+      prepared.push({id:newId,op:'create',title:op.title,body:op.body,parentId:parent,key:op.key});
+     }
+    }
+    const client=await pool.connect();
+    try{
+     await client.query('BEGIN');
+     for(const op of prepared){
+      if(op.op==='create')await client.query('INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,$3,$4,$5)',[op.id,id,op.title,op.body,op.parentId]);
+      else await client.query('UPDATE documents SET title=$3,body=$4,parent_id=$5,updated_at=now() WHERE id=$1 AND project_id=$2',[op.id,id,op.title,op.body,op.parentId]);
+     }
+     await client.query('COMMIT');
+    }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+    const made=prepared.filter(x=>x.op==='create').length,changed=prepared.filter(x=>x.op==='update').length;
+    const answer=output.reply+(prepared.length?'\n\nДокументация обновлена: создано '+made+', изменено '+changed+' страниц.':'');
+    const documentId=prepared[0]?.id||null;
+    await store(id,null,uid(req),'user',message,null,null,mode);
+    await store(id,null,null,'assistant',answer,null,documentId,mode);
+    await storeTokenUsage(id,null,config.model,result.usage);
+    await countCall(id,uid(req));
+    return {message:answer,created_task_id:null,created_document_id:documentId,changed_documents:prepared.length};
+   }catch(error){
+    return reply.code(409).send({error:'Не удалось обработать документацию: '+String(error instanceof Error?error.message:error).slice(0,500)});
    }
   }
   const config=await configuration(id);
