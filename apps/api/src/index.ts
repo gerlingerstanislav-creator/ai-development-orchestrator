@@ -543,8 +543,12 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  }
  if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
- if(pr.mergeable!==true || ['dirty','blocked','unknown'].includes(pr.mergeable_state))
-  throw Object.assign(new Error('PR содержит конфликт или ещё не готов к слиянию; обнови статус GitHub'),{statusCode:409});
+ if(pr.mergeable===null || pr.mergeable_state==='unknown')
+  throw Object.assign(new Error('GitHub ещё вычисляет mergeability PR, повторная проверка необходима'),{statusCode:409});
+ if(pr.mergeable===false || pr.mergeable_state==='dirty')
+  throw Object.assign(new Error('PR содержит конфликт с целевой веткой'),{statusCode:409});
+ if(pr.mergeable_state==='blocked')
+  throw Object.assign(new Error('PR заблокирован правилами GitHub или проверками'),{statusCode:409});
  // Best-effort CI inspection. Fine-grained tokens may lack Checks access;
  // GitHub still enforces branch protection and required checks on the merge API.
  // Never treat an inaccessible check endpoint as proof that CI has passed.
@@ -657,6 +661,8 @@ async function runMergeBatch(batch:MergeBatch,userId:string){
      batch.results.push({taskId:task.id,status:'merged'});success=true;break;
     }catch(e){
      reason=e instanceof Error?e.message:String(e);
+     const isPending=/ещё вычисляет mergeability/i.test(reason);
+     if(isPending&&retry<2){await new Promise(resolve=>setTimeout(resolve,3000));continue;}
      const isConflict=/merge conflicts|содержит конфликт|mergeable.*dirty|GitHub отклонил слияние.*conflict/i.test(reason);
      if(!isConflict||retry>=2)break;
      try{
