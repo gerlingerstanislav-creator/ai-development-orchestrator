@@ -297,3 +297,16 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .docs-markdown th{background:#f5f7fa;color:#48556a;font-weight:700}
 .docs-markdown tr:last-child td{border-bottom:0}
 .docs-markdown th:last-child,.docs-markdown td:last-child{border-right:0}
+
+/* Non-blocking error notifications stay above modals and the project chat. */
+.error-toast{position:fixed;bottom:86px;right:20px;z-index:10000;display:flex;gap:13px;align-items:flex-start;width:min(390px,calc(100vw - 32px));padding:14px 14px 14px 16px;border-radius:10px;background:#fff;border:1px solid #f2bdc7;border-left:4px solid #d94a62;color:#873547;box-shadow:0 15px 45px #13244130;font-size:13px;line-height:1.5;overflow-wrap:anywhere;animation:error-toast-in .2s ease-out}
+.error-toast span{min-width:0;flex:1}
+.error-toast button{flex:0 0 26px;border:0;background:transparent;color:inherit;opacity:.8;padding:3px;display:grid;place-items:center}
+.error-toast button:hover{opacity:1;background:#fff0f3;border-radius:5px}
+@keyframes error-toast-in{from{opacity:0;transform:translateY(9px)}to{opacity:1;transform:translateY(0)}}
+/* Text input takes the full composer width; only the Send icon remains. */
+.project-chat .assistant-composer{gap:6px;padding:9px;align-items:flex-end}
+.project-chat .assistant-composer textarea{flex:1 1 auto;width:0;min-width:0;min-height:56px;max-height:190px;padding:10px 11px}
+.project-chat .assistant-composer .assistant-send-icon{flex:0 0 34px;width:34px;height:34px;min-height:34px;padding:0;display:grid;place-items:center;border-radius:8px}
+.project-chat .assistant-composer .assistant-send-icon svg{width:17px;height:17px}
+@media(max-width:700px){.error-toast{right:10px;bottom:75px;width:min(390px,calc(100vw - 20px))}}
