@@ -13,13 +13,14 @@ const jwtKey = new TextEncoder().encode(process.env.JWT_SECRET || '');
 const keyText = process.env.CREDENTIALS_KEY || '';
 const encryptionKey = Buffer.from(keyText, 'hex');
 if (!process.env.JWT_SECRET || jwtKey.length < 32 || encryptionKey.length !== 32) throw Error('Set secure JWT_SECRET and 64-char hex CREDENTIALS_KEY');
-const validStages = z.enum(['backlog','analysis','development','testing','done']);
+const validStages = z.enum(['backlog','analysis','development','testing','merge_queue','done']);
 const validMode = z.enum(['automatic','approval','manual']);
 const workflowDefaults = [
   ['backlog','Бэклог','manual'],
   ['analysis','Анализ','approval'],
   ['development','Разработка','approval'],
   ['testing','Тестирование','approval'],
+  ['merge_queue','Ожидает слияния','manual'],
   ['done','Готово','manual']
 ] as const;
 async function dbInit() {
@@ -29,6 +30,12 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
  CREATE TABLE IF NOT EXISTS tasks (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, description text not null default '', type text not null default 'task', stage text not null default 'backlog', parent_id uuid references tasks(id) on delete set null, position int not null default 0, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS analysis_state text NOT NULL DEFAULT 'new';
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS related_task_ids jsonb NOT NULL DEFAULT '[]'::jsonb;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS git_branch text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number int;
  CREATE TABLE IF NOT EXISTS task_events (id uuid primary key, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), event text not null, detail text not null default '', created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS documents (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, body text not null default '', updated_at timestamptz not null default now());
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS parent_id uuid REFERENCES documents(id) ON DELETE SET NULL;
@@ -36,6 +43,12 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS connections (id uuid primary key, owner_id uuid not null references users(id), name text not null, provider text not null, secret_encrypted text not null, created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS project_connections (project_id uuid references projects(id) on delete cascade, connection_id uuid references connections(id) on delete cascade, primary key(project_id,connection_id));
  CREATE TABLE IF NOT EXISTS project_git_repositories (project_id uuid primary key references projects(id) on delete cascade, connection_id uuid not null references connections(id), repository text not null, default_branch text not null, updated_at timestamptz not null default now());
+ ALTER TABLE project_git_repositories ADD COLUMN IF NOT EXISTS target_branch text;
+ UPDATE project_git_repositories SET target_branch=default_branch WHERE target_branch IS NULL;
+ INSERT INTO workflow_stages(project_id,stage,label,mode,position)
+ SELECT p.id,'merge_queue','Ожидает слияния','manual',4 FROM projects p
+ ON CONFLICT(project_id,stage) DO NOTHING;
+ UPDATE workflow_stages SET position=5 WHERE stage='done';
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  CREATE INDEX IF NOT EXISTS idx_assistant_messages_project ON assistant_messages(project_id,task_id,created_at);
  CREATE TABLE IF NOT EXISTS assistant_usage (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, actor_id uuid not null references users(id), created_at timestamptz not null default now());
@@ -139,13 +152,13 @@ async function gitHubRepository(token:string,name:string) {
 app.get('/api/projects/:id/git',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const r=await pool.query('SELECT g.repository,g.default_branch,g.connection_id,c.name AS connection_name FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2',[id,uid(req)]);
+ const r=await pool.query('SELECT g.repository,g.default_branch,g.target_branch,g.connection_id,c.name AS connection_name FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2',[id,uid(req)]);
  return r.rows[0]||null;
 });
 app.put('/api/projects/:id/git',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const {repository,connectionId}=parse(z.object({repository:repositoryNameSchema,connectionId:z.string().uuid()}),req.body);
+ const {repository,connectionId,targetBranch}=parse(z.object({repository:repositoryNameSchema,connectionId:z.string().uuid(),targetBranch:z.string().regex(/^[a-zA-Z0-9_./-]{1,150}$/).optional()}),req.body);
  const r=await pool.query('SELECT provider,secret_encrypted FROM connections WHERE id=$1 AND owner_id=$2',[connectionId,uid(req)]);
  if(!r.rowCount || r.rows[0].provider!=='github_token')return reply.code(400).send({error:'Выбери своё подключение типа GitHub token'});
  const packed=Buffer.from(r.rows[0].secret_encrypted,'base64');
@@ -155,8 +168,12 @@ app.put('/api/projects/:id/git',async(req:any,reply)=>{
  let info;
  try{info=await gitHubRepository(token,repository);}
  catch(e){const err=e as Error & {statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message||'Ошибка проверки GitHub'});}
- await pool.query('INSERT INTO project_git_repositories(project_id,connection_id,repository,default_branch) VALUES($1,$2,$3,$4) ON CONFLICT(project_id) DO UPDATE SET connection_id=$2,repository=$3,default_branch=$4,updated_at=now()',[id,connectionId,info.name,info.branch]);
- return {repository:info.name,default_branch:info.branch,connection_id:connectionId,can_push:info.canPush,private:info.private};
+ const branch=targetBranch||info.branch;
+ const branchCheck=await fetch('https://api.github.com/repos/'+info.name+'/branches/'+encodeURIComponent(branch),{headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},signal:AbortSignal.timeout(12000)});
+ if(!branchCheck.ok)return reply.code(400).send({error:'Целевая ветка GitHub не найдена или недоступна'});
+ await pool.query('INSERT INTO project_git_repositories(project_id,connection_id,repository,default_branch,target_branch) VALUES($1,$2,$3,$4,$5) ON CONFLICT(project_id) DO UPDATE SET connection_id=$2,repository=$3,default_branch=$4,target_branch=$5,updated_at=now()',[id,connectionId,info.name,info.branch,branch]);
+
+ return {repository:info.name,default_branch:info.branch,target_branch:branch,connection_id:connectionId,can_push:info.canPush,private:info.private};
 });
 app.delete('/api/projects/:id/git',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
@@ -228,19 +245,20 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const t=await pool.query('SELECT id,title,description FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const t=await pool.query('SELECT id,title,description,stage,analysis_state FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+ if(t.rows[0].stage!=='development'||t.rows[0].analysis_state!=='approved')return reply.code(409).send({error:'Подтверди завершение анализа и отправь задачу в разработку'});
  const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,daily_run_limit,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
  const ai=settings.rows[0]||aiDefaults;
  if(!ai.enabled)return reply.code(409).send({error:'Включи ручной запуск AI в настройках проекта'});
  const usage=await pool.query("SELECT count(*)::int AS count FROM ai_task_runs WHERE project_id=$1 AND created_at > now() - interval '24 hours'",[id]);
  if(usage.rows[0].count >= ai.daily_run_limit)return reply.code(429).send({error:'Достигнут дневной лимит AI-запусков этого проекта'});
- const git=await pool.query("SELECT g.repository,g.default_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2 AND c.provider='github_token'",[id,uid(req)]);
+ const git=await pool.query("SELECT g.repository,g.default_branch,g.target_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2 AND c.provider='github_token'",[id,uid(req)]);
  if(!git.rowCount)return reply.code(409).send({error:'Сначала привяжи GitHub-репозиторий с токеном'});
  const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND status IN ('queued','running') LIMIT 1",[id]);
  if(active.rowCount)return reply.code(409).send({error:'В этом проекте уже выполняется AI-задача'});
  const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
- const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:git.rows[0].default_branch,
+ const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:git.rows[0].target_branch||git.rows[0].default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:ai.max_runtime_seconds,
   title:t.rows[0].title,description:t.rows[0].description};
  await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status) VALUES($1,$2,$3,$4,$5,'queued')",
@@ -267,6 +285,10 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
    if(['completed','failed'].includes(remote.status)){
     await pool.query('UPDATE ai_task_runs SET status=$2,branch=$3,pr_url=$4,message=$5,completed_at=now() WHERE id=$1',
      [runId,remote.status,remote.branch||null,remote.prUrl||null,String(remote.message||'').slice(0,2000)]);
+    if(remote.status==='completed'&&remote.prUrl){
+     const prMatch=/\/pull\/(\d+)$/.exec(remote.prUrl);
+     await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,updated_at=now() WHERE id=$1 AND project_id=$5",[current.task_id,remote.branch,remote.prUrl,prMatch?Number(prMatch[1]):null,id]);
+    }
     return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
    }
    return {...current,status:remote.status,message:remote.message||''};
