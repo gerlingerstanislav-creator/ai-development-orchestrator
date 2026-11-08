@@ -35,7 +35,7 @@ function runLogin(){
 }
 function deviceInfo(){
  const output=safeText();
- const url=output.match(/https:\/\/[^\s"'<>]+/i)?.[0]||null;
+ const url=output.match(/https:\/\/[^\s"'<>()]+/i)?.[0]||null;
  // Device code is displayed only to the authenticated administrator.
  const code=output.match(/\b[A-Z0-9]{4}(?:-[A-Z0-9]{4}){1,3}\b/i)?.[0]||null;
  return {state:loginState,url,code,instructions:output,startedAt:started||null};
