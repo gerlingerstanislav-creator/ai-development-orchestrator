@@ -64,8 +64,10 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const conversation=await history(id,null);
   let prompt:string;
+  let existingIds:string[]=[];
   if(create){
    const existing=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
+   existingIds=existing.rows.map((t:{id:string})=>t.id);
    const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 10',[id]);
    prompt=['Составь одну задачу разработки по запросу пользователя. Ответь ТОЛЬКО JSON без Markdown.',
     'Формат: {"title":"краткое название","description":"конкретное ТЗ и критерии приёмки","questions":["только блокирующие вопросы"],"related_ids":["UUID существующих похожих задач"],"relation_reason":"объяснение потенциальных пересечений"}.',
@@ -94,7 +96,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     relation_reason:z.string().max(1500).optional()
    }).parse(jsonObject(raw));
    taskId=randomUUID();
-   const related=data.related_ids.filter(x=>existing.rows.some(t=>t.id===x));
+   const related=data.related_ids.filter(x=>existingIds.includes(x));
    const state=data.questions.length?'needs_clarification':'ready_for_development';
    await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state,clarification_questions,related_task_ids) VALUES($1,$2,$3,$4,'task','analysis',$5,$6,$7)",
      [taskId,id,data.title,data.description,state,JSON.stringify(data.questions),JSON.stringify(related)]);
