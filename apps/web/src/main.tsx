@@ -64,6 +64,20 @@ function DocumentMarkdown({source}:{source:string}){
    result.push(level===1?<h1 {...props}>{contents}</h1>:level===2?<h2 {...props}>{contents}</h2>:level===3?<h3 {...props}>{contents}</h3>:<h4 {...props}>{contents}</h4>);
    index++;continue;
   }
+  if(line.trim().startsWith('|')&&index+1<rows.length&&
+     /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(rows[index+1])){
+   const cells=(value:string)=>value.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(x=>x.trim());
+   const headings=cells(line);
+   index+=2;
+   const content:React.ReactNode[]=[];
+   while(index<rows.length&&rows[index].trim().startsWith('|')){
+    const values=cells(rows[index]);
+    content.push(<tr key={'row-'+index}>{headings.map((_,col)=><td key={col}>{markdownInline(values[col]||'')}</td>)}</tr>);
+    index++;
+   }
+   result.push(<div key={'table-'+index} className="docs-table-wrap"><table><thead><tr>{headings.map((h,col)=><th key={col}>{markdownInline(h)}</th>)}</tr></thead><tbody>{content}</tbody></table></div>);
+   continue;
+  }
   if(/^\s*([-*+] |\d+\. )/.test(line)){
    const ordered=/^\s*\d+\. /.test(line);
    const items:React.ReactNode[]=[];
