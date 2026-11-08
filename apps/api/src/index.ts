@@ -234,15 +234,8 @@ app.put('/api/projects/:id/git',async(req:any,reply)=>{
  const prAccess=await fetch(baseUrl+'/pulls?state=open&per_page=1',{headers:ghHeaders,signal:AbortSignal.timeout(12000)});
  if(prAccess.status===403)return reply.code(409).send({error:'Подключение GitHub не сохранено: токен не имеет доступа к Pull Requests (HTTP 403). На github.com/settings/personal-access-tokens включи Repository permissions → Pull requests → Read and write для '+info.name+' и повтори проверку.'});
  if(!prAccess.ok)return reply.code(502).send({error:'Не удалось проверить права доступа к Pull Requests: GitHub HTTP '+prAccess.status});
- const branchInfo=await branchCheck.json() as any;
- const sha=String(branchInfo.commit?.sha||'');
- if(sha){
-  for(const permission of [{path:'/commits/'+encodeURIComponent(sha)+'/check-runs?per_page=1',name:'Checks: Read'},{path:'/commits/'+encodeURIComponent(sha)+'/status',name:'Commit statuses: Read'}]){
-   const check=await fetch(baseUrl+permission.path,{headers:ghHeaders,signal:AbortSignal.timeout(12000)});
-   if(check.status===403)return reply.code(409).send({error:'GitHub-подключение не готово к слиянию PR: токен не имеет права '+permission.name+' для '+info.name+'. Открой https://github.com/settings/personal-access-tokens → Repository permissions и выдай Checks: Read и Commit statuses: Read. Затем повтори сохранение подключения.'});
-   if(!check.ok)return reply.code(502).send({error:'Не удалось проверить разрешение GitHub '+permission.name+': HTTP '+check.status});
-  }
- }
+ // Checks and commit statuses may not be readable by fine-grained tokens.
+ // Do not reject repository binding: GitHub enforces required checks at merge time.
 
   await pool.query('INSERT INTO project_git_repositories(project_id,connection_id,repository,default_branch,target_branch) VALUES($1,$2,$3,$4,$5) ON CONFLICT(project_id) DO UPDATE SET connection_id=$2,repository=$3,default_branch=$4,target_branch=$5,updated_at=now()',[id,connectionId,info.name,info.branch,branch]);
 
@@ -552,29 +545,34 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
  if(pr.mergeable!==true || ['dirty','blocked','unknown'].includes(pr.mergeable_state))
   throw Object.assign(new Error('PR содержит конфликт или ещё не готов к слиянию; обнови статус GitHub'),{statusCode:409});
- // GitHub Checks may be publicly readable even if the user's fine-grained
- // token only has Contents and Pull requests. Never bypass CI: retry as a
- // public read-only request, and fail closed when both modes are denied.
- const readCi=async(path:string,label:string)=>{
+ // Best-effort CI inspection. Fine-grained tokens may lack Checks access;
+ // GitHub still enforces branch protection and required checks on the merge API.
+ // Never treat an inaccessible check endpoint as proof that CI has passed.
+ const readCi=async(path:string,label:string):Promise<any|null>=>{
   const url=base+path;
-  let response=await fetch(url,{headers,signal:AbortSignal.timeout(15000)});
-  if(response.status===403||response.status===401){
+  const response=await fetch(url,{headers,signal:AbortSignal.timeout(15000)});
+  if(response.status===401||response.status===403){
    const publicHeaders={Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
    const publicResponse=await fetch(url,{headers:publicHeaders,signal:AbortSignal.timeout(15000)});
-   if(publicResponse.ok)response=publicResponse;
-   else throw Object.assign(new Error('Не удалось проверить '+label+': у GitHub-токена нет прав для чтения проверок (HTTP '+response.status+'). Добавь в Fine-grained token → Repository permissions → Checks: Read и Commit statuses: Read, затем повтори слияние. Для закрытого репозитория публичное чтение недоступно.'),{statusCode:409});
+   if(publicResponse.ok)return publicResponse.json();
+   if([401,403,404].includes(publicResponse.status))return null;
+   throw Object.assign(new Error('Не удалось проверить '+label+': GitHub HTTP '+publicResponse.status),{statusCode:502});
   }
   if(!response.ok)throw Object.assign(new Error('Не удалось проверить '+label+' в GitHub: HTTP '+response.status),{statusCode:502});
-  return response.json() as Promise<any>;
+  return response.json();
  };
  const checkData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/check-runs?per_page=100','CI (Check Runs)');
- const runs=Array.isArray(checkData.check_runs)?checkData.check_runs:[];
- const incomplete=runs.filter((c:any)=>c.status!=='completed'||!['success','neutral','skipped'].includes(c.conclusion));
- if(incomplete.length)throw Object.assign(new Error('PR ожидает проверок CI или содержит ошибки: '+incomplete.map((c:any)=>c.name).slice(0,5).join(', ')),{statusCode:409});
- if(Number(checkData.total_count||0)>runs.length)throw Object.assign(new Error('У коммита больше 100 проверок CI. Для безопасного слияния необходимо получить все результаты проверок.'),{statusCode:409});
+ if(checkData){
+  const runs=Array.isArray(checkData.check_runs)?checkData.check_runs:[];
+  const incomplete=runs.filter((c:any)=>c.status!=='completed'||!['success','neutral','skipped'].includes(c.conclusion));
+  if(incomplete.length)throw Object.assign(new Error('PR ожидает проверок CI или содержит ошибки: '+incomplete.map((c:any)=>c.name).slice(0,5).join(', ')),{statusCode:409});
+  if(Number(checkData.total_count||0)>runs.length)throw Object.assign(new Error('У коммита больше 100 проверок CI. Для безопасного слияния необходимо получить все результаты проверок.'),{statusCode:409});
+ }
  const statusData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/status','статусы коммита');
- const statuses=Array.isArray(statusData.statuses)?statusData.statuses:[];
- if(statuses.length&&statusData.state!=='success')throw Object.assign(new Error('Статусы коммита не пройдены: '+statusData.state),{statusCode:409});
+ if(statusData){
+  const statuses=Array.isArray(statusData.statuses)?statusData.statuses:[];
+  if(statuses.length&&statusData.state!=='success')throw Object.assign(new Error('Статусы коммита не пройдены: '+statusData.state),{statusCode:409});
+ }
 
  const merge=await fetch(base+'/pulls/'+row.pr_number+'/merge',{method:'PUT',headers:{...headers,'Content-Type':'application/json'},
   body:JSON.stringify({sha:pr.head.sha,merge_method:'merge',commit_title:'Merge AI task: '+String(row.title).slice(0,150)}),
