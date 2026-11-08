@@ -19,9 +19,9 @@ type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|n
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[]};
-type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run';text:string;time:string;title?:string;link?:string;status?:string};
+type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','merge_queue','documentation','done'];
@@ -216,7 +216,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
  function timeline(taskId:string):ActivityItem[]{
   return [
-   ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString()})),
+   ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
    ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:ev.event==='created'?'Задача создана':ev.event==='analyzed'?'Анализ обновлён':ev.event==='merged'?'PR слит':ev.event==='documentation_updated'?'Документация обновлена':'Изменение задачи',text:ev.detail,time:ev.created_at})),
    ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined}))
   ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
@@ -427,18 +427,32 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>clearInterval(timer);
  },[token,selected?.id,aiRuns,activeTask?.id]);
  async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
-  const message=projectInput.trim();setProjectChatBusy(true);
-  try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message})});
-   setProjectMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:message},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id}]);
-   setProjectInput('');if(response.created_task_id||response.created_document_id)await loadProject(selected.id);
-  }catch(e){fail(e);}finally{setProjectChatBusy(false);}
+  const projectId=selected.id,message=projectInput.trim(),optimisticId='pending-'+crypto.randomUUID();
+  setProjectMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
+  setProjectInput('');setProjectChatBusy(true);
+  try{
+   const response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({message})});
+   setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
+    {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
+   if(response.created_task_id||response.created_document_id)await loadProject(projectId);
+  }catch(e){
+   setProjectMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
+   fail(e);
+  }finally{setProjectChatBusy(false);}
  }
  async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
-  const message=taskInput.trim();setTaskChatBusy(true);
-  try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
-   setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:message},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message}]);
-   setTaskInput('');await refreshTaskActivity(selected.id,activeTask.id);
-  }catch(e){fail(e);}finally{setTaskChatBusy(false);}
+  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim(),optimisticId='pending-'+crypto.randomUUID();
+  setTaskMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
+  setTaskInput('');setTaskChatBusy(true);
+  try{
+   const response=await api<AssistantResponse>('/projects/'+projectId+'/tasks/'+taskId+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
+   setTaskMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
+    {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_at:new Date().toISOString()}]);
+   await refreshTaskActivity(projectId,taskId);
+  }catch(e){
+   setTaskMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
+   fail(e);
+  }finally{setTaskChatBusy(false);}
  }
  async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
   const taskId=activeTask.id;
@@ -689,6 +703,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
       <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
       <div>{m.body}</div>
+      {m.pending&&<small className="chat-message-status">Отправляется…</small>}
+      {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
       {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setProjectChatOpen(false);}}>Открыть документ</button>}
     </div>)}
@@ -772,6 +788,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {timeline(activeTask.id).map(item=><div key={item.id} className={'assistant-bubble '+(item.kind==='user'?'mine':item.kind==='event'?'activity-event':item.kind==='run'?'activity-run':'bot')}>
        <span className="assistant-author">{item.kind==='user'?'Вы':item.kind==='assistant'?'AI':item.kind==='run'?item.title:item.title} · {new Date(item.time).toLocaleString('ru-RU')}</span>
        <div>{item.text}</div>
+       {item.pending&&<small className="chat-message-status">Отправляется…</small>}
+       {item.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
        {item.link&&<a href={item.link} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
       </div>)}
       {aiRuns.filter(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status)).map(r=><div className="task-execution-live" key={'live-'+r.id}>
