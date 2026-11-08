@@ -542,11 +542,30 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
  if(pr.mergeable!==true || ['dirty','blocked','unknown'].includes(pr.mergeable_state))
   throw Object.assign(new Error('PR содержит конфликт или ещё не готов к слиянию; обнови статус GitHub'),{statusCode:409});
- const checks=await fetch(base+'/commits/'+encodeURIComponent(pr.head.sha)+'/check-runs?per_page=100',{headers,signal:AbortSignal.timeout(15000)});
- if(!checks.ok)throw Object.assign(new Error('Не удалось проверить CI в GitHub: HTTP '+checks.status),{statusCode:502});
- const checkData=await checks.json() as any;
- const bad=(checkData.check_runs||[]).filter((c:any)=>c.status!=='completed'||!['success','neutral','skipped'].includes(c.conclusion));
- if(bad.length)throw Object.assign(new Error('PR ожидает проверок CI или есть ошибки: '+bad.map((c:any)=>c.name).slice(0,5).join(', ')),{statusCode:409});
+ // GitHub Checks may be publicly readable even if the user's fine-grained
+ // token only has Contents and Pull requests. Never bypass CI: retry as a
+ // public read-only request, and fail closed when both modes are denied.
+ const readCi=async(path:string,label:string)=>{
+  const url=base+path;
+  let response=await fetch(url,{headers,signal:AbortSignal.timeout(15000)});
+  if(response.status===403||response.status===401){
+   const publicHeaders={Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
+   const publicResponse=await fetch(url,{headers:publicHeaders,signal:AbortSignal.timeout(15000)});
+   if(publicResponse.ok)response=publicResponse;
+   else throw Object.assign(new Error('Не удалось проверить '+label+': у GitHub-токена нет прав для чтения проверок (HTTP '+response.status+'). Добавь в Fine-grained token → Repository permissions → Checks: Read и Commit statuses: Read, затем повтори слияние. Для закрытого репозитория публичное чтение недоступно.'),{statusCode:409});
+  }
+  if(!response.ok)throw Object.assign(new Error('Не удалось проверить '+label+' в GitHub: HTTP '+response.status),{statusCode:502});
+  return response.json() as Promise<any>;
+ };
+ const checkData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/check-runs?per_page=100','CI (Check Runs)');
+ const runs=Array.isArray(checkData.check_runs)?checkData.check_runs:[];
+ const incomplete=runs.filter((c:any)=>c.status!=='completed'||!['success','neutral','skipped'].includes(c.conclusion));
+ if(incomplete.length)throw Object.assign(new Error('PR ожидает проверок CI или содержит ошибки: '+incomplete.map((c:any)=>c.name).slice(0,5).join(', ')),{statusCode:409});
+ if(Number(checkData.total_count||0)>runs.length)throw Object.assign(new Error('У коммита больше 100 проверок CI. Для безопасного слияния необходимо получить все результаты проверок.'),{statusCode:409});
+ const statusData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/status','статусы коммита');
+ const statuses=Array.isArray(statusData.statuses)?statusData.statuses:[];
+ if(statuses.length&&statusData.state!=='success')throw Object.assign(new Error('Статусы коммита не пройдены: '+statusData.state),{statusCode:409});
+
  const merge=await fetch(base+'/pulls/'+row.pr_number+'/merge',{method:'PUT',headers:{...headers,'Content-Type':'application/json'},
   body:JSON.stringify({sha:pr.head.sha,merge_method:'merge',commit_title:'Merge AI task: '+String(row.title).slice(0,150)}),
   signal:AbortSignal.timeout(25000)});
