@@ -125,8 +125,30 @@ http.createServer(async(req,res)=>{
   }
   if(req.method==='POST'&&req.url==='/test'){
    if(!(await connected()).connected)return reply(res,409,{error:'Codex ещё не подключён'});
-   const {stdout,stderr}=await execFileAsync('codex',['exec','--ephemeral','--skip-git-repo-check','--sandbox','read-only','Ответь ровно: подключение работает'],{timeout:120000,maxBuffer:30000,cwd:'/opt/codex-runner',env:cliEnv});
-   return reply(res,200,{ok:true,message:stdout.trim().slice(0,1000)});
+   // execFile leaves stdin open as a pipe. Codex then waits for EOF and
+   // prints "Reading additional input from stdin..." instead of starting.
+   // Explicitly disable stdin for unattended execution.
+   const result=await new Promise((resolve,reject)=>{
+    const child=spawn('codex',['exec','--ephemeral','--skip-git-repo-check','--sandbox','read-only','Ответь ровно: подключение работает'],{
+     cwd:'/opt/codex-runner',env:cliEnv,stdio:['ignore','pipe','pipe']
+    });
+    let stdout='',stderr='',finished=false,timedOut=false;
+    const maxOutput=30000;
+    child.stdout.on('data',chunk=>{stdout=(stdout+chunk.toString()).slice(-maxOutput);});
+    child.stderr.on('data',chunk=>{stderr=(stderr+chunk.toString()).slice(-maxOutput);});
+    const timer=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},120000);
+    const settle=(error)=>{
+     if(finished)return;finished=true;clearTimeout(timer);
+     if(error)reject(error);else resolve({stdout,stderr});
+    };
+    child.on('error',settle);
+    child.on('close',(code,signal)=>{
+     if(timedOut)return settle(new Error('Превышено время выполнения Codex (120 секунд). '+stderr.slice(-500)));
+     if(code!==0)return settle(new Error('Codex завершился с кодом '+code+(signal?' ('+signal+')':'')+': '+stderr.slice(-1200)));
+     settle();
+    });
+   });
+   return reply(res,200,{ok:true,message:result.stdout.trim().slice(0,1000)});
   }
   return reply(res,404,{error:'Not found'});
  }catch(e){return reply(res,503,{error:'Codex: '+String(e.message||e).slice(0,300)});}
