@@ -339,6 +339,10 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
   try{
    const remote=await agentCall('/jobs/'+runId);
    const phase=String(remote.message||'').slice(0,1600);
+   if(remote.branch&&remote.branch!==current.branch){
+    await pool.query('UPDATE ai_task_runs SET branch=$2 WHERE id=$1',[runId,remote.branch]);
+    await pool.query('UPDATE tasks SET git_branch=$2 WHERE id=$1 AND project_id=$3',[current.task_id,remote.branch,id]);
+   }
    if(remote.status!==current.status)await pool.query('UPDATE ai_task_runs SET status=$2 WHERE id=$1',[runId,remote.status]);
    if(phase && phase!==current.message){
     await pool.query('UPDATE ai_task_runs SET message=$2 WHERE id=$1',[runId,phase]);
@@ -354,7 +358,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
     }
     return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
    }
-   return {...current,status:remote.status,message:phase,started_at:remote.startedAt||null};
+   return {...current,status:remote.status,branch:remote.branch||current.branch,message:phase,started_at:remote.startedAt||null};
   }catch(e){
    const problem=e instanceof Error?e.message:'ошибка';
    if(problem.includes('Задача не найдена (возможно, исполнитель перезапущен)')){
