@@ -34,7 +34,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const data=await response.json() as any;
   if(!response.ok)throw new Error(String(data.error||'Codex недоступен').slice(0,700));
   if(typeof data.message!=='string'||!data.message.trim())throw new Error('Codex вернул пустой ответ');
-  return data.message.trim().slice(0,16000);
+  return {text:data.message.trim().slice(0,16000),usage:data.usage as {input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined};
  }
  async function history(id:string,taskId:string|null){
   const r=await pool.query('SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NOT DISTINCT FROM $2 ORDER BY created_at DESC LIMIT 10',[id,taskId]);
@@ -43,6 +43,11 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
  async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null){
   await pool.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
    [randomUUID(),id,taskId,actor,role,body,createdTask]);
+ }
+ async function storeTokenUsage(id:string,taskId:string|null,model:string,usage:{input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined){
+  if(!usage)return;
+  await pool.query("INSERT INTO ai_token_usage(id,project_id,task_id,source_id,operation,model,input_tokens,cached_input_tokens,output_tokens) VALUES($1,$2,$3,$4,'chat',$5,$6,$7,$8)",
+   [randomUUID(),id,taskId,randomUUID(),model,Math.max(0,Number(usage.input_tokens)||0),Math.max(0,Number(usage.cached_input_tokens)||0),Math.max(0,Number(usage.output_tokens)||0)]);
  }
  async function countCall(id:string,actor:string){
   await pool.query('INSERT INTO assistant_usage(id,project_id,actor_id) VALUES($1,$2,$3)',[randomUUID(),id,actor]);
@@ -94,7 +99,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'История:\n'+conversation,'Запрос:\n'+message].join('\n\n');
   }
   let raw:string;
-  try{raw=await completion(prompt,config);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
+  try{const response=await completion(prompt,config);raw=response.text;await storeTokenUsage(id,null,config.model,response.usage);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
   let taskId:string|null=null,answer=raw;
   if(create){
    const data=z.object({
@@ -163,7 +168,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    'Ты инженерный AI-помощник внутри задачи. Ответь на русском по существу. Не утверждай, что менял код.',context
   ].join('\n\n');
   let raw:string;
-  try{raw=await completion(prompt,config);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
+  try{const response=await completion(prompt,config);raw=response.text;await storeTokenUsage(id,taskId,config.model,response.usage);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
   let summary:string|null=null,answer=raw;
   let questions:string[]=[];
   if(refining){
