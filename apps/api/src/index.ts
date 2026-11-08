@@ -19,7 +19,6 @@ const workflowDefaults = [
   ['backlog','Бэклог','manual'],
   ['analysis','Анализ','approval'],
   ['development','Разработка','approval'],
-  ['testing','Тестирование','approval'],
   ['merge_queue','Ожидает слияния','manual'],
   ['done','Готово','manual']
 ] as const;
@@ -48,6 +47,8 @@ async function dbInit() {
  INSERT INTO workflow_stages(project_id,stage,label,mode,position)
  SELECT p.id,'merge_queue','Ожидает слияния','manual',4 FROM projects p
  ON CONFLICT(project_id,stage) DO NOTHING;
+ DELETE FROM workflow_stages s WHERE s.stage='testing' AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id=s.project_id AND t.stage='testing');
+ UPDATE workflow_stages SET position=4 WHERE stage='merge_queue';
  UPDATE workflow_stages SET position=5 WHERE stage='done';
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  CREATE INDEX IF NOT EXISTS idx_assistant_messages_project ON assistant_messages(project_id,task_id,created_at);
