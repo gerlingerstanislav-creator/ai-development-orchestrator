@@ -401,8 +401,8 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
  const old=await pool.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);if(!old.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  const t=old.rows[0];
  if(data.stage && data.stage!==t.stage){
-  if(['development','merge_queue','done'].includes(data.stage))return reply.code(409).send({error:'Этот этап меняется только через подтверждение анализа, создание PR или слияние'});
-  if(t.stage==='merge_queue')return reply.code(409).send({error:'Задача ожидает слияния: сначала обработай Pull Request'});
+  if(!['backlog','analysis'].includes(t.stage)||!['backlog','analysis'].includes(data.stage))
+   return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
  }
  await pool.query('UPDATE tasks SET title=$1,description=$2,stage=$3,updated_at=now() WHERE id=$4',[data.title??t.title,data.description??t.description,data.stage??t.stage,taskId]);
  if(data.stage && data.stage!==t.stage)await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'stage_changed',t.stage+' → '+data.stage]);
