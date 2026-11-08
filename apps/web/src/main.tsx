@@ -113,7 +113,7 @@ function App(){
   {codex?.connected&&<><button className="secondary" disabled={codexBusy} onClick={()=>void codexAction('test')}>Проверить запросом</button><button className="secondary" disabled={codexBusy} onClick={()=>void codexAction('logout')}>Отключить</button></>}
  </div>
  {codexTest&&<div className="codex-test">{codexTest}</div>}
- </section>}
+ </section>
  </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Мои проекты</h1><p>Создавайте проекты и управляйте разработкой в одном месте.</p></div><button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button></div>
  <div className="project-grid">{projects.map(p=><button key={p.id} className="project-card" onClick={()=>{setSelected(p);setSection('tasks');}}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></button>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div></div>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
