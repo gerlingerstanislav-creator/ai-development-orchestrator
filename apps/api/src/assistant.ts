@@ -68,6 +68,10 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const conversation=await history(id,null);
   const rules=await rulesContext(id);
+  const repoLink=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
+  const repoContext=repoLink
+   ? 'GitHub-репозиторий уже подключён: '+repoLink.repository+'. Целевая ветка PR: '+(repoLink.target_branch||repoLink.default_branch)+'. Не задавай вопросов о выборе репозитория, ветки или способе публикации, если это не явное требование пользователя. GitHub Pages не предполагается по умолчанию.'
+   : 'GitHub-репозиторий ещё не привязан к проекту. Если для исполнения потребуется репозиторий, сообщи об этом как о настройке, не предлагай GitHub Pages без явного запроса.';
   let prompt:string;
   let existingIds:string[]=[];
   if(create){
@@ -76,11 +80,13 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 10',[id]);
    prompt=['Составь одну задачу разработки по запросу пользователя. Ответь ТОЛЬКО JSON без Markdown.',
     'Формат: {"title":"краткое название","description":"конкретное ТЗ и критерии приёмки","questions":["только блокирующие вопросы"],"related_ids":["UUID существующих похожих задач"],"relation_reason":"объяснение потенциальных пересечений","suggested_rules":["только универсальные правила для проекта, если выявлена повторяющаяся закономерность"]}.',
-    'Не задавай вопросы, ответ на которые уже есть в контексте. Если запрос достаточно ясен, questions должен быть [].',
+    'Сначала проверь всю постановку на неопределённости и сформируй сразу ПОЛНЫЙ список всех существенных блокирующих вопросов одним ответом. Не задавай их по одному в последовательных диалогах.',
+    'Не задавай вопросы, ответ на которые уже есть в контексте или настройках проекта. Если запрос достаточно ясен, questions должен быть [].',
     'Из списка задач выбирай только реальные UUID, не выдумывай идентификаторы.',
     'При похожей задаче не объединяй карточки автоматически, только предложи связь.',
     'Не выдумывай детали и не создавай несколько задач.',
     'Утверждённые правила проекта (соблюдай, не меняй):\n'+rules,
+    'Контекст GitHub проекта: '+repoContext,
     'Проект: '+project.rows[0].name,
     'Другие задачи (UUID, название и описание): '+JSON.stringify(existing.rows).slice(0,9000),
     'Документы проекта: '+JSON.stringify(docs.rows).slice(0,9000),
@@ -89,6 +95,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    prompt=['Ты ассистент проекта разработки. Отвечай кратко, по делу и на русском.',
     'Не создавай задачу, если пользователь не попросил об этом явно.',
     'Правила проекта:\n'+rules,
+    'GitHub проекта: '+repoContext,
     'Проект: '+project.rows[0].name,'Описание: '+project.rows[0].description.slice(0,2000),
     'История:\n'+conversation,'Запрос:\n'+message].join('\n\n');
   }
@@ -144,8 +151,11 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   if(!await checkQuota(id,reply))return;
   const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
+  const link=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
+  const repoContext=link?'Подключённый репозиторий: '+link.repository+'; целевая ветка: '+(link.target_branch||link.default_branch)+'. НЕ задавай вопросы о репозитории, выборе GitHub Pages и целевой ветке без прямого запроса пользователя.':'GitHub-репозиторий не подключён.';
   const rules=await rulesContext(id);
-  const context=['Утверждённые правила проекта:\n'+rules,'Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
+  const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id]);
+  const context=['Утверждённые правила проекта:\n'+rules,'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,6500),'Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
    'Открытые вопросы: '+JSON.stringify(task.clarification_questions),
    'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,9000),
    'История:\n'+await history(id,taskId),'Сообщение пользователя:\n'+message].join('\n\n');
@@ -153,6 +163,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const prompt=refining?[
    'Ты системный аналитик. Ответ пользователя может уточнять открытые вопросы или содержать дополнительное требование. Обнови ТЗ, не теряя ранее согласованные требования.',
    'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"],"suggested_rules":["только универсальные полезные правила для будущих задач"]}.',
+   'Проанализируй сразу ВСЕ возможные блокирующие вопросы, возвращай их единым списком questions. Не дроби уточнения на серию последовательных вопросов. Не спрашивай известные настройки проекта.',
    'Если нет блокирующих вопросов, верни пустой массив questions. Не придумывай ответы. Не объединяй карточки без разрешения.',
    context
   ].join('\n\n'):[
