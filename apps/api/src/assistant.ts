@@ -40,9 +40,9 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const r=await pool.query('SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NOT DISTINCT FROM $2 ORDER BY created_at DESC LIMIT 10',[id,taskId]);
   return r.rows.reverse().map(x=>x.role+': '+x.body.slice(0,1600)).join('\n\n');
  }
- async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null){
-  await pool.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
-   [randomUUID(),id,taskId,actor,role,body,createdTask]);
+ async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null){
+  await pool.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument]);
  }
  async function storeTokenUsage(id:string,taskId:string|null,model:string,usage:{input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined){
   if(!usage)return;
@@ -55,7 +55,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
  app.get('/api/projects/:id/assistant/messages',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
-  return (await pool.query('SELECT id,role,body,created_task_id,created_at FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL ORDER BY created_at ASC LIMIT 100',[id])).rows;
+  return (await pool.query('SELECT id,role,body,created_task_id,created_document_id,created_at FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL ORDER BY created_at ASC LIMIT 100',[id])).rows;
  });
  app.post('/api/projects/:id/assistant',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
@@ -64,6 +64,10 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const config=await configuration(id);
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   const create=/(создай|создать|добавь|заведи|оформи)\s+.{0,100}(задач[уаи]|таск)|(задач[уаи]|таск)\s+.{0,100}(создай|создать|добавь|заведи|оформи)/i.test(message);
+  // Document commands take priority over task detection. Mentioning documentation
+  // in a task request alone must NOT create a document.
+  const createDocument=/(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|заведи)\s+(?:нов(?:ый|ую|ое)\s+)?(?:документ(?:ацию)?|страниц[уы]|раздел\s+документации|описание\s+проекта)\b|(?:документ|страниц[ауеы]|документаци[юи])\s+.{0,70}(?:создай|создать|добавь|подготовь|напиши)/i.test(message);
+
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const conversation=await history(id,null);
   const rules=await rulesContext(id);
@@ -73,7 +77,21 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    : 'GitHub-репозиторий ещё не привязан к проекту. Если для исполнения потребуется репозиторий, сообщи об этом как о настройке, не предлагай GitHub Pages без явного запроса.';
   let prompt:string;
   let existingIds:string[]=[];
-  if(create){
+  if(createDocument){
+   const existingDocs=await pool.query('SELECT id,title,body,parent_id FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40',[id]);
+   prompt=['Ты технический писатель проекта. Пользователь явно попросил СОЗДАТЬ страницу документации. Верни ТОЛЬКО JSON без Markdown-обёртки.',
+    'Формат: {"title":"название документа","body":"полноценное содержимое Markdown","parent_id":"UUID существующей родительской страницы или null"}.',
+    'Не создавай задачу разработки. Подготовь содержательный документ на русском с заголовками и разделами.',
+    'Не выдумывай факты о проекте. Когда информации мало, явно отмечай предположения и открытые вопросы.',
+    'Разрешено выбрать parent_id исключительно из приведённых UUID. Если подходящего родителя нет, используй null.',
+    'Название проекта: '+project.rows[0].name,
+    'Описание проекта: '+project.rows[0].description.slice(0,3000),
+    'Правила проекта:\n'+rules,
+    'Настройки GitHub:\n'+repoContext,
+    'Существующая документация: '+JSON.stringify(existingDocs.rows.map((doc:any)=>({...doc,body:String(doc.body).slice(0,2500)}))).slice(0,11000),
+    'История чата:\n'+conversation,
+    'Запрос пользователя:\n'+message].join('\n\n');
+  }else if(create){
    const existing=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
    existingIds=existing.rows.map((t:{id:string})=>t.id);
    const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 10',[id]);
@@ -101,8 +119,22 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   }
   let raw:string;
   try{const response=await completion(prompt,config);raw=response.text;await storeTokenUsage(id,null,config.model,response.usage);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
-  let taskId:string|null=null,answer=raw;
-  if(create){
+  let taskId:string|null=null,documentId:string|null=null,answer=raw;
+  if(createDocument){
+   const parsed=z.object({
+    title:z.string().trim().min(2).max(200),
+    body:z.string().trim().min(10).max(14000),
+    parent_id:z.string().uuid().nullable().default(null)
+   }).parse(jsonObject(raw));
+   const parent=parsed.parent_id
+    ?await pool.query('SELECT 1 FROM documents WHERE project_id=$1 AND id=$2',[id,parsed.parent_id])
+    :null;
+   const parentId=parent?.rowCount?parsed.parent_id:null;
+   documentId=randomUUID();
+   await pool.query('INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,$3,$4,$5)',
+    [documentId,id,parsed.title,parsed.body,parentId]);
+   answer='Документ «'+parsed.title+'» создан в разделе «Документация». Его можно открыть и редактировать прямо там.';
+  }else if(create){
    const data=z.object({
     title:z.string().trim().min(3).max(180),description:z.string().trim().min(3).max(10000),
     questions:z.array(z.string().min(3).max(600)).max(20).default([]),
@@ -131,9 +163,9 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
       (related.length?'\nОбнаружены связанные задачи: '+related.length:'');
   }
   await store(id,null,uid(req),'user',message);
-  await store(id,null,null,'assistant',answer,taskId);
+  await store(id,null,null,'assistant',answer,taskId,documentId);
   await countCall(id,uid(req));
-  return {message:answer,created_task_id:taskId};
+  return {message:answer,created_task_id:taskId,created_document_id:documentId};
  });
  app.get('/api/projects/:id/tasks/:taskId/assistant/messages',async(req:any,reply)=>{
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
