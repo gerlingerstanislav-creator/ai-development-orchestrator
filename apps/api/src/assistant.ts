@@ -92,4 +92,46 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   await countCall(id,uid(req));
   return {message:answer,created_task_id:taskId};
  });
+ app.get('/api/projects/:id/tasks/:taskId/assistant/messages',async(req:any,reply)=>{
+  const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const t=await pool.query('SELECT 1 FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
+  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+  return (await pool.query('SELECT id,role,body,created_at FROM assistant_messages WHERE project_id=$1 AND task_id=$2 ORDER BY created_at ASC LIMIT 120',[id,taskId])).rows;
+ });
+ app.post('/api/projects/:id/tasks/:taskId/assistant',async(req:any,reply)=>{
+  const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {message,mode}=messageSchema.extend({mode:z.enum(['chat','analyze']).default('chat')}).parse(req.body);
+  const result=await pool.query('SELECT title,description,stage FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
+  if(!result.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+  const task=result.rows[0];
+  if(mode==='analyze'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
+  const config=await configuration(id);
+  if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
+  if(!await checkQuota(id,reply))return;
+  const context=['Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
+   'История:\n'+await history(id,taskId),'Запрос:\n'+message].join('\n\n');
+  const prompt=mode==='analyze'?[
+   'Ты системный аналитик. Проанализируй задачу. Ответь на русском.',
+   'Верни ТОЛЬКО JSON: {"summary":"сухое ТЗ: что реализовать, конкретные шаги и критерии приёмки","details":"подробный анализ, риски, вопросы и последовательность реализации"}.',
+   'Не меняй код и не утверждай, что задача выполнена. Не выдумывай неизвестные требования.',context
+  ].join('\n\n'):[
+   'Ты инженерный AI-помощник в задаче. На русском ответь по существу. Не утверждай, что менял код.',context
+  ].join('\n\n');
+  const raw=await completion(prompt,config);
+  let summary:string|null=null,answer=raw;
+  if(mode==='analyze'){
+   const analyzed=z.object({summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(10).max(16000)}).parse(jsonObject(raw));
+   summary=analyzed.summary;answer=analyzed.details;
+   await pool.query('UPDATE tasks SET description=$1,updated_at=now() WHERE id=$2 AND project_id=$3',[summary,taskId,id]);
+   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+    [randomUUID(),taskId,uid(req),'analyzed','AI-анализ обновил описание задачи']);
+  }
+  await store(id,taskId,uid(req),'user',message);
+  await store(id,taskId,null,'assistant',answer);
+  await countCall(id,uid(req));
+  return {message:answer,summary};
+ });
+
 }
