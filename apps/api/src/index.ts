@@ -40,6 +40,7 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS git_branch text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number int;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_base_branch text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS documentation_updated_at timestamptz;
  CREATE TABLE IF NOT EXISTS task_events (id uuid primary key, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), event text not null, detail text not null default '', created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS documents (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, body text not null default '', updated_at timestamptz not null default now());
@@ -314,14 +315,22 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(t.rows[0].stage!=='development'||t.rows[0].analysis_state!=='approved')return reply.code(409).send({error:'Подтверди завершение анализа и отправь задачу в разработку'});
  const relatedIds=(t.rows[0].related_task_ids||[]) as string[];
  const related=relatedIds.length?(await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[])',[id,relatedIds])).rows:[];
- const blockers=related.filter(x=>['development','merge_queue'].includes(x.stage));
- if(blockers.length)return reply.code(409).send({error:'Связанные задачи ещё в разработке или ожидают слияния: '+blockers.map(x=>x.title).join(', ')});
-
+ // Informationally related tasks never block development; only a typed code dependency does.
+ const parentId=t.rows[0].depends_on_task_id as string|null;
+ let parentBranch:string|null=null;
+ if(parentId){
+  const p=await pool.query('SELECT id,title,stage,git_branch,pr_url FROM tasks WHERE project_id=$1 AND id=$2',[id,parentId]);
+  if(!p.rowCount)return reply.code(409).send({error:'Задача-основание отсутствует в проекте'});
+  const parent=p.rows[0];
+  if(['documentation','done'].includes(parent.stage))parentBranch=null;
+  else if(parent.stage==='merge_queue'&&parent.git_branch&&parent.pr_url)parentBranch=parent.git_branch;
+  else return reply.code(409).send({error:'Ожидание зависимости: сначала заверши разработку задачи «'+parent.title+'» до открытого PR. После этого текущая задача сможет стартовать от её ветки.'});
+ }
  const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,daily_run_limit,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
  const ai=settings.rows[0]||aiDefaults;
  if(!ai.enabled)return reply.code(409).send({error:'Включи ручной запуск AI в настройках проекта'});
@@ -342,7 +351,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  }
  const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
- const branch=git.rows[0].target_branch||git.rows[0].default_branch;
+ const branch=parentBranch||(git.rows[0].target_branch||git.rows[0].default_branch);
  const check=await fetch('https://api.github.com/repos/'+git.rows[0].repository+'/branches/'+encodeURIComponent(branch),{
   headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
   signal:AbortSignal.timeout(12000)});
@@ -355,9 +364,9 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(pullsPermission.status===403)return reply.code(409).send({error:'GitHub запрещает чтение Pull Request (403). Добавь подключённому токену права Pull requests: Read and write для этого репозитория. Codex не запущен, лимит модели не потрачен.'});
  if(!pullsPermission.ok)return reply.code(502).send({error:'Не удалось проверить доступ к PR до разработки: GitHub HTTP '+pullsPermission.status});
 
- const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:git.rows[0].target_branch||git.rows[0].default_branch,
+ const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds,
-  title:t.rows[0].title,description:t.rows[0].description,projectRules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),relatedTasks:related.map(x=>({title:x.title,description:x.description.slice(0,1500),stage:x.stage}))};
+  title:t.rows[0].title,description:t.rows[0].description,dependsOnTaskId:parentId,projectRules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),relatedTasks:related.map(x=>({title:x.title,description:x.description.slice(0,1500),stage:x.stage}))};
  await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status) VALUES($1,$2,$3,$4,$5,'queued')",
  [runId,id,taskId,uid(req),ai.model]);
  try{
