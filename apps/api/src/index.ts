@@ -409,7 +409,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
      [runId,remote.status,remote.branch||null,remote.prUrl||null,String(remote.message||'').slice(0,2000)]);
     if(remote.status==='completed'&&remote.prUrl){
      const prMatch=/\/pull\/(\d+)$/.exec(remote.prUrl);
-     await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,updated_at=now() WHERE id=$1 AND project_id=$5",[current.task_id,remote.branch,remote.prUrl,prMatch?Number(prMatch[1]):null,id]);
+     await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[current.task_id,remote.branch,remote.prUrl,prMatch?Number(prMatch[1]):null,id,remote.baseBranch||null]);
     }
     return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
    }
@@ -430,7 +430,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
 
 async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):Promise<{pr_url:string;branch:string;recovered:boolean}|null>{
  const result=await pool.query(
-  "SELECT t.title,t.stage,t.git_branch,t.pr_url,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
+  "SELECT t.title,t.stage,t.git_branch,t.pr_url,t.depends_on_task_id,t.pr_base_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
   [taskId,id,actorId]);
  if(!result.rowCount)throw Object.assign(new Error('Задача или GitHub-подключение не найдены'),{statusCode:404});
  const row=result.rows[0];
@@ -438,7 +438,14 @@ async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):
  if(row.pr_url)return {pr_url:row.pr_url,branch:String(row.git_branch||taskId),recovered:true};
  const branch=taskId;
  const token=decryptToken(row.secret_encrypted);
- const baseBranch=String(row.target_branch||row.default_branch);
+ let baseBranch=String(row.pr_base_branch||row.target_branch||row.default_branch);
+ if(row.depends_on_task_id&&!row.pr_base_branch){
+  const p=await pool.query('SELECT stage,git_branch,pr_url FROM tasks WHERE id=$1 AND project_id=$2',[row.depends_on_task_id,id]);
+  if(!p.rowCount)throw Object.assign(new Error('Не найдена задача, от которой зависит разработка'),{statusCode:409});
+  if(p.rows[0].stage==='merge_queue'&&p.rows[0].git_branch&&p.rows[0].pr_url)baseBranch=p.rows[0].git_branch;
+  else if(!['done','documentation'].includes(p.rows[0].stage))
+   throw Object.assign(new Error('Зависимая задача ещё не подготовила PR'),{statusCode:409});
+ }
  const apiBase='https://api.github.com/repos/'+row.repository;
  const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
  const gh=async(endpoint:string,options:RequestInit={})=>{
@@ -468,7 +475,7 @@ async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):
    :'Не удалось создать PR: GitHub HTTP '+created.response.status+' '+String(created.data.message||'').slice(0,180)),{statusCode:409});
   pr=created.data;
  }
- await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,updated_at=now() WHERE id=$1 AND project_id=$5",[taskId,branch,pr.html_url,pr.number,id]);
+ await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[taskId,branch,pr.html_url,pr.number,id,baseBranch]);
  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pr_created',$4)",[randomUUID(),taskId,actorId,'PR создан автоматически: '+pr.html_url]);
  await pool.query("UPDATE ai_task_runs SET pr_url=$2,status='completed',message=$3,completed_at=COALESCE(completed_at,now()) WHERE project_id=$1 AND task_id=$4 AND status='failed' AND branch=$5",
   [id,pr.html_url,'PR автоматически создан из готовых изменений без нового запроса к Codex',taskId,branch]);
