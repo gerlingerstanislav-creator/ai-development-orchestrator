@@ -243,3 +243,9 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .token-usage-grid small{color:#7d899f;font-size:11px}
 .token-usage-grid strong{font-size:18px;font-variant-numeric:tabular-nums}
 @media(max-width:700px){.token-usage-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Compact paired task actions: normal create button + square AI text button. */
+.task-create-actions{display:flex;gap:6px;align-items:stretch;flex:0 0 auto}
+.tasks-page .toolbar .create-task-text{width:34px;min-width:34px;min-height:34px;padding:0;aspect-ratio:1/1;flex:0 0 34px;display:inline-flex;align-items:center;justify-content:center}
+.tasks-page .toolbar .create-task-text svg{width:17px;height:17px}
+@media(max-width:700px){.tasks-page .toolbar .task-create-actions{margin-left:auto}.tasks-page .toolbar .create-task{margin-left:0}}
