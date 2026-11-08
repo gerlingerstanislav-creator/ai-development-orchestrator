@@ -119,6 +119,7 @@ function App(){
 
  async function approveDevelopment(){if(!selected||!activeTask)return;setTaskChatBusy(true);
   try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id,{method:'PATCH',body:JSON.stringify({title:activeTask.title,description:activeTask.description})});
    await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/approve-development',{method:'POST'});
    const updated={...activeTask,stage:'development',analysis_state:'approved'};
    setActiveTask(updated);setTasks(old=>old.map(t=>t.id===updated.id?updated:t));
@@ -302,7 +303,7 @@ function App(){
        <p className="muted"><strong>{activeTask.analysis_state==='needs_clarification'?'Ожидает уточнений':activeTask.analysis_state==='ready_for_development'?'Анализ завершён':'Анализ не завершён'}</strong></p>
        {Boolean(activeTask.clarification_questions?.length)&&<div className="task-ai-action"><strong>Открытые вопросы</strong>{activeTask.clarification_questions?.map((q,i)=><p key={i}>{i+1}. {q}</p>)}</div>}
        {activeTask.related_task_ids?.length? <p className="muted">Связанные задачи: {activeTask.related_task_ids.map(id=>tasks.find(t=>t.id===id)?.title||id.slice(0,8)).join(', ')}</p>:null}
-       <button className="primary" disabled={taskChatBusy||activeTask.analysis_state!=='ready_for_development'} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>
+       <button className="primary" disabled={taskChatBusy||!aiSettings.enabled||!gitLink||activeTask.analysis_state!=='ready_for_development'} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>
      </>}
      {activeTask.git_branch&&<p className="muted">Ветка: <code>{activeTask.git_branch}</code></p>}
      {activeTask.pr_url&&<p><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть Pull Request</a></p>}
