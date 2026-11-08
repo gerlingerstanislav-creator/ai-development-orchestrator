@@ -1,7 +1,8 @@
 import Fastify from 'fastify';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
-import { compare, hash } from 'bcryptjs';
+import bcrypt from 'bcryptjs';
+const { compare, hash } = bcrypt;
 import { randomUUID, randomBytes, createCipheriv } from 'node:crypto';
 import { z } from 'zod';
 
