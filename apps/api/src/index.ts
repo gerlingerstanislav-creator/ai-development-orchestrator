@@ -30,6 +30,8 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS tasks (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, description text not null default '', type text not null default 'task', stage text not null default 'backlog', parent_id uuid references tasks(id) on delete set null, position int not null default 0, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS task_events (id uuid primary key, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), event text not null, detail text not null default '', created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS documents (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, body text not null default '', updated_at timestamptz not null default now());
+ ALTER TABLE documents ADD COLUMN IF NOT EXISTS parent_id uuid REFERENCES documents(id) ON DELETE SET NULL;
+ CREATE INDEX IF NOT EXISTS idx_documents_project_parent ON documents(project_id, parent_id);
  CREATE TABLE IF NOT EXISTS connections (id uuid primary key, owner_id uuid not null references users(id), name text not null, provider text not null, secret_encrypted text not null, created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS project_connections (project_id uuid references projects(id) on delete cascade, connection_id uuid references connections(id) on delete cascade, primary key(project_id,connection_id));
  `);
@@ -110,9 +112,43 @@ app.get('/api/projects/:id/tasks/:taskId/events',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
  const r=await pool.query('SELECT e.* FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE t.id=$1 AND t.project_id=$2 ORDER BY e.created_at DESC',[taskId,id]);return r.rows;
 });
-app.get('/api/projects/:id/docs',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT * FROM documents WHERE project_id=$1 ORDER BY updated_at DESC',[id])).rows;});
-app.post('/api/projects/:id/docs',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;const {title,body}=parse(z.object({title:z.string().min(1).max(200),body:z.string().max(100000).default('')}),req.body);const docId=randomUUID();await pool.query('INSERT INTO documents(id,project_id,title,body) VALUES($1,$2,$3,$4)',[docId,id,title,body]);return reply.code(201).send({id:docId});});
-app.patch('/api/projects/:id/docs/:docId',async(req:any,reply)=>{const {id,docId}=parse(z.object({id:z.string().uuid(),docId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;const {title,body}=parse(z.object({title:z.string().min(1).max(200),body:z.string().max(100000)}),req.body);const r=await pool.query('UPDATE documents SET title=$1,body=$2,updated_at=now() WHERE id=$3 AND project_id=$4 RETURNING id',[title,body,docId,id]);if(!r.rowCount)return reply.code(404).send({error:'Документ не найден'});return {ok:true};});
+const docParent = z.string().uuid().nullable().optional();
+async function validDocParent(projectId:string, docId:string|null, parentId:string|null) {
+ if(!parentId)return true;
+ const parent=await pool.query('SELECT id FROM documents WHERE id=$1 AND project_id=$2',[parentId,projectId]);
+ if(!parent.rowCount || parentId===docId)return false;
+ if(docId) {
+  const ancestors=await pool.query(`WITH RECURSIVE chain AS (
+   SELECT id,parent_id FROM documents WHERE id=$1 AND project_id=$2
+   UNION ALL
+   SELECT d.id,d.parent_id FROM documents d JOIN chain c ON c.parent_id=d.id WHERE d.project_id=$2
+  ) SELECT 1 FROM chain WHERE id=$3 LIMIT 1`,[parentId,projectId,docId]);
+  if(ancestors.rowCount)return false;
+ }
+ return true;
+}
+app.get('/api/projects/:id/docs',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
+ return (await pool.query('SELECT * FROM documents WHERE project_id=$1 ORDER BY title ASC, id ASC',[id])).rows;
+});
+app.post('/api/projects/:id/docs',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
+ const {title,body,parent_id}=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:docParent}),req.body);
+ if(!await validDocParent(id,null,parent_id??null))return reply.code(400).send({error:'Родительская страница не найдена в проекте'});
+ const docId=randomUUID();
+ await pool.query('INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,$3,$4,$5)',[docId,id,title,body,parent_id??null]);
+ return reply.code(201).send({id:docId});
+});
+app.patch('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
+ const {id,docId}=parse(z.object({id:z.string().uuid(),docId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
+ const data=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000),parent_id:docParent}),req.body);
+ const old=await pool.query('SELECT parent_id FROM documents WHERE id=$1 AND project_id=$2',[docId,id]);
+ if(!old.rowCount)return reply.code(404).send({error:'Документ не найден'});
+ const parentId=data.parent_id===undefined?old.rows[0].parent_id:data.parent_id;
+ if(!await validDocParent(id,docId,parentId))return reply.code(400).send({error:'Нельзя переместить страницу в себя, своего потомка или другой проект'});
+ await pool.query('UPDATE documents SET title=$1,body=$2,parent_id=$3,updated_at=now() WHERE id=$4 AND project_id=$5',[data.title,data.body,parentId,docId,id]);
+ return {ok:true};
+});
 app.get('/api/connections',async(req)=>{return (await pool.query('SELECT id,name,provider,created_at FROM connections WHERE owner_id=$1 ORDER BY created_at DESC',[uid(req)])).rows;});
 app.post('/api/connections',async(req,reply)=>{
  const {name,provider,secret}=parse(z.object({name:z.string().min(1).max(100),provider:z.enum(['openai_api','github_token']),secret:z.string().min(8).max(2000)}),req.body);
