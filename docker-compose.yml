@@ -30,6 +30,10 @@ services:
       context: .
       dockerfile: apps/codex-runner/Dockerfile
     init: true
+    # Docker is the security boundary for Codex when nested Linux sandboxing
+    # is unsupported. Run as unprivileged node and drop Linux capabilities.
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     environment:
       CODEX_HOME: /home/node/.codex
       RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
