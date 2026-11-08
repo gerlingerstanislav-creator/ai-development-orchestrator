@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates \
+ && apt-get install -y --no-install-recommends ca-certificates git \
  && update-ca-certificates \
  && test -s /etc/ssl/certs/ca-certificates.crt \
  && rm -rf /var/lib/apt/lists/* \
