@@ -108,7 +108,7 @@ function App(){
   <button className={'nav '+(accountSettings?'active':'')} onClick={()=>setAccountSettings(true)}><Settings2 size={18}/> Настройки аккаунта</button>
   <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
  </aside>
- <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':'Настройки'}</strong></>}<span className="top-right">● Ручной режим · без ИИ</span></header>
+ <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
  {error&&<div className="error global" onClick={()=>setError('')}>{error} <X size={16}/></div>}
  {accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
