@@ -38,6 +38,7 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS project_ai_settings (project_id uuid primary key references projects(id) on delete cascade, model text not null default 'gpt-6-luna', reasoning text not null default 'low', max_runtime_seconds int not null default 300, enabled boolean not null default false, updated_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS ai_task_runs (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid not null references tasks(id) on delete cascade, triggered_by uuid not null references users(id), model text not null, status text not null default 'queued', branch text, pr_url text, message text not null default '', created_at timestamptz not null default now(), completed_at timestamptz);
  CREATE INDEX IF NOT EXISTS idx_ai_task_runs_project_created ON ai_task_runs(project_id,created_at DESC);
+ ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
  const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
  const password = process.env.ADMIN_PASSWORD;
@@ -166,9 +167,10 @@ const projectAiSchema=z.object({
  model:allowedModels,
  reasoning:z.enum(['low','medium']),
  max_runtime_seconds:z.number().int().min(90).max(900),
+ daily_run_limit:z.number().int().min(1).max(10),
  enabled:z.boolean()
 });
-const aiDefaults={model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,enabled:false};
+const aiDefaults={model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,daily_run_limit:3,enabled:false};
 const runnerKey=process.env.RUNNER_SHARED_SECRET||'';
 if(!runnerKey || runnerKey.length<32)throw Error('Set RUNNER_SHARED_SECRET (32+ chars)');
 async function agentCall(path:string,method:'GET'|'POST'='GET',body?:unknown){
@@ -199,7 +201,7 @@ function decryptToken(packedText:string){
 app.get('/api/projects/:id/ai-settings',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const row=await pool.query('SELECT model,reasoning,max_runtime_seconds,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
+ const row=await pool.query('SELECT model,reasoning,max_runtime_seconds,daily_run_limit,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
  return row.rows[0]||aiDefaults;
 });
 app.put('/api/projects/:id/ai-settings',async(req:any,reply)=>{
@@ -207,8 +209,8 @@ app.put('/api/projects/:id/ai-settings',async(req:any,reply)=>{
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
  const p=projectAiSchema.parse(req.body);
- await pool.query("INSERT INTO project_ai_settings(project_id,model,reasoning,max_runtime_seconds,enabled) VALUES($1,$2,$3,$4,$5) ON CONFLICT(project_id) DO UPDATE SET model=EXCLUDED.model,reasoning=EXCLUDED.reasoning,max_runtime_seconds=EXCLUDED.max_runtime_seconds,enabled=EXCLUDED.enabled,updated_at=now()",
- [id,p.model,p.reasoning,p.max_runtime_seconds,p.enabled]);
+ await pool.query("INSERT INTO project_ai_settings(project_id,model,reasoning,max_runtime_seconds,daily_run_limit,enabled) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id) DO UPDATE SET model=EXCLUDED.model,reasoning=EXCLUDED.reasoning,max_runtime_seconds=EXCLUDED.max_runtime_seconds,daily_run_limit=EXCLUDED.daily_run_limit,enabled=EXCLUDED.enabled,updated_at=now()",
+ [id,p.model,p.reasoning,p.max_runtime_seconds,p.daily_run_limit,p.enabled]);
  return p;
 });
 app.get('/api/projects/:id/ai-runs',async(req:any,reply)=>{
@@ -226,6 +228,8 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
  const ai=settings.rows[0]||aiDefaults;
  if(!ai.enabled)return reply.code(409).send({error:'Включи ручной запуск AI в настройках проекта'});
+ const usage=await pool.query("SELECT count(*)::int AS count FROM ai_task_runs WHERE project_id=$1 AND created_at > now() - interval '24 hours'",[id]);
+ if(usage.rows[0].count >= ai.daily_run_limit)return reply.code(429).send({error:'Достигнут дневной лимит AI-запусков этого проекта'});
  const git=await pool.query("SELECT g.repository,g.default_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2 AND c.provider='github_token'",[id,uid(req)]);
  if(!git.rowCount)return reply.code(409).send({error:'Сначала привяжи GitHub-репозиторий с токеном'});
  const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND status IN ('queued','running') LIMIT 1",[id]);
