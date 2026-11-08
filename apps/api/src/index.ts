@@ -45,7 +45,9 @@ function parse<T extends z.ZodTypeAny>(schema:T,input:unknown):z.infer<T> { retu
 app.setErrorHandler((error,_,reply) => {
  if(error instanceof z.ZodError) return reply.code(400).send({error:'Некорректные данные',details:error.flatten()});
  app.log.error(error);
- return reply.code(typeof error.statusCode==='number'&&error.statusCode>=400&&error.statusCode<500?error.statusCode:500).send({error:typeof error.statusCode==='number'&&error.statusCode<500?error.message:'Ошибка сервера'});
+ const err = error as Error & {statusCode?:number};
+ const status = typeof err.statusCode==='number' && err.statusCode>=400 && err.statusCode<500 ? err.statusCode : 500;
+ return reply.code(status).send({error:status<500?err.message:'Ошибка сервера'});
 });
 app.post('/api/login',async(req,reply)=>{
  const {email,password}=parse(z.object({email:z.string().trim().min(3).max(254).regex(/^[^\s@]+@[^\s@]+$/),password:z.string()}),req.body);
