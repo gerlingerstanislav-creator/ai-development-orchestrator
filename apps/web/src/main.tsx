@@ -88,14 +88,14 @@ function App(){
  async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
   const message=projectInput.trim();setProjectChatBusy(true);
   try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message})});
-   setProjectMessages(old=>[...old,{id:'u-'+Date.now(),role:'user',body:message},{id:'a-'+Date.now(),role:'assistant',body:response.message,created_task_id:response.created_task_id}]);
+   setProjectMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:message},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message,created_task_id:response.created_task_id}]);
    setProjectInput('');if(response.created_task_id)await loadProject(selected.id);
   }catch(e){fail(e);}finally{setProjectChatBusy(false);}
  }
  async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
   const message=taskInput.trim();setTaskChatBusy(true);
   try{const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
-   setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user',body:message},{id:'a-'+Date.now(),role:'assistant',body:response.message}]);
+   setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:message},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message}]);
    setTaskInput('');
   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
  }
@@ -105,7 +105,7 @@ function App(){
   if(activeTask.stage==='analysis'){
    setTaskChatBusy(true);try{const instruction='Выполни анализ задачи и составь техническое задание с критериями приёмки.';
     const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant',{method:'POST',body:JSON.stringify({message:instruction,mode:'analyze'})});
-    setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user',body:instruction},{id:'a-'+Date.now(),role:'assistant',body:response.message}]);
+    setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:instruction},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message}]);
     if(response.summary){setActiveTask(old=>old?.id===activeTask.id?{...old,description:response.summary||old.description}:old);setTasks(old=>old.map(t=>t.id===activeTask.id?{...t,description:response.summary||t.description}:t));}
    }catch(e){fail(e);}finally{setTaskChatBusy(false);}
   }else if(activeTask.stage==='development'){await runAiTask();}
