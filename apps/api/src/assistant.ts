@@ -70,7 +70,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const lastUserRequest=conversation.split('\n\n').filter(x=>x.startsWith('user: ')).slice(-1)[0]?.slice(6)||'';
   const documentClarification=/(?:я\s+(?:говорю|имел)|имею\s+в\s+виду|именно|в\s+нашем\s+(?:сервисе|приложении|проекте)|внутри\s+(?:сервиса|проекта))/i.test(message)
    &&/(?:документ|документаци|страниц|раздел)/i.test(message)
-   &&documentAction.test(lastUserRequest);
+   &&(documentAction.test(lastUserRequest)||(/(?:нет доступного инструмента|не могу создать|для этого нужна|создания документов)/i.test(conversation)&&/(?:документ|раздел|страниц)/i.test(conversation)));
   const localDocumentIntent=(explicitDocumentCreation||documentClarification)
    &&!/(?:из\s+(?:github|репозитория)|на\s+основе\s+(?:документов|файлов)|импортир|перенеси\s+из)/i.test(message);
   const location=extractGitHubDocumentLocation(message,conversation);
