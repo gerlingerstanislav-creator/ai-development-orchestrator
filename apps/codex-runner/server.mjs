@@ -186,7 +186,8 @@ async function runJob(job,state){
    'Не изменяй файлы вне рабочей директории. Не устанавливай пакеты из сети.',
    'Если задача непонятна, не вноси случайных изменений.',
    'Название задачи: '+job.title,
-   'Описание задачи:\n'+job.description.slice(0,18000)
+   'Описание задачи:\n'+job.description.slice(0,18000),
+   'Другие связанные задачи (не повторяй и не перезаписывай их работу): '+JSON.stringify(job.relatedTasks||[]).slice(0,6000)
   ].join('\n\n');
   const result=await command('codex',[
    'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
