@@ -67,6 +67,36 @@ async function access(req:any,reply:any,projectId:string) {
  if(!await canAccess(projectId,uid(req))){reply.code(403).send({error:'Нет доступа к проекту'});return false;}return true;
 }
 app.get('/api/health',async()=>({ok:true}));
+// Local-only Codex runner. The service is not exposed on a host port.
+// Requests reach it only after the ordinary application session check.
+const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
+async function codexCall(path:string,method:'GET'|'POST'='GET') {
+ const response=await fetch(codexUrl+path,{method,signal:AbortSignal.timeout(path==='/test'?125000:15000)});
+ const body=await response.json().catch(()=>({error:'Некорректный ответ Codex'}));
+ if(!response.ok)throw Error(body.error||'Codex недоступен');
+ return body;
+}
+app.get('/api/codex/status',async(_req,reply)=>{
+ try{return await codexCall('/status');}
+ catch(e){return reply.code(503).send({connected:false,error:e instanceof Error?e.message:'Контейнер Codex не отвечает'});}
+});
+app.post('/api/codex/login',async(_req,reply)=>{
+ try{return await codexCall('/login','POST');}
+ catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Ошибка входа в Codex'});}
+});
+app.get('/api/codex/device',async(_req,reply)=>{
+ try{return await codexCall('/device');}
+ catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Codex недоступен'});}
+});
+app.post('/api/codex/logout',async(_req,reply)=>{
+ try{return await codexCall('/logout','POST');}
+ catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Ошибка отключения Codex'});}
+});
+app.post('/api/codex/test',async(_req,reply)=>{
+ try{return await codexCall('/test','POST');}
+ catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Тест Codex не прошёл'});}
+});
+
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
 app.get('/api/projects',async(req)=>{const r=await pool.query('SELECT p.* FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 ORDER BY p.created_at DESC',[uid(req)]);return r.rows;});
 app.post('/api/projects',async(req,reply)=>{
