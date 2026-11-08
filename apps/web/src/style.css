@@ -214,3 +214,10 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
  .tasks-page .board{gap:var(--card-gap)}
  .task-dialog-wide .task-details{padding:var(--page-gutter)}
 }
+
+/* Live background AI execution in task timeline. */
+.task-execution-live{display:flex;align-items:flex-start;gap:12px;padding:14px;background:#eef2ff;border:1px solid #d8e0fa;border-radius:10px;color:#3b4e90}
+.task-execution-live>svg{flex:0 0 auto;animation:workflow-spin 1.4s linear infinite;margin-top:2px}
+.task-execution-live strong{display:block;font-size:12px;margin-bottom:5px}
+.task-execution-live p{font-size:12px;margin:0 0 6px;overflow-wrap:anywhere}
+.task-execution-live small{font-size:11px;color:#65759c}
