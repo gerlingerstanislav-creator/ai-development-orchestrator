@@ -9,7 +9,8 @@ type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',posit
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
-type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';max_runtime_seconds:number;daily_run_limit:number;enabled:boolean};
+type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';enabled:boolean};
+type ServiceLimits={chat_requests_per_24h:number;development_runs_per_24h:number;max_runtime_seconds:number};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string};
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
@@ -33,6 +34,9 @@ function App(){
  const [projects,setProjects]=useState<Project[]>([]);const [selected,setSelected]=useState<Project|null>(null);
  const [section,setSection]=useState<'overview'|'tasks'|'docs'|'settings'>('tasks');
  const [accountSettings,setAccountSettings]=useState(false);
+ const [serviceSettings,setServiceSettings]=useState(false);
+ const [serviceLimits,setServiceLimits]=useState<ServiceLimits>({chat_requests_per_24h:0,development_runs_per_24h:0,max_runtime_seconds:1800});
+ const [serviceBusy,setServiceBusy]=useState(false);const [serviceNotice,setServiceNotice]=useState('');
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [docs,setDocs]=useState<Doc[]>([]);
  const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
@@ -40,7 +44,7 @@ function App(){
  const [documentVersions,setDocumentVersions]=useState<DocVersion[]>([]);const [documentationNotice,setDocumentationNotice]=useState('');
 const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
  const [projectConnections,setProjectConnections]=useState<Connection[]>([]);
- const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',max_runtime_seconds:300,daily_run_limit:3,enabled:false});
+ const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',enabled:false});
  const [aiBusy,setAiBusy]=useState(false);const [aiRuns,setAiRuns]=useState<AiRun[]>([]);const [aiMessage,setAiMessage]=useState('');
  const [targetBranch,setTargetBranch]=useState('');const [mergeBusy,setMergeBusy]=useState(false);const [mergeReport,setMergeReport]=useState('');
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
@@ -156,6 +160,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
  }
+ async function saveServiceLimits(){setServiceBusy(true);setServiceNotice('');
+  try{const saved=await api<ServiceLimits>('/service/ai-limits',{method:'PUT',body:JSON.stringify(serviceLimits)});
+   setServiceLimits(saved);setServiceNotice('Ограничения сервиса сохранены.');
+  }catch(e){fail(e);}finally{setServiceBusy(false);}
+ }
+ useEffect(()=>{if(token&&serviceSettings){void api<ServiceLimits>('/service/ai-limits').then(setServiceLimits).catch(fail);}},[token,serviceSettings]);
  async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const job=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
@@ -234,7 +244,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
- function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setCodex(null);}
+ function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setServiceSettings(false);setProjects([]);setCodex(null);}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
   return docs.filter(d=>d.parent_id===parentId).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
@@ -253,17 +263,31 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
   <div className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
-  <button className={'nav '+(!selected&&!accountSettings?'active':'')} onClick={()=>{setAccountSettings(false);setSelected(null);}}><LayoutGrid size={18}/> Мои проекты</button>
+  <button className={'nav '+(!selected&&!accountSettings&&!serviceSettings?'active':'')} onClick={()=>{setAccountSettings(false);setServiceSettings(false);setSelected(null);}}><LayoutGrid size={18}/> Мои проекты</button>
   {selected&&<><div className="sidebar-label">{selected.name.toUpperCase()}</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>{setAccountSettings(false);setSection(k);}}><Icon size={18}/>{label}</button>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><button key={k} className={'nav '+(section===k?'active':'')} onClick={()=>{setAccountSettings(false);setServiceSettings(false);setSection(k);}}><Icon size={18}/>{label}</button>)}
   </>}
   <div className="sidebar-label">АККАУНТ</div>
-  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>setAccountSettings(true)}><Settings2 size={18}/> Настройки аккаунта</button>
+  <button className={'nav '+(accountSettings?'active':'')} onClick={()=>{setAccountSettings(true);setServiceSettings(false);}}><Settings2 size={18}/> Настройки аккаунта</button>
+  <button className={'nav '+(serviceSettings?'active':'')} onClick={()=>{setServiceSettings(true);setAccountSettings(false);}}><Settings2 size={18}/> Настройки сервиса</button>
   <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
  </aside>
- <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);}}>Мои проекты</span>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
+ <main className="main"><header className="topbar"><span className="crumb" onClick={()=>{setSelected(null);setAccountSettings(false);setServiceSettings(false);}}>Мои проекты</span>{serviceSettings?<><span className="slash">/</span><strong>Настройки сервиса</strong></>:accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><strong>{selected.name}</strong><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
  {error&&<div className="error global" onClick={()=>setError('')}>{error} <X size={16}/></div>}
- {accountSettings?<div className="page compact-project-page">
+ {serviceSettings?<div className="page compact-project-page">
+  <section className="panel">
+   <h3>Ограничения ChatGPT / Codex для всего сервиса</h3>
+   <p className="muted">Эти значения общие для всех проектов и пользователей. Ноль означает отсутствие дневного ограничения. Они не являются бюджетом токенов подписки.</p>
+   <div className="settings-grid">
+    <label>Сообщений AI за 24 часа (все проекты)<input type="number" min={0} max={10000} value={serviceLimits.chat_requests_per_24h} onChange={e=>setServiceLimits({...serviceLimits,chat_requests_per_24h:Number(e.target.value)})}/></label>
+    <label>Запусков разработки за 24 часа (все проекты)<input type="number" min={0} max={10000} value={serviceLimits.development_runs_per_24h} onChange={e=>setServiceLimits({...serviceLimits,development_runs_per_24h:Number(e.target.value)})}/></label>
+    <label>Технический таймаут одной разработки, секунд<input type="number" min={120} max={7200} value={serviceLimits.max_runtime_seconds} onChange={e=>setServiceLimits({...serviceLimits,max_runtime_seconds:Number(e.target.value)})}/></label>
+   </div>
+   <p className="muted">Таймаут нужен для остановки зависшего процесса. Для контроля реального потребления токенов потребуется отдельная интеграция с учётом использования Codex.</p>
+   <button className="primary" disabled={serviceBusy} onClick={()=>void saveServiceLimits()}>Сохранить ограничения</button>
+   {serviceNotice&&<p>{serviceNotice}</p>}
+  </section>
+ </div>:accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
  <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
  {codex?.error&&<p className="error">{codex.error}</p>}
@@ -305,20 +329,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <label>Глубина рассуждений<select value={aiSettings.reasoning} onChange={e=>setAiSettings({...aiSettings,reasoning:e.target.value as AiSettings['reasoning']})}>
     <option value="low">Низкая — экономит лимиты</option><option value="medium">Средняя</option>
    </select></label>
-   <label>Максимальная длительность задания (сек.)<select value={aiSettings.max_runtime_seconds} onChange={e=>setAiSettings({...aiSettings,max_runtime_seconds:Number(e.target.value)})}>
-    <option value={90}>90 секунд</option><option value={180}>3 минуты</option>
-    <option value={300}>5 минут</option><option value={600}>10 минут</option>
-    <option value={900}>15 минут</option>
-   </select></label>
-   <label>Запусков за 24 часа<select value={aiSettings.daily_run_limit} onChange={e=>setAiSettings({...aiSettings,daily_run_limit:Number(e.target.value)})}>
-    {[1,2,3,5,10].map(n=><option key={n} value={n}>{n}</option>)}
-   </select></label>
   </div>
   <label style={{display:'flex',flexDirection:'row',alignItems:'center',gap:10}}>
    <input type="checkbox" checked={aiSettings.enabled} onChange={e=>setAiSettings({...aiSettings,enabled:e.target.checked})} style={{width:18,height:18}}/>
    Разрешить ручной запуск AI-задач
   </label>
-  <p className="muted">Лимит запусков за 24 часа, время и модель снижают расход, но не являются точным ограничением токенов. Доступность модели зависит от твоей подписки Codex.</p>
+  <p className="muted">Лимиты использования общие для сервиса и настраиваются в разделе «Настройки сервиса». Здесь выбирается модель для этого проекта.</p>
   <button className="primary" disabled={aiBusy} onClick={()=>void saveAiSettings()}>Сохранить настройки AI</button>
   {aiMessage&&<p>{aiMessage}</p>}
  </section>}
