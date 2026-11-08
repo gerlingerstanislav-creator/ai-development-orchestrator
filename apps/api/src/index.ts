@@ -324,6 +324,16 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(!git.rowCount)return reply.code(409).send({error:'Сначала привяжи GitHub-репозиторий с токеном'});
  const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
  if(active.rowCount)return reply.code(409).send({error:'Эта задача уже выполняется или находится в очереди'});
+ // Finish Git work from a previously successful Codex run before consuming any new tokens.
+ // This also recovers from GitHub 403 after the user fixes token permissions.
+ try{
+  const finished=await finishExistingTaskBranch(id,taskId,uid(req));
+  if(finished)return reply.send({status:'completed',recovered:true,pr_url:finished.pr_url,branch:finished.branch,task_id:taskId,
+   message:'Разработка уже выполнена. Pull Request создан автоматически без повторного запуска Codex.'});
+ }catch(e){
+  const err=e as Error&{statusCode?:number};
+  return reply.code(err.statusCode||503).send({error:err.message});
+ }
  const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
  const branch=git.rows[0].target_branch||git.rows[0].default_branch;
@@ -403,20 +413,17 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
 
 
 
-app.post('/api/projects/:id/tasks/:taskId/recover-pr',async(req:any,reply)=>{
- const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):Promise<{pr_url:string;branch:string;recovered:boolean}|null>{
  const result=await pool.query(
   "SELECT t.title,t.stage,t.git_branch,t.pr_url,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
-  [taskId,id,uid(req)]);
- if(!result.rowCount)return reply.code(404).send({error:'Задача или GitHub-подключение не найдены'});
+  [taskId,id,actorId]);
+ if(!result.rowCount)throw Object.assign(new Error('Задача или GitHub-подключение не найдены'),{statusCode:404});
  const row=result.rows[0];
- if(row.stage!=='development'&&row.stage!=='merge_queue')return reply.code(409).send({error:'PR создаётся после разработки, до слияния'});
- if(row.pr_url)return {ok:true,pr_url:row.pr_url,already_existed:true};
- const branch=String(row.git_branch||taskId);
- if(branch!==taskId)return reply.code(409).send({error:'Имя ветки не соответствует ID задачи'});
+ if(row.stage!=='development'&&row.stage!=='merge_queue')return null;
+ if(row.pr_url)return {pr_url:row.pr_url,branch:String(row.git_branch||taskId),recovered:true};
+ const branch=taskId;
  const token=decryptToken(row.secret_encrypted);
- const baseBranch=row.target_branch||row.default_branch;
+ const baseBranch=String(row.target_branch||row.default_branch);
  const apiBase='https://api.github.com/repos/'+row.repository;
  const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
  const gh=async(endpoint:string,options:RequestInit={})=>{
@@ -424,32 +431,34 @@ app.post('/api/projects/:id/tasks/:taskId/recover-pr',async(req:any,reply)=>{
   const data=await response.json().catch(()=>({})) as any;
   return {response,data};
  };
- try{
-  // Explicitly check branch commits before PR creation; no Codex request is made.
-  const compare=await gh('/compare/'+encodeURIComponent(baseBranch)+'...'+encodeURIComponent(branch));
-  if(!compare.response.ok)return reply.code(409).send({error:'Не удалось проверить изменения ветки: GitHub HTTP '+compare.response.status});
-  if(!compare.data.ahead_by)return reply.code(409).send({error:'В ветке задачи ещё нет новых коммитов. Сначала выполни разработку.'});
-  const existing=await gh('/pulls?state=all&head='+encodeURIComponent(row.repository.split('/')[0]+':'+branch)+'&per_page=100');
-  if(!existing.response.ok){
-   const status=existing.response.status;
-   const msg=status===403?'Токену GitHub не хватает права Pull requests: Read and write. Выдай его для этого репозитория и сохрани подключение.':'Не удалось прочитать Pull Request: HTTP '+status;
-   return reply.code(403).send({error:msg});
-  }
-  const old=(existing.data as any[]).find(p=>p.base?.ref===baseBranch&&p.state==='open');
-  let pr=old;
-  if(!pr){
-   const created=await gh('/pulls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'AI: '+String(row.title).slice(0,180),body:'Изменения по задаче '+taskId+'\n\nПодготовлено AI Development Orchestrator. Проверьте перед слиянием.',head:branch,base:baseBranch,draft:false})});
-   if(!created.response.ok){
-    return reply.code(409).send({error:created.response.status===403?'GitHub отклонил создание PR (403). Проверь у токена Pull requests: Read and write для репозитория.':'Не удалось создать PR: GitHub HTTP '+created.response.status+' '+String(created.data.message||'').slice(0,180)});
-   }
-   pr=created.data;
-  }
-  await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,updated_at=now() WHERE id=$1 AND project_id=$5",[taskId,branch,pr.html_url,pr.number,id]);
-  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pr_created',$4)",[randomUUID(),taskId,uid(req),pr.html_url]);
-  await pool.query("UPDATE ai_task_runs SET pr_url=$2,status='completed',message=$3,completed_at=COALESCE(completed_at,now()) WHERE project_id=$1 AND task_id=$4 AND status='failed' AND branch=$5",[id,pr.html_url,'PR восстановлен без повторного запуска Codex',taskId,branch]);
-  return {ok:true,pr_url:pr.html_url,already_existed:!!old};
- }catch(e){return reply.code(503).send({error:'Не удалось восстановить PR: '+(e instanceof Error?e.message:'Ошибка GitHub')});}
-});
+ // A task's branch might not yet have been created. No changes means normal Codex development.
+ const branchResult=await gh('/branches/'+encodeURIComponent(branch));
+ if(branchResult.response.status===404)return null;
+ if(!branchResult.response.ok)throw Object.assign(new Error('Не удалось проверить ветку задачи в GitHub: HTTP '+branchResult.response.status),{statusCode:502});
+ const comparison=await gh('/compare/'+encodeURIComponent(baseBranch)+'...'+encodeURIComponent(branch));
+ if(!comparison.response.ok)throw Object.assign(new Error('Не удалось сравнить ветки: GitHub HTTP '+comparison.response.status),{statusCode:502});
+ if(!(Number(comparison.data.ahead_by)>0))return null;
+ // Source code has already been pushed. Don't charge Codex again for the same work.
+ const existing=await gh('/pulls?state=open&head='+encodeURIComponent(row.repository.split('/')[0]+':'+branch)+'&per_page=100');
+ if(!existing.response.ok)throw Object.assign(new Error(existing.response.status===403
+  ?'GitHub HTTP 403: у подключённого токена нет доступа к Pull Requests. В GitHub выдай ему разрешение Pull requests: Read and write и сохрани подключение заново.'
+  :'Не удалось прочитать Pull Requests: GitHub HTTP '+existing.response.status),{statusCode:existing.response.status===403?409:502});
+ const previous=(Array.isArray(existing.data)?existing.data:[]).find((pr:any)=>pr.base?.ref===baseBranch);
+ let pr=previous;
+ if(!pr){
+  const created=await gh('/pulls',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({title:'AI: '+String(row.title).slice(0,180),body:'Изменения по задаче '+taskId+'\n\nПодготовлено AI Development Orchestrator. Проверь изменения перед слиянием.',head:branch,base:baseBranch,draft:false})});
+  if(!created.response.ok)throw Object.assign(new Error(created.response.status===403
+   ?'GitHub HTTP 403: создание PR запрещено. Нужны Pull requests: Read and write в разрешениях токена.'
+   :'Не удалось создать PR: GitHub HTTP '+created.response.status+' '+String(created.data.message||'').slice(0,180)),{statusCode:409});
+  pr=created.data;
+ }
+ await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,updated_at=now() WHERE id=$1 AND project_id=$5",[taskId,branch,pr.html_url,pr.number,id]);
+ await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pr_created',$4)",[randomUUID(),taskId,actorId,'PR создан автоматически: '+pr.html_url]);
+ await pool.query("UPDATE ai_task_runs SET pr_url=$2,status='completed',message=$3,completed_at=COALESCE(completed_at,now()) WHERE project_id=$1 AND task_id=$4 AND status='failed' AND branch=$5",
+  [id,pr.html_url,'PR автоматически создан из готовых изменений без нового запроса к Codex',taskId,branch]);
+ return {pr_url:pr.html_url,branch,recovered:true};
+}
 async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  const info=await pool.query("SELECT t.id,t.title,t.stage,t.pr_number,t.pr_url,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
  [taskId,projectId,userId]);
