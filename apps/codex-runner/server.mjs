@@ -272,7 +272,7 @@ http.createServer(async(req,res)=>{
     typeof job.baseBranch!=='string'|| !/^[a-zA-Z0-9_.\/-]+$/.test(job.baseBranch) ||
     !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(job.model)||
     !['low','medium'].includes(job.reasoning)||
-    !Number.isInteger(job.maxRuntimeSeconds)||job.maxRuntimeSeconds<90||job.maxRuntimeSeconds>900||
+    !Number.isInteger(job.maxRuntimeSeconds)||job.maxRuntimeSeconds<90||job.maxRuntimeSeconds>7200||
     typeof job.token!=='string'||job.token.length<20||
     typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
     return reply(res,400,{error:'Некорректные параметры задачи'});
