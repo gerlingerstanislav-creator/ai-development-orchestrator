@@ -487,7 +487,7 @@ http.createServer(async(req,res)=>{
     const result=await command('codex',[
       'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
       '--json','--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
-    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:105000});
+    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:240000});
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
