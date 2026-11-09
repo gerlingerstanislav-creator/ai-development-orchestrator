@@ -1624,7 +1624,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
          </div>
         </details>}
        </React.Fragment>)}
-       {managerState?.requests?.some(x=>x.status==='waiting')&&<small>Ожидаем инструменты для визуальной проверки</small>}
+       {managerState?.requests?.filter(x=>x.status==='waiting'&&x.kind==='qa_visual').map(request=><React.Fragment key={request.id}>
+        <small>Визуальные тесты отложены</small>
+        <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Передумал: разрешить слияние с риском</button>
+       </React.Fragment>)}
        {['testing','development'].includes(activeTask.stage)&&
         <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>
          {managerBusy?'Проверка процесса…':'Продолжить / восстановить работу'}
