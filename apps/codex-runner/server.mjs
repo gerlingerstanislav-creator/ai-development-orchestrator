@@ -491,7 +491,8 @@ http.createServer(async(req,res)=>{
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
-    return reply(res,200,{message:message.slice(0,16000),usage:parsed.usage});
+    if(message.length>120000)return reply(res,413,{error:'Слишком объёмный ответ AI для одного этапа. Раздели итоговую документацию на несколько частей.'});
+    return reply(res,200,{message,usage:parsed.usage});
    }catch(error){
     return reply(res,503,{error:'Codex: '+String(error?.message||error).slice(0,900)});
    }finally{activeChatRequests--;}
