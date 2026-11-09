@@ -5,7 +5,7 @@ import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
 import bcrypt from 'bcryptjs';
 const { compare, hash } = bcrypt;
-import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import { randomUUID, randomBytes, createHash, createCipheriv, createDecipheriv } from 'node:crypto';
 import { z } from 'zod';
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
@@ -27,6 +27,8 @@ const workflowDefaults = [
 async function dbInit() {
  await pool.query(`
  CREATE TABLE IF NOT EXISTS users (id uuid primary key, email text unique not null, password_hash text not null);
+ CREATE TABLE IF NOT EXISTS auth_sessions (token_hash text primary key, user_id uuid not null references users(id) on delete cascade, expires_at timestamptz not null, created_at timestamptz not null default now());
+ CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
  CREATE TABLE IF NOT EXISTS projects (id uuid primary key, name text not null, description text not null default '', owner_id uuid not null references users(id), created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
@@ -110,14 +112,52 @@ app.setErrorHandler((error,_,reply) => {
  const status = typeof err.statusCode==='number' && err.statusCode>=400 && err.statusCode<500 ? err.statusCode : 500;
  return reply.code(status).send({error:status<500?err.message:'Ошибка сервера'});
 });
+const REFRESH_DAYS=30;
+const REFRESH_COOKIE='ado-refresh';
+function refreshHash(raw:string){return createHash('sha256').update(raw).digest('hex');}
+function cookieValue(req:any,name:string){
+ const line=String(req.headers.cookie||'');
+ const item=line.split(';').map((x:string)=>x.trim()).find((x:string)=>x.startsWith(name+'='));
+ return item?item.slice(name.length+1):null;
+}
+function setRefreshCookie(req:any,reply:any,raw:string|null){
+ const secure=req.protocol==='https'||req.headers['x-forwarded-proto']==='https';
+ const value=raw?encodeURIComponent(raw):'';
+ const attrs=[REFRESH_COOKIE+'='+value,'HttpOnly','SameSite=Lax','Path=/api/auth',secure?'Secure':'',raw?'Max-Age='+REFRESH_DAYS*86400:'Max-Age=0'].filter(Boolean);
+ reply.header('Set-Cookie',attrs.join('; '));
+}
+async function accessToken(userId:string,email:string){
+ return new SignJWT({email}).setProtectedHeader({alg:'HS256'}).setSubject(userId).setIssuedAt().setExpirationTime('12h').sign(jwtKey);
+}
 app.post('/api/login',async(req,reply)=>{
- const {email,password}=parse(z.object({email:z.string().trim().min(3).max(254).regex(/^[^\s@]+@[^\s@]+$/),password:z.string()}),req.body);
+ const {email,password}=parse(z.object({email:z.string().trim().min(3).max(254).regex(/^[^\\s@]+@[^\\s@]+$/),password:z.string()}),req.body);
  const u=await pool.query('SELECT * FROM users WHERE email=$1',[email.toLowerCase()]);
  if(!u.rowCount || !(await compare(password,u.rows[0].password_hash))) return reply.code(401).send({error:'Неверный логин или пароль'});
- return {token:await new SignJWT({email:u.rows[0].email}).setProtectedHeader({alg:'HS256'}).setSubject(u.rows[0].id).setIssuedAt().setExpirationTime('12h').sign(jwtKey)};
+ const user=u.rows[0];
+ const refresh=randomBytes(32).toString('base64url');
+ await pool.query("INSERT INTO auth_sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '30 days')",[refreshHash(refresh),user.id]);
+ setRefreshCookie(req,reply,refresh);
+ return {token:await accessToken(user.id,user.email)};
+});
+app.post('/api/auth/refresh',async(req,reply)=>{
+ const old=cookieValue(req,REFRESH_COOKIE);
+ if(!old||!/^[a-zA-Z0-9_-]{30,100}$/.test(old))return reply.code(401).send({error:'Сессия завершена'});
+ const fresh=randomBytes(32).toString('base64url');
+ const rotated=await pool.query("UPDATE auth_sessions SET token_hash=$2 WHERE token_hash=$1 AND expires_at>now() RETURNING user_id",[refreshHash(old),refreshHash(fresh)]);
+ if(!rotated.rowCount){setRefreshCookie(req,reply,null);return reply.code(401).send({error:'Сессия завершена'});}
+ const user=(await pool.query('SELECT email FROM users WHERE id=$1',[rotated.rows[0].user_id])).rows[0];
+ if(!user){setRefreshCookie(req,reply,null);return reply.code(401).send({error:'Сессия завершена'});}
+ setRefreshCookie(req,reply,fresh);
+ return {token:await accessToken(rotated.rows[0].user_id,user.email)};
+});
+app.post('/api/auth/logout',async(req,reply)=>{
+ const raw=cookieValue(req,REFRESH_COOKIE);
+ if(raw)await pool.query('DELETE FROM auth_sessions WHERE token_hash=$1',[refreshHash(raw)]);
+ setRefreshCookie(req,reply,null);
+ return {ok:true};
 });
 app.addHook('preHandler',async(req,reply)=>{
- if(req.url === '/api/login' || req.url === '/api/health' || !req.url.startsWith('/api/')) return;
+ if(req.url === '/api/login' || req.url === '/api/health' || req.url.startsWith('/api/auth/') || !req.url.startsWith('/api/')) return;
  try {const raw=req.headers.authorization?.replace(/^Bearer /,'');if(!raw)throw Error('no token');const {payload}=await jwtVerify(raw,jwtKey);(req as any).userId=payload.sub;}
  catch{return reply.code(401).send({error:'Требуется вход'});}
 });
