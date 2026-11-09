@@ -205,6 +205,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      return instructions.rows.reverse().map((row:any)=>'- '+String(row.body).slice(0,900)).join('\n').slice(-1800);
     };
     const rules=await rulesContext(id);
+    const documentationAgent=await stageAgentContext(id,'documentation');
     // Summarise every source chunk separately: the Codex assistant endpoint has
     // a strict 24k-character prompt limit. Never silently drop source tails.
     // Keep prompts well below the limit even after JSON serialization.
@@ -312,6 +313,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      'Проект: '+String(project.rows[0]?.name||''),
      'Описание: '+String(project.rows[0]?.description||'').slice(0,900),
      'Правила: '+rules.slice(0,1500),
+     'Инструкции исполнителя документации: '+documentationAgent.slice(0,1100),
      'Существующие документы: '+JSON.stringify(existingDocs.rows.map((d:any)=>({title:d.title}))).slice(0,2200),
      'Запрос: '+message.slice(0,2000),
      'Уточнения пользователя, поступившие во время импорта: '+(await getInstructions()),
