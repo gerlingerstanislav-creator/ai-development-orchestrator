@@ -104,11 +104,36 @@ function DocumentMarkdown({source}:{source:string}){
  return <article className="docs-markdown">{result}</article>;
 }
 
+class AuthExpiredError extends Error {}
+let refreshInFlight:Promise<string|null>|null=null;
+function renewAccessToken():Promise<string|null>{
+ if(refreshInFlight)return refreshInFlight;
+ refreshInFlight=(async()=>{
+  try{
+   const response=await fetch('/api/auth/refresh',{method:'POST',credentials:'same-origin'});
+   if(!response.ok)return null;
+   const data=await response.json() as {token?:string};
+   if(!data.token)return null;
+   sessionStorage.setItem(key,data.token);
+   return data.token;
+  }catch{return null;}
+ })().finally(()=>{refreshInFlight=null;});
+ return refreshInFlight;
+}
 async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
- const token=sessionStorage.getItem(key);
- const res=await fetch('/api'+path,{...options,headers:{...(options.body!=null?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});
- const data=await res.json().catch(()=>({}));
- if(!res.ok)throw Error(data.error||'Ошибка запроса');
+ const send=(token:string|null)=>fetch('/api'+path,{...options,credentials:'same-origin',headers:{...(options.body!=null?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});
+ let response=await send(sessionStorage.getItem(key));
+ if(response.status===401 && path!=='/login' && !path.startsWith('/auth/')){
+  const nextToken=await renewAccessToken();
+  if(nextToken)response=await send(nextToken);
+  else{
+   sessionStorage.removeItem(key);
+   window.dispatchEvent(new Event('ado-session-expired'));
+   throw new AuthExpiredError('Сессия завершена');
+  }
+ }
+ const data=await response.json().catch(()=>({}));
+ if(!response.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
 }
 type ProjectSection='overview'|'tasks'|'docs'|'rules'|'settings';
@@ -135,6 +160,13 @@ function projectUrl(projectId:string,section:ProjectSection='tasks'){
 }
 function App(){
  const [token,setToken]=useState(sessionStorage.getItem(key)||'');
+ useEffect(()=>{
+  let active=true;
+  if(!sessionStorage.getItem(key))void renewAccessToken().then(fresh=>{if(active&&fresh)setToken(fresh);});
+  const expired=()=>{setToken('');setProjectsLoaded(false);setProjects([]);setSelected(null);};
+  window.addEventListener('ado-session-expired',expired);
+  return()=>{active=false;window.removeEventListener('ado-session-expired',expired);};
+ },[]);
  const [login,setLogin]=useState(''); const [password,setPassword]=useState('');
  const [route,setRoute]=useState<AppRoute>(()=>parseAppRoute(window.location.pathname));
  const [projectsLoaded,setProjectsLoaded]=useState(false);
@@ -256,7 +288,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   else if(from==='documentation')await updateDocumentation();
  }
  const [drag,setDrag]=useState<string|null>(null);
- function fail(e:unknown){setError(e instanceof Error?e.message:'Неизвестная ошибка');}
+ function fail(e:unknown){if(e instanceof AuthExpiredError)return;setError(e instanceof Error?e.message:'Неизвестная ошибка');}
  async function loadProjects(){try{setProjects(await api('/projects'));setProjectsLoaded(true);}catch(e){fail(e);}}
  async function loadProject(id:string){
   try{
@@ -532,7 +564,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
- function logout(){sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setProjectsLoaded(false);setLoadedProjectId(null);setCodex(null);navigate('/projects',true);}
+ function logout(){void fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}).catch(()=>{});sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setProjectsLoaded(false);setLoadedProjectId(null);setCodex(null);navigate('/projects',true);}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
   return docs.filter(d=>d.parent_id===parentId).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
