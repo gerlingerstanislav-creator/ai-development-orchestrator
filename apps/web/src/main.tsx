@@ -821,9 +821,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
   setMergeBusy(true);try{
    await api('/projects/'+selected.id+'/tasks/'+task.id+'/merge',{method:'POST'});
-   setTasks(old=>old.map(t=>t.id===task.id?{...t,stage:'done'}:t));
-   setActiveTask(old=>old?.id===task.id?{...old,stage:'done'}:old);
-   setMergeReport('Изменения задачи слиты.');
+   setTasks(old=>old.map(t=>t.id===task.id?{...t,stage:'documentation'}:t));
+   setActiveTask(old=>old?.id===task.id?{...old,stage:'documentation'}:old);
+   setMergeReport('PR слит. Задача ожидает актуализации документации.');
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
  async function mergeReady(){if(!selected||!window.confirm('Последовательно слить PR с автоматическим разрешением конфликтов?'))return;
