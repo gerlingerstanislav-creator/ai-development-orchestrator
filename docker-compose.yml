@@ -28,9 +28,9 @@ services:
       db: {condition: service_healthy}
   temporal:
     image: temporalio/temporal:1.10.0
-    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/data/temporal.db"]
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
     volumes:
-      - temporal_data:/data
+      - temporal_data:/home/temporal
     restart: unless-stopped
     # Development service with persistent SQLite. Keep Web UI private.
     # Expose explicitly only on a trusted host if needed: 127.0.0.1:8233:8233
