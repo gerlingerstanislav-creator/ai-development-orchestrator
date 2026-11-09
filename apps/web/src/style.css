@@ -598,3 +598,40 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .tasks-page .kanban-group:nth-child(3) .group-mark{background:#d5a850}
 .tasks-page .kanban-group:nth-child(4) .group-mark{background:#879dda}
 .tasks-page .kanban-group:nth-child(5) .group-mark{background:#75bba8}
+
+/* Project workflow map: compact cards, directional connectors and visible return path. */
+.workflow-settings-panel{padding:14px 12px;margin-bottom:7px}
+.workflow-settings-panel .row-line{align-items:center;margin-bottom:9px;gap:10px}
+.workflow-settings-panel .row-line h3{margin:0 0 3px}
+.workflow-settings-panel .row-line p{margin:0;font-size:11px}
+.workflow-key{display:inline-flex;align-items:center;gap:6px;color:#7b879b;font-size:10px;white-space:nowrap}
+.workflow-key-line{width:18px;height:2px;background:#8398d9;position:relative}
+.workflow-key-line:after{content:'';position:absolute;right:0;top:-3px;border-left:5px solid #8398d9;border-top:4px solid transparent;border-bottom:4px solid transparent}
+.workflow-diagram-scroll{overflow-x:auto;overflow-y:hidden;padding:3px 1px 0}
+.workflow-diagram{display:flex;align-items:stretch;gap:0;min-width:max-content;padding:3px 0 0}
+.workflow-diagram-connector{width:26px;flex:0 0 26px;display:flex;align-items:center;justify-content:center;color:#8197d6;position:relative}
+.workflow-diagram-connector span{height:2px;background:#9baad2;position:absolute;width:24px;top:50%;left:0}
+.workflow-diagram-connector svg{position:relative;margin-left:16px;background:white}
+.workflow-stage-card{width:148px;min-height:91px;position:relative;flex:0 0 148px;padding:11px 10px;border:1px solid #dfe5ef;border-radius:10px;background:#f7f9fd;display:flex;flex-direction:column;align-items:flex-start;gap:6px;text-align:left;color:#35445d}
+.workflow-stage-card:hover,.workflow-stage-card:focus-visible{background:#eff2ff;border-color:#a4b1f0;outline:none;box-shadow:0 2px 10px #5764ce15}
+.workflow-stage-label{font-size:12px;font-weight:750;line-height:1.25;padding-right:20px}
+.workflow-stage-agent{font-size:10px;color:#5f6e85;line-height:1.25;max-width:125px;overflow-wrap:anywhere}
+.workflow-stage-mode{margin-top:auto;color:#8490a4;font-size:9px}
+.workflow-stage-icon{position:absolute;right:9px;top:9px;color:#8b99af}
+.workflow-stage-development{border-top:3px solid #829fe7}
+.workflow-stage-analysis{border-top:3px solid #b991e5}
+.workflow-stage-testing{border-top:3px solid #e5ad61}
+.workflow-stage-merge_queue{border-top:3px solid #84a7d4}
+.workflow-stage-documentation{border-top:3px solid #79b7aa}
+.workflow-stage-done{border-top:3px solid #5ba688}
+.workflow-feedback{height:53px;width:1192px;max-width:none;position:relative;color:#cb8b55}
+.workflow-feedback-path{position:absolute;inset:0;width:100%;height:44px}
+.workflow-feedback>span{position:absolute;top:29px;left:405px;display:inline-flex;align-items:center;gap:5px;background:#fff9f1;border:1px solid #f0d9be;padding:4px 9px;border-radius:6px;font-size:10px;white-space:nowrap;color:#ad7848}
+.workflow-note{font-size:10px!important;margin:5px 0 0!important}
+.workflow-stage-dialog{width:min(590px,96vw);padding:21px 23px}
+.workflow-stage-dialog .modal-heading{margin-bottom:12px}
+.workflow-stage-dialog label{margin-bottom:11px}
+.workflow-stage-dialog textarea{min-height:210px;resize:vertical;font-family:inherit;line-height:1.5;font-size:12px}
+.workflow-stage-dialog footer{margin-top:14px}
+.workflow-transition-description{display:flex;align-items:center;gap:7px;border:1px solid #ead8c3;background:#fffaf2;padding:9px;border-radius:8px;font-size:11px;color:#946e42;margin:8px 0}
+@media(max-width:700px){.workflow-settings-panel{padding:10px 8px}.workflow-stage-dialog{padding:15px;max-height:90vh}.workflow-key{display:none}}

@@ -10,6 +10,9 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
  async function ask(id:string,prompt:string){
   const cfg=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
   if(!cfg.rows[0]?.enabled)throw new Error('Включи AI в настройках проекта');
+  const writer=await pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='documentation'",[id]);
+  const role=writer.rows[0];
+  if(role)prompt+='\n\nИнструкции этапа документации ('+String(role.agent_name||'AI-технический писатель')+'): '+String(role.agent_instructions||'').slice(0,7000);
   const r=await fetch(codexUrl+'/assistant',{method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},body:JSON.stringify({prompt,model:cfg.rows[0].model,reasoning:cfg.rows[0].reasoning}),signal:AbortSignal.timeout(115000)});
   const data=await r.json().catch(()=>({})) as any;
   if(!r.ok)throw new Error(String(data.error||'Ошибка Codex').slice(0,300));

@@ -34,6 +34,15 @@ const workflowDefaults = [
   ['documentation','Документация','manual'],
   ['done','Готово','manual']
 ] as const;
+const workflowAgentDefaults:Record<string,{name:string;instructions:string}>={
+ backlog:{name:'Оператор',instructions:'Регистрируй новые запросы и сохраняй их контекст до анализа.'},
+ analysis:{name:'AI-аналитик',instructions:'Уточняй требования, фиксируй критерии приёмки и открытые вопросы. Не придумывай недостающие факты.'},
+ development:{name:'AI-разработчик',instructions:'Реализуй утверждённые требования, соблюдай правила проекта, исправляй дефекты тестирования. Не меняй секреты.'},
+ testing:{name:'AI-тестировщик',instructions:'Независимо проверяй код и доступные тесты, документируй дефекты с шагами воспроизведения. Не утверждай, что непроверенное работает.'},
+ merge_queue:{name:'Интегратор GitHub',instructions:'Проверяй состояние PR и доступные проверки перед слиянием. Не обходи защиту веток.'},
+ documentation:{name:'AI-технический писатель',instructions:'Документируй только подтверждённую реализацию. Отличай требования от реализованной функциональности.'},
+ done:{name:'Система',instructions:'Фиксируй завершение только после тестирования, слияния и обновления документации.'}
+};
 // Preserve the original administrator account when upgrading legacy local installs.
 // A dotted reserved domain also passes conventional email validation.
 function configuredAdminEmail(){
@@ -48,6 +57,9 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS projects (id uuid primary key, name text not null, description text not null default '', owner_id uuid not null references users(id), created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
+ ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS agent_name text NOT NULL DEFAULT '';
+ ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS agent_instructions text NOT NULL DEFAULT '';
+
  CREATE TABLE IF NOT EXISTS tasks (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, description text not null default '', type text not null default 'task', stage text not null default 'backlog', parent_id uuid references tasks(id) on delete set null, position int not null default 0, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
  -- Keep UUID as the internal stable identifier; expose a monotonic human task number.
  CREATE SEQUENCE IF NOT EXISTS task_display_number_seq;
@@ -152,6 +164,25 @@ async function dbInit() {
  UPDATE workflow_stages SET position=5 WHERE stage='merge_queue';
  UPDATE workflow_stages SET position=6 WHERE stage='documentation';
  UPDATE workflow_stages SET position=7 WHERE stage='done';
+ UPDATE workflow_stages SET agent_name=CASE stage
+  WHEN 'backlog' THEN 'Оператор'
+  WHEN 'analysis' THEN 'AI-аналитик'
+  WHEN 'development' THEN 'AI-разработчик'
+  WHEN 'testing' THEN 'AI-тестировщик'
+  WHEN 'merge_queue' THEN 'Интегратор GitHub'
+  WHEN 'documentation' THEN 'AI-технический писатель'
+  WHEN 'done' THEN 'Система'
+  ELSE 'Исполнитель' END WHERE agent_name='';
+ UPDATE workflow_stages SET agent_instructions=CASE stage
+  WHEN 'analysis' THEN 'Уточняй требования, фиксируй проверяемые критерии приёмки и открытые вопросы. Не придумывай недостающие факты.'
+  WHEN 'development' THEN 'Реализуй утверждённые требования в рабочей ветке, соблюдай правила проекта, исправляй замечания тестировщика. Не изменяй секреты.'
+  WHEN 'testing' THEN 'Независимо проверь задачу и доступные тесты. Возвращай структурированные ошибки со способом воспроизведения, ожидаемым и фактическим результатом. Не объявляй непроверенное успешным.'
+  WHEN 'documentation' THEN 'Обновляй подтверждённую реализованную функциональность после слияния PR. Отделяй проектные требования от фактической реализации.'
+  WHEN 'merge_queue' THEN 'Проверяй состояние PR и доступные проверки перед слиянием. Не обходи защиту веток.'
+  WHEN 'backlog' THEN 'Регистрируй новые запросы и сохраняй их контекст до анализа.'
+  WHEN 'done' THEN 'Фиксируй завершение только после необходимых проверок и обновления документации.'
+  ELSE '' END WHERE agent_instructions='';
+
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS created_document_id uuid REFERENCES documents(id) ON DELETE SET NULL;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT 'project';
@@ -970,18 +1001,26 @@ app.post('/api/projects',async(req,reply)=>{
  try{await client.query('BEGIN');
  await client.query('INSERT INTO projects(id,name,description,owner_id) VALUES($1,$2,$3,$4)',[id,name,description,uid(req)]);
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
- for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];await client.query('INSERT INTO workflow_stages VALUES($1,$2,$3,$4,$5)',[id,stage,label,mode,i]);}
+ for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent.name,agent.instructions]);}
  await client.query('COMMIT');return reply.code(201).send({id,name,description});}
  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 });
 app.get('/api/projects/:id',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;const r=await pool.query('SELECT * FROM projects WHERE id=$1',[id]);return r.rows[0];});
-app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows;});
+app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows;});
 app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
  const {id,stage}=parse(z.object({id:z.string().uuid(),stage:validStages}),req.params);
  if(!await access(req,reply,id))return;
- const {mode}=parse(z.object({mode:validMode}),req.body);
- await pool.query('UPDATE workflow_stages SET mode=$1 WHERE project_id=$2 AND stage=$3',[mode,id,stage]);
- return {ok:true};
+ if(!await requireAdmin(req,reply))return;
+ const {mode,agent_name,agent_instructions}=parse(z.object({
+  mode:validMode.optional(),
+  agent_name:z.string().trim().min(1).max(100).optional(),
+  agent_instructions:z.string().max(12000).optional()
+ }).refine(v=>Object.keys(v).length>0,'Укажи настройку для изменения'),req.body);
+ const updated=await pool.query(
+  'UPDATE workflow_stages SET mode=COALESCE($1,mode),agent_name=COALESCE($2,agent_name),agent_instructions=COALESCE($3,agent_instructions) WHERE project_id=$4 AND stage=$5 RETURNING stage,label,mode,position,agent_name,agent_instructions',
+  [mode??null,agent_name??null,agent_instructions??null,id,stage]);
+ if(!updated.rowCount)return reply.code(404).send({error:'Этап не найден'});
+ return updated.rows[0];
 });
 app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT * FROM tasks WHERE project_id=$1 ORDER BY position, created_at',[id])).rows;});
 app.post('/api/projects/:id/tasks',async(req:any,reply)=>{

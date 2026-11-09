@@ -30,16 +30,17 @@ async function event(projectId:string,processId:string,kind:string,stage:string,
 }
 type TaskRef={projectId:string;taskId:string;runId:string;attempt?:number};
 async function jobSettings(projectId:string,taskId:string){
- const [task,repo,settings,rules]=await Promise.all([
+ const [task,repo,settings,rules,workflow]=await Promise.all([
   pool.query('SELECT * FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT g.repository,g.default_branch,g.target_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.provider='github_token'",[projectId]),
   pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
-  pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 60',[projectId])
+  pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 60',[projectId]),
+  pool.query('SELECT stage,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1',[projectId])
  ]);
  if(!task.rowCount||!repo.rowCount||!settings.rowCount||!settings.rows[0].enabled)
   throw ApplicationFailure.nonRetryable('Задача, подключение GitHub или настройки AI недоступны');
  const t=task.rows[0],g=repo.rows[0],ai=settings.rows[0];
- return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,12000)};
+ return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),agentSettings:workflow.rows};
 }
 async function dispatch(job:any){
  try{
@@ -54,7 +55,7 @@ async function dispatch(job:any){
 
 export async function startDevelopment(args:TaskRef){
  const {projectId,taskId,runId,attempt=0}=args;
- const {task,repo,ai,token,rules}=await jobSettings(projectId,taskId);
+ const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  const record=await pool.query('SELECT status FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,projectId]);
  if(!record.rowCount)throw ApplicationFailure.nonRetryable('Запуск разработки отсутствует');
  if(['completed','failed'].includes(record.rows[0].status))return;
@@ -63,7 +64,7 @@ export async function startDevelopment(args:TaskRef){
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ТЕСТИРОВАНИЯ:\n'+feedback:'');
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
   model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,projectRules:rules,relatedTasks:[]};
+  title:task.title,description,projectRules:rules,relatedTasks:[],agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions};
  await dispatch(job);
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -114,7 +115,7 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
 }
 export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
- const {task,repo,ai,token,rules}=await jobSettings(projectId,taskId);
+ const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const testId=existing.rowCount?existing.rows[0].id:randomUUID();
  if(!existing.rowCount){
@@ -127,7 +128,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,projectRules:rules});
+  title:task.title,description:task.description,projectRules:rules,agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
