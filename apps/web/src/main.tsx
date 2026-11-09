@@ -26,7 +26,7 @@ type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
-type ProjectProcess={id:string;kind:'document_import'|'development'|'merge';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[]}|null;taskId?:string};
+type ProjectProcess={id:string;kind:'document_import'|'development'|'merge';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[]}|null;taskId?:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
@@ -778,7 +778,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!selected||!process.sourceUrl||processActionBusy)return;
   setProcessActionBusy(true);
   try{
-   const message='Импортируй документацию в текущий проект из '+process.sourceUrl+'. Прочитай все Markdown-файлы, сохрани требования и не дублируй существующие документы.';
+   const message=process.requestText?.trim()||('Импортируй техническую документацию в текущий проект из '+process.sourceUrl+'. Прочитай все Markdown-файлы, сохрани требования, не дублируй существующие документы и не утверждай, что функциональность реализована.');
    await api('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'documentation'})});
    const res=await api<{processes:ProjectProcess[]}>('/projects/'+selected.id+'/processes');
    setProjectProcesses(res.processes);setSelectedProcessId(res.processes[0]?.id||null);
@@ -962,8 +962,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>}
      {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
       {process.hasDraft?<button className="secondary" disabled={processActionBusy} onClick={()=>void retryProcessSave(process)}>Повторить сохранение без повторного анализа</button>:
-       <button className="secondary" disabled={processActionBusy||!process.sourceUrl} onClick={()=>void restartImport(process)}>Повторить импорт из источника</button>}
-      <small>{process.hasDraft?'AI-черновик сохранён — повторится только SQL-запись.':'Нет сохранённого AI-черновика. Источник придётся прочитать заново.'}</small>
+       <button className="secondary" disabled={processActionBusy||!process.sourceUrl} onClick={()=>void restartImport(process)}>{(process.progress?.completed??0)>0?'Продолжить импорт':'Повторить импорт из источника'}</button>}
+      <small>{process.hasDraft?'AI-черновик сохранён — повторится только SQL-запись.':'Нет готового итогового черновика. При повторе система сверит файлы и переиспользует сохранённые конспекты уже обработанных фрагментов.'}</small>
      </div>}
      {process.kind==='document_import'&&process.status==='running'&&<div className="process-instruction-box">
       <strong>Уточнить задание для AI</strong>

@@ -145,12 +145,12 @@ function authorized(req){
  const a=Buffer.from(supplied),b=Buffer.from(jobKey);
  return a.length===b.length && timingSafeEqual(a,b);
 }
-function command(binary,args,{cwd,env,timeout=30000}={}){
+function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000}={}){
  return new Promise((resolve,reject)=>{
   const child=spawn(binary,args,{cwd,env:{...process.env,...env},stdio:['ignore','pipe','pipe']});
   let output='',errors='',done=false,timedOut=false;
   const timer=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},timeout);
-  child.stdout.on('data',x=>{output=(output+x.toString()).slice(-16000);});
+  child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
   child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
   const settle=(err)=>{
    if(done)return;done=true;clearTimeout(timer);
@@ -487,7 +487,7 @@ http.createServer(async(req,res)=>{
     const result=await command('codex',[
       'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
       '--json','--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
-    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:105000});
+    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:240000,maxOutputChars:500000});
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
