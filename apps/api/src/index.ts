@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { registerAssistantRoutes } from './assistant.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
+import {fingerprint} from './topic-import.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
 import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
@@ -1459,6 +1460,32 @@ app.get('/api/projects/:id/processes/:processId/events',async(req:any,reply)=>{
  if(!await access(req,reply,id))return;
  const rows=await pool.query("SELECT id,process_kind,level,stage,detail,created_at FROM process_events WHERE project_id=$1 AND process_id=$2 ORDER BY created_at ASC LIMIT 500",[id,processId]);
  return rows.rows;
+});
+
+app.get('/api/projects/:id/documentation/proposals',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ return (await pool.query("SELECT v.id,v.job_id,v.topic_key,v.document_id,v.title,v.proposed_body,v.status,v.created_at,d.title AS document_title FROM document_import_proposals v JOIN documents d ON d.id=v.document_id WHERE v.project_id=$1 AND v.status='open' ORDER BY v.created_at",[id])).rows;
+});
+app.post('/api/projects/:id/documentation/proposals/:proposalId/decision',async(req:any,reply)=>{
+ const {id,proposalId}=parse(z.object({id:z.string().uuid(),proposalId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {decision}=parse(z.object({decision:z.enum(['approve','reject'])}),req.body);
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const v=(await client.query("SELECT * FROM document_import_proposals WHERE id=$1 AND project_id=$2 AND status='open' FOR UPDATE",[proposalId,id])).rows[0];
+  if(!v){await client.query('ROLLBACK');return reply.code(409).send({error:'Предложение уже обработано'});}
+  const d=(await client.query('SELECT id,title,body,system_key FROM documents WHERE id=$1 AND project_id=$2 FOR UPDATE',[v.document_id,id])).rows[0];
+  if(!d||d.system_key){await client.query('ROLLBACK');return reply.code(409).send({error:'Страница недоступна для обновления'});}
+  if(decision==='approve'){
+   if(fingerprint(d.title,d.body)!==v.base_hash){await client.query('ROLLBACK');return reply.code(409).send({error:'Страница изменилась после формирования предложения. Нужна повторная сверка.'});}
+   await client.query("UPDATE documents SET title=$2,body=$3,import_synced_hash=$4,updated_at=now() WHERE id=$1",[d.id,v.title,v.proposed_body,fingerprint(v.title,v.proposed_body)]);
+  }
+  await client.query("UPDATE document_import_proposals SET status=$2,decided_at=now() WHERE id=$1",[proposalId,decision==='approve'?'approved':'rejected']);
+  await client.query('COMMIT');
+  return {ok:true,decision};
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 });
 app.get('/api/projects/:id/docs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
