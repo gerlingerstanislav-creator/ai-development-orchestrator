@@ -667,6 +667,62 @@ type MergeBatchResult={taskId:string;status:'merged'|'skipped';reason?:string};
 type MergeBatch={id:string;projectId:string;status:'running'|'completed';results:MergeBatchResult[];currentTask:string|null;message:string;createdAt:string;finishedAt?:string};
 const mergeBatches=new Map<string,MergeBatch>();
 const runningMergeProjects=new Map<string,string>();
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+app.get('/api/background-processes',async(req:any)=>{
+ const userId=uid(req);
+ const [developments,imports,accessibleProjects]=await Promise.all([
+  pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.title AS task_title,t.display_number,a.status,a.message,a.created_at
+    FROM ai_task_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
+    JOIN tasks t ON t.id=a.task_id
+    WHERE a.status IN ('queued','running')
+    ORDER BY a.created_at DESC LIMIT 50`,[userId]),
+  pool.query(`SELECT j.id,j.project_id,p.name AS project_name,j.status,j.message,j.created_at
+    FROM document_import_jobs j JOIN projects p ON p.id=j.project_id
+    JOIN memberships m ON m.project_id=j.project_id AND m.user_id=$1
+    WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50`,[userId]),
+  pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId])
+ ]);
+ const processes:BackgroundProcess[]=[];
+ for(const row of developments.rows){
+  let status:string=row.status,detail:string=row.message||'Codex работает над задачей';
+  // Reconcile the actual runner state: DB status alone may remain stale if the
+  // user closes the task page while a development run completes.
+  try{
+   const remote=await agentCall('/jobs/'+row.id);
+   status=String(remote.status||status);
+   detail=String(remote.message||detail).slice(0,250);
+   if(['completed','failed'].includes(status)){
+    // Preserve the existing full reconciliation workflow in the task-run endpoint.
+    // Do not present a finished process as active.
+    continue;
+   }
+  }catch(error){
+   const text=error instanceof Error?error.message:String(error);
+   if(text.includes('Задача не найдена'))continue;
+   detail='Связь с исполнителем временно недоступна · '+detail;
+  }
+  if(status!=='queued'&&status!=='running')continue;
+  processes.push({id:'development:'+row.id,kind:'development',projectId:row.project_id,projectName:row.project_name,
+   taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
+   detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/tasks/'+row.task_id});
+ }
+ for(const row of imports.rows){
+  processes.push({id:'import:'+row.id,kind:'document_import',projectId:row.project_id,projectName:row.project_name,
+   title:'Импорт документации',detail:String(row.message||'Обработка Markdown-документов').slice(0,250),
+   status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/docs'});
+ }
+ const projectNames=new Map<string,string>(accessibleProjects.rows.map((row:any)=>[row.id,row.name]));
+ for(const batch of mergeBatches.values()){
+  const projectName=projectNames.get(batch.projectId);
+  if(!projectName||batch.status!=='running')continue;
+  processes.push({id:'merge:'+batch.id,kind:'merge',projectId:batch.projectId,projectName,
+   title:'Последовательное слияние PR',detail:batch.message||'Обработка очереди Pull Request',
+   status:'running',createdAt:batch.createdAt,url:'/projects/'+batch.projectId+'/tasks'});
+ }
+ processes.sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
+ return {count:processes.length,processes,checkedAt:new Date().toISOString()};
+});
+
 async function resolvePrConflicts(projectId:string,taskId:string,userId:string){
  const details=await pool.query(
   "SELECT t.title,t.description,t.pr_number,t.git_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted,a.model,a.reasoning FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 LEFT JOIN project_ai_settings a ON a.project_id=t.project_id WHERE t.id=$1 AND t.project_id=$2",
