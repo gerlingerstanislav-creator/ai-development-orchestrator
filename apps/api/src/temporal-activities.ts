@@ -264,7 +264,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  }
  const status=String(remote.status||'running'),message=String(remote.message||'').slice(0,2500);
  if(status==='completed'||status==='failed'){
-  const expected=Array.isArray(row.rows[0].qa_plan_snapshot?.cases)?row.rows[0].qa_plan_snapshot.cases:[];
+  const expected:Array<{id:string}>=Array.isArray(row.rows[0].qa_plan_snapshot?.cases)?row.rows[0].qa_plan_snapshot.cases:[];
   const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
   const providedMap=new Map<string,{result:string;evidence:string}>();
   for(const item of provided){
