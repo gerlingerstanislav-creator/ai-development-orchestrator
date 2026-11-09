@@ -763,6 +763,8 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
   throw Object.assign(new Error('Требования изменились или аналитик проверял другую версию PR. Повтори сверку требований и тестирование.'),{statusCode:409});
  const qaPlan=await pool.query('SELECT id,spec_version FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
  const orchestrated=await pool.query('SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND cycle_id IS NOT NULL LIMIT 1',[projectId,taskId]);
+ if((qaPlan.rowCount||orchestrated.rowCount)&&spec.rows[0].spec_reviewed_commit!==pr.head.sha)
+  throw Object.assign(new Error('Аналитик не проверил последний коммит PR. Сначала повтори сверку требований.'),{statusCode:409});
  if((qaPlan.rowCount||orchestrated.rowCount)&&(!qaPlan.rowCount||qaPlan.rows[0].spec_version!==spec.rows[0].spec_version))
   throw Object.assign(new Error('Нет QA-плана для актуальной версии ТЗ. Сначала выполни тестирование.'),{statusCode:409});
  if(qaPlan.rowCount){
@@ -1093,6 +1095,8 @@ app.put('/api/projects/:id/tasks/:taskId/dependency',async(req:any,reply)=>{
 });
 /** Manual task edits are spec changes; they invalidate QA and trigger analyst review. */
 async function startRequirementsReview(projectId:string,taskId:string,version:number){
+ const running=await pool.query("SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",[projectId,taskId,version]);
+ if(running.rowCount)return {started:true,runId:running.rows[0].id,message:'Проверка требований уже выполняется'};
  const enabled=await pool.query('SELECT enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  if(!enabled.rows[0]?.enabled)return {started:false,message:'AI отключён; проверка требований ожидает включения'};
  const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') AND cycle_id IS NOT NULL LIMIT 1",[projectId,taskId]);
