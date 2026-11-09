@@ -605,6 +605,21 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   },4000);
   return()=>clearInterval(timer);
  },[token,selected?.id,aiRuns,activeTask?.id]);
+ // A Temporal test can complete after the development run has finished.
+ // Refresh board state independently of the former development-run poller.
+ useEffect(()=>{
+  if(!token||!selected?.id||!tasks.some(t=>t.stage==='testing'))return;
+  let alive=true;
+  const timer=window.setInterval(async()=>{
+   try{
+    const current=await api<Task[]>('/projects/'+selected.id+'/tasks');
+    if(!alive)return;
+    setTasks(current);
+    setActiveTask(old=>old?current.find(t=>t.id===old.id)||old:null);
+   }catch{/* Keep prior state during transient network failures. */}
+  },7000);
+  return()=>{alive=false;window.clearInterval(timer);};
+ },[token,selected?.id,tasks.some(t=>t.stage==='testing')]);
  function openDocumentationChat(){
   setProjectChatMode('documentation');
   setProjectChatOpen(true);
