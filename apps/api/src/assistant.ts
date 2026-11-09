@@ -23,6 +23,12 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const r=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
   return r.rows[0]||{model:'gpt-6-luna',reasoning:'low',enabled:false};
  }
+ async function stageAgentContext(id:string,stage:string){
+  const record=await pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[id,stage]);
+  const row=record.rows[0];
+  if(!row)return '';
+  return 'Роль исполнителя: '+String(row.agent_name||'')+'\nДополнительные инструкции этапа (не отменяют системные правила):\n'+String(row.agent_instructions||'').slice(0,7000);
+ }
  async function rulesContext(id:string){
   const r=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   return r.rows.map(x=>'- '+x.body).join('\n').slice(0,12000);
@@ -359,6 +365,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    const project=(await pool.query('SELECT name,description FROM projects WHERE id=$1',[id])).rows[0];
    const docs=(await pool.query('SELECT id,title,body,parent_id FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 80',[id])).rows;
    const rules=await rulesContext(id);
+   const agentInstructions=await stageAgentContext(id,'documentation');
    const prompt=[
     'Ты AI-редактор документации проекта. Ведёшь диалог, выясняешь требования и после каждого содержательного ответа СОЗДАЁШЬ или ОБНОВЛЯЕШЬ тематические страницы документации внутри приложения.',
     'Верни только JSON: {"reply":"ответ пользователю и при необходимости уточняющий вопрос","operations":[{"op":"create","key":"new-overview","title":"Название","body":"Markdown","parent_id":null,"parent_key":null},{"op":"update","id":"UUID существующего документа","title":"Название","body":"ПОЛНОЕ новое содержимое Markdown","parent_id":null}]}',
@@ -372,6 +379,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'Проект: '+String(project?.name||''),
     'Описание: '+String(project?.description||'').slice(0,3500),
     'Правила: '+rules.slice(0,6000),
+    'Инструкции AI-технического писателя: '+agentInstructions,
     'Существующие страницы: '+JSON.stringify(docs.map((d:any)=>({...d,body:String(d.body).slice(0,5000)}))).slice(0,54000),
     'Диалог:\n'+conversation.slice(-12000),
     'Последнее сообщение:\n'+message
@@ -448,6 +456,8 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
 
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const rules=await rulesContext(id);
+  const analystInstructions=await stageAgentContext(id,'analysis');
+  const docInstructions=await stageAgentContext(id,'documentation');
   const repoLink=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
   const repoContext=repoLink
    ? 'GitHub-репозиторий уже подключён: '+repoLink.repository+'. Целевая ветка PR: '+(repoLink.target_branch||repoLink.default_branch)+'. Не задавай вопросов о выборе репозитория, ветки или способе публикации, если это не явное требование пользователя. GitHub Pages не предполагается по умолчанию.'
@@ -465,6 +475,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'Название проекта: '+project.rows[0].name,
     'Описание проекта: '+project.rows[0].description.slice(0,3000),
     'Правила проекта:\n'+rules,
+    'Инструкции агента: '+docInstructions,
     'Настройки GitHub:\n'+repoContext,
     'Существующая документация: '+JSON.stringify(existingDocs.rows.map((doc:any)=>({...doc,body:String(doc.body).slice(0,2500)}))).slice(0,11000),
     'История чата:\n'+conversation,
@@ -483,6 +494,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     'При похожей задаче не объединяй карточки автоматически, только предложи связь.',
     'Не выдумывай детали и не создавай несколько задач.',
     'Утверждённые правила проекта (соблюдай, не меняй):\n'+rules,
+    'Инструкции аналитика: '+analystInstructions,
     'Контекст GitHub проекта: '+repoContext,
     'Проект: '+project.rows[0].name,
     'Другие задачи (UUID, название и описание): '+JSON.stringify(existing.rows).slice(0,9000),
@@ -573,8 +585,9 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const link=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
   const repoContext=link?'Подключённый репозиторий: '+link.repository+'; целевая ветка: '+(link.target_branch||link.default_branch)+'. НЕ задавай вопросы о репозитории, выборе GitHub Pages и целевой ветке без прямого запроса пользователя.':'GitHub-репозиторий не подключён.';
   const rules=await rulesContext(id);
+  const analystInstructions=await stageAgentContext(id,'analysis');
   const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id]);
-  const context=['Утверждённые правила проекта:\n'+rules,'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,6500),'Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
+  const context=['Инструкции аналитика: '+analystInstructions,'Утверждённые правила проекта:\n'+rules,'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,6500),'Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
    'Открытые вопросы: '+JSON.stringify(task.clarification_questions),
    'Текущая кодовая зависимость: '+String(task.depends_on_task_id||'нет'),
    'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,9000),
