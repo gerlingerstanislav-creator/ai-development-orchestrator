@@ -1533,6 +1533,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
     </div>
     <div className="task-modal-actions">
+     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
      {savingField&&<span className="muted">Сохранение…</span>}
      <button className="task-close" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу"><X size={20}/></button>
     </div>
@@ -1549,7 +1550,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
      <div className="task-metadata">
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
-      <span>Этап: <strong>{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</strong></span>
+
       <span>Модель: <strong>{aiSettings.model}</strong></span>
      </div>
      {activeTask.stage==='analysis'&&<div className="task-questions">
