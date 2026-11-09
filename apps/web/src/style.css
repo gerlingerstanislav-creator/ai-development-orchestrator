@@ -872,3 +872,7 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .qa-waiver-blockers{display:flex;flex-direction:column;gap:5px}
 .qa-waiver-blockers>p{font-size:11px;margin:0;color:#9c614b}
 .qa-waiver-blockers>strong{font-size:12px}
+
+.qa-waiver-capabilities{font-size:11px;color:#765b39}
+.qa-waiver-capabilities>summary{cursor:pointer}
+.qa-waiver-capabilities>pre{font-size:10px;line-height:1.45;background:#fff;padding:7px 9px;border:1px solid #eadbc7;border-radius:6px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
