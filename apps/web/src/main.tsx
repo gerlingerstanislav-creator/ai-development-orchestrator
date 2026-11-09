@@ -5,15 +5,16 @@ import './style.css';
 import {QaPanel} from './QaPanel.js';
 
 type Project={id:string,name:string,description:string};
-type Task={test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
+type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
+type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
+type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
- {key:'development',title:'Разработка',ids:['development']},
- {key:'testing',title:'Тестирование',ids:['testing']},
- {key:'merging',title:'Слияние',ids:['merge_queue']},
+ {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
  {key:'results',title:'Итоги',ids:['documentation','done']}
 ];
 
@@ -28,9 +29,9 @@ type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:s
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
-type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
+type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
@@ -275,7 +276,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
  const [expandedGroups,setExpandedGroups]=useState<KanbanGroupKey[]>(()=>{
-  const all:KanbanGroupKey[]=['analytics','development','testing','merging','results','other'];
+  const all:KanbanGroupKey[]=['analytics','development','results','other'];
   try{
    // New layout starts fully expanded, while retaining subsequent user choices.
    const saved=localStorage.getItem('ado-kanban-groups-expanded-v3');
@@ -290,6 +291,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
 
  const [activeTask,setActiveTask]=useState<Task|null>(null);
+ const [requirements,setRequirements]=useState<RequirementInfo|null>(null);
+ const [requirementsBusy,setRequirementsBusy]=useState(false);
  const [elapsedNow,setElapsedNow]=useState(Date.now());
  const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
  const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');
@@ -337,6 +340,45 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined})),
    ...testRuns.filter(r=>r.task_id===taskId).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',text:r.report?.summary||r.message||'Тестировщик выполняет проверку',time:r.created_at,status:r.status}))
   ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
+ }
+ async function loadRequirements(projectId:string,taskId:string){
+  const data=await api<RequirementInfo>('/projects/'+projectId+'/tasks/'+taskId+'/requirements');
+  setRequirements(data);
+ }
+ useEffect(()=>{
+  if(!selected?.id||!activeTask?.id){setRequirements(null);return;}
+  let live=true;
+  const projectId=selected.id,taskId=activeTask.id;
+  const refresh=async()=>{
+   try{
+    const data=await api<RequirementInfo>('/projects/'+projectId+'/tasks/'+taskId+'/requirements');
+    if(live){
+     setRequirements(data);
+     setActiveTask(old=>old&&old.id===data.task.id&&old.spec_version!==data.task.spec_version&&editingField===null
+      ?{...old,title:data.task.title,description:data.task.description,spec_version:data.task.spec_version,spec_review_status:data.task.spec_review_status as Task['spec_review_status'],spec_review_note:data.task.spec_review_note}:old);
+    }
+   }catch{/* Keep previous review data while reconnecting. */}
+  };
+  void refresh();
+  const timer=window.setInterval(()=>{if(!document.hidden)void refresh();},8000);
+  return()=>{live=false;window.clearInterval(timer);};
+ },[selected?.id,activeTask?.id,editingField]);
+ async function decideRequirements(reviewId:string,decision:'approve'|'reject'){
+  if(!selected||!activeTask||requirementsBusy)return;
+  setRequirementsBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/requirements/'+reviewId+'/decision',{method:'POST',body:JSON.stringify({decision})});
+   await loadRequirements(selected.id,activeTask.id);
+   await refreshTaskActivity(selected.id,activeTask.id);
+  }catch(e){fail(e);}finally{setRequirementsBusy(false);}
+ }
+ async function retryRequirements(){
+  if(!selected||!activeTask||requirementsBusy)return;
+  setRequirementsBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/requirements/retry',{method:'POST'});
+   await loadRequirements(selected.id,activeTask.id);
+  }catch(e){fail(e);}finally{setRequirementsBusy(false);}
  }
  async function refreshTaskActivity(projectId:string,taskId:string){
   try{
@@ -644,7 +686,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  },[token,selected?.id]);
  const activeTestFor=(taskId:string)=>testRuns.find(r=>r.task_id===taskId&&['running','queued'].includes(r.status));
  const agentWorking=(taskId:string)=>aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
-  testRuns.some(r=>r.task_id===taskId&&r.status==='running');
+  testRuns.some(r=>r.task_id===taskId&&r.status==='running')||
+  projectProcesses.some(p=>p.kind==='analysis'&&p.taskId===taskId&&['queued','running'].includes(p.status));
  // A Temporal test can complete after the development run has finished.
  // Refresh board state independently of the former development-run poller.
  useEffect(()=>{
@@ -801,14 +844,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
     draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
-    {showStage&&<span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>}
-    <span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span>
-    <span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span>
-    <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
+    <span className="task-card-top"><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
+    <span className="task-name-line"><strong>{t.title}</strong><span className="task-card-state"><span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span></span>
     <p>{t.description||'Без описания'}</p>
     {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
-    {t.stage==='merge_queue'&&<small className="task-warning">PR ожидает слияния</small>}
-    <span className="task-footer"><span>Задача</span><span>↗</span></span>
   </a>;
  }
  function renderKanbanLane(s:Stage){
@@ -1308,6 +1347,28 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <><div className="task-readonly">{activeTask.description||'Описание пока пустое'}</div>
         <button className="pencil" title="Изменить описание" onClick={()=>setEditingField('description')}><Pencil size={15}/></button></>}
      </div>
+     {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
+      <div className={'task-requirements-review '+requirements.task.spec_review_status}>
+       <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
+       <p>{requirements.task.spec_review_note||'Актуальная версия требований ожидает проверки.'}</p>
+       {requirements.task.spec_review_status==='pending'&&<button className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить проверку аналитиком</button>}
+       {requirements.task.spec_review_status==='needs_approval'&&(()=>{
+        const review=requirements.reviews.find(item=>item.status==='needs_approval'&&item.spec_version===requirements.task.spec_version);
+        if(!review)return null;
+        return <div className="requirement-proposal">
+         <strong>Предлагаемое ТЗ</strong><div className="task-readonly">{review.proposed_description}</div>
+         {!!review.questions?.length&&<div className="muted">{review.questions.map((q,i)=><p key={i}>{q}</p>)}</div>}
+         <div className="requirements-actions">
+          <button className="primary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'approve')}>Согласовать изменение</button>
+          <button className="secondary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'reject')}>Отклонить и вернуть разработчику</button>
+         </div>
+        </div>;
+       })()}
+      </div>}
+     {requirements&&<details className="task-requirements-history">
+      <summary>История требований · версия {requirements.task.spec_version}</summary>
+      {requirements.versions.map(v=><div key={v.version}><strong>v{v.version}</strong> · {v.origin} · {new Date(v.created_at).toLocaleString('ru-RU')}{v.reason&&<p>{v.reason}</p>}</div>)}
+     </details>}
      <div className="task-metadata">
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
       <span>Этап: <strong>{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</strong></span>

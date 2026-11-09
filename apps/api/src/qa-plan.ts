@@ -32,17 +32,17 @@ function parseResponse(raw:string){
 
 export type QaTestCase={id:string;title:string;area:string;description:string;preconditions:string;steps:Array<{action:string;expected:string}>;priority:string;category:string;execution_mode:string;purpose:string};
 
-export async function readQaPlan(pool:Pool,projectId:string,taskId:string):Promise<{summary:string;cases:QaTestCase[]}|null>{
- const plan=await pool.query('SELECT id,summary FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
+export async function readQaPlan(pool:Pool,projectId:string,taskId:string):Promise<{summary:string;spec_version:number;spec_hash:string;cases:QaTestCase[]}|null>{
+ const plan=await pool.query('SELECT id,summary,spec_version,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
  if(!plan.rowCount)return null;
  const cases=await pool.query('SELECT c.id,c.title,c.area,c.description,c.preconditions,c.steps,c.priority,c.category,c.execution_mode,p.purpose FROM qa_plan_cases p JOIN qa_test_cases c ON c.id=p.case_id WHERE p.plan_id=$1 AND c.project_id=$2 AND c.status=\'active\' ORDER BY CASE p.purpose WHEN \'targeted\' THEN 0 ELSE 1 END,c.priority,c.title',[plan.rows[0].id,projectId]);
- return {summary:plan.rows[0].summary,cases:cases.rows};
+ return {summary:plan.rows[0].summary,spec_version:plan.rows[0].spec_version,spec_hash:plan.rows[0].spec_hash,cases:cases.rows};
 }
 
-export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;taskId:string;runId:string},ask:(prompt:string)=>Promise<string>):Promise<number>{
+export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;taskId:string;runId:string;implementationEvidence?:string},ask:(prompt:string)=>Promise<string>):Promise<number>{
  const {projectId,taskId}=args;
  const [task,stage,rules,docs,existing]=await Promise.all([
-  pool.query('SELECT title,description,analysis_state FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
+  pool.query('SELECT title,description,analysis_state,spec_version,spec_reviewed_version,spec_review_status FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='testing'",[projectId]),
   pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 50',[projectId]),
   pool.query("SELECT title,body FROM documents WHERE project_id=$1 AND (document_kind='functional' OR implementation_status='implemented') ORDER BY updated_at DESC LIMIT 6",[projectId]),
@@ -50,17 +50,18 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  ]);
  if(!task.rowCount)throw new Error('Задача для подготовки QA не найдена');
  if(task.rows[0].analysis_state!=='approved')throw new Error('Сначала требуется утвердить анализ задачи');
+ if(task.rows[0].spec_review_status!=='current'||task.rows[0].spec_version!==task.rows[0].spec_reviewed_version)throw new Error('Требования должны быть актуализированы аналитиком перед генерацией тестов');
  const row=task.rows[0];
  const rulesText=rules.rows.map((r:any)=>r.body).join('\n').slice(0,9000);
  const instructions=String(stage.rows[0]?.agent_instructions||'').slice(0,7000);
- const hash=createHash('sha256').update(JSON.stringify({title:row.title,description:row.description,rulesText,instructions})).digest('hex');
+ const hash=createHash('sha256').update(JSON.stringify({title:row.title,description:row.description,spec_version:row.spec_version,rulesText,instructions})).digest('hex');
  const plan=await pool.query('SELECT id,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
  if(plan.rowCount&&plan.rows[0].spec_hash===hash){
   const count=await pool.query('SELECT count(*)::int AS count FROM qa_plan_cases WHERE plan_id=$1',[plan.rows[0].id]);
   if(count.rows[0].count>0)return count.rows[0].count;
  }
  const prompt=[
-  'Ты независимый QA-инженер и тест-дизайнер. Создай тестовую документацию ПО ТРЕБОВАНИЯМ ЗАДАЧИ ДО начала разработки.',
+  'Ты независимый QA-инженер. Создай или актуализируй тестовую документацию ПЕРЕД тестированием, ПОСЛЕ сверки ТЗ аналитиком.',
   'Никогда не подстраивай ожидаемое поведение под текущий код. Не придумывай реализованные возможности.',
   'Сформируй 1–6 пользовательских сценариев и 1–12 конкретных тест-кейсов: позитивные, негативные, крайние условия, права доступа (где уместно).',
   'Для каждого тест-кейса укажи чёткие действия и ожидаемые результаты, чтобы проверить его мог человек или AI.',
@@ -70,6 +71,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   'Роль агента: '+String(stage.rows[0]?.agent_name||'AI-тестировщик'),
   'Инструкции агента: '+instructions,
   'Задача: '+row.title+'\n'+String(row.description||'').slice(0,17000),
+  'Реализованные изменения (используй для выбора проверок, но НЕ подгоняй ожидаемый результат под код): '+String(args.implementationEvidence||'').slice(0,13000),
   'Правила проекта: '+rulesText,
   'Существующая функциональная документация (сжатый контекст): '+JSON.stringify(docs.rows.map((d:any)=>({title:d.title,body:String(d.body).slice(0,2400)}))).slice(0,16000),
   'Существующий каталог тест-кейсов: '+JSON.stringify(existing.rows).slice(0,14000)
@@ -78,6 +80,9 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
+  const spec=await client.query('SELECT spec_version,spec_reviewed_version,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,projectId]);
+  if(!spec.rowCount||spec.rows[0].spec_version!==row.spec_version||spec.rows[0].spec_review_status!=='current'||spec.rows[0].spec_reviewed_version!==row.spec_version)
+   throw new Error('ТЗ изменилось во время формирования тест-кейсов. Повтори подготовку по новой версии.');
   const current=await client.query('SELECT id,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2 FOR UPDATE',[projectId,taskId]);
   if(current.rowCount&&current.rows[0].spec_hash===hash){
    const count=await client.query('SELECT count(*)::int AS count FROM qa_plan_cases WHERE plan_id=$1',[current.rows[0].id]);
@@ -86,9 +91,9 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   const planId=current.rowCount?current.rows[0].id:randomUUID();
   if(current.rowCount){
    await client.query('DELETE FROM qa_plan_cases WHERE plan_id=$1',[planId]);
-   await client.query('UPDATE qa_test_plans SET summary=$2,spec_hash=$3,generated_at=now() WHERE id=$1',[planId,produced.summary,hash]);
+   await client.query('UPDATE qa_test_plans SET summary=$2,spec_hash=$3,spec_version=$4,generated_at=now() WHERE id=$1',[planId,produced.summary,hash,row.spec_version]);
   }else{
-   await client.query('INSERT INTO qa_test_plans(id,project_id,task_id,spec_hash,summary) VALUES($1,$2,$3,$4,$5)',[planId,projectId,taskId,hash,produced.summary]);
+   await client.query('INSERT INTO qa_test_plans(id,project_id,task_id,spec_hash,summary,spec_version) VALUES($1,$2,$3,$4,$5,$6)',[planId,projectId,taskId,hash,produced.summary,row.spec_version]);
   }
   const flowIds=new Map<string,string>();
   for(const flow of produced.flows){

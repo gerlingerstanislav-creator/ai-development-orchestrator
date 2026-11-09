@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { registerAssistantRoutes } from './assistant.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
+import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
@@ -496,9 +497,10 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(t.rows[0].stage!=='development'||t.rows[0].analysis_state!=='approved')return reply.code(409).send({error:'Подтверди завершение анализа и отправь задачу в разработку'});
+ if(['pending','needs_approval'].includes(t.rows[0].spec_review_status))return reply.code(409).send({error:'Требования ещё проверяются аналитиком. Дождись завершения сверки.'});
  const relatedIds=(t.rows[0].related_task_ids||[]) as string[];
  const related=relatedIds.length?(await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[])',[id,relatedIds])).rows:[];
  // Informationally related tasks never block development; only a typed code dependency does.
@@ -578,10 +580,11 @@ app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
 app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const task=await pool.query('SELECT stage,pr_url,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const task=await pool.query('SELECT stage,pr_url,git_branch,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
+ if(task.rows[0].spec_review_status==='needs_approval'||task.rows[0].spec_review_status==='rejected')return reply.code(409).send({error:'Сначала согласуй или отклони изменение требований, отмеченное аналитиком'});
  const active=await pool.query("SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
  if(active.rowCount)return reply.code(409).send({error:'Проверка этой задачи уже запущена'});
  const cycleId=randomUUID();
@@ -755,10 +758,18 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  }
  if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
  // QA plans require a verified test run for the exact commit being merged.
- const qaPlan=await pool.query('SELECT id FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
+ const spec=await pool.query('SELECT spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
+ if(!spec.rowCount||spec.rows[0].spec_review_status!=='current'||spec.rows[0].spec_version!==spec.rows[0].spec_reviewed_version||(spec.rows[0].spec_reviewed_commit&&spec.rows[0].spec_reviewed_commit!==pr.head.sha))
+  throw Object.assign(new Error('Требования изменились или аналитик проверял другую версию PR. Повтори сверку требований и тестирование.'),{statusCode:409});
+ const qaPlan=await pool.query('SELECT id,spec_version FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
+ const orchestrated=await pool.query('SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND cycle_id IS NOT NULL LIMIT 1',[projectId,taskId]);
+ if((qaPlan.rowCount||orchestrated.rowCount)&&spec.rows[0].spec_reviewed_commit!==pr.head.sha)
+  throw Object.assign(new Error('Аналитик не проверил последний коммит PR. Сначала повтори сверку требований.'),{statusCode:409});
+ if((qaPlan.rowCount||orchestrated.rowCount)&&(!qaPlan.rowCount||qaPlan.rows[0].spec_version!==spec.rows[0].spec_version))
+  throw Object.assign(new Error('Нет QA-плана для актуальной версии ТЗ. Сначала выполни тестирование.'),{statusCode:409});
  if(qaPlan.rowCount){
-  const lastTest=await pool.query('SELECT verdict,report,status FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
-  if(!lastTest.rowCount||lastTest.rows[0].status!=='completed'||lastTest.rows[0].verdict!=='passed'||lastTest.rows[0].report?.commit!==pr.head.sha)
+  const lastTest=await pool.query('SELECT verdict,report,status,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
+  if(!lastTest.rowCount||lastTest.rows[0].status!=='completed'||lastTest.rows[0].verdict!=='passed'||lastTest.rows[0].report?.commit!==pr.head.sha||lastTest.rows[0].qa_spec_version!==spec.rows[0].spec_version)
    throw Object.assign(new Error('PR изменился после успешного тестирования или последний QA-прогон не пройден. Повтори тестирование текущего коммита.'),{statusCode:409});
  }
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
@@ -818,10 +829,10 @@ type MergeBatchResult={taskId:string;status:'merged'|'skipped';reason?:string};
 type MergeBatch={id:string;projectId:string;status:'running'|'completed';results:MergeBatchResult[];currentTask:string|null;message:string;createdAt:string;finishedAt?:string};
 const mergeBatches=new Map<string,MergeBatch>();
 const runningMergeProjects=new Map<string,string>();
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
- const [developments,imports,accessibleProjects,tests,merges]=await Promise.all([
+ const [developments,imports,accessibleProjects,tests,merges,analyses]=await Promise.all([
   pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.title AS task_title,t.display_number,a.status,a.message,a.created_at,a.cycle_id
     FROM ai_task_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
     JOIN tasks t ON t.id=a.task_id
@@ -833,7 +844,8 @@ app.get('/api/background-processes',async(req:any)=>{
     WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50`,[userId]),
   pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId]),
   pool.query("SELECT t.id,t.project_id,t.message,t.created_at,p.name AS project_name FROM ai_test_runs t JOIN projects p ON p.id=t.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE t.status IN ('queued','running') ORDER BY t.created_at DESC LIMIT 50",[userId]),
-  pool.query("SELECT j.id,j.project_id,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50",[userId])
+  pool.query("SELECT j.id,j.project_id,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50",[userId]),
+  pool.query("SELECT r.id,r.project_id,r.task_id,r.message,r.created_at,t.title,p.name AS project_name FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id JOIN projects p ON p.id=r.project_id JOIN memberships m ON m.project_id=r.project_id AND m.user_id=$1 WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50",[userId])
  ]);
  const processes:BackgroundProcess[]=[];
  for(const row of developments.rows){
@@ -892,6 +904,11 @@ app.get('/api/background-processes',async(req:any)=>{
   processes.push({id:'test:'+row.id,kind:'testing',projectId:row.project_id,projectName:row.project_name,
    title:'AI-тестирование',detail:row.message||'Проверка задачи',status:'running',
    createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
+ }
+ for(const row of analyses.rows){
+  if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // A Temporal review already appears within its development cycle.
+  processes.push({id:'analysis:'+row.id,kind:'analysis',projectId:row.project_id,projectName:row.project_name,
+   taskId:row.task_id,title:'Сверка требований · '+row.title,detail:row.message||'AI-аналитик работает',status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  for(const row of merges.rows){
   processes.push({id:'merge:'+row.id,kind:'merge',projectId:row.project_id,projectName:row.project_name,
@@ -1077,19 +1094,109 @@ app.put('/api/projects/:id/tasks/:taskId/dependency',async(req:any,reply)=>{
  try{return await updateDependency(id,taskId,depends_on_task_id,uid(req));}
  catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||409).send({error:err.message});}
 });
+/** Manual task edits are spec changes; they invalidate QA and trigger analyst review. */
+async function startRequirementsReview(projectId:string,taskId:string,version:number){
+ const running=await pool.query("SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",[projectId,taskId,version]);
+ if(running.rowCount)return {started:true,runId:running.rows[0].id,message:'Проверка требований уже выполняется'};
+ const enabled=await pool.query('SELECT enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
+ if(!enabled.rows[0]?.enabled)return {started:false,message:'AI отключён; проверка требований ожидает включения'};
+ const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') AND cycle_id IS NOT NULL LIMIT 1",[projectId,taskId]);
+ if(active.rowCount)return {started:false,message:'Актуализацию требований выполнит аналитик в активном цикле разработки'};
+ const runId=randomUUID();
+ await pool.query("INSERT INTO requirement_review_runs(id,project_id,task_id,spec_version,status,message) VALUES($1,$2,$3,$4,'queued','Ожидает проверки аналитиком')",[runId,projectId,taskId,version]);
+ try{
+  const client=await temporal();
+  await client.workflow.start('requirementsReview',{taskQueue:'agent-pipeline',workflowId:'requirements-'+taskId+'-v'+version,args:[{projectId,taskId,runId}]});
+  return {started:true,runId,message:'AI-аналитик проверяет изменение требований'};
+ }catch(e){
+  await pool.query("UPDATE requirement_review_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,'Не удалось запустить Temporal: '+String(e).slice(0,500)]);
+  return {started:false,runId,message:'Не удалось запустить проверку требований; повтори её вручную'};
+ }
+}
+app.get('/api/projects/:id/tasks/:taskId/requirements',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const task=await pool.query('SELECT id,title,description,spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit,spec_review_note FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+ const [reviews,versions,runs]=await Promise.all([
+  pool.query('SELECT id,classification,status,summary,proposed_description,questions,commit_sha,spec_version,created_at,resolved_at FROM task_requirement_reviews WHERE task_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT 30',[taskId,id]),
+  pool.query('SELECT id,version,origin,title,description,reason,created_at FROM task_spec_versions WHERE task_id=$1 AND project_id=$2 ORDER BY version DESC LIMIT 30',[taskId,id]),
+  pool.query('SELECT id,status,message,spec_version,created_at,completed_at FROM requirement_review_runs WHERE task_id=$1 AND project_id=$2 ORDER BY created_at DESC LIMIT 12',[taskId,id])
+ ]);
+ return {task:task.rows[0],reviews:reviews.rows,versions:versions.rows,runs:runs.rows};
+});
+app.post('/api/projects/:id/tasks/:taskId/requirements/retry',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const task=await pool.query('SELECT spec_version,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+ if(task.rows[0].spec_review_status==='needs_approval')return reply.code(409).send({error:'Сначала согласуй изменение требований'});
+ const run=await startRequirementsReview(id,taskId,task.rows[0].spec_version);
+ return reply.code(run.started?202:409).send(run);
+});
+app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async(req:any,reply)=>{
+ const {id,taskId,reviewId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid(),reviewId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {decision}=parse(z.object({decision:z.enum(['approve','reject'])}),req.body);
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const task=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
+  const review=await client.query("SELECT * FROM task_requirement_reviews WHERE id=$1 AND task_id=$2 AND project_id=$3 FOR UPDATE",[reviewId,taskId,id]);
+  if(!task.rowCount||!review.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Требования или предложение не найдены'});}
+  const t=task.rows[0],v=review.rows[0];
+  if(v.status!=='needs_approval'||t.spec_version!==v.spec_version||t.spec_review_status!=='needs_approval'){
+   await client.query('ROLLBACK');return reply.code(409).send({error:'Предложение уже рассмотрено или относится к старой версии ТЗ'});
+  }
+  if(decision==='approve'){
+   const newVersion=await saveSpecRevision(client,t,{title:t.title,description:v.proposed_description,origin:'approved_change',actorId:uid(req),reason:v.summary,reviewStatus:'current',reviewedCommit:v.commit_sha});
+   if(newVersion===t.spec_version){
+    await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note=$4,updated_at=now() WHERE id=$1 AND project_id=$2",[taskId,id,v.commit_sha,v.summary]);
+   }
+   await client.query("UPDATE task_requirement_reviews SET status='approved',resolved_at=now(),resolved_by=$2 WHERE id=$1",[reviewId,uid(req)]);
+  }else{
+   const backToDevelopment=['testing','merge_queue'].includes(t.stage);
+   await client.query("UPDATE tasks SET spec_review_status='rejected',spec_review_note=$3,test_feedback=$4,stage=CASE WHEN $5 THEN 'development' ELSE stage END,updated_at=now() WHERE id=$1 AND project_id=$2",
+    [taskId,id,'Изменение требований отклонено: реализация должна соответствовать утверждённому ТЗ','Отклонено изменение поведения: '+v.summary,backToDevelopment]);
+   await client.query("UPDATE task_requirement_reviews SET status='rejected',resolved_at=now(),resolved_by=$2 WHERE id=$1",[reviewId,uid(req)]);
+  }
+  await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),decision==='approve'?'requirements_approved':'requirements_rejected',v.summary.slice(0,1800)]);
+  await client.query('COMMIT');
+  return {ok:true,decision};
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+});
 app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  const data=parse(z.object({title:z.string().trim().min(1).max(300).optional(),description:z.string().max(20000).optional(),stage:validStages.optional()}),req.body);
- const old=await pool.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);if(!old.rowCount)return reply.code(404).send({error:'Задача не найдена'});
- const t=old.rows[0];
- if(data.stage && data.stage!==t.stage){
-  if(!['backlog','analysis'].includes(t.stage)||!['backlog','analysis'].includes(data.stage))
-   return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
- }
- await pool.query('UPDATE tasks SET title=$1,description=$2,stage=$3,updated_at=now() WHERE id=$4',[data.title??t.title,data.description??t.description,data.stage??t.stage,taskId]);
- if(data.stage && data.stage!==t.stage)await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'stage_changed',t.stage+' → '+data.stage]);
- return {ok:true};
+ const client=await pool.connect();
+ let version=0,changed=false;
+ try{
+  await client.query('BEGIN');
+  const old=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
+  if(!old.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Задача не найдена'});}
+  const t=old.rows[0];
+  if(data.stage&&data.stage!==t.stage&&(!['backlog','analysis'].includes(t.stage)||!['backlog','analysis'].includes(data.stage))){
+   await client.query('ROLLBACK');return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
+  }
+  const title=data.title??t.title,description=data.description??t.description;
+  if(['documentation','done'].includes(t.stage)&&description!==t.description){
+   await client.query('ROLLBACK');
+   return reply.code(409).send({error:'PR уже слит. Чтобы изменить завершённую функциональность, создай новую связанную задачу; нельзя переписывать утверждённое ТЗ уже внедрённой версии.'});
+  }
+  changed=title!==t.title||description!==t.description;
+  version=changed?await saveSpecRevision(client,t,{title,description,origin:'user',actorId:uid(req),reason:'Пользователь изменил требования задачи'}):t.spec_version;
+  const stage=data.stage&&data.stage!==t.stage?data.stage:changed&&t.stage==='merge_queue'?'testing':t.stage;
+  if(stage!==t.stage)await client.query('UPDATE tasks SET stage=$2,updated_at=now() WHERE id=$1',[taskId,stage]);
+  if(changed){
+   if(['analysis','backlog'].includes(t.stage))await client.query("UPDATE tasks SET analysis_state='new' WHERE id=$1",[taskId]);
+   await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'spec_changed','Требования изменены: версия '+version+'; требуется сверка аналитиком']);
+  }
+  if(stage!==t.stage)await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'stage_changed',t.stage+' → '+stage]);
+  await client.query('COMMIT');
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+ const review=changed?await startRequirementsReview(id,taskId,version):null;
+ return {ok:true,spec_version:version,requirements_review:review};
 });
 app.get('/api/projects/:id/tasks/:taskId/events',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
@@ -1114,11 +1221,12 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const [imports,developments,tests,merges]=await Promise.all([
+ const [imports,developments,tests,merges,analyses]=await Promise.all([
   pool.query("SELECT id,status,message,source_url,request_text,source_file_count,analyzed_chunks,total_chunks,saved_documents,created_at,updated_at,result,draft_result IS NOT NULL AS has_draft FROM document_import_jobs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT id,status,message,created_at,finished_at,results FROM merge_process_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id])
+  pool.query("SELECT id,status,message,created_at,finished_at,results FROM merge_process_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.completed_at,r.spec_version,t.display_number,t.title AS task_title FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
  const processes:any[]=[
   ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:'Импорт документации'+(r.source_url?' · '+r.source_url.split('/').slice(-1)[0]:''),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,requestText:r.request_text,progress:{completed:r.analyzed_chunks,total:r.total_chunks},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
@@ -1128,6 +1236,11 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   processes.push({id:row.id,kind:'testing',title:'Тестирование #'+row.display_number+' · '+row.task_title,
    status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,
    result:row.report?{message:row.report.summary,verdict:row.verdict,findings:row.report.findings,checks:row.report.checks,commit:row.report.commit}:null});
+ }
+ for(const row of analyses.rows){
+  if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // Reconciliation is already recorded in the development process events.
+  processes.push({id:row.id,kind:'analysis',title:'Сверка ТЗ #'+row.display_number+' · '+row.task_title,status:row.status,
+   detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,result:{message:row.message}});
  }
  for(const row of merges.rows){
   processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
@@ -1200,5 +1313,5 @@ app.post('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse
 registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken});
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
-async function main(){await dbInit();await initQaSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});

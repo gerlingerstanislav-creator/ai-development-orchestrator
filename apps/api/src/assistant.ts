@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { randomUUID,createHash } from 'node:crypto';
 import { z } from 'zod';
 import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,wantsDocumentSynthesis} from './github-document-import.js';
+import {saveSpecRevision} from './requirements.js';
 
 type Dependencies={
  pool:Pool; uid:(req:any)=>string;
@@ -620,8 +621,16 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    summary=analyzed.summary;questions=analyzed.questions;
    answer=analyzed.details+(questions.length?'\n\nОстались вопросы:\n'+questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'\n\nБлокирующих вопросов нет. Можно отправлять задачу в разработку.');
    const related=analyzed.related_ids.filter(x=>other.rows.some(o=>o.id===x));
-   await pool.query("UPDATE tasks SET description=$1,clarification_questions=$2,related_task_ids=$3,analysis_state=$4,updated_at=now() WHERE id=$5 AND project_id=$6",
-    [summary,JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
+   const client=await pool.connect();
+   try{
+    await client.query('BEGIN');
+    const current=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
+    if(!current.rowCount||current.rows[0].stage!=='analysis')throw Error('Этап задачи изменился во время анализа');
+    await saveSpecRevision(client,current.rows[0],{title:current.rows[0].title,description:summary!,origin:'analyst',actorId:uid(req),reason:'Уточнение ТЗ системным аналитиком',reviewStatus:'current'});
+    await client.query("UPDATE tasks SET clarification_questions=$1,related_task_ids=$2,analysis_state=$3,spec_review_status='current',spec_reviewed_version=spec_version,updated_at=now() WHERE id=$4 AND project_id=$5",
+     [JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
+    await client.query('COMMIT');
+   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
    if(!task.git_branch&&task.dependency_source==='ai'){
     const dep=analyzed.depends_on_task_id;
     if(!dep || other.rows.some(o=>o.id===dep)){
@@ -647,9 +656,9 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
  app.post('/api/projects/:id/tasks/:taskId/approve-development',async(req:any,reply)=>{
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const task=await pool.query('SELECT stage,analysis_state,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+  const task=await pool.query('SELECT stage,analysis_state,clarification_questions,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
   if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
-  if(task.rows[0].stage!=='analysis'||task.rows[0].analysis_state!=='ready_for_development'||(task.rows[0].clarification_questions||[]).length)
+  if(task.rows[0].stage!=='analysis'||task.rows[0].analysis_state!=='ready_for_development'||task.rows[0].spec_review_status!=='current'||(task.rows[0].clarification_questions||[]).length)
    return reply.code(409).send({error:'Сначала ответь на блокирующие вопросы AI-аналитика'});
   await pool.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE id=$1 AND project_id=$2",[taskId,id]);
   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Анализ → Разработка')",[randomUUID(),taskId,uid(req)]);
