@@ -7,6 +7,7 @@ import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
 import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
+import {initProjectManagerSchema,registerProjectManagerRoutes} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
@@ -1472,5 +1473,11 @@ registerQaRoutes(app,{pool,uid,access,requireAdmin});
 registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview});
 registerTaskCancellationRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
-async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
+ startManagerWorkflow:async({projectId,taskId,messageId})=>{
+  const client=await temporal();
+  await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
+ }
+});
+async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});
