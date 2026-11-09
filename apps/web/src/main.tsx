@@ -1190,6 +1190,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     </small>}
   </a>;
  }
+ function renderDocQuestionCard(question:DocumentationQuestion){
+  return <div className="task-card docs-question-card" key={'doc-question-'+question.id}>
+   <span className="task-type">Уточнение документации</span>
+   <strong>{question.question}</strong>
+   <a href={projectUrl(selected!.id,'docs')+'/'+question.document_id} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+question.document_id)}>ТЗ: {question.document_title}</a>
+   {question.status==='answered'?<small className="muted">Ответ получен. Аналитик обновляет страницу.</small>:<>
+    <textarea rows={3} value={questionAnswers[question.id]||''} onChange={e=>setQuestionAnswers(old=>({...old,[question.id]:e.target.value}))} placeholder="Решение владельца продукта"/>
+    <button className="secondary" disabled={processActionBusy||!(questionAnswers[question.id]||'').trim()} onClick={()=>void answerDocumentationQuestion(question)}>Ответить аналитику</button>
+   </>}
+  </div>;
+ }
  function renderKanbanLane(s:KanbanLane){
   const isQuestions=s.stage===productOwnerLane.stage;
   const stageTasks=filtered.filter(t=>boardLaneFor(t)===s.stage);
@@ -1202,16 +1213,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>
    <div className="cards">
      {stageTasks.map(t=>renderKanbanCard(t))}
-     {isQuestions&&docQuestions.map(question=><div className="task-card docs-question-card" key={'doc-question-'+question.id}>
-      <span className="task-type">Уточнение документации</span>
-      <strong>{question.question}</strong>
-      <a href={projectUrl(selected!.id,'docs')+'/'+question.document_id} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+question.document_id)}>ТЗ: {question.document_title}</a>
-      {question.status==='answered'?<small className="muted">Ответ получен. Аналитик обновляет страницу.</small>:<>
-       <textarea rows={3} value={questionAnswers[question.id]||''} onChange={e=>setQuestionAnswers(old=>({...old,[question.id]:e.target.value}))} placeholder="Решение владельца продукта"/>
-       <button className="secondary" disabled={processActionBusy||!(questionAnswers[question.id]||'').trim()} onClick={()=>void answerDocumentationQuestion(question)}>Ответить аналитику</button>
-      </>}
-     </div>)}
-     {stageTasks.length===0&&(!isQuestions||docQuestions.length===0)&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}
+     {isQuestions&&docQuestions.map(renderDocQuestionCard)}
+      {stageTasks.length===0&&(!isQuestions||docQuestions.length===0)&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}
     </div>
   </div>;
  }
@@ -1224,8 +1227,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    return ai-bi || new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
   });
   return <div className="kanban-group-combined">
-   {ordered.length?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}</div>:
-    <div className="lane-empty">В группе пока нет задач</div>}
+   {ordered.length||(group.key==='analytics'&&docQuestions.length)?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}{group.key==='analytics'&&docQuestions.map(renderDocQuestionCard)}</div>:
+     <div className="lane-empty">В группе пока нет задач</div>}
    {group.stages.some(stage=>stage.stage==='merge_queue')&&tasks.some(t=>t.stage==='merge_queue')&&
     <button className="secondary group-action" disabled={mergeBusy} onClick={()=>void mergeReady()}>Слить готовые</button>}
    {group.stages.some(stage=>stage.stage==='documentation')&&tasks.some(t=>t.stage==='documentation')&&
@@ -1398,7 +1401,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board board-groups">
  {kanbanGroups.map(group=>{
   const expanded=expandedGroups.includes(group.key);
-  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t))).length;
+  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t))).length+(group.key==='analytics'?docQuestions.length:0);
   return <section key={group.key} className={'kanban-group '+(expanded?'is-expanded':'is-collapsed')} style={{['--kanban-stage-count' as string]:group.stages.length} as React.CSSProperties}>
    <button className="kanban-group-heading" type="button" aria-expanded={expanded} onClick={()=>toggleKanbanGroup(group.key)}
     title={expanded?'Свернуть этапы':'Развернуть этапы'}><span className="group-mark"/>
