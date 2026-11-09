@@ -1271,6 +1271,7 @@ app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async
  const {id,taskId,reviewId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid(),reviewId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
  const {decision}=parse(z.object({decision:z.enum(['approve','reject'])}),req.body);
+ if(decision==='approve'&&await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Нельзя согласовать изменение требований, пока остаются вопросы агентов без ответа'});
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
@@ -1278,6 +1279,10 @@ app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async
   const review=await client.query("SELECT * FROM task_requirement_reviews WHERE id=$1 AND task_id=$2 AND project_id=$3 FOR UPDATE",[reviewId,taskId,id]);
   if(!task.rowCount||!review.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Требования или предложение не найдены'});}
   const t=task.rows[0],v=review.rows[0];
+  if(decision==='approve'){
+   const pending=await client.query("SELECT 1 FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' LIMIT 1",[id,taskId]);
+   if(pending.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Поступил новый вопрос агента: сначала ответь на него'});}
+  }
   if(v.classification==='uncertain'&&decision==='approve'){
    await client.query('ROLLBACK');return reply.code(409).send({error:'Аналитик не смог проверить требования. Сначала ответь на вопросы и уточни ТЗ.'});
   }

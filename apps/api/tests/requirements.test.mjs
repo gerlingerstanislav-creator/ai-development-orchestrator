@@ -5,8 +5,8 @@ import {randomUUID} from 'node:crypto';
 import {initRequirementsSchema,saveSpecRevision,reconcileTaskRequirements} from '../dist/requirements.js';
 import {initQaWaiverSchema} from '../dist/qa-waiver.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from '../dist/task-orchestration.js';
-import {initTaskAgentNotesSchema,recordTaskAgentNote,taskNotesContext,pendingAgentQuestions} from '../dist/task-agent-notes.js';
-import {initTaskCancellationSchema} from '../dist/task-cancellation.js';
+import {initTaskAgentNotesSchema,recordTaskAgentNote,taskNotesContext,pendingAgentQuestions,resolveAgentQuestionsForReview} from '../dist/task-agent-notes.js';
+import {initTaskCancellationSchema,needsGitHubCleanup} from '../dist/task-cancellation.js';
 
 test('spec revisions, analyst reconciliation and human-approval gate persist in PostgreSQL',async()=>{
  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
@@ -34,6 +34,9 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await initTaskAgentNotesSchema(pool);
   await initTaskCancellationSchema(pool);
   await initTaskCancellationSchema(pool);
+  assert.equal(needsGitHubCleanup({git_branch:null,pr_number:null},true),true,'A failed runner may have pushed its UUID branch before saving task.git_branch');
+  assert.equal(needsGitHubCleanup({git_branch:null,pr_number:null},false),false);
+  assert.equal(needsGitHubCleanup({git_branch:taskId,pr_number:null},false),true);
   const noteRun=randomUUID();
   const note={projectId,taskId,authorStage:'development',authorName:'AI-разработчик',
    targetStage:'testing',body:'Проверяй на мобильной ширине 360px: иначе стрелки перекрывают край карточки',
@@ -96,6 +99,53 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   const review=(await pool.query("SELECT * FROM task_requirement_reviews WHERE task_id=$1 AND status='needs_approval'",[taskId])).rows[0];
   assert.equal(review.commit_sha,'sha-1');
   assert.match(review.proposed_description,/creation date/);
+
+  // The answer itself is never approval of a behavioral change.
+  // With an unanswered question, old review remains blocking.
+  const reviewQuestionRun=randomUUID();
+  await recordTaskAgentNote(pool,{...note,kind:'question',targetStage:'all',
+   sourceKey:'analyst-question:'+reviewQuestionRun,
+   body:'Какой порядок сортировки результата должен быть принят?'});
+  const pendingClient=await pool.connect();
+  try{
+   await pendingClient.query('BEGIN');
+   const pending=await resolveAgentQuestionsForReview(pendingClient,projectId,taskId,2);
+   assert.equal(pending.remaining,1);
+   await pendingClient.query('COMMIT');
+  }finally{pendingClient.release();}
+  await pool.query("UPDATE task_agent_notes SET status='answered',answer='По времени создания' WHERE project_id=$1 AND task_id=$2 AND source_key=$3",
+   [projectId,taskId,'analyst-question:'+reviewQuestionRun]);
+  const guardClient=await pool.connect();
+  try{
+   await guardClient.query('BEGIN');
+   const decision=await resolveAgentQuestionsForReview(guardClient,projectId,taskId,2);
+   assert.equal(decision.remaining,0);
+   assert.equal(decision.requiresApproval,true,'An answer cannot auto-approve a material change');
+   await guardClient.query('COMMIT');
+  }finally{guardClient.release();}
+  assert.equal((await pool.query('SELECT status FROM task_requirement_reviews WHERE id=$1',[review.id])).rows[0].status,'needs_approval');
+
+  // An *uncertain* review must be re-run after a human answers the question.
+  // Previously the same spec_version and SHA returned old needs_approval forever.
+  await pool.query("UPDATE task_requirement_reviews SET classification='uncertain' WHERE id=$1",[review.id]);
+  const followupClient=await pool.connect();
+  try{
+   await followupClient.query('BEGIN');
+   const decision=await resolveAgentQuestionsForReview(followupClient,projectId,taskId,2);
+   assert.equal(decision.requiresApproval,false);
+   await followupClient.query('COMMIT');
+  }finally{followupClient.release();}
+  assert.equal((await pool.query('SELECT status FROM task_requirement_reviews WHERE id=$1',[review.id])).rows[0].status,'superseded');
+  await pool.query("UPDATE tasks SET spec_review_status='pending' WHERE id=$1",[taskId]);
+  let askedAgain=0;
+  const reconsidered=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:'sha-1',
+   prEvidence:'The updated answer resolves the previously ambiguous implementation'},async()=>{
+   askedAgain++;
+   return JSON.stringify({classification:'aligned',summary:'The answer resolved all open questions',
+    proposed_description:'Users can search by title and filter active results',questions:[]});
+  });
+  assert.equal(askedAgain,1,'Analyst must actually analyze new answers rather than reuse an old verdict');
+  assert.equal(reconsidered,'current');
 
   // A proposal is not silently accepted; a subsequent edit invalidates it.
   const editor=await pool.connect();

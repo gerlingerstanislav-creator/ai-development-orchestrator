@@ -12,7 +12,7 @@ type RequirementHistory={version:number;description:string;origin:string;reason:
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
 type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
 type AgentTaskNote={id:string;author_stage:string;author_name:string;target_stage:string;kind:'handoff'|'observation'|'question'|'risk'|'resolution';body:string;source_kind:string;status:string;answer?:string|null;answered_at?:string|null;created_at:string};
-type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_note:string};
+type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_cleanup_required?:boolean;warnings?:string[];github_note:string};
 type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[]};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
@@ -709,7 +709,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/start-testing',{method:'POST'});
    setTaskFeedback('Проверка запущена через Temporal. Подробности — в Центре процессов.');
    await loadProject(selected.id);
-  }catch(e){fail(e);}finally{setAiBusy(false);}
+  }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось проверить или повторить QA');fail(e);}finally{setAiBusy(false);}
  }
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const response=await api<AiRun&{recovered?:boolean}>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
@@ -783,11 +783,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setNoteBusy(true);
   try{
    const id=selected.id,taskId=activeTask.id;
-   await api('/projects/'+id+'/tasks/'+taskId+'/agent-notes/'+answerNoteId+'/answer',{method:'POST',body:JSON.stringify({answer:answerText.trim()})});
+   const response=await api<{pending_questions:number;requires_approval:boolean;requirements_review?:{started?:boolean;message?:string}|null}>('/projects/'+id+'/tasks/'+taskId+'/agent-notes/'+answerNoteId+'/answer',{method:'POST',body:JSON.stringify({answer:answerText.trim()})});
    setAnswerNoteId(null);setAnswerText('');
    await refreshTaskActivity(id,taskId);
    await loadRequirements(id,taskId);
-   setTaskFeedback('Ответ сохранён. Аналитик должен учесть уточнение до продолжения работы.');
+   setTaskFeedback(response.pending_questions>0?'Ответ сохранён. Осталось ответить на '+response.pending_questions+' вопрос(а).':response.requires_approval?'Вопрос закрыт, но изменение поведения требует отдельного согласования. Рассмотри предложение аналитика.':response.requirements_review?.message||'Ответ сохранён. Сверка аналитика требуется перед продолжением.');
   }catch(e){fail(e);}finally{setNoteBusy(false);}
  }
  async function showTaskCancellation(){
@@ -1547,7 +1547,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <div><strong>{r.status==='queued'?'Тестирование ожидает запуска':'AI-тестировщик выполняет проверку'}</strong>
          <p>{r.message||'Подготовка проверок'}</p>
          <small>Цикл проверки: {r.attempt+1} · {Math.max(0,Math.floor((elapsedNow-new Date(r.created_at).getTime())/60000))} мин.</small>
-         <button className="task-process-link" type="button" onClick={()=>{setSelectedProcessId(r.id);navigate(projectUrl(selected!.id,'processes')+'?process='+r.id);}}>Посмотреть процесс</button>
+
         </div>
        </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
@@ -1582,11 +1582,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
           {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='passed'&&
            <button type="button" className="primary" disabled={qaResultBusy||openAgentQuestions.length>0} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Подтвердить QA → Слияние'}</button>}
           {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='failed'&&
-           <button type="button" className="primary" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Вернуть разработчику'}</button>}
-          <button type="button" className="secondary" disabled={aiBusy||openAgentQuestions.length>0||['pending','needs_approval','rejected'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void startTaskTesting()}>
-           {aiBusy?'Запуск…':newestTaskTest?'Повторить тестирование':'Начать тестирование'}
-          </button>
+           <button type="button" className="primary" disabled={qaResultBusy||openAgentQuestions.length>0} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Вернуть разработчику'}</button>}
          </>}
+         {activeTestFor(activeTask.id)&&
+          <button type="button" className="secondary" onClick={()=>{setSelectedProcessId(activeTestFor(activeTask.id)!.id);navigate(projectUrl(selected!.id,'processes')+'?process='+activeTestFor(activeTask.id)!.id);}}>Посмотреть процесс</button>}
+         <button type="button" className="secondary" disabled={aiBusy||openAgentQuestions.length>0||['pending','needs_approval','rejected'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void startTaskTesting()}>
+          {aiBusy?'Проверка статуса…':taskOrchestration||activeTestFor(activeTask.id)?'Проверить / восстановить QA':newestTaskTest?'Повторить тестирование':'Начать тестирование'}
+         </button>
         </>}
         {activeTask.stage==='merge_queue'&&<button type="button" className="primary" disabled={mergeBusy||openAgentQuestions.length>0} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
         {activeTask.stage==='documentation'&&<button type="button" className="primary" disabled={knowledgeBusy||openAgentQuestions.length>0} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
@@ -1645,6 +1647,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить созданные артефакты?</strong>
         <p>Закрыть PR, удалить ветку UUID, {cancelPreview.stats.qa_plans} QA-планов, до {cancelPreview.stats.qa_cases} тест-кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} принадлежащих задаче документов. Общие документы сохраняются.</p>
         <p>{cancelPreview.github_note}</p>
+        {cancelPreview.warnings?.map((warning,i)=><p key={i} className="muted">{warning}</p>)}
         {cancelPreview.blocked.length>0?<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>:<>
          <label>Подтверждение: {cancelPreview.confirmation}
           <input value={cancelPhrase} onChange={e=>setCancelPhrase(e.target.value)} placeholder={cancelPreview.confirmation}/>
