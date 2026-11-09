@@ -4,6 +4,7 @@ import { registerKnowledgeRoutes } from './knowledge.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
 import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
+import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
@@ -550,8 +551,12 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(pullsPermission.status===403)return reply.code(409).send({error:'GitHub запрещает чтение Pull Request (403). Добавь подключённому токену права Pull requests: Read and write для этого репозитория. Codex не запущен, лимит модели не потрачен.'});
  if(!pullsPermission.ok)return reply.code(502).send({error:'Не удалось проверить доступ к PR до разработки: GitHub HTTP '+pullsPermission.status});
 
- await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status,cycle_id,cycle_attempt) VALUES($1,$2,$3,$4,$5,'queued',$6,0)",
- [runId,id,taskId,uid(req),ai.model,runId]);
+ const claimed=await acquireTaskOrchestration(pool,id,taskId,runId,'task-cycle-'+runId,'development');
+ if(!claimed)return reply.code(409).send({error:'Для задачи уже выполняется цикл разработки, сверки требований или тестирования. Новый агент не запущен.'});
+ try{
+  await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status,cycle_id,cycle_attempt) VALUES($1,$2,$3,$4,$5,'queued',$6,0)",
+   [runId,id,taskId,uid(req),ai.model,runId]);
+ }catch(error){await releaseTaskOrchestration(pool,id,taskId,runId);throw error;}
  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','queued',$4)",
   [randomUUID(),id,runId,'Запуск разработки принят в очередь']);
  try{
@@ -565,6 +570,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
   const err=e as Error;
   await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",
    [runId,'Не удалось запустить Temporal: '+err.message.slice(0,500)]);
+  await releaseTaskOrchestration(pool,id,taskId,runId);
   return reply.code(503).send({error:'Temporal недоступен: '+err.message.slice(0,500)});
  }
  return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:ai.model,created_at:new Date().toISOString()});
@@ -585,18 +591,38 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
- if(task.rows[0].spec_review_status==='needs_approval'||task.rows[0].spec_review_status==='rejected')return reply.code(409).send({error:'Сначала согласуй или отклони изменение требований, отмеченное аналитиком'});
- const active=await pool.query("SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
- if(active.rowCount)return reply.code(409).send({error:'Проверка этой задачи уже запущена'});
+ if(['needs_approval','rejected'].includes(task.rows[0].spec_review_status))return reply.code(409).send({error:'Сначала согласуй изменение ТЗ'});
+ const existing=await pool.query("SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
+ if(existing.rowCount)return reply.code(409).send({error:'QA-исполнитель уже проверяет эту задачу'});
+ // Older workflows started before the orchestration-owner migration must be
+ // checked in Temporal too: a QA design stage has no ai_test_runs row yet.
+ const temporalClient=await temporal();
+ const legacy=await pool.query("SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=cycle_id ORDER BY created_at DESC LIMIT 12",[id,taskId]);
+ for(const old of legacy.rows){
+  try{
+   const workflow=await temporalClient.workflow.getHandle('task-cycle-'+old.id).describe();
+   if(workflow.status.name==='RUNNING')return reply.code(409).send({error:'Автоматический цикл уже выполняет аналитику или QA. Повторный запуск тестировщика запрещён.'});
+  }catch(error){
+   // Non-existent historical workflows are not active. Network errors are not proof
+   // of inactivity, so only ignore a real NOT_FOUND response.
+   const e=error as {code?:number;name?:string;message?:string};
+   if(e.code!==5&&!String(e.name||'').includes('NotFound')&&!String(e.message||'').includes('not found'))
+    return reply.code(503).send({error:'Не удалось подтвердить отсутствие активного Temporal-процесса: '+String(e.message||error).slice(0,250)});
+  }
+ }
  const cycleId=randomUUID();
+ if(!await acquireTaskOrchestration(pool,id,taskId,cycleId,'manual-test-'+cycleId,'testing'))
+  return reply.code(409).send({error:'Для задачи уже идёт аналитика, формирование QA-плана или тестирование'});
  try{
-  const client=await temporal();
-  await client.workflow.start('manualTesting',{
+  await temporalClient.workflow.start('manualTesting',{
    taskQueue:'agent-pipeline',workflowId:'manual-test-'+cycleId,
    args:[{projectId:id,taskId,cycleId}]
   });
- }catch(error){return reply.code(503).send({error:'Temporal недоступен: '+(error as Error).message});}
- return reply.code(202).send({cycle_id:cycleId,status:'queued',message:'AI-тестирование запущено через Temporal'});
+ }catch(error){
+  await releaseTaskOrchestration(pool,id,taskId,cycleId);
+  return reply.code(503).send({error:'Temporal недоступен: '+(error as Error).message});
+ }
+ return reply.code(202).send({cycle_id:cycleId,status:'queued',message:'QA-цикл запущен; повторный запуск заблокирован до завершения'});
 });
 app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
@@ -1323,5 +1349,5 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
 registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
-async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});
