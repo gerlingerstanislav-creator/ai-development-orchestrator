@@ -466,14 +466,21 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   document.addEventListener('visibilitychange',onVisible);
   return()=>{window.clearInterval(interval);document.removeEventListener('visibilitychange',onVisible);};
  },[token]);
- const limitWindows=rateLimits?.windows.flatMap(w=>[w.primary,w.secondary].filter((v):v is CodexRateWindow=>v!==null&&v!==undefined))||[];
- const shortWindow=limitWindows.find(w=>w.windowDurationMins===300)||limitWindows.find(w=>w.windowDurationMins!==null&&w.windowDurationMins>=240&&w.windowDurationMins<=360)||null;
- const weekWindow=limitWindows.find(w=>w.windowDurationMins===10080)||limitWindows.find(w=>w.windowDurationMins!==null&&w.windowDurationMins>=9000&&w.windowDurationMins<=11000)||null;
+ const windowCandidates=rateLimits?.windows.flatMap(bucket=>
+  [bucket.primary,bucket.secondary].filter((window):window is CodexRateWindow=>!!window)
+   .map(window=>({window,bucketId:bucket.id,bucketName:bucket.name||bucket.id,planType:bucket.planType})))||[];
+ const shortSource=windowCandidates.find(entry=>entry.window.windowDurationMins===300)
+  ||windowCandidates.find(entry=>entry.window.windowDurationMins!==null&&entry.window.windowDurationMins>=240&&entry.window.windowDurationMins<=360);
+ const weeklySource=windowCandidates.find(entry=>entry.window.windowDurationMins===10080)
+  ||windowCandidates.find(entry=>entry.window.windowDurationMins!==null&&entry.window.windowDurationMins>=9000&&entry.window.windowDurationMins<=11000);
+ const shortWindow=shortSource?.window||null;
+ const weekWindow=weeklySource?.window||null;
+ const formatPercent=(value:number)=>value>0&&value<1?value.toFixed(2):value.toFixed(1);
  const remaining=(window:CodexRateWindow|null)=>window?Math.max(0,Math.min(100,100-window.usedPercent)):null;
  const colorForRemaining=(percent:number)=>{const hue=Math.max(0,Math.min(120,percent*1.2));return 'hsl('+hue.toFixed(0)+' 66% 43%)';};
  const quotaBar=(window:CodexRateWindow|null,label:string,large:boolean)=>(
   <div className={'quota-line '+(large?'expanded':'')} key={label}>
-   {large&&<div className="quota-label"><span>{label}</span><strong>{window?Math.round(remaining(window)! )+'% доступно':'Нет данных'}</strong></div>}
+   {large&&<div className="quota-label"><span>{label}</span><strong>{window?formatPercent(remaining(window)??0)+'% доступно':'Нет данных'}</strong></div>}
    <div className="quota-track" role="progressbar" aria-label={label+' — доступный лимит'} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining(window)??undefined}>
     {window?<div className="quota-fill" style={{width:(remaining(window)??0)+'%',backgroundColor:colorForRemaining(remaining(window)??0)}}/>:<div className="quota-unknown"/>}
    </div>
@@ -699,6 +706,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <strong>Лимиты Codex</strong>
      {quotaBar(shortWindow,'5-часовой лимит',true)}
      {quotaBar(weekWindow,'Недельный лимит',true)}
+     <small className="quota-source">Источник: Codex CLI · account/rateLimits/read</small>
+     {shortSource&&<small className="quota-source">5 ч: {shortSource.bucketName} · использовано {formatPercent(shortWindow?.usedPercent??0)}%</small>}
+     {weeklySource&&<small className="quota-source">Неделя: {weeklySource.bucketName} · использовано {formatPercent(weekWindow?.usedPercent??0)}%</small>}
+     {rateLimits&&rateLimits.windows.length>1&&<small className="quota-source">Другие лимиты: {rateLimits.windows.map(bucket=>bucket.name||bucket.id).join(', ')}</small>}
      <small className="quota-updated">{rateLimits?.checkedAt?'Обновлено: '+new Date(rateLimits.checkedAt).toLocaleTimeString('ru-RU'):'Данные не загружены'}{rateLimitsLoading?' · обновление…':''}{rateLimitsError?' · '+rateLimitsError:''}</small>
     </div>
    </div>
