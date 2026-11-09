@@ -197,4 +197,78 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  assert.equal(planCalls+assignmentCalls+partCalls,callsBefore,'Retry of completed topic checkpoints must not invoke Codex again');
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE $2",
   [collapsedProject,'topic:'+collapsedSourceKey+':%'])).rows[0].n,collapsedDocs.length,'Retry must not duplicate documents');
+
+ // A separate interrupted job mirrors the screenshot: 3/11 parts of a topic are
+ // already saved, but the 4th reply contains two concatenated JSON objects.
+ const replayProject=randomUUID(),replayRoot=randomUUID(),replayPage=randomUUID(),replayJobId=randomUUID();
+ const replayKey='topic:coffee-json-regression:preorder';
+ const replayFiles=[{path:'replay-preorder.md',
+  body:Array.from({length:11},(_,i)=>'## Раздел '+(i+1)+'\n'+('Подтверждённое требование сценария предзаказа №'+(i+1)+'. ').repeat(100)).join('\n')}];
+ const replayFragments=splitSourceFragments(replayFiles);
+ assert.equal(replayFragments.length,11);
+ const replayDraft='## Ранее согласованные требования\nТри части уже проверены и сохранены.';
+ const replayBody='# Предзаказ и выдача\n\n'+replayDraft+'\n\n---\n\n## Исходные материалы\n- replay-preorder.md';
+ await db.query(
+  "INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",
+  [replayRoot,replayProject]);
+ await db.query(
+  "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,import_synced_hash) VALUES($1,$2,'Предзаказ и выдача',$3,$4,$5,$6)",
+  [replayPage,replayProject,replayBody,replayRoot,replayKey,fingerprint('Предзаказ и выдача',replayBody)]);
+ await db.query(
+  "INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_key,request_text) VALUES($1,$2,$3,'running','Part 4/11','coffee-json-regression','Импорт ТЗ')",
+  [replayJobId,replayProject,actorId]);
+ for(const fragment of replayFragments){
+  await db.query(
+   "INSERT INTO document_import_fragments(job_id,fragment_index,file_path,heading,content_sha,notes,topics,exclusion_reason) VALUES($1,$2,$3,$4,$5,$6,$7,NULL)",
+   [replayJobId,fragment.index,fragment.path,fragment.heading,fragment.sha,'Подтверждённая постановка. '.repeat(30),
+    JSON.stringify([{key:'preorder',title:'Предзаказ и выдача'}])]);
+ }
+ await db.query(
+  "INSERT INTO document_import_topics(job_id,topic_key,title,status,cursor,page_id,draft_body) VALUES($1,'preorder','Предзаказ и выдача','processing',3,$2,$3)",
+  [replayJobId,replayPage,replayDraft]);
+ let generated=0,repairedJson=0;
+ const replayEvents=[];
+ const replayArgs={pool,job:{id:replayJobId,project_id:replayProject,actor_id:actorId,
+  source_key:'coffee-json-regression',request_text:'Импорт ТЗ'},files:replayFiles,
+  sourceName:'Coffee Preorder',location:{owner:'gerlingerstanislav-creator',repository:'ideas',commit:fixture.source_commit},
+  instructions:'',rules:'',analystInstructions:'',
+  complete:async prompt=>{
+   if(prompt.includes('Ты исправляешь структуру своего ответа')){
+    repairedJson++;
+    assert.match(prompt,/часть 4\/11/);
+    assert.match(prompt,/Требование из дополнительного JSON/);
+    return {text:JSON.stringify({body:'## Требование из первого JSON\nСохранить.\n\n## Требование из дополнительного JSON\nТакже сохранить.',
+     questions:Array.from({length:7},(_,i)=>'Вопрос владельцу продукта номер '+(i+1)+'?' )})};
+   }
+   assert.match(prompt,/Сформируй ОДНУ самостоятельную порцию ТЗ/);
+   generated++;
+   if(generated===1){
+    return {text:JSON.stringify({body:'## Требование из первого JSON\nСохранить.',questions:['Вопрос владельцу продукта номер 1?']})+
+     '\n'+JSON.stringify({body:'## Требование из дополнительного JSON\nТакже сохранить.',
+      questions:Array.from({length:6},(_,i)=>'Вопрос владельцу продукта номер '+(i+2)+'?')})};
+   }
+   return {text:JSON.stringify({body:'## Продолжение требований\nОставшиеся разделы предзаказа.',
+    questions:[]})};
+  },
+  progress:async(stage,message)=>replayEvents.push({stage,message}),
+  recordUsage:async()=>{},getInstructions:async()=>''};
+ const replayResult=await importByTopics(replayArgs);
+ assert.equal(replayResult.generated_documents,1);
+ assert.equal(generated,8,'Only unfinished portions 4 through 11 are requested');
+ assert.equal(repairedJson,1,'Malformed fourth portion is repaired in-place');
+ const replayState=(await db.query("SELECT cursor,status FROM document_import_topics WHERE job_id=$1 AND topic_key='preorder'",[replayJobId])).rows[0];
+ assert.deepEqual(replayState,{cursor:11,status:'complete'});
+ const replaySaved=(await db.query('SELECT id,body FROM documents WHERE id=$1',[replayPage])).rows[0];
+ assert.equal(replaySaved.id,replayPage);
+ assert.match(replaySaved.body,/Три части уже проверены и сохранены/);
+ assert.match(replaySaved.body,/Требование из первого JSON/);
+ assert.match(replaySaved.body,/Требование из дополнительного JSON/);
+ assert.equal((await db.query('SELECT count(*)::int n FROM documentation_questions WHERE project_id=$1',[replayProject])).rows[0].n,7);
+ assert.ok(replayEvents.some(event=>event.stage==='format_retry'));
+ const replayCalls=generated+repairedJson;
+ await importByTopics(replayArgs);
+ assert.equal(generated+repairedJson,replayCalls,'Reusing completed job must not replay past portions');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source=$2",
+  [replayProject,replayKey])).rows[0].n,1);
+
 });

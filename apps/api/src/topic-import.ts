@@ -1,6 +1,7 @@
 import type {Pool} from 'pg';
 import {randomUUID,createHash} from 'node:crypto';
 import {z} from 'zod';
+import {parseAgentObject,completeStructured} from './structured-agent-response.js';
 
 export type SourceFile={path:string;body:string};
 export type SourceFragment={index:number;path:string;heading:string;body:string;sha:string};
@@ -25,11 +26,6 @@ export function fingerprint(title:string,body:string){
  return createHash('sha256').update(title+'\n'+body).digest('hex');
 }
 function sha(text:string){return createHash('sha256').update(text).digest('hex');}
-function jsonObject(raw:string):unknown{
- const a=raw.indexOf('{'),b=raw.lastIndexOf('}');
- if(a<0||b<a)throw Error('Аналитик не вернул JSON темы');
- return JSON.parse(raw.slice(a,b+1));
-}
 /** Heading-aware, lossless splitting. Every character belongs to one source fragment. */
 export function splitSourceFragments(files:SourceFile[],size=5500):SourceFragment[]{
  const fragments:SourceFragment[]=[];
@@ -139,7 +135,7 @@ async function diversifyCollapsedTopics(args:TopicImportArgs,classified:Classifi
  const planResponse=await complete(planPrompt);
  await recordUsage(planResponse.usage);
  try{
-  const plan=catalogSchema.parse(jsonObject(planResponse.text));
+  const plan=catalogSchema.parse(parseAgentObject(planResponse.text));
   catalog=plan.topics.map(t=>({key:safeTopicKey(t.key),title:t.title}))
    .filter((t,i,a)=>t.key!==oldKey&&a.findIndex(x=>x.key===t.key)===i);
  }catch{
@@ -170,7 +166,7 @@ async function diversifyCollapsedTopics(args:TopicImportArgs,classified:Classifi
    const response=await complete(prompt);
    await recordUsage(response.usage);
    try{
-    const parsed=assignmentSchema.parse(jsonObject(response.text));
+    const parsed=assignmentSchema.parse(parseAgentObject(response.text));
     const valid=new Map<number,TopicRef>();
     for(const row of parsed.assignments){
      const topic=allowed.get(safeTopicKey(row.key));
@@ -284,9 +280,10 @@ export async function importByTopics(args:TopicImportArgs){
     fragment.body
    ].join('\n\n');
    if(prompt.length>23000)throw Error('Превышен лимит анализа фрагмента');
-   const result=await complete(prompt);
-   await recordUsage(result.usage);
-   digest=digestSchema.parse(jsonObject(result.text));
+   digest=await completeStructured({prompt,schema:digestSchema,
+    label:'фрагмент '+fragment.index+' · '+fragment.heading,
+    formatExample:'{"notes":"факты, решения и противоречия","topics":[{"key":"topic-key","title":"Название темы"}],"exclusion_reason":null}',
+    complete,recordUsage,progress});
    const items=digest.topics.map(topic=>({key:safeTopicKey(topic.key),title:topic.title}));
    if(!items.length&&!digest.exclusion_reason){
     items.push({key:'source-review',title:'Материалы для уточнения'});
@@ -349,9 +346,10 @@ export async function importByTopics(args:TopicImportArgs){
     'Материалы:\n'+context
    ].join('\n\n');
    if(prompt.length>24000)throw Error('Тема '+title+' превышает размер одного блока; требуется меньшее разбиение');
-   const response=await complete(prompt);
-   await recordUsage(response.usage);
-   const result=draftSchema.parse(jsonObject(response.text));
+   const result=await completeStructured({prompt,schema:draftSchema,
+    label:'тема '+title+' · часть '+(i+1)+'/'+batches.length,
+    formatExample:'{"body":"Полная часть Markdown с требованиями, гипотезами и критериями","questions":["Вопрос владельцу продукта"]}',
+    complete,recordUsage,progress});
    const newDraft=(state.draft_body?state.draft_body+'\n\n':'')+result.body;
    if(newDraft.length>85000)throw Error('Тема '+title+' достигла лимита 85 КБ, дальнейшая запись остановлена без потери черновика');
    const refs=refsFor(items,location);
