@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
+import {recordAgentActivity} from './task-agent-activity.js';
 import { randomUUID,createHash } from 'node:crypto';
 import { z } from 'zod';
 import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,wantsDocumentSynthesis} from './github-document-import.js';
@@ -609,50 +610,61 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   ].join('\n\n'):[
    'Ты инженерный AI-помощник внутри задачи. Ответь на русском по существу. Не утверждай, что менял код.',context
   ].join('\n\n');
-  let raw:string;
-  try{const response=await completion(prompt,config);raw=response.text;await storeTokenUsage(id,taskId,config.model,response.usage);}catch(error){return reply.code(503).send({error:'Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350)});}
-  let summary:string|null=null,answer=raw;
-  let questions:string[]=[];
-  if(refining){
-   const analyzed=z.object({
-    summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(3).max(16000),
-    questions:z.array(z.string().min(3).max(600)).max(20).default([]),
-    related_ids:z.array(z.string().uuid()).max(10).default([]),
-    depends_on_task_id:z.string().uuid().nullable().default(null),
-    suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
-   }).parse(jsonObject(raw));
-   summary=analyzed.summary;questions=analyzed.questions;
-   answer=analyzed.details+(questions.length?'\n\nОстались вопросы:\n'+questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'\n\nБлокирующих вопросов нет. Можно отправлять задачу в разработку.');
-   const related=analyzed.related_ids.filter(x=>other.rows.some(o=>o.id===x));
-   const client=await pool.connect();
-   try{
-    await client.query('BEGIN');
-    const current=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
-    if(!current.rowCount||current.rows[0].stage!=='analysis')throw Error('Этап задачи изменился во время анализа');
-    await saveSpecRevision(client,current.rows[0],{title:current.rows[0].title,description:summary!,origin:'analyst',actorId:uid(req),reason:'Уточнение ТЗ системным аналитиком',reviewStatus:'current'});
-    await client.query("UPDATE tasks SET clarification_questions=$1,related_task_ids=$2,analysis_state=$3,spec_review_status='current',spec_reviewed_version=spec_version,updated_at=now() WHERE id=$4 AND project_id=$5",
-     [JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
-    await client.query('COMMIT');
-   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
-   if(!task.git_branch&&task.dependency_source==='ai'){
-    const dep=analyzed.depends_on_task_id;
-    if(!dep || other.rows.some(o=>o.id===dep)){
-     // Avoid cycles by walking the proposed parent chain, including existing AI links.
-     const cycle=dep?await pool.query('WITH RECURSIVE chain AS (SELECT id,depends_on_task_id,ARRAY[id] AS trail FROM tasks WHERE project_id=$1 AND id=$2 UNION ALL SELECT t.id,t.depends_on_task_id,c.trail||t.id FROM tasks t JOIN chain c ON t.id=c.depends_on_task_id WHERE t.project_id=$1 AND NOT t.id=ANY(c.trail)) SELECT 1 FROM chain WHERE id=$3 LIMIT 1',[id,dep,taskId]):{rowCount:0};
-     if(!cycle.rowCount)await pool.query("UPDATE tasks SET depends_on_task_id=$3 WHERE id=$1 AND project_id=$2",[taskId,id,dep]);
+  const runId=refining?randomUUID():null;
+  if(runId)await recordAgentActivity(pool,id,[taskId],runId,'analysis','running','Аналитик уточняет требования');
+  let outcome='Анализ прервался без результата.';
+  let completed=false;
+  try{
+   let raw:string;
+   try{const response=await completion(prompt,config);raw=response.text;await storeTokenUsage(id,taskId,config.model,response.usage);}
+   catch(error){outcome='Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350);return reply.code(503).send({error:outcome});}
+   let summary:string|null=null,answer=raw;
+   let questions:string[]=[];
+   if(refining){
+    const analyzed=z.object({
+     summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(3).max(16000),
+     questions:z.array(z.string().min(3).max(600)).max(20).default([]),
+     related_ids:z.array(z.string().uuid()).max(10).default([]),
+     depends_on_task_id:z.string().uuid().nullable().default(null),
+     suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
+    }).parse(jsonObject(raw));
+    summary=analyzed.summary;questions=analyzed.questions;
+    answer=analyzed.details+(questions.length?'\n\nОстались вопросы:\n'+questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'\n\nБлокирующих вопросов нет. Можно отправлять задачу в разработку.');
+    const related=analyzed.related_ids.filter(x=>other.rows.some(o=>o.id===x));
+    const client=await pool.connect();
+    try{
+     await client.query('BEGIN');
+     const current=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
+     if(!current.rowCount||current.rows[0].stage!=='analysis')throw Error('Этап задачи изменился во время анализа');
+     await saveSpecRevision(client,current.rows[0],{title:current.rows[0].title,description:summary!,origin:'analyst',actorId:uid(req),reason:'Уточнение ТЗ системным аналитиком',reviewStatus:'current'});
+     await client.query("UPDATE tasks SET clarification_questions=$1,related_task_ids=$2,analysis_state=$3,spec_review_status='current',spec_reviewed_version=spec_version,updated_at=now() WHERE id=$4 AND project_id=$5",
+      [JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
+     await client.query('COMMIT');
+    }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+    if(!task.git_branch&&task.dependency_source==='ai'){
+     const dep=analyzed.depends_on_task_id;
+     if(!dep || other.rows.some(o=>o.id===dep)){
+      // Avoid cycles by walking the proposed parent chain, including existing AI links.
+      const cycle=dep?await pool.query('WITH RECURSIVE chain AS (SELECT id,depends_on_task_id,ARRAY[id] AS trail FROM tasks WHERE project_id=$1 AND id=$2 UNION ALL SELECT t.id,t.depends_on_task_id,c.trail||t.id FROM tasks t JOIN chain c ON t.id=c.depends_on_task_id WHERE t.project_id=$1 AND NOT t.id=ANY(c.trail)) SELECT 1 FROM chain WHERE id=$3 LIMIT 1',[id,dep,taskId]):{rowCount:0};
+      if(!cycle.rowCount)await pool.query("UPDATE tasks SET depends_on_task_id=$3 WHERE id=$1 AND project_id=$2",[taskId,id,dep]);
+     }
     }
+    for(const rule of analyzed.suggested_rules){
+     const dup=await pool.query("SELECT 1 FROM project_rules WHERE project_id=$1 AND lower(body)=lower($2) UNION ALL SELECT 1 FROM project_rule_suggestions WHERE project_id=$1 AND lower(body)=lower($2) AND status='pending' LIMIT 1",[id,rule]);
+     if(!dup.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
+    }
+    await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+     [randomUUID(),taskId,uid(req),'analyzed','ТЗ и открытые вопросы обновлены по результатам AI-анализа']);
    }
-   for(const rule of analyzed.suggested_rules){
-    const dup=await pool.query("SELECT 1 FROM project_rules WHERE project_id=$1 AND lower(body)=lower($2) UNION ALL SELECT 1 FROM project_rule_suggestions WHERE project_id=$1 AND lower(body)=lower($2) AND status='pending' LIMIT 1",[id,rule]);
-    if(!dup.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
-   }
-   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
-    [randomUUID(),taskId,uid(req),'analyzed','ТЗ и открытые вопросы обновлены по результатам AI-анализа']);
+   await store(id,taskId,uid(req),'user',mode==='analyze'?message+'\n\nИсходное описание до анализа:\n'+task.description:message);
+   await store(id,taskId,null,'assistant',answer);
+   await countCall(id,uid(req));
+   outcome=answer;
+   completed=true;
+   return {message:answer,summary,questions};
+  }finally{
+   if(runId)await recordAgentActivity(pool,id,[taskId],runId,'analysis',completed?'completed':'failed',outcome);
   }
-  await store(id,taskId,uid(req),'user',mode==='analyze'?message+'\n\nИсходное описание до анализа:\n'+task.description:message);
-  await store(id,taskId,null,'assistant',answer);
-  await countCall(id,uid(req));
-  return {message:answer,summary,questions};
  });
 
 

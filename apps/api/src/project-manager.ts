@@ -77,13 +77,13 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
  }
  // Old pending requests must not be shown after a task advances or a question is answered.
  await pool.query(
-  "UPDATE manager_requests r SET status='superseded',resolved_at=now() WHERE r.project_id=$1 AND r.task_id=$2 AND r.status IN ('open','waiting') AND ((r.kind='qa_visual' AND (NOT EXISTS(SELECT 1 FROM ai_test_runs t WHERE t.id=r.source_id AND t.task_id=$2 AND t.status='completed' AND t.verdict='blocked') OR (SELECT stage FROM tasks WHERE id=$2)<>'testing')) OR (r.kind='question' AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.id=r.source_id AND n.status='open')) OR (r.kind='requirements' AND NOT EXISTS(SELECT 1 FROM task_requirement_reviews v WHERE v.id=r.source_id AND v.status='needs_approval')) OR (r.kind='analysis_clarifications' AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.id=$2 AND t.stage='analysis' AND t.clarification_questions<>'[]'::jsonb)))",
+  "UPDATE manager_requests r SET status='superseded',resolved_at=now() WHERE r.project_id=$1 AND r.task_id=$2 AND r.status IN ('open','waiting') AND ((r.kind='qa_visual' AND (NOT EXISTS(SELECT 1 FROM ai_test_runs t WHERE t.id=r.source_id AND t.task_id=$2 AND t.status='completed' AND t.verdict='blocked') OR (SELECT stage FROM tasks WHERE id=$2)<>'testing')) OR (r.kind='question' AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.id=r.source_id AND n.status='open')) OR (r.kind='requirements' AND NOT EXISTS(SELECT 1 FROM task_requirement_reviews v WHERE v.id=r.source_id AND v.status='needs_approval')) OR (r.kind='analysis_clarifications' AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.id=$2 AND t.stage='analysis' AND t.clarification_questions=r.payload->'questions')))",
   [projectId,taskId]);
 }
 export async function managerSnapshot(pool:Pool,projectId:string,taskId:string){
  await syncManagerInbox(pool,projectId,taskId);
  const [messages,requests,task,owner,tests,notes]=await Promise.all([
-  pool.query("SELECT id,role,body,status,reply_to,created_at FROM manager_messages WHERE project_id=$1 AND task_id=$2 ORDER BY created_at,id LIMIT 300",[projectId,taskId]),
+  pool.query("SELECT * FROM (SELECT id,role,body,status,reply_to,created_at FROM manager_messages WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 300) recent ORDER BY created_at,id",[projectId,taskId]),
   pool.query("SELECT id,kind,source_id,payload,status,created_at,decision FROM manager_requests WHERE project_id=$1 AND task_id=$2 AND status IN ('open','waiting') ORDER BY created_at,id",[projectId,taskId]),
   pool.query('SELECT id,title,description,stage,spec_version,spec_review_status,pr_url,pr_number,test_feedback FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT workflow_id,kind,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[projectId,taskId]),

@@ -6,6 +6,7 @@ import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
 import {recordTaskAgentNote,taskNotesContext,pendingAgentQuestions} from './task-agent-notes.js';
 import {managerSnapshot} from './project-manager.js';
+import {recordAgentActivity} from './task-agent-activity.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
@@ -153,6 +154,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
  if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI отключён для проекта');
  await pool.query("UPDATE requirement_review_runs SET status='running',message='QA-агент формирует тест-кейсы',completed_at=NULL WHERE id=$1 AND project_id=$2",[runId,projectId]);
  await event(projectId,runId,'testing','test_design_started','AI-тестировщик формирует тесты по актуализированному ТЗ перед проверкой PR');
+ await recordAgentActivity(pool,projectId,[taskId],runId,'qa_design','running','Тестировщик готовит сценарии проверки.');
  try{
   if(await pendingAgentQuestions(pool,projectId,taskId))throw new Error('Нельзя готовить тестирование: вопросы участников процесса остались без ответа');
   const evidence=await prEvidence(projectId,taskId);
@@ -172,10 +174,12 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
   await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,'QA-документация подготовлена: '+count+' проверок',projectId]);
   await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'testing',authorName:'AI-тестировщик',targetStage:'all',kind:'observation',body:'Подготовлен план тестирования по актуальному ТЗ: '+count+' проверок. Фактические результаты будут записаны после выполнения, это не подтверждение прохождения тестов.',sourceKey:'test-plan:'+runId,sourceRunId:runId});
   await event(projectId,runId,'testing','test_design_ready','QA-документация подготовлена: '+count+' проверок');
+  await recordAgentActivity(pool,projectId,[taskId],runId,'qa_design','completed','Подготовлено проверок: '+count+'.');
   return count;
  }catch(e){
   await pool.query("UPDATE requirement_review_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,String(e).slice(0,1800),projectId]);
   await event(projectId,runId,'testing','test_design_failed',String(e).slice(0,1900),'error');
+  await recordAgentActivity(pool,projectId,[taskId],runId,'qa_design','failed',String(e));
   throw e;
  }
 }

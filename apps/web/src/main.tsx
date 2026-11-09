@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
@@ -13,7 +13,15 @@ type RequirementInfo={task:{id:string;title:string;description:string;spec_versi
 type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
 type AgentTaskNote={id:string;author_stage:string;author_name:string;target_stage:string;kind:'handoff'|'observation'|'question'|'risk'|'resolution';body:string;source_kind:string;status:string;answer?:string|null;answered_at?:string|null;created_at:string};
 type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_cleanup_required?:boolean;warnings?:string[];github_note:string};
-type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[]};
+type AgentRun={id:string;kind:'analysis'|'development'|'testing'|'qa_design'|'documentation';status:'queued'|'running'|'completed'|'failed';summary:string;link:string|null;created_at:string;completed_at:string|null};
+const agentRunLabels={
+ analysis:{name:'Аналитик',active:'Ведётся анализ'},
+ development:{name:'Разработчик',active:'Ведётся разработка'},
+ testing:{name:'Тестировщик',active:'Ведётся тестирование'},
+ qa_design:{name:'Тестировщик',active:'Готовятся тестовые сценарии'},
+ documentation:{name:'Документатор',active:'Обновляется документация'}
+};
+type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[]};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
@@ -43,7 +51,7 @@ type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed';reply_to?:string|null;created_at:string};
-type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
+type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string};
@@ -332,7 +340,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    else if(showTask){setShowTask(false);}
    else if(showProject){setShowProject(false);}
    else if(activeTask){
-    if(editingField){setEditingField(null);}
+    if(cancelPreview||cancelError){if(!cancelBusy){setCancelPreview(null);setCancelError('');}}
+    else if(editingField){setEditingField(null);}
     else if(selected){navigate(projectUrl(selected.id,'tasks'));}
    }else if(backgroundProcessMenuOpen){setBackgroundProcessMenuOpen(false);}
    else if(projectMenuOpen){setProjectMenuOpen(false);}
@@ -341,7 +350,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   };
   document.addEventListener('keydown',onEscape);
   return()=>document.removeEventListener('keydown',onEscape);
- },[workflowModal,workflowEditing,workflowSaving,showConnection,showTask,showProject,activeTask,editingField,selected,backgroundProcessMenuOpen,projectMenuOpen]);
+ },[workflowModal,workflowEditing,workflowSaving,showConnection,showTask,showProject,activeTask,editingField,selected,backgroundProcessMenuOpen,projectMenuOpen,cancelPreview,cancelError,cancelBusy]);
  useEffect(()=>{
   const modalOpen=!!(activeTask||showProject||showTask||showConnection);
   if(!modalOpen)return;
@@ -365,6 +374,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [events,setEvents]=useState<{id:string;event:string;detail:string;created_at:string}[]>([]);
  const [taskProcessEvents,setTaskProcessEvents]=useState<TaskProcessEvent[]>([]);
  const [taskTestRuns,setTaskTestRuns]=useState<TestRun[]>([]);
+ const [taskAgentRuns,setTaskAgentRuns]=useState<AgentRun[]>([]);
  const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
@@ -383,6 +393,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [managerAnswer,setManagerAnswer]=useState('');
  const [managerFeedback,setManagerFeedback]=useState('');
  const [managerSending,setManagerSending]=useState(false);
+ const managerMessages=managerState?.messages;
+ const decisions=managerState?.requests.filter(request=>request.status==='open')||[];
+ const deferredQa=managerState?.requests.filter(request=>request.status==='waiting'&&request.kind==='qa_visual')||[];
+ const activeAgentRuns=taskAgentRuns.filter(run=>run.status==='running'||run.status==='queued');
+ const managerWorking=managerSending||managerMessages?.some(message=>message.role==='user'&&(message.status==='queued'||message.status==='processing'));
+ const chatEntries=[...(managerMessages||[]),...taskAgentRuns.filter(run=>run.status==='completed'||run.status==='failed')]
+  .sort((left,right)=>{
+   const time=(entry:ManagerMessage|AgentRun)=>Date.parse(('completed_at' in entry?entry.completed_at:null)||entry.created_at);
+   return time(left)-time(right);
+  });
+
  function timeline(taskId:string):ActivityItem[]{
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
@@ -460,7 +481,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     api<TaskActivityResponse>('/projects/'+projectId+'/tasks/'+taskId+'/activity'),
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
-   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
+   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentRuns(activity.agentRuns||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
    setManagerState(await api<ManagerSnapshot>('/projects/'+projectId+'/tasks/'+taskId+'/manager'));
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
@@ -545,7 +566,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
      void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
@@ -559,11 +580,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
 
  useEffect(()=>{if(selected)void loadProject(selected.id);},[selected?.id]);
  useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy]);
- useEffect(()=>{
+ useLayoutEffect(()=>{
   const element=taskThreadRef.current;
-  if(!element)return;
-  if(element.scrollHeight-element.scrollTop-element.clientHeight<180||element.scrollTop===0)element.scrollTop=element.scrollHeight;
- },[taskMessages,taskChatBusy,events,taskAgentNotes,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback,managerState?.messages.length,managerState?.requests.length]);
+  if(element)element.scrollTop=element.scrollHeight;
+ },[activeTask?.id,managerMessages,taskAgentRuns,managerWorking,decisions.length]);
  // One live timeline for analysis, development, QA-design, testing and approvals.
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id)return;
@@ -581,6 +601,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setEvents(old=>JSON.stringify(old)===JSON.stringify(feed.events)?old:feed.events);
     setTaskProcessEvents(old=>JSON.stringify(old)===JSON.stringify(feed.processEvents)?old:feed.processEvents);
     setTaskTestRuns(old=>JSON.stringify(old)===JSON.stringify(feed.tests||[])?old:feed.tests||[]);
+    setTaskAgentRuns(old=>JSON.stringify(old)===JSON.stringify(feed.agentRuns||[])?old:feed.agentRuns||[]);
     setTaskAgentNotes(old=>JSON.stringify(old)===JSON.stringify(feed.notes||[])?old:feed.notes||[]);
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
@@ -1541,24 +1562,36 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {activeTask&&<div className="overlay task-modal-overlay" onMouseDown={()=>{if(!editingField&&selected)navigate(projectUrl(selected.id,'tasks'));}}>
   <div className="dialog task-dialog task-dialog-wide" role="dialog" aria-modal="true" aria-label={'Задача #'+activeTask.display_number+': '+activeTask.title} onMouseDown={e=>e.stopPropagation()}>
    <div className="task-modal-top">
-    <div className="task-modal-heading">
-     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
+    <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
+    <div className="task-modal-actions">
+     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
+     {!['documentation','done'].includes(activeTask.stage)&&
+      <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
+     <button className="task-close" type="button" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу" aria-label="Закрыть задачу"><X size={20}/></button>
+    </div>
+   </div>
+   {cancelPreview&&<div className="task-command-expansion task-cancel-confirm task-cancel-header">
+    <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить её артефакты?</strong>
+    <p>GitHub PR будет закрыт (история PR сохранится), UUID-ветка удалена. Удаляются {cancelPreview.stats.qa_plans} планов, до {cancelPreview.stats.qa_cases} кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} собственных документов. Общие данные останутся.</p>
+    {cancelPreview.warnings?.map((warning,i)=><p key={i}>{warning}</p>)}
+    {cancelPreview.blocked.length>0&&<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>}
+    {cancelError&&<p className="task-action-error">{cancelError}</p>}
+    <div className="task-action-buttons">
+     <button type="button" className="secondary" onClick={()=>{setCancelPreview(null);setCancelError('');}}>Не отменять</button>
+     <button type="button" className="task-action-danger" disabled={cancelBusy||cancelPreview.blocked.length>0} onClick={()=>void confirmTaskCancellation()}>{cancelBusy?'Очистка…':'Да, отменить и очистить'}</button>
+    </div>
+   </div>}
+   {cancelError&&!cancelPreview&&<p className="task-cancel-header task-action-error" role="alert">{cancelError}</p>}
+   <div className="task-dialog-columns">
+    <section className="task-details">
      <div className="task-editable task-title-editable">
       {editingField==='title'?
        <input autoFocus value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}
         onBlur={e=>void autoSaveField('title',e.currentTarget.value)}
         onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){e.stopPropagation();setEditingField(null);}}}/>:
-       <><h2>{activeTask.title}</h2>{agentWorking(activeTask.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}<button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
+       <><h2>{activeTask.title}</h2><button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
      </div>
-    </div>
-    <div className="task-modal-actions">
-     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
-     {savingField&&<span className="muted">Сохранение…</span>}
-     <button className="task-close" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу"><X size={20}/></button>
-    </div>
-   </div>
-   <div className="task-dialog-columns">
-    <section className="task-details">
+     {savingField&&<small className="muted">Сохранение…</small>}
      <div className="task-editable task-description-editable">
       <div className="task-field-label">Описание / техническое задание</div>
       {editingField==='description'?
@@ -1595,26 +1628,36 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     </section>
     <aside className="task-conversation manager-conversation">
      <header><MessageCircle size={17}/><strong>Менеджер проекта</strong>
-      <small>{managerState?.owner?'Команда работает':managerState?.requests?.some(r=>r.status==='open')?'Ожидает вашего решения':'Контролирует процесс'}</small>
+      <small>{decisions.length?'Ожидает вашего решения':activeAgentRuns.length||managerWorking?'Команда работает':'Контролирует процесс'}</small>
      </header>
      <div ref={taskThreadRef} className="assistant-thread manager-thread" role="log" aria-live="polite">
       {!managerState?.messages.length&&<p className="assistant-hint">Менеджер проекта координирует аналитика, разработчика и тестировщика. Все вопросы и решения для вас поступают только от него.</p>}
       <details className="manager-internal-log">
        <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
-       <p>Аналитик, разработчик и тестировщик общаются между собой. К вам обращается только Менеджер проекта.</p>
+       <p>Здесь отображаются рабочие сообщения и технические события команды.</p>
+       {['testing','development'].includes(activeTask.stage)&&!managerState?.owner&&!managerWorking&&!activeAgentRuns.length&&!decisions.length&&!deferredQa.length&&
+        <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>Продолжить / восстановить работу</button>}
+       {deferredQa.map(request=><button key={request.id} type="button" className="secondary" disabled={managerBusy}
+        onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить слияние без визуальных проверок</button>)}
        {timeline(activeTask.id).slice(-90).map(item=><div className="manager-internal-entry" key={item.id}>
         <strong>{item.title|| (item.kind==='user'?'Историческое сообщение пользователя':item.kind==='assistant'?'Предыдущий AI-помощник':'Этап работы')}</strong>
         <small>{new Date(item.time).toLocaleString('ru-RU')}</small>
         <div>{item.text}</div>
        </div>)}
       </details>
-      {managerState?.messages.map(m=><div className={'manager-message '+(m.role==='user'?'from-user':'from-manager')} key={m.id}>
+      {chatEntries.map(m=>'kind' in m?<div className="manager-message from-manager" key={m.kind+'-'+m.id}>
+       <div className="manager-message-heading">
+        <strong>{agentRunLabels[m.kind].name} · {m.status==='failed'?'Ошибка':'Итог'}</strong>
+        <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
+       </div>
+       <div className="manager-message-body">{m.summary||(m.status==='failed'?'Работа завершилась с ошибкой.':'Работа завершена.')}</div>
+       {m.link&&<a href={m.link} target="_blank" rel="noreferrer">Открыть PR</a>}
+      </div>:<div className={'manager-message '+(m.role==='user'?'from-user':'from-manager')} key={m.id}>
        <div className="manager-message-heading">
         <strong>{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</strong>
         <small>{new Date(m.created_at).toLocaleString('ru-RU')}</small>
        </div>
        <div className="manager-message-body">{m.body}</div>
-       {m.status==='queued'||m.status==='processing'?<small className="manager-message-pending">Менеджер обрабатывает сообщение…</small>:null}
        {m.role==='user'&&m.status==='failed'&&<div className="manager-message-error">
         Не удалось обработать запрос. Сообщение сохранено.
         <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void retryManagerMessage(m.id)}>Повторить</button>
@@ -1622,9 +1665,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       </div>)}
 
      </div>
-     <div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
+     {(activeAgentRuns.length>0||managerWorking)&&<ul className="manager-live-activity" aria-label="Текущая работа команды" aria-live="polite">
+      {activeAgentRuns.map(run=><li key={run.kind+'-'+run.id}><LoaderCircle size={14} aria-hidden="true"/>
+       {run.status==='queued'?'В очереди · '+agentRunLabels[run.kind].name:agentRunLabels[run.kind].active}</li>)}
+      {managerWorking&&<li><LoaderCircle size={14} aria-hidden="true"/>Менеджер обрабатывает сообщение</li>}
+     </ul>}
+     {decisions.length>0&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
       <div className="manager-action-row">
-       {managerState?.requests?.filter(x=>x.status==='open').map(request=><React.Fragment key={request.id}>
+       {decisions.map(request=><React.Fragment key={request.id}>
         {request.kind==='qa_visual'&&<>
          <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить без визуальных проверок</button>
          <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'wait_for_tools')}>Ждать инструменты</button>
@@ -1633,40 +1681,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
          <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_requirements')}>Согласовать изменение ТЗ</button>
          <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'reject_requirements')}>Отклонить изменение</button>
         </>}
-        {request.kind==='question'&&<details className="manager-answer-popover">
+        {(request.kind==='question'||request.kind==='analysis_clarifications')&&<details className="manager-answer-popover">
          <summary>Ответить менеджеру</summary>
          <div className="manager-answer-body">
           <strong>Менеджер проекта спрашивает</strong>
-          <p>{String(request.payload?.question||'')}</p>
+          <p>{request.kind==='analysis_clarifications'?(request.payload?.questions||[]).join('\n'):String(request.payload?.question||'')}</p>
           <textarea value={managerAnswer} rows={3} onChange={e=>setManagerAnswer(e.target.value)} placeholder="Ваш ответ менеджеру проекта"/>
           <button className="primary" type="button" disabled={managerBusy||managerAnswer.trim().length<3} onClick={()=>void decideAsManager(request,'answer')}>Отправить ответ</button>
          </div>
         </details>}
        </React.Fragment>)}
-       {managerState?.requests?.filter(x=>x.status==='waiting'&&x.kind==='qa_visual').map(request=><React.Fragment key={request.id}>
-        <small>Визуальные тесты отложены</small>
-        <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Передумал: разрешить слияние с риском</button>
-       </React.Fragment>)}
-       {['testing','development'].includes(activeTask.stage)&&
-        <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>
-         {managerBusy?'Проверка процесса…':'Продолжить / восстановить работу'}
-        </button>}
-       {!['documentation','done'].includes(activeTask.stage)&&
-        <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
       </div>
-      {cancelPreview&&<div className="task-command-expansion task-cancel-confirm">
-       <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить её артефакты?</strong>
-       <p>GitHub PR будет закрыт (история PR сохранится), UUID-ветка удалена. Удаляются {cancelPreview.stats.qa_plans} планов, до {cancelPreview.stats.qa_cases} кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} собственных документов. Общие данные останутся.</p>
-       {cancelPreview.warnings?.map((warning,i)=><p key={i}>{warning}</p>)}
-       {cancelPreview.blocked.length>0&&<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>}
-       {cancelError&&<p className="task-action-error">{cancelError}</p>}
-       <div className="task-action-buttons">
-        <button type="button" className="secondary" onClick={()=>{setCancelPreview(null);setCancelError('');}}>Не отменять</button>
-        <button type="button" className="task-action-danger" disabled={cancelBusy||cancelPreview.blocked.length>0} onClick={()=>void confirmTaskCancellation()}>{cancelBusy?'Очистка…':'Да, отменить и очистить'}</button>
-       </div>
-      </div>}
-      {managerFeedback&&<p className="manager-action-error">{managerFeedback}</p>}
-     </div>
+     </div>}
+     {managerFeedback&&<p className="manager-action-error" role="alert">{managerFeedback}</p>}
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
       <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
