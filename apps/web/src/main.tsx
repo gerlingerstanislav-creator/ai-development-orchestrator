@@ -246,6 +246,11 @@ function App(){
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [projectProcesses,setProjectProcesses]=useState<ProjectProcess[]>([]);
  const [selectedProcessId,setSelectedProcessId]=useState<string|null>(null);
+ useEffect(()=>{
+  const id=new URLSearchParams(window.location.search).get('process');
+  if(id&&uuidPattern.test(id))setSelectedProcessId(id);
+ },[route]);
+
  const [processEvents,setProcessEvents]=useState<ProjectProcessEvent[]>([]);
  const [processFilter,setProcessFilter]=useState<'all'|'active'|'failed'|'completed'>('all');
  const [processActionBusy,setProcessActionBusy]=useState(false);
@@ -468,7 +473,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!doc.title){setError('У документа должно быть название');return;}
   setDocBusy(true);
   try{
-   await api('/projects/'+selected.id+'/docs/'+doc.id,{method:'PATCH',body:JSON.stringify({title:doc.title,body:doc.body,parent_id:doc.parent_id})});
+   await api('/projects/'+selected.id+'/docs/'+doc.id,{method:'PATCH',body:JSON.stringify({title:doc.title,body:doc.body,parent_id:doc.parent_id,document_kind:doc.document_kind,implementation_status:doc.implementation_status,implementation_evidence:doc.implementation_evidence||''})});
    setDocs(old=>old.map(d=>d.id===doc.id?{...doc,updated_at:new Date().toISOString()}:d));
    setEditingDoc(null);
   }catch(e){fail(e);}finally{setDocBusy(false);}
