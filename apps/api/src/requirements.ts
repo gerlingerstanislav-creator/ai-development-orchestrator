@@ -41,7 +41,7 @@ export async function saveSpecRevision(client:PoolClient,old:any,data:{title:str
 }
 
 const analystAnswer=z.object({
- classification:z.enum(['aligned','clarification','material_change','uncertain']),
+ classification:z.enum(['aligned','clarification','material_change','uncertain','qa_validation']),
  summary:z.string().trim().min(5).max(3000),
  proposed_description:z.string().trim().min(5).max(20000),
  questions:z.array(z.string().min(3).max(700)).max(12).default([])
@@ -74,8 +74,10 @@ export async function reconcileTaskRequirements(pool:Pool,args:{projectId:string
   'Если реализация соответствует ТЗ, classification=aligned и proposed_description точно равен текущему ТЗ.',
   'Если нужно только уточнить формулировку БЕЗ изменения ожидаемого поведения, classification=clarification и proposed_description=полное актуализированное ТЗ.',
   'Если изменение поведения или новая трактовка требуют решения пользователя, classification=material_change, proposed_description=предлагаемое ПОЛНОЕ новое ТЗ, а summary объясняет отличие.',
-  'Если данных недостаточно, classification=uncertain и перечисли блокирующие вопросы. Ничего не выдумывай.',
-  'Ответь только JSON {"classification":"aligned|clarification|material_change|uncertain","summary":"...","proposed_description":"...","questions":["..."]}.',
+  'Если полного PR diff недостаточно для оценки ФАКТИЧЕСКОГО поведения, а изменения бизнес-требований не обнаружены, classification=qa_validation. Передай конкретные проверки тестировщику, а не спрашивай заказчика о коде, diff, скриншотах или инструментах.',
+  'classification=uncertain только когда НЕЯСНЫ именно пользовательские требования, а не фактическая работоспособность программы.',
+  'Не заявляй, что визуальная реализация проверена по diff. Визуальные тесты выполняет независимый тестировщик.',
+  'Ответь только JSON {"classification":"aligned|clarification|material_change|uncertain|qa_validation","summary":"...","proposed_description":"...","questions":["..."]}.',
   'Агент: '+String(stage.rows[0]?.agent_name||'AI-аналитик'),
   'Инструкции аналитика: '+String(stage.rows[0]?.agent_instructions||'').slice(0,5500),
   'Название задачи: '+row.title,
@@ -97,6 +99,16 @@ export async function reconcileTaskRequirements(pool:Pool,args:{projectId:string
   if(!locked.rowCount||Number(locked.rows[0].spec_version)!==version){await client.query('ROLLBACK');return 'pending';}
   const current=locked.rows[0];
   if(current.spec_review_status==='current'&&current.spec_reviewed_commit===commitSha){await client.query('COMMIT');return 'current';}
+  // Tool requests and missing browser evidence belong to QA. They are not a
+  // change of requirements and must not become an unanswerable human gate.
+  const toolOnly=analysis.classification==='uncertain'&&commitSha.length>0&&analysis.questions.length>0&&
+   analysis.questions.every(q=>/(diff|patch|PR|pull request|скриншот|визуальн|браузер|исходн.{0,12}код|файл)/i.test(q)&&
+    /(нуж|не вид|пришл|предостав|доступ|провер|отсутств)/i.test(q));
+  if(toolOnly){
+   analysis.classification='qa_validation';
+   analysis.summary='Сверка требований не выявила предложения изменить ТЗ. Дополнительная проверка фактической реализации передана QA: '+analysis.questions.join('; ').slice(0,1100);
+   analysis.questions=[];
+  }
   const needsApproval=analysis.classification==='material_change'||analysis.classification==='uncertain';
   const status=needsApproval?'needs_approval':'aligned';
   const reviewId=randomUUID();
