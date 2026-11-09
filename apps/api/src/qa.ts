@@ -34,7 +34,8 @@ export async function initQaSchema(pool:Pool){
   'CREATE TABLE IF NOT EXISTS qa_test_plans (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE, task_id uuid NOT NULL UNIQUE REFERENCES tasks(id) ON DELETE CASCADE, spec_hash text NOT NULL, summary text NOT NULL DEFAULT \'\', generated_at timestamptz NOT NULL DEFAULT now())',
   'CREATE TABLE IF NOT EXISTS qa_plan_cases (plan_id uuid NOT NULL REFERENCES qa_test_plans(id) ON DELETE CASCADE, case_id uuid NOT NULL REFERENCES qa_test_cases(id) ON DELETE CASCADE, purpose text NOT NULL CHECK(purpose IN (\'targeted\',\'regression\')), PRIMARY KEY(plan_id,case_id))',
   'CREATE TABLE IF NOT EXISTS qa_case_results (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE, test_run_id uuid NOT NULL REFERENCES ai_test_runs(id) ON DELETE CASCADE, case_id uuid NOT NULL REFERENCES qa_test_cases(id) ON DELETE CASCADE, result text NOT NULL CHECK(result IN (\'passed\',\'failed\',\'blocked\',\'not_run\')), evidence text NOT NULL DEFAULT \'\', created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(test_run_id,case_id))',
-  'CREATE TABLE IF NOT EXISTS qa_case_versions (id uuid PRIMARY KEY, case_id uuid NOT NULL REFERENCES qa_test_cases(id) ON DELETE CASCADE, changed_by uuid REFERENCES users(id) ON DELETE SET NULL, snapshot jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())'
+  'CREATE TABLE IF NOT EXISTS qa_case_versions (id uuid PRIMARY KEY, case_id uuid NOT NULL REFERENCES qa_test_cases(id) ON DELETE CASCADE, changed_by uuid REFERENCES users(id) ON DELETE SET NULL, snapshot jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now())',
+  'CREATE TABLE IF NOT EXISTS qa_manual_results (id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,case_id uuid NOT NULL REFERENCES qa_test_cases(id) ON DELETE CASCADE,actor_id uuid REFERENCES users(id) ON DELETE SET NULL,result text NOT NULL,evidence text NOT NULL,created_at timestamptz NOT NULL DEFAULT now())'
  ].join(';\n')+';');
 }
 
@@ -43,13 +44,14 @@ export function registerQaRoutes(app:FastifyInstance,{pool,access,requireAdmin,u
  app.get('/api/projects/:id/qa',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
   if(!await access(req,reply,id))return;
-  const [flows,cases,plans,results]=await Promise.all([
+  const [flows,cases,plans,results,manualResults]=await Promise.all([
    pool.query('SELECT f.*,t.display_number AS task_number FROM qa_user_flows f LEFT JOIN tasks t ON t.id=f.source_task_id WHERE f.project_id=$1 ORDER BY f.updated_at DESC LIMIT 300',[id]),
    pool.query('SELECT c.*,t.display_number AS task_number FROM qa_test_cases c LEFT JOIN tasks t ON t.id=c.source_task_id WHERE c.project_id=$1 ORDER BY c.updated_at DESC LIMIT 600',[id]),
    pool.query('SELECT p.*,t.display_number AS task_number,t.title AS task_title,COALESCE(jsonb_agg(jsonb_build_object(\'id\',pc.case_id,\'purpose\',pc.purpose)) FILTER (WHERE pc.case_id IS NOT NULL),\'[]\'::jsonb) AS cases FROM qa_test_plans p JOIN tasks t ON t.id=p.task_id LEFT JOIN qa_plan_cases pc ON pc.plan_id=p.id WHERE p.project_id=$1 GROUP BY p.id,t.display_number,t.title ORDER BY p.generated_at DESC LIMIT 100',[id]),
-   pool.query('SELECT r.case_id,r.result,r.evidence,r.created_at,r.test_run_id,t.task_id FROM qa_case_results r JOIN ai_test_runs t ON t.id=r.test_run_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 200',[id])
+   pool.query('SELECT r.case_id,r.result,r.evidence,r.created_at,r.test_run_id,t.task_id FROM qa_case_results r JOIN ai_test_runs t ON t.id=r.test_run_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 200',[id]),
+   pool.query('SELECT case_id,result,evidence,created_at,actor_id FROM qa_manual_results WHERE project_id=$1 ORDER BY created_at DESC LIMIT 100',[id])
   ]);
-  return {flows:flows.rows,cases:cases.rows,plans:plans.rows,results:results.rows};
+  return {flows:flows.rows,cases:cases.rows,plans:plans.rows,results:results.rows,manualResults:manualResults.rows};
  });
  app.post('/api/projects/:id/qa/flows',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
@@ -100,7 +102,6 @@ export function registerQaRoutes(app:FastifyInstance,{pool,access,requireAdmin,u
   const c=await pool.query('SELECT 1 FROM qa_test_cases WHERE id=$1 AND project_id=$2',[caseId,id]);
   if(!c.rowCount)return reply.code(404).send({error:'Тест-кейс не найден'});
   // Manual observations are not AI test runs; record them separately without forging an AI verdict.
-  await pool.query('CREATE TABLE IF NOT EXISTS qa_manual_results (id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,case_id uuid NOT NULL REFERENCES qa_test_cases(id) ON DELETE CASCADE,actor_id uuid REFERENCES users(id) ON DELETE SET NULL,result text NOT NULL,evidence text NOT NULL,created_at timestamptz NOT NULL DEFAULT now())');
   await pool.query('INSERT INTO qa_manual_results(id,project_id,case_id,actor_id,result,evidence) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),id,caseId,uid(req),result,evidence]);
   return reply.code(201).send({ok:true});
  });
