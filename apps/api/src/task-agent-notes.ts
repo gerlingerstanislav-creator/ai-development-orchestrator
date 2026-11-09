@@ -65,7 +65,8 @@ export async function taskNotesContext(pool:Pool,projectId:string,taskId:string,
 
 export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
- requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;startRequirementsReview?:(projectId:string,taskId:string,version:number)=>Promise<unknown>
+ requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;startRequirementsReview?:(projectId:string,taskId:string,version:number)=>Promise<unknown>;
+ resumeAfterAnswer?:(input:{projectId:string;taskId:string;auth:string;cookie:string})=>Promise<{started:boolean;message:string}>
 }){
  app.post('/api/projects/:id/tasks/:taskId/agent-notes',async(req:any,reply)=>{
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
@@ -96,7 +97,7 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
    if(!result.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже закрыт или не относится к задаче'});}
    await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
     [randomUUID(),taskId,deps.uid(req),'Ответ на вопрос агента: '+answer.slice(0,1600)]);
-   const task=await client.query('SELECT stage,spec_version,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
+   const task=await client.query('SELECT stage,spec_version,spec_review_status,pr_url FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
    const state=task.rowCount
     ?await resolveAgentQuestionsForReview(client,id,taskId,task.rows[0].spec_version)
     :{remaining:0,requiresApproval:false};
@@ -112,7 +113,14 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
    await client.query('COMMIT');
    let review:unknown=null;
    if(mayReconcile&&!['backlog','analysis','documentation','done'].includes(task.rows[0].stage)){
-    review=await deps.startRequirementsReview?.(id,taskId,task.rows[0].spec_version);
+    const current=task.rows[0];
+    let resumed:{started:boolean;message:string}|undefined;
+    if(current.stage==='testing'||current.stage==='development'&&current.pr_url){
+     try{
+      resumed=await deps.resumeAfterAnswer?.({projectId:id,taskId,auth:String(req.headers.authorization||''),cookie:String(req.headers.cookie||'')});
+     }catch{/* The answer is committed. Fall back to a fresh requirements review. */}
+    }
+    review=resumed?.started?resumed:await deps.startRequirementsReview?.(id,taskId,current.spec_version)??resumed;
    }
    return {ok:true,pending_questions:unanswered,requires_approval:state.requiresApproval,requirements_review:review};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}

@@ -8,7 +8,7 @@ import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuesti
 import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
-import {initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes} from './project-manager.js';
+import {initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
@@ -1221,7 +1221,7 @@ app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
  if(!updated.rowCount)return reply.code(404).send({error:'Этап не найден'});
  return updated.rows[0];
 });
-app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT * FROM tasks WHERE project_id=$1 ORDER BY position, created_at',[id])).rows;});
+app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return tasksWithCustomerQuestions(pool,id);});
 app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
  const data=parse(z.object({title:z.string().trim().min(1).max(300),description:z.string().max(20000).default(''),type:z.enum(['task','bug','improvement','epic']).default('task'),parent_id:z.string().uuid().nullable().optional()}),req.body);
@@ -1508,13 +1508,7 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
 registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
-registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview});
-registerTaskCancellationRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
-registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
- workerSecret:runnerKey,
- workerAuthorization:async(actorId,email)=>'Bearer '+await new SignJWT({email}).setProtectedHeader({alg:'HS256'})
-  .setSubject(actorId).setIssuedAt().setExpirationTime('2m').sign(jwtKey),
- recoverTask:async({projectId,taskId,auth,cookie})=>{
+async function recoverTask({projectId,taskId,auth,cookie}:Parameters<ManagerDeps['recoverTask']>[0]):ReturnType<ManagerDeps['recoverTask']>{
   const task=(await pool.query("SELECT t.stage,t.analysis_state,t.pr_number,t.git_branch,t.pr_url,t.spec_review_status,t.spec_version,t.test_feedback,g.repository,c.secret_encrypted FROM tasks t LEFT JOIN project_git_repositories g ON g.project_id=t.project_id LEFT JOIN connections c ON c.id=g.connection_id WHERE t.id=$1 AND t.project_id=$2",
    [taskId,projectId])).rows[0];
   if(!task)return {ok:false,status:404,message:'Задача не найдена'};
@@ -1590,7 +1584,19 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   return {ok:true,status:202,message:task.stage==='development'
    ?'Менеджер запустил разработку. После неё система сверит ТЗ и запустит тестирование.'
    :'Менеджер запустил сверку требований и тестирование существующего PR.',details:data};
- },
+ }
+registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview,resumeAfterAnswer:async input=>{
+ const owner=await pool.query("SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[input.projectId,input.taskId]);
+ if(owner.rowCount)return {started:true,message:'Ответ передан в текущий процесс.'};
+ const result=await recoverTask(input);
+ return {started:result.ok,message:result.message};
+}});
+registerTaskCancellationRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
+registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
+ workerSecret:runnerKey,
+ workerAuthorization:async(actorId,email)=>'Bearer '+await new SignJWT({email}).setProtectedHeader({alg:'HS256'})
+  .setSubject(actorId).setIssuedAt().setExpirationTime('2m').sign(jwtKey),
+ recoverTask,
  startManagerWorkflow:async({projectId,taskId,messageId})=>{
   const client=await temporal();
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
