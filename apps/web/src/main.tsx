@@ -1459,7 +1459,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
     {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Расскажи об идее проекта, требованиях или пришли ссылку на GitHub-каталог с Markdown. Я буду раскладывать подтверждённые детали по документам и уточнять недостающие.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
-      <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
+      <span className="assistant-author">{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</span>
       <div>{m.body}</div>
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
@@ -1469,12 +1469,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {projectChatBusy&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
    </div>
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
-    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
+    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
     <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
   </section>}
-  <button className="chat-fab" onClick={()=>{if(projectChatMode==='documentation'){setProjectChatMode('project');setProjectChatOpen(true);}else setProjectChatOpen(open=>!open);}} title={projectChatOpen&&projectChatMode==='project'?'Закрыть чат':'Открыть AI-чат'} aria-label={projectChatOpen?'Закрыть чат':'Открыть AI-чат'}>
+  <button className="chat-fab" onClick={()=>{if(projectChatMode==='documentation'){setProjectChatMode('project');setProjectChatOpen(true);}else setProjectChatOpen(open=>!open);}} title={projectChatOpen&&projectChatMode==='project'?'Закрыть чат':'Открыть чат Менеджера проекта'} aria-label={projectChatOpen?'Закрыть чат':'Открыть чат Менеджера проекта'}>
    {projectChatOpen&&projectChatMode==='project'?<X size={22}/>:<MessageCircle size={22}/>}
   </button>
  </>}
