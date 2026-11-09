@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {importByTopics,splitSourceFragments} from '../dist/topic-import.js';
+import {importByTopics,splitSourceFragments,fingerprint} from '../dist/topic-import.js';
 
 const fixture=JSON.parse(await readFile(new URL('./fixtures/coffee-preorder-43-0.3.json',import.meta.url),'utf8'));
 const classifications={
@@ -113,4 +113,88 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  assert.equal(proposals.length,1);
  assert.equal(proposals[0].status,'open');
  assert.match(proposals[0].proposed_body,/Предзаказ и выдача/);
+
+ // Regression for an actual failed import: 122/122 fragments were classified,
+ // the model put all of them in one topic, and its second portion returned >5 questions.
+ // The first portion and its page UUID must survive remapping and resumption.
+ const collapsedProject=randomUUID(),collapsedRoot=randomUUID(),collapsedPage=randomUUID(),collapsedJobId=randomUUID();
+ const collapsedSourceKey=sourceKey+':collapsed-regression';
+ const legacyTitle='Вся документация';
+ const legacyDraft='Первый блок требований уже подготовлен и должен остаться неизменным.';
+ const legacyBody='# '+legacyTitle+'\n\n'+legacyDraft+'\n\n---\n\n## Исходные материалы\nИсходный фрагмент';
+ const classificationNotes='Выделены требования и открытые вопросы данного раздела.';
+ await db.query(
+  "INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",
+  [collapsedRoot,collapsedProject]);
+ await db.query(
+  "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,import_synced_hash) VALUES($1,$2,$3,$4,$5,$6,$7)",
+  [collapsedPage,collapsedProject,legacyTitle,legacyBody,collapsedRoot,'topic:'+collapsedSourceKey+':everything',fingerprint(legacyTitle,legacyBody)]);
+ await db.query(
+  "INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_key,request_text) VALUES($1,$2,$3,'running','Resume',$4,'Перенеси документацию')",
+  [collapsedJobId,collapsedProject,actorId,collapsedSourceKey]);
+ for(const fragment of fragments){
+  await db.query(
+   'INSERT INTO document_import_fragments(job_id,fragment_index,file_path,heading,content_sha,notes,topics,exclusion_reason) VALUES($1,$2,$3,$4,$5,$6,$7,NULL)',
+   [collapsedJobId,fragment.index,fragment.path,fragment.heading,fragment.sha,classificationNotes,
+    JSON.stringify([{key:'everything',title:legacyTitle}])]);
+ }
+ await db.query(
+  "INSERT INTO document_import_topics(job_id,topic_key,title,status,cursor,page_id,draft_body) VALUES($1,'everything',$2,'processing',1,$3,$4)",
+  [collapsedJobId,legacyTitle,collapsedPage,legacyDraft]);
+ const largeQuestions=Array.from({length:9},(_,i)=>'Какой порядок принятия решения владельцем продукта для варианта '+(i+1)+'?');
+ let planCalls=0,assignmentCalls=0,partCalls=0,remapCalls=0;
+ const collapsedComplete=async prompt=>{
+  if(prompt.includes('Первичное распределение материалов ошибочно')){
+   planCalls++;
+   return {text:JSON.stringify({topics:Object.values(classifications).filter((topic,i,a)=>a.findIndex(t=>t.key===topic.key)===i)})};
+  }
+  if(prompt.includes('Распредели каждый фрагмент документации')){
+   assignmentCalls++;
+   const marker='Фрагменты:\n';
+   const rows=JSON.parse(prompt.slice(prompt.lastIndexOf(marker)+marker.length));
+   return {text:JSON.stringify({assignments:rows.map(f=>{
+    const name=f.path.split('/').pop();
+    return {index:f.index,key:classifications[name].key};
+   })})};
+  }
+  if(prompt.includes('Сформируй ОДНУ самостоятельную порцию ТЗ')){
+   partCalls++;
+   return {text:JSON.stringify({
+    body:'## Требования\nПредметные требования подготовлены из сохранённых источников. Все существующие требования остаются доступными.',
+    questions:largeQuestions
+   })};
+  }
+  throw Error('Unexpected regression prompt '+prompt.slice(0,200));
+ };
+ const collapsedJob={id:collapsedJobId,project_id:collapsedProject,actor_id:actorId,source_key:collapsedSourceKey,request_text:'Перенеси документацию'};
+ const collapsedEvents=[];
+ const collapsedArgs={pool,job:collapsedJob,files:fixture.files,sourceName:'Coffee Preorder',
+  location:{owner:'gerlingerstanislav-creator',repository:'ideas',commit:fixture.source_commit},
+  instructions:'',rules:'',analystInstructions:'',complete:collapsedComplete,
+  progress:async(stage,message)=>collapsedEvents.push({stage,message}),
+  recordUsage:async()=>{},getInstructions:async()=>''};
+ const repaired=await importByTopics(collapsedArgs);
+ assert.ok(repaired.generated_documents>=6,'A 122-fragment import must be split across genuine topics');
+ assert.equal(planCalls,1,'Global topic plan should be proposed once');
+ assert.ok(assignmentCalls>2,'Incomplete fragments should be assigned in bounded groups');
+ assert.ok(partCalls>1,'Separate topics must be synthesized incrementally');
+ const retained=(await db.query('SELECT id,body,source_refs FROM documents WHERE id=$1',[collapsedPage])).rows[0];
+ assert.equal(retained.id,collapsedPage,'The previously saved document must retain its identity');
+ assert.match(retained.body,/Первый блок требований уже подготовлен/);
+ assert.ok(retained.source_refs.length<fragments.length,'An old partial topic must not falsely cite the entire repository');
+ const oldCheckpoint=(await db.query("SELECT status,cursor FROM document_import_topics WHERE job_id=$1 AND topic_key='everything'",[collapsedJobId])).rows[0];
+ assert.equal(oldCheckpoint.status,'complete');
+ assert.equal(oldCheckpoint.cursor,1);
+ const collapsedDocs=(await db.query("SELECT id,title,import_source FROM documents WHERE project_id=$1 AND import_source LIKE $2",
+  [collapsedProject,'topic:'+collapsedSourceKey+':%'])).rows;
+ assert.ok(collapsedDocs.length>=6,'The recovery must create multiple topic-specific pages');
+ assert.equal((await db.query('SELECT count(*)::int n FROM documentation_questions WHERE project_id=$1',[collapsedProject])).rows[0].n,
+  largeQuestions.length*(collapsedDocs.length-1),'Nine distinct questions per new topic must survive, without duplicates from successive batches');
+ assert.ok(collapsedEvents.some(event=>event.stage==='remapped'));
+ assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[collapsedJobId])).rows[0].status,'completed');
+ const callsBefore=planCalls+assignmentCalls+partCalls;
+ await importByTopics(collapsedArgs);
+ assert.equal(planCalls+assignmentCalls+partCalls,callsBefore,'Retry of completed topic checkpoints must not invoke Codex again');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE $2",
+  [collapsedProject,'topic:'+collapsedSourceKey+':%'])).rows[0].n,collapsedDocs.length,'Retry must not duplicate documents');
 });
