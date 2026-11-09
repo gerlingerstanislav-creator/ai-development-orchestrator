@@ -25,6 +25,7 @@ export function managerRequestText(kind:string,payload:any):string{
  if(kind==='requirements')return 'Аналитик обнаружил существенное отличие реализации от утверждённого ТЗ: '+String(payload.summary||'').slice(0,1300)+
   '\nПредложение по требованиям: '+String(payload.proposed_description||'').slice(0,1700)+
   '\nНужно твоё решение: согласовать изменение поведения или отклонить его и вернуть исправления разработчику.';
+ if(kind==='analysis_clarifications')return 'Аналитик собрал уточнения по постановке задачи:\n'+(payload.questions||[]).map((q:string,i:number)=>(i+1)+'. '+q).join('\n').slice(0,2600)+'\nОтветь мне одним сообщением, я передам ответы аналитику и продолжу работу команды.';
  if(kind==='question')return 'Команде не удалось разрешить вопрос самостоятельно: '+String(payload.question||'').slice(0,2000)+
   '\nОтветь мне, и я передам ответ ответственному агенту.';
  return 'Необходимо решение по задаче.';
@@ -33,7 +34,7 @@ export type ManagerRequest={id:string;kind:string;source_id:string;payload:any;s
 
 /** Deterministic gate projection: the manager does not hallucinate required approvals. */
 export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string){
- const task=(await pool.query('SELECT id,stage,spec_review_status,spec_version FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId])).rows[0];
+ const task=(await pool.query('SELECT id,stage,spec_review_status,spec_version,clarification_questions,analysis_state FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId])).rows[0];
  if(!task)return;
  const add=async(kind:string,source:string,sourceId:string,payload:any)=>{
   const result=await pool.query(
@@ -44,6 +45,9 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
     [randomUUID(),projectId,taskId,managerRequestText(kind,payload)]);
   }
  };
+ if(task.stage==='analysis'&&Array.isArray(task.clarification_questions)&&task.clarification_questions.length){
+  await add('analysis_clarifications','analysis:'+task.spec_version+':'+JSON.stringify(task.clarification_questions),taskId,{questions:task.clarification_questions,stage:'analysis'});
+ }
  if(task.stage==='testing'){
   const latest=await latestQaWaiver(pool,projectId,taskId);
   if(latest.run_id&&latest.assessment.eligible&&!latest.approval){
@@ -69,7 +73,7 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
  }
  // Old pending requests must not be shown after a task advances or a question is answered.
  await pool.query(
-  "UPDATE manager_requests r SET status='superseded',resolved_at=now() WHERE r.project_id=$1 AND r.task_id=$2 AND r.status='open' AND ((r.kind='qa_visual' AND (NOT EXISTS(SELECT 1 FROM ai_test_runs t WHERE t.id=r.source_id AND t.task_id=$2 AND t.status='completed' AND t.verdict='blocked') OR (SELECT stage FROM tasks WHERE id=$2)<>'testing')) OR (r.kind='question' AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.id=r.source_id AND n.status='open')) OR (r.kind='requirements' AND NOT EXISTS(SELECT 1 FROM task_requirement_reviews v WHERE v.id=r.source_id AND v.status='needs_approval')))",
+  "UPDATE manager_requests r SET status='superseded',resolved_at=now() WHERE r.project_id=$1 AND r.task_id=$2 AND r.status='open' AND ((r.kind='qa_visual' AND (NOT EXISTS(SELECT 1 FROM ai_test_runs t WHERE t.id=r.source_id AND t.task_id=$2 AND t.status='completed' AND t.verdict='blocked') OR (SELECT stage FROM tasks WHERE id=$2)<>'testing')) OR (r.kind='question' AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.id=r.source_id AND n.status='open')) OR (r.kind='requirements' AND NOT EXISTS(SELECT 1 FROM task_requirement_reviews v WHERE v.id=r.source_id AND v.status='needs_approval')) OR (r.kind='analysis_clarifications' AND NOT EXISTS(SELECT 1 FROM tasks t WHERE t.id=$2 AND t.stage='analysis' AND t.clarification_questions<>'[]'::jsonb)))",
   [projectId,taskId]);
 }
 export async function managerSnapshot(pool:Pool,projectId:string,taskId:string){
@@ -146,11 +150,11 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    choice:z.enum(['approve_without_visual','wait_for_tools','answer','approve_requirements','reject_requirements']),
    answer:z.string().trim().max(3000).default('')
   }).parse(req.body);
-  const selected=await pool.query('SELECT * FROM manager_requests WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status=$4',[requestId,id,taskId,'open']);
+  const selected=await pool.query("SELECT * FROM manager_requests WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status IN ('open','waiting')",[requestId,id,taskId]);
   if(!selected.rowCount)return reply.code(409).send({error:'Вопрос уже рассмотрен или устарел. Обнови чат менеджера проекта.'});
   const request=selected.rows[0];
   if(request.kind==='qa_visual'&&!['approve_without_visual','wait_for_tools'].includes(choice)
-   ||request.kind==='question'&&choice!=='answer'
+   ||['question','analysis_clarifications'].includes(request.kind)&&choice!=='answer'
    ||request.kind==='requirements'&&!['approve_requirements','reject_requirements'].includes(choice))
    return reply.code(400).send({error:'Выбранное действие не соответствует запросу менеджера проекта'});
   if(choice==='answer'&&answer.length<3)return reply.code(400).send({error:'Укажи содержательный ответ'});
@@ -161,10 +165,11 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
     [randomUUID(),id,taskId,'Решение принято: ждём инструменты для полноценного тестирования. Непроверенные сценарии остаются непроверенными, слияние PR не разрешено.']);
    return {ok:true,stage:'testing',status:'waiting'};
   }
-  const route=choice==='approve_without_visual'?'/api/projects/'+id+'/tasks/'+taskId+'/qa-waiver'
+  const route=request.kind==='analysis_clarifications'?'/api/projects/'+id+'/tasks/'+taskId+'/assistant'
+   :choice==='approve_without_visual'?'/api/projects/'+id+'/tasks/'+taskId+'/qa-waiver'
    :choice==='answer'?'/api/projects/'+id+'/tasks/'+taskId+'/agent-notes/'+request.source_id+'/answer'
    :'/api/projects/'+id+'/tasks/'+taskId+'/requirements/'+request.source_id+'/decision';
-  const payload=choice==='approve_without_visual'?{
+  const payload=request.kind==='analysis_clarifications'?{message:answer,mode:'analyze'}:choice==='approve_without_visual'?{
    test_run_id:request.source_id,
    justification:'Решение пользователя через Менеджера проекта: разрешено слияние с перечисленными непроверенными визуальными сценариями; фактическое выполнение не подтверждено.',
    acknowledge_unverified:true
@@ -176,7 +181,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
   });
   let data:any;try{data=injected.json();}catch{data={error:injected.body.slice(0,300)};}
   if(injected.statusCode>=400)return reply.code(injected.statusCode).send(data);
-  await pool.query("UPDATE manager_requests SET status='resolved',decision=$2,decided_by=$3,resolved_at=now() WHERE id=$1 AND status='open'",
+  await pool.query("UPDATE manager_requests SET status='resolved',decision=$2,decided_by=$3,resolved_at=now() WHERE id=$1 AND status IN ('open','waiting')",
    [requestId,choice,uid(req)]);
   const response=choice==='approve_without_visual'?'Получено разрешение на слияние без перечисленных визуальных проверок. Риск зафиксирован, дальнейшее слияние по-прежнему проходит проверки GitHub.'
    :choice==='answer'?'Ответ передан специалисту. При необходимости аналитик повторит сверку требований.'
