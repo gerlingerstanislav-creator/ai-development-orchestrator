@@ -15,7 +15,8 @@ const digestSchema=z.object({
 });
 const draftSchema=z.object({
  body:z.string().trim().min(15).max(12000),
- questions:z.array(z.string().trim().min(8).max(700)).max(5).default([])
+ // Large documents can legitimately raise more than five PO questions. Do not discard them.
+ questions:z.array(z.string().trim().min(8).max(700)).default([])
 });
 export function safeTopicKey(key:string){
  return key.toLowerCase().normalize('NFKC').replace(/ё/g,'е').replace(/[^a-zа-я0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,90)||'other';
@@ -203,7 +204,7 @@ export async function importByTopics(args:TopicImportArgs){
     'В Markdown раздели: согласованные требования / гипотезы / противоречия / критерии приёмки / открытые вопросы по необходимости.',
     'Не включай тест-кейсы и результаты тестирования. MVP и открытые границы определи из материалов или запроси у владельца продукта.',
     'Не повторяй уже записанное: последняя порция черновика приведена для контекста.',
-    'Вопросы только о продуктовых решениях, влияющих на требования; каждый вопрос должен ссылаться на эту страницу.',
+    'Вопросы только о продуктовых решениях, влияющих на требования; не повторяй уже выявленные вопросы. Не обрезай список из-за произвольного числового лимита.',
     'Верни JSON {"body":"Новая часть документа (Markdown)","questions":["вопрос владельцу продукта"]}.',
     'Проект: '+sourceName,
     'Правила проекта: '+args.rules.slice(0,800),
@@ -249,7 +250,7 @@ export async function importByTopics(args:TopicImportArgs){
     await client.query(
      "UPDATE document_import_topics SET cursor=$3,status=$4,draft_body=$5,page_id=$6,source_refs=$7,review_suggestion=$8,updated_at=now() WHERE job_id=$1 AND topic_key=$2",
      [jobId,key,i+1,last?(conflict?'conflict':'complete'):'processing',newDraft,pageId,JSON.stringify(refs),conflict?'Есть ручные изменения; подготовлено предложение, оригинал сохранён':null]);
-    for(const question of result.questions){
+    for(const question of new Set(result.questions.map(q=>q.trim()))){
      const questionKey=sha(key+'\n'+question.trim().toLowerCase()).slice(0,24);
      await client.query(
       "INSERT INTO documentation_questions(id,project_id,job_id,topic_key,question_key,document_id,question) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,document_id,question_key) DO NOTHING",
