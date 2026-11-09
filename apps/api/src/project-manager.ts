@@ -60,7 +60,7 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
  // Genuine user-facing questions only. Tool access requests belong to the manager,
  // not the customer, and cannot be treated as changing the product requirements.
  const questions=await pool.query(
-  "SELECT id,body,author_name,target_stage FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' ORDER BY created_at DESC LIMIT 15",
+  "SELECT id,body,author_name,target_stage FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' AND (target_stage='all' OR requires_customer) ORDER BY created_at DESC LIMIT 15",
   [projectId,taskId]);
  for(const note of questions.rows){
   const toolQuestion=/\b(diff|patch|PR|pull request|репозитор|файл|доступ к коду|скриншот|браузер)\b/i.test(note.body)&&/предостав|пришл|не (вижу|могу|хватает)|нужен|требует/i.test(note.body);
