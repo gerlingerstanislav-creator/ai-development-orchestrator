@@ -86,6 +86,16 @@ async function dbInit() {
   created_at timestamptz not null default now()
  );
  CREATE INDEX IF NOT EXISTS idx_process_events_history ON process_events(project_id,process_id,created_at);
+ CREATE TABLE IF NOT EXISTS merge_process_runs (
+  id uuid primary key,project_id uuid not null references projects(id) on delete cascade,
+  actor_id uuid not null references users(id),status text not null default 'running',
+  message text not null default '',current_task uuid,
+  results jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),finished_at timestamptz
+ );
+ CREATE INDEX IF NOT EXISTS idx_merge_process_runs_project ON merge_process_runs(project_id,created_at DESC);
+ UPDATE merge_process_runs SET status='failed',message='Слияние прервано перезапуском API',finished_at=now() WHERE status='running';
+
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS document_kind text not null default 'technical';
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS implementation_status text not null default 'unverified';
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS implementation_evidence text not null default '';
@@ -817,10 +827,16 @@ async function runMergeBatch(batch:MergeBatch,userId:string){
     }
    }
    if(!success)batch.results.push({taskId:task.id,status:'skipped',reason});
+   await pool.query("UPDATE merge_process_runs SET message=$2,current_task=$3,results=$4 WHERE id=$1",
+    [batch.id,batch.message,task.id,JSON.stringify(batch.results)]).catch(()=>{});
+   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'merge',$4,$5,$6)",
+    [randomUUID(),batch.projectId,batch.id,success?'info':'warning',success?'merged':'skipped',success?'PR успешно слит':reason.slice(0,1200)]).catch(()=>{});
   }
  }catch(e){batch.message='Ошибка обработки очереди: '+(e instanceof Error?e.message:String(e));}
  finally{
   batch.currentTask=null;batch.status='completed';batch.finishedAt=new Date().toISOString();
+  await pool.query("UPDATE merge_process_runs SET status=$2,message=$3,results=$4,finished_at=now(),current_task=NULL WHERE id=$1",
+   [batch.id,'completed',batch.message,JSON.stringify(batch.results)]).catch(()=>{});
   if(runningMergeProjects.get(batch.projectId)===batch.id)runningMergeProjects.delete(batch.projectId);
  }
 }
@@ -831,6 +847,8 @@ app.post('/api/projects/:id/merge-ready',async(req:any,reply)=>{
  if(existingId)return reply.code(409).send({error:'Слияние уже выполняется',batchId:existingId});
  const batch:MergeBatch={id:randomUUID(),projectId:id,status:'running',results:[],currentTask:null,message:'Подготовка очереди',createdAt:new Date().toISOString()};
  mergeBatches.set(batch.id,batch);runningMergeProjects.set(id,batch.id);
+ await pool.query("INSERT INTO merge_process_runs(id,project_id,actor_id,status,message) VALUES($1,$2,$3,'running',$4)",[batch.id,id,uid(req),batch.message]);
+ await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'merge','started','Запущено последовательное слияние')",[randomUUID(),id,batch.id]);
  void runMergeBatch(batch,uid(req));
  return reply.code(202).send(batch);
 });
@@ -938,17 +956,17 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const [imports,developments]=await Promise.all([
-  pool.query("SELECT id,status,message,source_url,source_file_count,analyzed_chunks,total_chunks,saved_documents,created_at,updated_at,result FROM document_import_jobs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
+ const [imports,developments,merges]=await Promise.all([
+  pool.query("SELECT id,status,message,source_url,source_file_count,analyzed_chunks,total_chunks,saved_documents,created_at,updated_at,result,draft_result IS NOT NULL AS has_draft FROM document_import_jobs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT id,status,message,created_at,finished_at,results FROM merge_process_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id])
  ]);
  const processes:any[]=[
-  ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:'Импорт документации'+(r.source_url?' · '+r.source_url.split('/').slice(-1)[0]:''),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,progress:{completed:r.analyzed_chunks,total:r.total_chunks},result:r.result,savedDocuments:r.saved_documents,sourceFileCount:r.source_file_count})),
+  ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:'Импорт документации'+(r.source_url?' · '+r.source_url.split('/').slice(-1)[0]:''),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,progress:{completed:r.analyzed_chunks,total:r.total_chunks},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
   ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
  ];
- for(const batch of mergeBatches.values()){
-  if(batch.projectId!==id)continue;
-  processes.push({id:batch.id,kind:'merge',title:'Слияние готовых PR',status:batch.status,detail:batch.message,createdAt:batch.createdAt,updatedAt:batch.finishedAt||null,result:{results:batch.results}});
+ for(const row of merges.rows){
+  processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
  }
  processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
  return {processes,checkedAt:new Date().toISOString()};
