@@ -102,3 +102,22 @@ export async function readGitHubMarkdownFiles(source:GitHubDocumentLocation,toke
  return entries;
 }
 
+
+/** Resolve branch to immutable commit before reading any file, including retries. */
+export async function resolveGitHubDocumentCommit(source:GitHubDocumentLocation,tokens:string[]):Promise<string>{
+ const url='https://api.github.com/repos/'+encodeURIComponent(source.owner)+'/'+encodeURIComponent(source.repository)+'/commits/'+encodeURIComponent(source.branch);
+ let status=404;
+ for(const token of [null,...tokens.slice(0,8)]){
+  const headers:Record<string,string>={Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'};
+  if(token)headers.Authorization='Bearer '+token;
+  const response=await fetch(url,{headers,signal:AbortSignal.timeout(20000)});
+  status=response.status;
+  if(response.ok){
+   const commit=await response.json() as {sha?:unknown};
+   if(typeof commit.sha!=='string'||!/^[a-f0-9]{40}$/.test(commit.sha))throw Error('GitHub вернул некорректный SHA');
+   return commit.sha;
+  }
+  if(![401,403,404].includes(status))break;
+ }
+ throw Error('Не удалось зафиксировать коммит GitHub для импорта (HTTP '+status+')');
+}
