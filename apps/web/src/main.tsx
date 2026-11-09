@@ -1361,7 +1361,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <div><strong>{r.status==='queued'?'Тестирование ожидает запуска':'AI-тестировщик выполняет проверку'}</strong>
          <p>{r.message||'Подготовка проверок'}</p>
          <small>Цикл проверки: {r.attempt+1} · {Math.max(0,Math.floor((elapsedNow-new Date(r.created_at).getTime())/60000))} мин.</small>
-         <button className="task-process-link" type="button" onClick={()=>{setSelectedProcessId(r.id);navigate(projectUrl(selected.id,'processes')+'?process='+r.id);}}>Посмотреть процесс</button>
+         <button className="task-process-link" type="button" onClick={()=>{setSelectedProcessId(r.id);navigate(projectUrl(selected!.id,'processes')+'?process='+r.id);}}>Посмотреть процесс</button>
         </div>
        </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
