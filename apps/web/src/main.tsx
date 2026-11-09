@@ -746,7 +746,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <small className="quota-updated">{rateLimits?.checkedAt?'Обновлено: '+new Date(rateLimits.checkedAt).toLocaleTimeString('ru-RU'):'Данные не загружены'}{rateLimitsLoading?' · обновление…':''}{rateLimitsError?' · '+rateLimitsError:''}</small>
     </div>
    </div>
-  </div>
    <div className="background-process-control" ref={processDropdownRef}>
     <button className={'background-process-count '+(backgroundProcessMenuOpen?'is-open':'')} type="button"
      aria-label={'Фоновые процессы: '+backgroundProcesses.length} aria-expanded={backgroundProcessMenuOpen}
@@ -765,6 +764,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {backgroundProcessesError&&<small className="background-process-warning">{backgroundProcessesError}</small>}
     </div>}
    </div>
+  </div>
 </header>
  
  {accountSettings?<div className="page compact-project-page">
