@@ -343,14 +343,18 @@ async function runTestJob(job,state){
   state.testedCommit=rev.stdout.trim();
   const prompt=[
    'Ты независимый AI-тестировщик в отдельной временной копии репозитория.',
-   'Проанализируй ТЗ, код и доказательства. По возможности запусти доступные локальные проверки (build, unit, integration, API).',
+   'Проверяй утверждённые QA-сценарии из плана. По возможности запусти доступные локальные проверки (build, unit, integration, API).',
+   'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run.',
+   'Не утверждай, что пользовательский путь, браузерное действие или ручная проверка выполнены без реального инструмента и воспроизведения.',
+   'В отчёте caseResults укажи для каждого входного case_id статус passed|failed|blocked|not_run и конкретное evidence.',
    'НЕ устанавливай зависимости из интернета, НЕ запускай развертывание, НЕ читай секреты, НЕ меняй GitHub.',
    'Это ограниченное тестирование без отдельного стенда и браузера. Не заявляй, что провёл E2E-тесты, если их реально не запускал.',
    'Если проверку выполнить нельзя из-за отсутствующих инструментов/зависимостей, укажи blocked и не заявляй об успешном тестировании.',
-   'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}]}.',
+   'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","evidence":"фактическое доказательство"}]}.',
    'Вердикт failed при обнаружении воспроизводимых проблем. Вердикт passed только при достаточных проверках и отсутствии дефектов. blocked — если проверить нельзя.',
    'Исполнитель: '+String(job.agentName||'AI-тестировщик'),
    'Дополнительные инструкции исполнителя (не отменяют требование проверять факты): '+String(job.agentInstructions||'').slice(0,12000),
+   'План тестирования, подготовленный ДО разработки: '+JSON.stringify(job.testPlan||{}).slice(0,52000),
    'Задача: '+job.title,
    'Требования: '+String(job.description).slice(0,16000),
    'Правила: '+String(job.projectRules||'').slice(0,5000),
@@ -368,12 +372,13 @@ async function runTestJob(job,state){
   if(start<0||end<=start)throw Error('AI-тестировщик не вернул структурированный результат');
   let report;
   try{report=JSON.parse(text.slice(start,end+1));}catch{throw Error('AI-тестировщик вернул некорректный JSON');}
-  if(!['passed','failed','blocked'].includes(report.verdict)||typeof report.summary!=='string'||!Array.isArray(report.findings)||!Array.isArray(report.checks))
+  if(!['passed','failed','blocked'].includes(report.verdict)||typeof report.summary!=='string'||!Array.isArray(report.findings)||!Array.isArray(report.checks)||!Array.isArray(report.caseResults))
    throw Error('Недопустимый формат отчёта AI-тестировщика');
   state.verdict=report.verdict;
   state.summary=report.summary.slice(0,3500);
   state.findings=report.findings.slice(0,20);
   state.checks=report.checks.slice(0,30);
+  state.caseResults=report.caseResults.slice(0,50);
   state.status='completed';
   state.message='Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
  }catch(e){
