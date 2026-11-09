@@ -13,7 +13,8 @@ export async function initTaskAgentNotesSchema(pool:Pool){
   "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS answered_at timestamptz",
   "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS answered_by uuid REFERENCES users(id) ON DELETE SET NULL",
   "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS answer_author text",
-  "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS processing_at timestamptz"
+  "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS processing_at timestamptz",
+  "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS requires_customer boolean NOT NULL DEFAULT false"
  ].join(';\n')+';');
 }
 export type AgentNoteInput={
@@ -33,7 +34,7 @@ export async function recordTaskAgentNote(pool:Pool,note:AgentNoteInput){
 }
 
 export async function pendingAgentQuestions(pool:Pool,projectId:string,taskId:string):Promise<number>{
- const r=await pool.query("SELECT count(*)::int AS count FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing')",[projectId,taskId]);
+ const r=await pool.query("SELECT count(*)::int AS count FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND (target_stage='all' OR requires_customer)",[projectId,taskId]);
  return r.rows[0].count;
 }
 /**
