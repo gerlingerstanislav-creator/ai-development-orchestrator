@@ -990,3 +990,19 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .manager-answer-body button{align-self:flex-start}
 .task-modal-overlay .manager-conversation .assistant-composer{background:white}
 @media(max-width:850px){.task-modal-overlay .manager-thread .manager-message{max-width:96%}.task-modal-overlay .manager-actions{padding:6px}.manager-answer-body{left:0;right:auto;width:min(330px,90vw)}}
+
+/* Task header and chat activity. */
+.task-modal-overlay .task-modal-top{flex-direction:row;align-items:center;gap:8px;padding:5px 12px}
+.task-modal-overlay .task-modal-actions{max-width:none;flex-wrap:wrap;justify-content:flex-end}
+.task-modal-overlay .task-details .task-title-editable{margin-bottom:14px}
+.task-modal-overlay .task-details .task-title-editable h2{margin:0;font-size:16px;line-height:1.35;overflow-wrap:anywhere}
+.task-modal-overlay .task-cancel-header{position:static;max-height:min(35vh,240px);overflow:auto;width:auto;flex:0 0 auto;margin:0;padding:8px 12px;border-width:0 0 1px;box-shadow:none}
+.task-modal-overlay .manager-thread>.manager-message,.task-modal-overlay .manager-thread>.manager-internal-log{flex:0 0 auto}
+.manager-live-activity{display:flex;flex:0 0 auto;flex-wrap:wrap;gap:5px 14px;margin:0;padding:7px 12px;border-top:1px solid #e2e6ec;list-style:none;color:#536175;font-size:11px;max-height:18vh;overflow:auto}
+.manager-live-activity li{display:flex;align-items:center;gap:6px}
+.manager-live-activity svg{animation:manager-activity-spin 1.2s linear infinite;flex:none}
+@keyframes manager-activity-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.manager-live-activity svg{animation:none}}
+.manager-action-row{flex-wrap:wrap;overflow:visible}
+.manager-answer-body{right:auto;left:0}
+.manager-conversation>.manager-action-error{margin:0;padding:5px 12px}

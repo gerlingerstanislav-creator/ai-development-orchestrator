@@ -5,6 +5,7 @@ import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
 import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
 import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
+import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import {initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes} from './project-manager.js';
@@ -125,6 +126,8 @@ async function dbInit() {
   stage text not null, detail text not null default '',
   created_at timestamptz not null default now()
  );
+ ALTER TABLE process_events ADD COLUMN IF NOT EXISTS task_id uuid REFERENCES tasks(id) ON DELETE CASCADE;
+ CREATE INDEX IF NOT EXISTS idx_process_events_task ON process_events(project_id,task_id,created_at) WHERE task_id IS NOT NULL;
  CREATE INDEX IF NOT EXISTS idx_process_events_history ON process_events(project_id,process_id,created_at);
  CREATE TABLE IF NOT EXISTS process_instructions (
   id uuid primary key,project_id uuid not null references projects(id) on delete cascade,
@@ -1350,14 +1353,15 @@ app.get('/api/projects/:id/tasks/:taskId/activity',async(req:any,reply)=>{
  if(!await access(req,reply,id))return;
  const task=await pool.query('SELECT id FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
- const [events,processes,ownership,tests,notes]=await Promise.all([
+ const [events,processes,ownership,tests,notes,agentRuns]=await Promise.all([
   pool.query('SELECT id,event,detail,created_at FROM task_events WHERE task_id=$1 ORDER BY created_at DESC LIMIT 200',[taskId]),
   pool.query("SELECT p.id,p.process_kind,p.stage,p.detail,p.level,p.created_at FROM process_events p WHERE p.project_id=$1 AND p.process_id IN (SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2) ORDER BY p.created_at DESC,p.id DESC LIMIT 250",[id,taskId]),
   pool.query('SELECT owner_id,kind,workflow_id,state,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2',[id,taskId]),
   pool.query('SELECT id,task_id,cycle_id,attempt,status,message,verdict,report,created_at,completed_at,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 30',[id,taskId]),
-  pool.query('SELECT id,author_stage,author_name,target_stage,kind,body,source_kind,status,answer,answered_at,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 200',[id,taskId])
+  pool.query('SELECT id,author_stage,author_name,target_stage,kind,body,source_kind,status,answer,answered_at,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 200',[id,taskId]),
+  readAgentActivity(pool,id,taskId)
  ]);
- return {events:events.rows,processEvents:processes.rows,owner:ownership.rows[0]?.state==='active'?ownership.rows[0]:null,tests:tests.rows,notes:notes.rows};
+ return {events:events.rows,processEvents:processes.rows,agentRuns,owner:ownership.rows[0]?.state==='active'?ownership.rows[0]:null,tests:tests.rows,notes:notes.rows};
 });
 const docParent = z.string().uuid().nullable().optional();
 async function validDocParent(projectId:string, docId:string|null, parentId:string|null) {

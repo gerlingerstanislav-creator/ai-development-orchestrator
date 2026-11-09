@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
+import {recordAgentActivity} from './task-agent-activity.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {pendingAgentQuestions} from './task-agent-notes.js';
@@ -81,10 +82,15 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
    'Предыдущий документ:\n'+String(doc?.body||'# Реализованные возможности\n').slice(0,40000),
    'Правила проекта (учитывай, не изменяй):\n'+rules.rows.map(x=>x.body).join('\n').slice(0,7000),
    'Выполненные задачи:\n'+JSON.stringify(pending.rows).slice(0,22000)].join('\n\n');
+  const ids=pending.rows.map(x=>x.id);
+  const runId=randomUUID();
+  await recordAgentActivity(pool,id,ids,runId,'documentation','running','Документатор обрабатывает слитые изменения');
   let body:string;
   try{body=z.object({body:z.string().min(20).max(90000)}).parse(await ask(id,prompt)).body;}
-  catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Ошибка обновления документации'});}
-  const ids=pending.rows.map(x=>x.id);
+  catch(e){
+   await recordAgentActivity(pool,id,ids,runId,'documentation','failed','Не удалось подготовить изменения документации.');
+   return reply.code(503).send({error:e instanceof Error?e.message:'Ошибка обновления документации'});
+  }
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -96,9 +102,14 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
    await client.query('INSERT INTO document_versions(id,document_id,task_ids,body) VALUES($1,$2,$3,$4)',[randomUUID(),documentId,JSON.stringify(ids),body]);
    await client.query("UPDATE tasks SET stage='done',documentation_updated_at=now(),updated_at=now() WHERE project_id=$1 AND id=ANY($2::uuid[])",[id,ids]);
    for(const taskId of ids)await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'documentation_updated','Документация обновлена после слияния')",[randomUUID(),taskId,uid(req)]);
+   await recordAgentActivity(client,id,ids,runId,'documentation','completed','Обновлён документ «Реализованные возможности».');
    await client.query('COMMIT');
    return {ok:true,updated_tasks:ids.length,document_id:documentId};
-  }catch(e){await client.query('ROLLBACK');return reply.code(409).send({error:e instanceof Error?e.message:'Ошибка'});}finally{client.release();}
+  }catch(e){
+   await client.query('ROLLBACK');
+   await recordAgentActivity(client,id,ids,runId,'documentation','failed','Не удалось сохранить изменения документации.');
+   return reply.code(409).send({error:e instanceof Error?e.message:'Ошибка'});
+  }finally{client.release();}
  });
  app.get('/api/projects/:id/documentation/versions',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id))return;
