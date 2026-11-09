@@ -962,8 +962,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>}
      {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
       {process.hasDraft?<button className="secondary" disabled={processActionBusy} onClick={()=>void retryProcessSave(process)}>Повторить сохранение без повторного анализа</button>:
-       <button className="secondary" disabled={processActionBusy||!process.sourceUrl} onClick={()=>void restartImport(process)}>Повторить импорт из источника</button>}
-      <small>{process.hasDraft?'AI-черновик сохранён — повторится только SQL-запись.':'Нет сохранённого AI-черновика. Источник придётся прочитать заново.'}</small>
+       <button className="secondary" disabled={processActionBusy||!process.sourceUrl} onClick={()=>void restartImport(process)}>{(process.progress?.completed??0)>0?'Продолжить импорт':'Повторить импорт из источника'}</button>}
+      <small>{process.hasDraft?'AI-черновик сохранён — повторится только SQL-запись.':'Нет готового итогового черновика. При повторе система сверит файлы и переиспользует сохранённые конспекты уже обработанных фрагментов.'}</small>
      </div>}
      {process.kind==='document_import'&&process.status==='running'&&<div className="process-instruction-box">
       <strong>Уточнить задание для AI</strong>
