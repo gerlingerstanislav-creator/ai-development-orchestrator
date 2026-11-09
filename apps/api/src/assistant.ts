@@ -217,7 +217,8 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     let partNumber=0;
     for(const chunk of chunks){
      partNumber++;
-     const contentSha=createHash('sha256').update(chunk.content).digest('hex');
+     const currentInstructions=await getInstructions();
+     const contentSha=createHash('sha256').update(chunk.content).update('\n'+message).update('\n'+currentInstructions).digest('hex');
      const previous=await pool.query(
       `SELECT c.notes FROM document_import_checkpoints c JOIN document_import_jobs j ON j.id=c.job_id
        WHERE j.project_id=$1 AND j.actor_id=$2 AND j.source_key=$3 AND c.chunk_index=$4
@@ -235,7 +236,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
       'Верни ТОЛЬКО JSON: {"notes":"подробные, но компактные Markdown-заметки с фактами, требованиями, ограничениями, решениями, гипотезами, противоречиями и именами сущностей"}',
       'Учитывай точные значения, имена, параметры, статусы и ограничения. Ничего не выдумывай. Отмечай, если мысль обрывается на границе фрагмента.',
       'Источник: '+chunk.path+'; фрагмент '+chunk.part+' из '+chunk.total+'.',
-      'Дополнительные уточнения пользователя (если есть): '+(await getInstructions()),
+      'Дополнительные уточнения пользователя (если есть): '+currentInstructions,
       'Файл ('+partNumber+'/'+chunks.length+'):',
       chunk.content
      ].join('\n\n');
