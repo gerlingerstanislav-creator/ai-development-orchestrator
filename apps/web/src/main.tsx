@@ -24,6 +24,9 @@ type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checked
 type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:string;requests:number};
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
+
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
@@ -208,6 +211,36 @@ function App(){
  const [rateLimitsBusy,setRateLimitsBusy]=useState(false);
  const [rateLimitsError,setRateLimitsError]=useState('');
  const [rateLimitsLoading,setRateLimitsLoading]=useState(false);
+ const [backgroundProcesses,setBackgroundProcesses]=useState<BackgroundProcess[]>([]);
+ const [backgroundProcessMenuOpen,setBackgroundProcessMenuOpen]=useState(false);
+ const [backgroundProcessesError,setBackgroundProcessesError]=useState('');
+ const processDropdownRef=useRef<HTMLDivElement|null>(null);
+ useEffect(()=>{
+  if(!token){setBackgroundProcesses([]);setBackgroundProcessMenuOpen(false);return;}
+  let active=true;
+  const refresh=async()=>{
+   try{
+    const result=await api<BackgroundProcessResponse>('/background-processes');
+    if(active){setBackgroundProcesses(result.processes);setBackgroundProcessesError('');}
+   }catch(e){
+    if(active)setBackgroundProcessesError(e instanceof Error?e.message:'Не удалось обновить процессы');
+   }
+  };
+  void refresh();
+  const timer=window.setInterval(()=>{if(!document.hidden)void refresh();},8000);
+  const onVisible=()=>{if(!document.hidden)void refresh();};
+  document.addEventListener('visibilitychange',onVisible);
+  return()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
+ },[token]);
+ useEffect(()=>{
+  if(!backgroundProcessMenuOpen)return;
+  const onOutside=(event:MouseEvent)=>{if(processDropdownRef.current&&!processDropdownRef.current.contains(event.target as Node))setBackgroundProcessMenuOpen(false);};
+  const onKey=(event:KeyboardEvent)=>{if(event.key==='Escape')setBackgroundProcessMenuOpen(false);};
+  document.addEventListener('mousedown',onOutside);
+  document.addEventListener('keydown',onKey);
+  return()=>{document.removeEventListener('mousedown',onOutside);document.removeEventListener('keydown',onKey);};
+ },[backgroundProcessMenuOpen]);
+
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [docs,setDocs]=useState<Doc[]>([]);
  const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
@@ -713,7 +746,26 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <small className="quota-updated">{rateLimits?.checkedAt?'Обновлено: '+new Date(rateLimits.checkedAt).toLocaleTimeString('ru-RU'):'Данные не загружены'}{rateLimitsLoading?' · обновление…':''}{rateLimitsError?' · '+rateLimitsError:''}</small>
     </div>
    </div>
-  </div></header>
+   <div className="background-process-control" ref={processDropdownRef}>
+    <button className={'background-process-count '+(backgroundProcessMenuOpen?'is-open':'')} type="button"
+     aria-label={'Фоновые процессы: '+backgroundProcesses.length} aria-expanded={backgroundProcessMenuOpen}
+     aria-haspopup="true" title="Фоновые процессы"
+     onClick={()=>setBackgroundProcessMenuOpen(open=>!open)}>{backgroundProcesses.length}</button>
+    {backgroundProcessMenuOpen&&<div className="background-process-popover">
+     <div className="background-process-heading"><strong>Фоновые процессы</strong><span>{backgroundProcesses.length}</span></div>
+     {backgroundProcesses.length===0?<p className="background-process-empty">Нет активных процессов</p>:
+      <div className="background-process-list">{backgroundProcesses.map(process=>
+       <a key={process.id} href={process.url} className="background-process-item"
+        onClick={e=>{setBackgroundProcessMenuOpen(false);followLink(e,process.url);}}>
+        <span className="background-process-item-title"><span className="background-process-pulse"/><strong>{process.title}</strong></span>
+        <span className="background-process-project">{process.projectName} · {process.status==='queued'?'В очереди':'Выполняется'}</span>
+        <span className="background-process-detail">{process.detail}</span>
+       </a>)}</div>}
+     {backgroundProcessesError&&<small className="background-process-warning">{backgroundProcessesError}</small>}
+    </div>}
+   </div>
+  </div>
+</header>
  
  {accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
