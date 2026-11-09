@@ -12,6 +12,7 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await pool.query('CREATE TABLE projects (id uuid PRIMARY KEY)');
   await pool.query("CREATE TABLE tasks (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id),title text NOT NULL,description text NOT NULL,updated_at timestamptz NOT NULL DEFAULT now())");
   await pool.query("CREATE TABLE workflow_stages (project_id uuid NOT NULL,stage text NOT NULL,agent_name text NOT NULL DEFAULT '',agent_instructions text NOT NULL DEFAULT '')");
+  await pool.query("CREATE TABLE task_events (id uuid PRIMARY KEY,task_id uuid NOT NULL REFERENCES tasks(id),event text NOT NULL,detail text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now())");
   await pool.query("CREATE TABLE project_rules (project_id uuid NOT NULL,body text NOT NULL,created_at timestamptz DEFAULT now())");
   await pool.query('CREATE TABLE qa_test_plans (id uuid PRIMARY KEY)');
   await pool.query('CREATE TABLE ai_test_runs (id uuid PRIMARY KEY)');
