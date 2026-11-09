@@ -303,6 +303,8 @@ export async function importByTopics(args:TopicImportArgs){
   await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2 WHERE id=$1',[jobId,fragment.index]);
  }
  await diversifyCollapsedTopics(args,classified,sourceName,location);
+ // Remapping may introduce new stable keys after the initial classifier pass.
+ for(const fragment of classified)for(const topic of fragment.topics)knownTopics.set(topic.key,knownTopics.get(topic.key)||topic.title);
  const groups=new Map<string,ClassifiedFragment[]>();
  for(const fragment of classified){
   for(const topic of fragment.topics){
