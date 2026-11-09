@@ -43,7 +43,7 @@ export function qaWaiverAssessment(run:QaRunRow|null|undefined){
  }
  if(!unverified.length)blockers.push('Нет сценариев, которые необходимо явно исключить из проверки.');
  return {eligible:blockers.length===0,blockers,passed,total:cases.length,unverified,checks,
-  summary:String(run?.report?.summary||''),commit:String(run?.report?.commit||''),spec_version:run?.qa_spec_version??null};
+  summary:String(run?.report?.summary||''),capabilities:String(run?.report?.capabilities||''),commit:String(run?.report?.commit||''),spec_version:run?.qa_spec_version??null};
 }
 
 type Dependencies={pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;decryptToken:(ciphertext:string)=>string};
