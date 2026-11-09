@@ -11,9 +11,7 @@ type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'oth
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
- {key:'development',title:'Разработка',ids:['development']},
- {key:'testing',title:'Тестирование',ids:['testing']},
- {key:'merging',title:'Слияние',ids:['merge_queue']},
+ {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
  {key:'results',title:'Итоги',ids:['documentation','done']}
 ];
 
@@ -801,14 +799,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
     draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
-    {showStage&&<span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>}
-    <span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span>
-    <span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span>
-    <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
+    <span className="task-card-top"><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
+    <span className="task-name-line"><strong>{t.title}</strong><span className="task-card-state"><span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span></span>
     <p>{t.description||'Без описания'}</p>
     {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
-    {t.stage==='merge_queue'&&<small className="task-warning">PR ожидает слияния</small>}
-    <span className="task-footer"><span>Задача</span><span>↗</span></span>
   </a>;
  }
  function renderKanbanLane(s:Stage){
