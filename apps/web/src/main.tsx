@@ -367,7 +367,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      ...(r.report?.checks||[]).map(c=>c.name+': '+c.result+(c.details?' — '+c.details:'')),
      ...(r.report?.findings||[]).map(f=>'Дефект ('+f.severity+'): '+f.description+(f.steps?' · '+f.steps:'')),
      ...(r.report?.caseResults||[]).slice(0,30).map(c=>c.case_id+': '+c.result+(c.evidence?' — '+c.evidence:''))
-    ].filter(Boolean).join('\n'),time:r.created_at,status:r.status}))
+    ].filter(Boolean).join('\n'),time:r.completed_at||r.created_at,status:r.status,failed:r.status==='failed'}))
   ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
  }
  async function loadRequirements(projectId:string,taskId:string){
