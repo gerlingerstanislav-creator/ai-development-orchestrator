@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 
@@ -32,6 +32,22 @@ export async function recordTaskAgentNote(pool:Pool,note:AgentNoteInput){
 export async function pendingAgentQuestions(pool:Pool,projectId:string,taskId:string):Promise<number>{
  const r=await pool.query("SELECT count(*)::int AS count FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open'",[projectId,taskId]);
  return r.rows[0].count;
+}
+/**
+ * Accepting a question answer is not equivalent to approving changed behavior.
+ * Only an inconclusive analytical review can be superseded automatically.
+ * A material-change proposal must still receive an explicit human decision.
+ */
+export async function resolveAgentQuestionsForReview(client:PoolClient,projectId:string,taskId:string,version:number){
+ const open=await client.query("SELECT count(*)::int AS total FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open'",[projectId,taskId]);
+ const remaining=Number(open.rows[0].total);
+ if(remaining)return {remaining,requiresApproval:false};
+ const review=await client.query("SELECT classification FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status='needs_approval' ORDER BY created_at DESC LIMIT 1 FOR UPDATE",[projectId,taskId,version]);
+ if(review.rows[0]?.classification==='material_change')return {remaining:0,requiresApproval:true};
+ if(review.rows[0]?.classification==='uncertain'){
+  await client.query("UPDATE task_requirement_reviews SET status='superseded',resolved_at=now() WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status='needs_approval' AND classification='uncertain'",[projectId,taskId,version]);
+ }
+ return {remaining:0,requiresApproval:false};
 }
 /** Return bounded, addressed task comments as untrusted advisory context. */
 export async function taskNotesContext(pool:Pool,projectId:string,taskId:string,targetStage:string,limit=18){
@@ -76,15 +92,13 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
    if(!result.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже закрыт или не относится к задаче'});}
    await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
     [randomUUID(),taskId,deps.uid(req),'Ответ на вопрос агента: '+answer.slice(0,1600)]);
-   const task=await client.query('SELECT stage,spec_version FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
-   const remaining=await client.query("SELECT count(*)::int AS total FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open'",[id,taskId]);
-   const unanswered=Number(remaining.rows[0].total);
-   // Review the combined answers only after the last blocking question is answered.
-   // A previous needs_approval row for the same version+SHA would otherwise be
-   // returned from reconcileTaskRequirements without consulting the new answer.
-   if(task.rowCount&&unanswered===0){
-    await client.query("UPDATE task_requirement_reviews SET status='superseded',resolved_at=now() WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status IN ('needs_approval','rejected')",
-     [id,taskId,task.rows[0].spec_version]);
+   const task=await client.query('SELECT stage,spec_version,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
+   const state=task.rowCount
+    ?await resolveAgentQuestionsForReview(client,id,taskId,task.rows[0].spec_version)
+    :{remaining:0,requiresApproval:false};
+   const unanswered=state.remaining;
+   const mayReconcile=task.rowCount&&unanswered===0&&!state.requiresApproval&&task.rows[0].spec_review_status!=='rejected';
+   if(mayReconcile){
     if(task.rows[0].stage==='analysis'){
      await client.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE id=$1",[taskId]);
     }else if(!['backlog','documentation','done'].includes(task.rows[0].stage)){
@@ -93,10 +107,10 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
    }
    await client.query('COMMIT');
    let review:unknown=null;
-   if(task.rowCount&&unanswered===0&&!['backlog','analysis','documentation','done'].includes(task.rows[0].stage)){
+   if(mayReconcile&&!['backlog','analysis','documentation','done'].includes(task.rows[0].stage)){
     review=await deps.startRequirementsReview?.(id,taskId,task.rows[0].spec_version);
    }
-   return {ok:true,pending_questions:unanswered,requirements_review:review};
+   return {ok:true,pending_questions:unanswered,requires_approval:state.requiresApproval,requirements_review:review};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  });
 
