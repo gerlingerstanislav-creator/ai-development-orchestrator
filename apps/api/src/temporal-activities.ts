@@ -514,6 +514,13 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string}
      "UPDATE task_agent_notes SET status='answered',answer=$2,answer_author=$3,answered_at=now(),processing_at=NULL WHERE id=$1 AND status='processing'",
      [note.id,text,name]);
     resolved++;
+   }else if(answer.status==='needs_tool'){
+    // A missing browser or code-reading tool is a capability gap, not an
+    // unanswered business question for the customer. Preserve its evidence
+    // and let independent QA report the affected cases as blocked.
+    await pool.query("UPDATE task_agent_notes SET status='answered',answer=$2,answer_author='Система инструментов',answered_at=now(),processing_at=NULL,requires_customer=false WHERE id=$1 AND status='processing'",
+     [note.id,'Средство недоступно: '+(text||'нужна инструментальная проверка')]);
+    resolved++;
    }else{
     await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=$2,target_stage=CASE WHEN $2 THEN 'all' ELSE target_stage END WHERE id=$1 AND status='processing'",
      [note.id,answer.status==='needs_customer']);
