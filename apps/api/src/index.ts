@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { registerAssistantRoutes } from './assistant.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
+import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
 import bcrypt from 'bcryptjs';
@@ -10,6 +11,14 @@ import { z } from 'zod';
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+let temporalClient:Client|null=null;
+async function temporal():Promise<Client>{
+ if(temporalClient)return temporalClient;
+ const connection=await Connection.connect({address:process.env.TEMPORAL_ADDRESS||'temporal:7233'});
+ temporalClient=new Client({connection,namespace:'default'});
+ return temporalClient;
+}
+
 const jwtKey = new TextEncoder().encode(process.env.JWT_SECRET || '');
 const keyText = process.env.CREDENTIALS_KEY || '';
 const encryptionKey = Buffer.from(keyText, 'hex');
@@ -20,6 +29,7 @@ const workflowDefaults = [
   ['backlog','Бэклог','manual'],
   ['analysis','Анализ','approval'],
   ['development','Разработка','approval'],
+  ['testing','Тестирование','automatic'],
   ['merge_queue','Ожидает слияния','manual'],
   ['documentation','Документация','manual'],
   ['done','Готово','manual']
@@ -135,10 +145,13 @@ async function dbInit() {
  INSERT INTO workflow_stages(project_id,stage,label,mode,position)
  SELECT p.id,'documentation','Документация','manual',5 FROM projects p
  ON CONFLICT(project_id,stage) DO NOTHING;
- DELETE FROM workflow_stages s WHERE s.stage='testing' AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.project_id=s.project_id AND t.stage='testing');
- UPDATE workflow_stages SET position=4 WHERE stage='merge_queue';
- UPDATE workflow_stages SET position=5 WHERE stage='documentation';
- UPDATE workflow_stages SET position=6 WHERE stage='done';
+ INSERT INTO workflow_stages(project_id,stage,label,mode,position)
+ SELECT p.id,'testing','Тестирование','automatic',4 FROM projects p
+ ON CONFLICT(project_id,stage) DO NOTHING;
+ UPDATE workflow_stages SET position=4 WHERE stage='testing';
+ UPDATE workflow_stages SET position=5 WHERE stage='merge_queue';
+ UPDATE workflow_stages SET position=6 WHERE stage='documentation';
+ UPDATE workflow_stages SET position=7 WHERE stage='done';
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS created_document_id uuid REFERENCES documents(id) ON DELETE SET NULL;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT 'project';
@@ -158,6 +171,21 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_ai_token_usage_project ON ai_token_usage(project_id,created_at);
   CREATE TABLE IF NOT EXISTS ai_task_runs (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid not null references tasks(id) on delete cascade, triggered_by uuid not null references users(id), model text not null, status text not null default 'queued', branch text, pr_url text, message text not null default '', created_at timestamptz not null default now(), completed_at timestamptz);
  CREATE INDEX IF NOT EXISTS idx_ai_task_runs_project_created ON ai_task_runs(project_id,created_at DESC);
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_feedback text not null default '';
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_attempts int not null default 0;
+ ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS cycle_id uuid;
+ ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS cycle_attempt int not null default 0;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_task_cycle_attempt ON ai_task_runs(cycle_id,cycle_attempt) WHERE cycle_id IS NOT NULL;
+ CREATE TABLE IF NOT EXISTS ai_test_runs (
+  id uuid primary key,project_id uuid not null references projects(id) on delete cascade,
+  task_id uuid not null references tasks(id) on delete cascade,
+  cycle_id uuid not null,attempt int not null,
+  status text not null default 'queued',message text not null default '',
+  verdict text,report jsonb,created_at timestamptz not null default now(),
+  completed_at timestamptz,unique(cycle_id,attempt)
+ );
+ CREATE INDEX IF NOT EXISTS idx_ai_test_runs_project ON ai_test_runs(project_id,created_at DESC);
+
  ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
  const email=configuredAdminEmail();
@@ -429,7 +457,7 @@ app.get('/api/projects/:id/token-usage',async(req:any,reply)=>{
 app.get('/api/projects/:id/ai-runs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const runs=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
+ const runs=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at,cycle_id FROM ai_task_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
  return runs.rows;
 });
 app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
@@ -485,29 +513,32 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(pullsPermission.status===403)return reply.code(409).send({error:'GitHub запрещает чтение Pull Request (403). Добавь подключённому токену права Pull requests: Read and write для этого репозитория. Codex не запущен, лимит модели не потрачен.'});
  if(!pullsPermission.ok)return reply.code(502).send({error:'Не удалось проверить доступ к PR до разработки: GitHub HTTP '+pullsPermission.status});
 
- const job={id:runId,taskId,repository:git.rows[0].repository,baseBranch:branch,
-  token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds,
-  title:t.rows[0].title,description:t.rows[0].description,dependsOnTaskId:parentId,projectRules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),relatedTasks:related.map(x=>({title:x.title,description:x.description.slice(0,1500),stage:x.stage}))};
- await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status) VALUES($1,$2,$3,$4,$5,'queued')",
- [runId,id,taskId,uid(req),ai.model]);
+ await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status,cycle_id,cycle_attempt) VALUES($1,$2,$3,$4,$5,'queued',$6,0)",
+ [runId,id,taskId,uid(req),ai.model,runId]);
  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','queued',$4)",
   [randomUUID(),id,runId,'Запуск разработки принят в очередь']);
  try{
-  const worker=await agentCall('/jobs','POST',job);
-  await pool.query('UPDATE ai_task_runs SET status=$2,message=$3 WHERE id=$1',[runId,worker.status==='queued'?'queued':'running',String(worker.message||'Запуск принят')]);
+  const client=await temporal();
+  await client.workflow.start('developmentTestingCycle',{
+   taskQueue:'agent-pipeline',workflowId:'task-cycle-'+runId,
+   args:[{projectId:id,taskId,runId,maxFixes:3}]
+  });
+  await pool.query("UPDATE ai_task_runs SET message='Temporal принял задачу в оркестрацию' WHERE id=$1",[runId]);
  }catch(e){
-  const err=e as Error&{statusCode?:number};
-  await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,err.message]);
-  return reply.code(err.statusCode||503).send({error:err.message});
+  const err=e as Error;
+  await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",
+   [runId,'Не удалось запустить Temporal: '+err.message.slice(0,500)]);
+  return reply.code(503).send({error:'Temporal недоступен: '+err.message.slice(0,500)});
  }
  return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:ai.model,created_at:new Date().toISOString()});
 });
 app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const run=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,id]);
+ const run=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at,cycle_id FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,id]);
  if(!run.rowCount)return reply.code(404).send({error:'Запуск не найден'});
  const current=run.rows[0];
+ if(current.cycle_id)return current; // Temporal worker is the single owner of lifecycle transitions.
  if(current.status==='running'||current.status==='queued'){
   try{
    const remote=await agentCall('/jobs/'+runId);
