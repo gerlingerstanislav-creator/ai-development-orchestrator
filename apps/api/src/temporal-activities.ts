@@ -5,7 +5,8 @@ import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
 import {recordTaskAgentNote,taskNotesContext,pendingAgentQuestions} from './task-agent-notes.js';
-import {managerSnapshot,MANAGER_NAME} from './project-manager.js';
+import {managerSnapshot} from './project-manager.js';
+import {checkedWithActualCapabilities} from './qa-evidence.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -299,16 +300,17 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
     providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason});
    }
   }
-  const checked=expected.map(c=>{
+  const supplied=expected.map(c=>{
    const candidate=providedMap.get(c.id);
    return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата'};
   });
+  const {cases:checked,visualToolGap}=checkedWithActualCapabilities(expected,supplied,String(remote.capabilities||''));
   let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
   const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
   const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version;
   if(!expected.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
   if(checked.some(c=>c.result==='failed')||(Array.isArray(remote.checks)&&remote.checks.some((c:any)=>c.result==='failed'))||(Array.isArray(remote.findings)&&remote.findings.length>0))verdict='failed';
-  else if(checked.some(c=>c.result!=='passed')&&verdict==='passed')verdict='blocked';
+  else if((checked.some(c=>c.result!=='passed')||visualToolGap)&&verdict==='passed')verdict='blocked';
   // A changed specification invalidates the entire run even if old cases failed.
   if(staleSpecification)verdict='blocked';
   const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version};
