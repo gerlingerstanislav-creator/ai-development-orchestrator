@@ -9,6 +9,7 @@ export type CycleInput={projectId:string;taskId:string;runId:string;maxFixes:num
 
 // Workflow history is durable. Secrets and Codex jobs live only in Activities.
 export async function developmentTestingCycle(input:CycleInput):Promise<string>{
+ try {
  let runId=input.runId;
  for(let attempt=0;attempt<=input.maxFixes;attempt++){
   try{await steps.startDevelopment({projectId:input.projectId,taskId:input.taskId,runId,attempt});}
@@ -73,9 +74,13 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
   runId=next;
  }
  return 'manual_intervention';
+ } finally {
+  await steps.finishTaskOrchestration({projectId:input.projectId,taskId:input.taskId,ownerId:input.runId});
+ }
 }
 
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
+ try {
  let status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
  while(status==='pending'||status==='needs_approval'){
   await sleep('20 seconds');
@@ -109,6 +114,9 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
  }
  await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,testId,attempt:0,allowFix:false});
  return 'manual_intervention';
+ } finally {
+  await steps.finishTaskOrchestration({projectId:input.projectId,taskId:input.taskId,ownerId:input.cycleId});
+ }
 }
 
 /** An independently started review for user edits at any stage (including completed tasks). */
