@@ -709,7 +709,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/start-testing',{method:'POST'});
    setTaskFeedback('Проверка запущена через Temporal. Подробности — в Центре процессов.');
    await loadProject(selected.id);
-  }catch(e){fail(e);}finally{setAiBusy(false);}
+  }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось проверить или повторить QA');fail(e);}finally{setAiBusy(false);}
  }
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const response=await api<AiRun&{recovered?:boolean}>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
@@ -1547,7 +1547,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <div><strong>{r.status==='queued'?'Тестирование ожидает запуска':'AI-тестировщик выполняет проверку'}</strong>
          <p>{r.message||'Подготовка проверок'}</p>
          <small>Цикл проверки: {r.attempt+1} · {Math.max(0,Math.floor((elapsedNow-new Date(r.created_at).getTime())/60000))} мин.</small>
-         <button className="task-process-link" type="button" onClick={()=>{setSelectedProcessId(r.id);navigate(projectUrl(selected!.id,'processes')+'?process='+r.id);}}>Посмотреть процесс</button>
+
         </div>
        </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
@@ -1582,11 +1582,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
           {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='passed'&&
            <button type="button" className="primary" disabled={qaResultBusy||openAgentQuestions.length>0} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Подтвердить QA → Слияние'}</button>}
           {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='failed'&&
-           <button type="button" className="primary" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Вернуть разработчику'}</button>}
-          <button type="button" className="secondary" disabled={aiBusy||openAgentQuestions.length>0||['pending','needs_approval','rejected'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void startTaskTesting()}>
-           {aiBusy?'Запуск…':newestTaskTest?'Повторить тестирование':'Начать тестирование'}
-          </button>
+           <button type="button" className="primary" disabled={qaResultBusy||openAgentQuestions.length>0} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Вернуть разработчику'}</button>}
          </>}
+         {activeTestFor(activeTask.id)&&
+          <button type="button" className="secondary" onClick={()=>{setSelectedProcessId(activeTestFor(activeTask.id)!.id);navigate(projectUrl(selected!.id,'processes')+'?process='+activeTestFor(activeTask.id)!.id);}}>Посмотреть процесс</button>}
+         <button type="button" className="secondary" disabled={aiBusy||openAgentQuestions.length>0||['pending','needs_approval','rejected'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void startTaskTesting()}>
+          {aiBusy?'Проверка статуса…':taskOrchestration||activeTestFor(activeTask.id)?'Проверить / восстановить QA':newestTaskTest?'Повторить тестирование':'Начать тестирование'}
+         </button>
         </>}
         {activeTask.stage==='merge_queue'&&<button type="button" className="primary" disabled={mergeBusy||openAgentQuestions.length>0} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
         {activeTask.stage==='documentation'&&<button type="button" className="primary" disabled={knowledgeBusy||openAgentQuestions.length>0} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
