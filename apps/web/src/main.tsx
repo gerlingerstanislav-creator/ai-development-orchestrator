@@ -12,7 +12,7 @@ type RequirementHistory={version:number;description:string;origin:string;reason:
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
 type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
 type AgentTaskNote={id:string;author_stage:string;author_name:string;target_stage:string;kind:'handoff'|'observation'|'question'|'risk'|'resolution';body:string;source_kind:string;status:string;answer?:string|null;answered_at?:string|null;created_at:string};
-type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_note:string};
+type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_cleanup_required?:boolean;warnings?:string[];github_note:string};
 type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[]};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
@@ -1645,6 +1645,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить созданные артефакты?</strong>
         <p>Закрыть PR, удалить ветку UUID, {cancelPreview.stats.qa_plans} QA-планов, до {cancelPreview.stats.qa_cases} тест-кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} принадлежащих задаче документов. Общие документы сохраняются.</p>
         <p>{cancelPreview.github_note}</p>
+        {cancelPreview.warnings?.map((warning,i)=><p key={i} className="muted">{warning}</p>)}
         {cancelPreview.blocked.length>0?<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>:<>
          <label>Подтверждение: {cancelPreview.confirmation}
           <input value={cancelPhrase} onChange={e=>setCancelPhrase(e.target.value)} placeholder={cancelPreview.confirmation}/>
