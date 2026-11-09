@@ -2,22 +2,20 @@ import {proxyActivities,sleep} from '@temporalio/workflow';
 import type * as activities from './temporal-activities.js';
 
 const steps=proxyActivities<typeof activities>({
- startToCloseTimeout:'2 minutes',
+ startToCloseTimeout:'4 minutes',
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
 export type CycleInput={projectId:string;taskId:string;runId:string;maxFixes:number};
 
 // Workflow history is durable. Secrets and Codex jobs live only in Activities.
 export async function developmentTestingCycle(input:CycleInput):Promise<string>{
- try{
-  await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.runId});
- }catch(e){
-  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось подготовить QA-документацию: '+String(e),stage:'qa_preparation'});
-  return 'qa_plan_failed';
- }
  let runId=input.runId;
  for(let attempt=0;attempt<=input.maxFixes;attempt++){
-  await steps.startDevelopment({projectId:input.projectId,taskId:input.taskId,runId,attempt});
+  try{await steps.startDevelopment({projectId:input.projectId,taskId:input.taskId,runId,attempt});}
+  catch(error){
+   await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Разработка не запущена: '+String(error),stage:'development'});
+   return 'development_failed';
+  }
   let development;
   while(true){
    development=await steps.checkDevelopment({projectId:input.projectId,taskId:input.taskId,runId});
@@ -27,6 +25,29 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
   if(development.status==='failed'){
    await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:development.message,stage:'development'});
    return 'development_failed';
+  }
+  // Analyst is an ongoing owner of the specification, not a one-time Kanban executor.
+  // Reconcile the actual PR before QA is allowed to author the final test plan.
+  let status: 'current'|'pending'|'needs_approval'|'rejected';
+  try{status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId,mode:'handoff'});}
+  catch(error){
+   await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Сверка ТЗ не завершена: '+String(error),stage:'requirements'});
+   return 'requirements_review_failed';
+  }
+  while(status==='pending'||status==='needs_approval'){
+   await sleep('20 seconds'); // Persistent Temporal wait, no active Codex billing.
+   status=await steps.checkRequirementStatus({projectId:input.projectId,taskId:input.taskId});
+   if(status==='pending')status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId,mode:'handoff'});
+  }
+  if(status==='rejected'){
+   if(attempt>=input.maxFixes)return 'requirements_rejected_needs_attention';
+   runId=await steps.scheduleRequirementFix({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt:attempt+1});
+   continue;
+  }
+  try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId});}
+  catch(error){
+   await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось актуализировать тестовую документацию: '+String(error),stage:'qa_preparation'});
+   return 'qa_plan_failed';
   }
   const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt});
   let testing;
@@ -43,7 +64,6 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId});
    return 'ready_to_merge';
   }
-  // A failed test creates an actionable report before the next Codex invocation.
   const next=await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,testId,attempt,allowFix:attempt<input.maxFixes});
   if(!next)return 'manual_intervention';
   runId=next;
@@ -52,10 +72,16 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 }
 
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
- try{
-  await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});
- }catch(e){
-  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось подготовить QA-документацию: '+String(e),stage:'qa_preparation'});
+ let status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
+ while(status==='pending'||status==='needs_approval'){
+  await sleep('20 seconds');
+  status=await steps.checkRequirementStatus({projectId:input.projectId,taskId:input.taskId});
+  if(status==='pending')status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
+ }
+ if(status==='rejected')return 'requirements_rejected';
+ try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});}
+ catch(error){
+  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось подготовить QA-документацию: '+String(error),stage:'qa_preparation'});
   return 'qa_plan_failed';
  }
  const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0});
@@ -75,4 +101,14 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
  }
  await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,testId,attempt:0,allowFix:false});
  return 'manual_intervention';
+}
+
+/** An independently started review for user edits at any stage (including completed tasks). */
+export async function requirementsReview(input:{projectId:string;taskId:string;runId:string}):Promise<string>{
+ try{
+  return await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.runId,mode:'edit'});
+ }catch(error){
+  await steps.noteReviewFailure({projectId:input.projectId,taskId:input.taskId,runId:input.runId,message:String(error)});
+  return 'failed';
+ }
 }
