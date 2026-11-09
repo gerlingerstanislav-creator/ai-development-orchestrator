@@ -686,7 +686,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  },[token,selected?.id]);
  const activeTestFor=(taskId:string)=>testRuns.find(r=>r.task_id===taskId&&['running','queued'].includes(r.status));
  const agentWorking=(taskId:string)=>aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
-  testRuns.some(r=>r.task_id===taskId&&r.status==='running');
+  testRuns.some(r=>r.task_id===taskId&&r.status==='running')||
+  projectProcesses.some(p=>p.kind==='analysis'&&p.taskId===taskId&&['queued','running'].includes(p.status));
  // A Temporal test can complete after the development run has finished.
  // Refresh board state independently of the former development-run poller.
  useEffect(()=>{
