@@ -20,7 +20,8 @@ type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
-type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[]};
+type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string};
+type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
@@ -246,6 +247,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [projectMessages,setProjectMessages]=useState<AssistantMessage[]>([]);
  const [projectPendingId,setProjectPendingId]=useState<string|null>(null);
  const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
+ const [projectImportProgress,setProjectImportProgress]=useState('');
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
  const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
@@ -471,14 +473,28 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setProjectMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
   setProjectInput('');setProjectPendingId(optimisticId);setProjectChatBusy(true);
   try{
-   const response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({message,mode})});
+   let response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({message,mode})});
+   if(response.import_job_id){
+    const jobId=response.import_job_id;
+    setProjectImportProgress('Импорт запущен. Чтение исходных документов…');
+    for(;;){
+     await new Promise(resolve=>setTimeout(resolve,2500));
+     const job=await api<ImportJob>('/projects/'+projectId+'/document-import/'+jobId);
+     setProjectImportProgress(job.message||'Импорт обрабатывается…');
+     if(job.status==='failed')throw new Error(job.message||'Не удалось импортировать документацию');
+     if(job.status==='completed'){
+      if(!job.result)throw new Error('Импорт завершился без результата');
+      response=job.result;break;
+     }
+    }
+   }
    setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
     {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
    if(response.created_task_id||response.created_document_id)await loadProject(projectId);
   }catch(e){
    setProjectMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
    fail(e);
-  }finally{setProjectChatBusy(false);setProjectPendingId(null);}
+  }finally{setProjectChatBusy(false);setProjectPendingId(null);setProjectImportProgress('');}
  }
  async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
   const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim(),optimisticId='pending-'+crypto.randomUUID();
@@ -757,7 +773,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
       {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setProjectChatOpen(false);}}>Открыть документ</button>}
     </div>)}
-    {projectChatBusy&&<p className="assistant-hint">Codex готовит ответ…</p>}
+    {projectChatBusy&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
    </div>
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
     <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>

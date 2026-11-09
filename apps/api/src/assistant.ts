@@ -59,6 +59,13 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const {mode}=z.object({mode:z.enum(['project','documentation']).default('project')}).parse(req.query);
   return (await pool.query('SELECT id,role,body,created_task_id,created_document_id,created_at FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at ASC LIMIT 100',[id,mode])).rows;
  });
+ app.get('/api/projects/:id/document-import/:jobId',async(req:any,reply)=>{
+  const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const job=await pool.query('SELECT id,status,message,result FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND actor_id=$3',[jobId,id,uid(req)]);
+  if(!job.rowCount)return reply.code(404).send({error:'Импорт не найден'});
+  return job.rows[0];
+ });
  app.post('/api/projects/:id/assistant',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
@@ -97,39 +104,109 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    if(!location)return reply.code(409).send({error:'Для создания документов на основе GitHub пришли ссылку на исходный каталог, например https://github.com/owner/repo/tree/main/docs'});
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта: для переработки документации требуется Codex.'});
+   const jobId=randomUUID();
+   await pool.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message) VALUES($1,$2,$3,'running','Чтение исходных Markdown-файлов')",[jobId,id,uid(req)]);
+   const actorId=uid(req);
+   const updateProgress=async(message:string)=>pool.query("UPDATE document_import_jobs SET message=$2,updated_at=now() WHERE id=$1",[jobId,message]).then(()=>{});
+   void (async()=>{
    try{
     const connected=await pool.query("SELECT secret_encrypted FROM connections WHERE owner_id=$1 AND provider='github_token' ORDER BY created_at DESC LIMIT 8",[uid(req)]);
     const tokens:string[]=[];
     for(const c of connected.rows){try{tokens.push(decryptToken(c.secret_encrypted));}catch{continue;}}
     const files=await readGitHubMarkdownFiles(location,tokens);
-    if(!files.length)return reply.code(409).send({error:'В указанном каталоге нет Markdown-файлов.'});
+    await updateProgress('Прочитано Markdown-файлов: '+files.length+'. Подготовка анализа.');
+    if(!files.length)throw Error('В указанном каталоге нет Markdown-файлов.');
     const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
     const existingDocs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 20',[id]);
     const rules=await rulesContext(id);
-    // Feed source documents to Codex, not an assumed summary. Bound per file size
-    // so every input file is represented even for large collections.
-    const perFile=Math.max(4000,Math.floor(115000/files.length));
-    const sourceText=files.map((file,i)=>{
-     const excerpt=file.body.slice(0,perFile);
-     return '### Source '+(i+1)+': '+file.path+'\n'+excerpt+
-      (excerpt.length<file.body.length?'\n[ФАЙЛ ДЛИННЕЕ ЛИМИТА КОНТЕКСТА — ПРОДОЛЖЕНИЕ НЕ ВКЛЮЧЕНО]':'');
-    }).join('\n\n');
+    // Summarise every source chunk separately: the Codex assistant endpoint has
+    // a strict 24k-character prompt limit. Never silently drop source tails.
+    // Keep prompts well below the limit even after JSON serialization.
+    type SourceDigest={path:string;notes:string};
+    const chunks:Array<{path:string;part:number;total:number;content:string}>=[];
+    const CHUNK_SIZE=10500;
+    for(const file of files){
+     const count=Math.ceil(file.body.length/CHUNK_SIZE)||1;
+     for(let i=0;i<count;i++)chunks.push({
+      path:file.path,part:i+1,total:count,
+      content:file.body.slice(i*CHUNK_SIZE,(i+1)*CHUNK_SIZE)
+     });
+    }
+    const digests:SourceDigest[]=[];
+    let partNumber=0;
+    for(const chunk of chunks){
+     partNumber++;
+     const instruction=[
+      'Ты аналитик импортируемых Markdown-документов. Внимательно извлеки факты и требования из ЭТОГО фрагмента, а не пытайся сразу создать итоговую документацию.',
+      'Верни ТОЛЬКО JSON: {"notes":"подробные, но компактные Markdown-заметки с фактами, требованиями, ограничениями, решениями, гипотезами, противоречиями и именами сущностей"}',
+      'Учитывай точные значения, имена, параметры, статусы и ограничения. Ничего не выдумывай. Отмечай, если мысль обрывается на границе фрагмента.',
+      'Источник: '+chunk.path+'; фрагмент '+chunk.part+' из '+chunk.total+'.',
+      'Файл ('+partNumber+'/'+chunks.length+'):',
+      chunk.content
+     ].join('\n\n');
+     await updateProgress('Анализ файлов: фрагмент '+partNumber+' из '+chunks.length);
+     const result=await completion(instruction,config);
+     await storeTokenUsage(id,null,config.model,result.usage);
+     const parsed=z.object({notes:z.string().trim().min(20).max(12000)}).parse(jsonObject(result.text));
+     digests.push({path:chunk.path,notes:parsed.notes});
+    }
+    // For larger repositories, recursively condense notes by bounded groups.
+    // This protects the final synthesis prompt from exceeding the runner limit.
+    let summaries=digests.map((x,i)=>'### '+x.path+' · '+(i+1)+'\n'+x.notes);
+    let rounds=0;
+    while(summaries.join('\n\n').length>12500){
+     rounds++;
+     if(rounds>12)throw Error('Слишком большой объём документации для автоматического объединения за один запрос');
+     await updateProgress('Объединение конспектов: этап '+rounds);
+     const next:string[]=[];
+     let batch:string[]=[];
+     let size=0;
+     const flush=async()=>{
+      if(!batch.length)return;
+      const prompt=[
+       'Объедини конспекты исходных Markdown-документов без потери уникальных требований, ограничений, имён и решений.',
+       'Не добавляй новых фактов. Укажи пути исходных файлов у сохранённых фактов.',
+       'Верни ТОЛЬКО JSON: {"notes":"структурированный конспект Markdown"}',
+       batch.join('\n\n')
+      ].join('\n\n');
+      const result=await completion(prompt,config);
+      await storeTokenUsage(id,null,config.model,result.usage);
+      const parsed=z.object({notes:z.string().trim().min(20).max(10000)}).parse(jsonObject(result.text));
+      next.push(parsed.notes);
+      batch=[];size=0;
+     };
+     for(const item of summaries){
+      if(batch.length && size+item.length>12500)await flush();
+      // A single unusually large digest is further broken up, not dropped.
+      if(item.length>12500){
+       for(let i=0;i<item.length;i+=10000){
+        if(batch.length)await flush();
+        batch.push(item.slice(i,i+10000));await flush();
+       }
+      }else{batch.push(item);size+=item.length;}
+     }
+     await flush();
+     if(next.join('\n\n').length>=summaries.join('\n\n').length)
+      throw Error('Codex не смог достаточно сократить конспекты для создания итоговой документации');
+     summaries=next;
+    }
     const prompt=[
-     'Ты системный аналитик и технический писатель. Переработай существующие документы из GitHub в НОВЫЙ СОГЛАСОВАННЫЙ НАБОР ДОКУМЕНТОВ для текущего проекта в приложении.',
-     'Не копируй документы один к одному. Синтезируй структуру, устрани повторы, распредели информацию по тематическим страницам. Сохрани факты и ограничения исходников. Не выдавай исходную идею за уже реализованную систему.',
-     'Верни ТОЛЬКО корректный JSON без Markdown-обёртки, формат {"collection_title":"Название раздела","documents":[{"title":"Название новой страницы","body":"Полный Markdown","sources":["пути исходных файлов"]}],"notes":"кратко об ограничениях и предположениях"}.',
-     'Создай 3-6 содержательных документов. Предложенные темы: обзор проекта, функциональные требования, пользовательские сценарии, архитектура/ограничения, MVP и план развития. Подстрой под содержание исходников.',
-     'Каждый документ должен содержать самостоятельный Markdown с заголовками и конкретными фактами. Для неточных или противоречивых пунктов добавь явное указание, что требуется решение.',
-     'Запрещено записывать файлы обратно в GitHub. Это содержимое для внутреннего раздела «Документация» приложения. Пользователь явно запросил НОВЫЙ набор, а не импорт исходных файлов.',
-     'Имена файлов источников допустимы только из списка ниже. Добавь в конец каждого документа раздел «Источники» с ссылками/именами использованных файлов. Новые факты не выдумывай.',
-     'Название текущего проекта: '+String(project.rows[0]?.name||''),
-     'Описание текущего проекта: '+String(project.rows[0]?.description||'').slice(0,3000),
-     'Правила: '+rules.slice(0,6000),
-     'Уже созданные страницы в проекте: '+JSON.stringify(existingDocs.rows.map((d:any)=>({title:d.title,excerpt:String(d.body).slice(0,600)}))).slice(0,6000),
-     'Инструкция пользователя: '+message,
-     'Исходный репозиторий: '+location.owner+'/'+location.repository+' (ветка '+location.branch+', каталог '+location.path+')',
-     'Исходные Markdown-файлы ('+files.length+'):\n'+sourceText
+     'Ты системный аналитик и технический писатель. На основе ПОЛНЫХ конспектов прочитанных Markdown-файлов создай НОВЫЙ набор документации для проекта.',
+     'Переработай и структурируй сведения, устрани повторы. Сохрани ограничения, статусы, пользовательские сценарии и принятые решения.',
+     'Верни ТОЛЬКО корректный JSON: {"collection_title":"Название раздела","documents":[{"title":"Название","body":"Полный Markdown","sources":["пути исходных файлов"]}],"notes":"ограничения и вопросы"}.',
+     'Создай 3–6 самостоятельных тематических Markdown-страниц; не выдумывай факты и не выдавай гипотезы за реализацию.',
+     'Не записывай изменения в GitHub. Итоговые документы будут сохранены во внутреннем разделе «Документация».',
+     'Проект: '+String(project.rows[0]?.name||''),
+     'Описание: '+String(project.rows[0]?.description||'').slice(0,900),
+     'Правила: '+rules.slice(0,1500),
+     'Существующие документы: '+JSON.stringify(existingDocs.rows.map((d:any)=>({title:d.title}))).slice(0,2200),
+     'Запрос: '+message.slice(0,2000),
+     'Источник: '+location.owner+'/'+location.repository+'@'+location.branch+'/'+location.path,
+     'Исходные пути файлов: '+files.map(f=>f.path).join(', ').slice(0,1800),
+     'Конспекты всех фрагментов:\n'+summaries.join('\n\n')
     ].join('\n\n');
+    if(prompt.length>22000)throw Error('Конспекты не поместились в допустимый запрос Codex');
+    await updateProgress('Формирование итоговой структуры документации');
     const result=await completion(prompt,config);
     await storeTokenUsage(id,null,config.model,result.usage);
     const structure=z.object({
@@ -141,6 +218,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      })).min(2).max(8),
      notes:z.string().max(2000).default('')
     }).parse(jsonObject(result.text));
+    await updateProgress('Сохранение документов в проект');
     const client=await pool.connect();
     let rootId:string;
     const sourceKey='github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path;
@@ -163,14 +241,18 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      await client.query('COMMIT');
     }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
     const answer='Создан новый набор документов на основе материалов из '+location.owner+'/'+location.repository+': '+structure.documents.length+' тематических страниц. AI переработал исходные материалы и разместил их в разделе «Документация» проекта. '+(structure.notes?'\n\nПримечания: '+structure.notes:'');
-    await store(id,null,uid(req),'user',message,null,null,mode);
+    await store(id,null,actorId,'user',message,null,null,mode);
     await store(id,null,null,'assistant',answer,null,rootId!,mode);
-    await countCall(id,uid(req));
-    return {message:answer,created_task_id:null,created_document_id:rootId!,generated_documents:structure.documents.length};
+    await countCall(id,actorId);
+    await pool.query("UPDATE document_import_jobs SET status='completed',message=$2,result=$3,updated_at=now() WHERE id=$1",
+     [jobId,'Документация импортирована',JSON.stringify({message:answer,created_task_id:null,created_document_id:rootId!,generated_documents:structure.documents.length})]);
    }catch(error){
     const reason=error instanceof Error?error.message:'Неизвестная ошибка';
-    return reply.code(409).send({error:'Не удалось создать набор документов: '+reason.slice(0,600)});
+    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2,updated_at=now() WHERE id=$1",
+     [jobId,'Не удалось создать набор документов: '+reason.slice(0,600)]).catch(()=>{});
    }
+   })();
+   return reply.code(202).send({import_job_id:jobId,message:'Импорт начат'});
   }
   // Documentation workspace: discuss requirements and atomically apply structured edits.
   // The model is a planner, not a database writer; only validated operations are executed.

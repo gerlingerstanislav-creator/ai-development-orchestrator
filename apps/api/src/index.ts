@@ -64,6 +64,15 @@ async function dbInit() {
  CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_import_source ON documents(project_id,import_source) WHERE import_source IS NOT NULL;
  CREATE INDEX IF NOT EXISTS idx_documents_project_parent ON documents(project_id, parent_id);
  CREATE TABLE IF NOT EXISTS document_versions (id uuid primary key, document_id uuid not null references documents(id) on delete cascade, task_ids jsonb not null default '[]'::jsonb, body text not null, created_at timestamptz not null default now());
+ CREATE TABLE IF NOT EXISTS document_import_jobs (
+  id uuid primary key, project_id uuid not null references projects(id) on delete cascade,
+  actor_id uuid not null references users(id), status text not null,
+  message text not null default '', result jsonb,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now()
+ );
+ CREATE INDEX IF NOT EXISTS idx_document_import_jobs_project ON document_import_jobs(project_id,created_at DESC);
+ UPDATE document_import_jobs SET status='failed',message='Импорт прерван перезапуском сервера. Повтори импорт.' WHERE status='running';
+
  CREATE TABLE IF NOT EXISTS project_rules (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, body text not null, origin text not null default 'manual', source_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
  CREATE INDEX IF NOT EXISTS idx_project_rules_project ON project_rules(project_id,created_at);
  CREATE TABLE IF NOT EXISTS project_rule_suggestions (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, body text not null, status text not null default 'pending', created_at timestamptz not null default now());
