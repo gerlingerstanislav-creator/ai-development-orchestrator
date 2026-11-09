@@ -63,6 +63,9 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
     questions:prompt.includes('Тема: Выдача')?[]:['Где оплачивается заказ?']};
   }else if(prompt.includes('Составь одну задачу разработки')){
    output={title:'Добавить два круга',description:'Отобразить внешний и внутренний контуры.',questions:['Круги вокруг каждой фигуры или всей группы?']};
+  }else if(prompt.includes('Владельцем продукта дан ответ')){
+   assert.ok(prompt.includes('Оплата при получении'),prompt.slice(0,300));
+   output={addition:'Покупатель оформляет заказ и оплачивает его при получении.',summary:'Требование по оплате уточнено.'};
   }else{
    assert.ok(prompt.includes('Оплата при получении'),prompt.slice(0,300));
    assert.ok(prompt.includes(pageId));
