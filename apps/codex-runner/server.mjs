@@ -341,20 +341,29 @@ async function runTestJob(job,state){
    {cwd:workdir,env:gitEnv,timeout:90000});
   const rev=await command('git',['rev-parse','HEAD'],{cwd:dir,timeout:10000});
   state.testedCommit=rev.stdout.trim();
+  // Probe the real runner, not the model's assumptions about what tools may exist.
+  const probe=await command('sh',['-c',
+   'for tool in node npm npx python3 pytest git chromium chromium-browser google-chrome playwright docker; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: available"; else echo "$tool: unavailable"; fi; done; if test -d node_modules; then echo "node_modules: available"; else echo "node_modules: unavailable"; fi'
+  ],{cwd:dir,timeout:8000});
+  const capabilities=probe.stdout.trim().slice(0,1500);
   const prompt=[
    'Ты независимый AI-тестировщик в отдельной временной копии репозитория.',
-   'Проверяй утверждённые QA-сценарии из плана. По возможности запусти доступные локальные проверки (build, unit, integration, API).',
+   'СНАЧАЛА исследуй проект и реальные возможности среды. Затем запусти ВСЕ доступные и относящиеся к ТЗ проверки (сборка, unit, integration, API, пользовательские сценарии, если для них есть инструменты). Записывай фактические команды и результаты.',
+   'Если проект не требует зависимостей, не объявляй его непроверяемым только из-за отсутствия node_modules.',
    'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run.',
    'Не утверждай, что пользовательский путь, браузерное действие или ручная проверка выполнены без реального инструмента и воспроизведения.',
-   'В отчёте caseResults укажи для каждого входного case_id статус passed|failed|blocked|not_run и конкретное evidence.',
+   'Для КАЖДОГО case_id из плана верни result, evidence и reason. reason для passed/failed = executed; для недоступных сценариев = tool_unavailable|environment_unavailable|manual_only. Если настоящая причина не установлена, reason = unknown (слияние без проверки нельзя рекомендовать).',
+   'Для недоступного сценария evidence должно назвать отсутствующий инструмент или среду, конкретную проверку, которая не запускалась, и почему. Не заменяй это общими фразами.',
    'НЕ устанавливай зависимости из интернета, НЕ запускай развертывание, НЕ читай секреты, НЕ меняй GitHub.',
    'Это ограниченное тестирование без отдельного стенда и браузера. Не заявляй, что провёл E2E-тесты, если их реально не запускал.',
-   'Если проверку выполнить нельзя из-за отсутствующих инструментов/зависимостей, укажи blocked и не заявляй об успешном тестировании.',
-   'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","evidence":"фактическое доказательство"}]}.',
+   'При невозможности проверки не скрывай её. Если все реально доступные проверки выполнены без ошибок, но несколько сценариев недоступны, верни verdict=blocked и точный список таких сценариев. НЕ разрешай слияние самостоятельно — его может согласовать только пользователь.',
+   'Если инструмент есть и проверку можно провести, обязательно попробуй. Отсутствие времени, ошибка теста или неподтверждённый результат НЕ является доказательством, что инструмент недоступен.',
+   'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","reason":"executed|tool_unavailable|environment_unavailable|manual_only|unknown","evidence":"команда и результат или причина недоступности"}]}.',
    'Вердикт failed при обнаружении воспроизводимых проблем. Вердикт passed только при достаточных проверках и отсутствии дефектов. blocked — если проверить нельзя.',
    'Исполнитель: '+String(job.agentName||'AI-тестировщик'),
    'Дополнительные инструкции исполнителя (не отменяют требование проверять факты): '+String(job.agentInstructions||'').slice(0,12000),
-   'План тестирования, подготовленный ДО разработки: '+JSON.stringify(job.testPlan||{}).slice(0,52000),
+   'Возможности текущего контейнера, обнаруженные автоматически: '+capabilities,
+   'План тестирования по актуальной версии ТЗ: '+JSON.stringify(job.testPlan||{}).slice(0,52000),
    'Задача: '+job.title,
    'Требования: '+String(job.description).slice(0,16000),
    'Правила: '+String(job.projectRules||'').slice(0,5000),
