@@ -56,9 +56,13 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    if(testing.status==='completed'||testing.status==='failed')break;
    await sleep('8 seconds');
   }
-  if(testing.status==='failed'||testing.verdict==='blocked'){
-   await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:testing.message,stage:'testing'});
-   return 'testing_needs_attention';
+  if(testing.status==='failed'){
+   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.runId,message:'Сбой QA-исполнителя: '+testing.message,stage:'testing'});
+   return 'testing_runner_failed';
+  }
+  if(testing.verdict==='blocked'){
+   await steps.noteBlockedTests({projectId:input.projectId,taskId:input.taskId,testId});
+   return 'testing_awaits_explicit_decision';
   }
   if(testing.verdict==='passed'){
    await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId});
@@ -91,9 +95,13 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
   if(testing.status==='completed'||testing.status==='failed')break;
   await sleep('8 seconds');
  }
- if(testing.status==='failed'||testing.verdict==='blocked'){
-  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:testing.message,stage:'testing'});
-  return 'testing_needs_attention';
+ if(testing.status==='failed'){
+  await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,message:'Сбой QA-исполнителя: '+testing.message,stage:'testing'});
+  return 'testing_runner_failed';
+ }
+ if(testing.verdict==='blocked'){
+  await steps.noteBlockedTests({projectId:input.projectId,taskId:input.taskId,testId});
+  return 'testing_awaits_explicit_decision';
  }
  if(testing.verdict==='passed'){
   await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId});

@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { registerAssistantRoutes } from './assistant.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
+import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
 import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -768,9 +769,17 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  if((qaPlan.rowCount||orchestrated.rowCount)&&(!qaPlan.rowCount||qaPlan.rows[0].spec_version!==spec.rows[0].spec_version))
   throw Object.assign(new Error('Нет QA-плана для актуальной версии ТЗ. Сначала выполни тестирование.'),{statusCode:409});
  if(qaPlan.rowCount){
-  const lastTest=await pool.query('SELECT verdict,report,status,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
-  if(!lastTest.rowCount||lastTest.rows[0].status!=='completed'||lastTest.rows[0].verdict!=='passed'||lastTest.rows[0].report?.commit!==pr.head.sha||lastTest.rows[0].qa_spec_version!==spec.rows[0].spec_version)
-   throw Object.assign(new Error('PR изменился после успешного тестирования или последний QA-прогон не пройден. Повтори тестирование текущего коммита.'),{statusCode:409});
+  const lastTest=await pool.query('SELECT id,task_id,verdict,report,status,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
+  const run=lastTest.rows[0];
+  const matches=run&&run.status==='completed'&&run.report?.commit===pr.head.sha&&run.qa_spec_version===spec.rows[0].spec_version;
+  if(!matches)throw Object.assign(new Error('QA-отчёт устарел или не относится к текущему коммиту PR. Повтори тестирование.'),{statusCode:409});
+  if(run.verdict==='blocked'){
+   const waiver=await pool.query('SELECT id,test_run_id,commit_sha,spec_version FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 AND test_run_id=$3',[projectId,taskId,run.id]);
+   if(!waiver.rowCount||!qaWaiverAssessment(run).eligible||waiver.rows[0].commit_sha!==pr.head.sha||waiver.rows[0].spec_version!==spec.rows[0].spec_version)
+    throw Object.assign(new Error('Сценарии не проверены. Необходимо отдельное согласование исключений в карточке задачи.'),{statusCode:409});
+  }else if(run.verdict!=='passed'){
+   throw Object.assign(new Error('Тестировщик выявил дефекты или проверка не завершена. Слияние запрещено.'),{statusCode:409});
+  }
  }
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
  if(pr.mergeable===null || pr.mergeable_state==='unknown')
@@ -1313,5 +1322,6 @@ app.post('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse
 registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken});
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
-async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
+async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});

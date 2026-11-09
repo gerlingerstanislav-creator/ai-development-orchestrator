@@ -29,4 +29,4 @@ jobs:
           node-version: '22'
       - run: npm install
       - run: npm run build -w apps/api
-      - run: node --test apps/api/tests/requirements.test.mjs
+      - run: node --test apps/api/tests/*.test.mjs

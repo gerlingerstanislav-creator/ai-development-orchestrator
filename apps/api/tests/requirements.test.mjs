@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {initRequirementsSchema,saveSpecRevision,reconcileTaskRequirements} from '../dist/requirements.js';
+import {initQaWaiverSchema} from '../dist/qa-waiver.js';
 
 test('spec revisions, analyst reconciliation and human-approval gate persist in PostgreSQL',async()=>{
  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
@@ -21,6 +22,8 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await pool.query('INSERT INTO tasks(id,project_id,title,description) VALUES($1,$2,$3,$4)',[taskId,projectId,'Search','Users can search by title']);
   await pool.query("INSERT INTO workflow_stages(project_id,stage,agent_name) VALUES($1,'analysis','AI-аналитик')",[projectId]);
   await initRequirementsSchema(pool);
+  await initQaWaiverSchema(pool);
+  await initQaWaiverSchema(pool); // Startup migrations must be idempotent.
 
   const before=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
   assert.equal(before.spec_version,1);
@@ -73,5 +76,15 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   assert.equal(task.spec_version,3);
   assert.equal(task.spec_review_status,'pending');
   assert.equal((await pool.query('SELECT count(*)::int AS total FROM task_spec_versions WHERE task_id=$1',[taskId])).rows[0].total,3);
+  const testId=randomUUID(),waiverId=randomUUID();
+  await pool.query('INSERT INTO ai_test_runs(id) VALUES($1)',[testId]);
+  await pool.query('INSERT INTO qa_merge_waivers(id,project_id,task_id,test_run_id,approved_by,justification,commit_sha,spec_version,unverified_cases) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+   [waiverId,projectId,taskId,testId,userId,'Browser missing; temporary merge exception authorized','f'.repeat(40),3,JSON.stringify([{id:'case1',title:'Visual check'}])]);
+  const waiver=(await pool.query('SELECT test_run_id,approved_by,commit_sha,spec_version,unverified_cases FROM qa_merge_waivers WHERE id=$1',[waiverId])).rows[0];
+  assert.equal(waiver.test_run_id,testId);
+  assert.equal(waiver.approved_by,userId);
+  assert.equal(waiver.spec_version,3);
+  assert.deepEqual(waiver.unverified_cases,[{id:'case1',title:'Visual check'}]);
+  assert.equal(waiver.commit_sha,'f'.repeat(40));
  }finally{await pool.end();}
 });

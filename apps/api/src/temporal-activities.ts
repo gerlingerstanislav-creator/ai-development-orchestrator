@@ -275,26 +275,27 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  if(status==='completed'||status==='failed'){
   const expected:Array<{id:string}>=Array.isArray(row.rows[0].qa_plan_snapshot?.cases)?row.rows[0].qa_plan_snapshot.cases:[];
   const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
-  const providedMap=new Map<string,{result:string;evidence:string}>();
+  const providedMap=new Map<string,{result:string;evidence:string;reason:string}>();
   for(const item of provided){
    if(typeof item?.case_id==='string'&&typeof item?.result==='string'&&['passed','failed','blocked','not_run'].includes(item.result)){
     const evidence=String(item.evidence||'').slice(0,3000).trim();
-    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence});
+    const reason=String(item.reason||'unknown').slice(0,60);
+    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason});
    }
   }
   const checked=expected.map(c=>{
    const candidate=providedMap.get(c.id);
-   return {case_id:c.id,result:candidate?.result||'not_run',evidence:candidate?.evidence||'Нет подтверждённого результата'};
+   return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата'};
   });
   let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
   const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
   const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version;
   if(!expected.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
-  if(checked.some(c=>c.result==='failed'))verdict='failed';
+  if(checked.some(c=>c.result==='failed')||(Array.isArray(remote.checks)&&remote.checks.some((c:any)=>c.result==='failed'))||(Array.isArray(remote.findings)&&remote.findings.length>0))verdict='failed';
   else if(checked.some(c=>c.result!=='passed')&&verdict==='passed')verdict='blocked';
   // A changed specification invalidates the entire run even if old cases failed.
   if(staleSpecification)verdict='blocked';
-  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version};
+  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version};
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -314,6 +315,19 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   await event(projectId,testId,'testing','progress',message);
  }
  return {status,message};
+}
+/** Tool limitations are not defects; retain the tested code for human review. */
+export async function noteBlockedTests(args:{projectId:string;taskId:string;testId:string}):Promise<void>{
+ const {projectId,taskId,testId}=args;
+ const test=await pool.query('SELECT status,verdict,report FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3',[testId,projectId,taskId]);
+ if(!test.rowCount||test.rows[0].status!=='completed'||test.rows[0].verdict!=='blocked')
+  throw ApplicationFailure.nonRetryable('Нельзя согласовать не завершённый или не заблокированный QA-прогон');
+ const cases=Array.isArray(test.rows[0].report?.caseResults)?test.rows[0].report.caseResults:[];
+ const missing=cases.filter((c:any)=>['blocked','not_run'].includes(c.result));
+ const msg='Не удалось проверить '+missing.length+' сценариев: '+missing.map((c:any)=>c.case_id+': '+String(c.evidence||'нет объяснения')).join('; ').slice(0,1700);
+ await pool.query("UPDATE tasks SET stage='testing',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",[taskId,projectId,msg]);
+ await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_tools_unavailable',msg.slice(0,2400)]);
+ await event(projectId,testId,'testing','awaiting_manual_qa_decision','Проверки ограничены средой. Согласование исключений доступно только при подтверждённой недоступности инструментов.','warning');
 }
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string}){
  const {projectId,taskId,testId}=args;

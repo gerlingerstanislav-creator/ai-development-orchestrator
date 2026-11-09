@@ -28,6 +28,7 @@ type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checked
 type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:string;requests:number};
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
+type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
 type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
@@ -291,6 +292,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
 
  const [activeTask,setActiveTask]=useState<Task|null>(null);
+ const [qaWaiver,setQaWaiver]=useState<QaWaiverInfo|null>(null);
+ const [qaWaiverBusy,setQaWaiverBusy]=useState(false);
+ const [qaWaiverReason,setQaWaiverReason]=useState('');
+ const [qaWaiverAcknowledged,setQaWaiverAcknowledged]=useState(false);
  const [requirements,setRequirements]=useState<RequirementInfo|null>(null);
  const [requirementsBusy,setRequirementsBusy]=useState(false);
  const [elapsedNow,setElapsedNow]=useState(Date.now());
@@ -684,6 +689,34 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   document.addEventListener('visibilitychange',onVisible);
   return()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
  },[token,selected?.id]);
+ const newestTaskTest=activeTask?testRuns.find(r=>r.task_id===activeTask.id):null;
+ useEffect(()=>{
+  if(!selected?.id||!activeTask?.id){setQaWaiver(null);return;}
+  const projectId=selected.id,taskId=activeTask.id;
+  let valid=true;
+  void api<QaWaiverInfo>('/projects/'+projectId+'/tasks/'+taskId+'/qa-waiver').then(value=>{
+   if(valid)setQaWaiver(value);
+  }).catch(()=>{if(valid)setQaWaiver(null);});
+  return()=>{valid=false;};
+ },[selected?.id,activeTask?.id,newestTaskTest?.id,newestTaskTest?.status,newestTaskTest?.verdict]);
+ async function approveQaWaiver(){
+  if(!selected||!activeTask||!qaWaiver?.assessment.eligible||!qaWaiver.run_id||qaWaiverBusy)return;
+  if(qaWaiverReason.trim().length<20||!qaWaiverAcknowledged){
+   setTaskFeedback('Укажи причину (не менее 20 символов) и подтверди, что понимаешь, какие проверки не выполнялись.');
+   return;
+  }
+  setQaWaiverBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/qa-waiver',{method:'POST',body:JSON.stringify({
+    test_run_id:qaWaiver.run_id,justification:qaWaiverReason.trim(),acknowledge_unverified:true
+   })});
+   setTaskFeedback('Исключение согласовано. Пропущенные проверки останутся в истории; GitHub CI по-прежнему обязателен.');
+   setQaWaiverReason('');setQaWaiverAcknowledged(false);
+   const current=await api<Task[]>('/projects/'+selected.id+'/tasks');
+   setTasks(current);setActiveTask(old=>old?current.find(t=>t.id===old.id)||old:null);
+   setQaWaiver(await api<QaWaiverInfo>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/qa-waiver'));
+  }catch(error){fail(error);}finally{setQaWaiverBusy(false);}
+ }
  const activeTestFor=(taskId:string)=>testRuns.find(r=>r.task_id===taskId&&['running','queued'].includes(r.status));
  const agentWorking=(taskId:string)=>aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
   testRuns.some(r=>r.task_id===taskId&&r.status==='running')||
@@ -788,9 +821,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
   setMergeBusy(true);try{
    await api('/projects/'+selected.id+'/tasks/'+task.id+'/merge',{method:'POST'});
-   setTasks(old=>old.map(t=>t.id===task.id?{...t,stage:'done'}:t));
-   setActiveTask(old=>old?.id===task.id?{...old,stage:'done'}:old);
-   setMergeReport('Изменения задачи слиты.');
+   setTasks(old=>old.map(t=>t.id===task.id?{...t,stage:'documentation'}:t));
+   setActiveTask(old=>old?.id===task.id?{...old,stage:'documentation'}:old);
+   setMergeReport('PR слит. Задача ожидает актуализации документации.');
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
  async function mergeReady(){if(!selected||!window.confirm('Последовательно слить PR с автоматическим разрешением конфликтов?'))return;
@@ -1380,10 +1413,37 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {activeTask.analysis_state==='ready_for_development'&&<p className="muted">Блокирующих вопросов нет. Можно отправлять в разработку.</p>}
      </div>}
      {!!activeTask.test_feedback&&<div className="task-test-feedback">
-      <strong>Замечания AI-тестировщика</strong>
+      <strong>{newestTaskTest?.verdict==='blocked'?'Ограничения проверки':'Замечания AI-тестировщика'}</strong>
       <pre>{activeTask.test_feedback}</pre>
-      <small>После ошибок задача возвращается разработчику автоматически (до трёх циклов исправлений).</small>
+      <small>{newestTaskTest?.verdict==='blocked'?'Непроверенные сценарии нельзя считать успешно пройденными.':'Воспроизводимые дефекты возвращаются разработчику.'}</small>
      </div>}
+     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&
+      <div className="qa-waiver-panel">
+       <strong>Не все сценарии удалось проверить</strong>
+       <p>{qaWaiver.assessment.summary||'Тестировщик указал ограничения инструментов и среды исполнения.'}</p>
+       <div className="qa-waiver-counts">
+        Проверено: <b>{qaWaiver.assessment.passed} из {qaWaiver.assessment.total}</b>. 
+        Не проверено: <b>{qaWaiver.assessment.unverified.length}</b>.
+       </div>
+       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities"><summary>Доступные инструменты QA-контейнера</summary><pre>{qaWaiver.assessment.capabilities}</pre></details>}
+       {qaWaiver.assessment.unverified.length>0&&<div className="qa-waiver-cases">
+        {qaWaiver.assessment.unverified.map(item=><div key={item.id} className="qa-waiver-case">
+         <b>{item.title}</b><span>{item.evidence}</span>
+        </div>)}
+       </div>}
+       {qaWaiver.assessment.eligible?<>
+        <p className="muted">Подтверждённых дефектов и упавших автоматических тестов нет. Можно явно разрешить слияние PR без перечисленных сценариев. Это не отменяет проверок GitHub и не означает, что сценарии пройдены.</p>
+        <textarea rows={3} placeholder="Почему допустимо слияние без этих проверок?" value={qaWaiverReason} onChange={e=>setQaWaiverReason(e.target.value)}/>
+        <label className="qa-waiver-confirm"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Я понимаю, что перечисленные сценарии не проверялись, и принимаю риск.</label>
+        <button className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20} onClick={()=>void approveQaWaiver()}>
+         {qaWaiverBusy?'Согласование…':'Разрешить слияние с непроверенными сценариями'}
+        </button>
+       </>:<div className="qa-waiver-blockers">
+        <strong>Слияние без тестов пока недопустимо</strong>
+        {qaWaiver.assessment.blockers.map((reason,i)=><p key={i}>{reason}</p>)}
+        <p className="muted">Можно исправить окружение или уточнить проверку и запустить QA повторно.</p>
+       </div>}
+      </div>}
      <div className="task-dependency">
       <label>Зависит от задачи
        <select value={activeTask.depends_on_task_id||''} disabled={!!activeTask.git_branch||['merge_queue','documentation','done'].includes(activeTask.stage)}
