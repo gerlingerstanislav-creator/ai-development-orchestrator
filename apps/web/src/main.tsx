@@ -1425,28 +1425,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <><div className="task-readonly">{activeTask.description||'Описание пока пустое'}</div>
         <button className="pencil" title="Изменить описание" onClick={()=>setEditingField('description')}><Pencil size={15}/></button></>}
      </div>
-     {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
-      <div className={'task-requirements-review '+requirements.task.spec_review_status}>
-       <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
-       <p>{requirements.task.spec_review_note||'Актуальная версия требований ожидает проверки.'}</p>
-       {requirements.task.spec_review_status==='pending'&&<button className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить проверку аналитиком</button>}
-       {requirements.task.spec_review_status==='needs_approval'&&(()=>{
-        const review=requirements.reviews.find(item=>item.status==='needs_approval'&&item.spec_version===requirements.task.spec_version);
-        if(!review)return null;
-        return <div className="requirement-proposal">
-         <strong>Предлагаемое ТЗ</strong><div className="task-readonly">{review.proposed_description}</div>
-         {!!review.questions?.length&&<div className="muted">{review.questions.map((q,i)=><p key={i}>{q}</p>)}</div>}
-         <div className="requirements-actions">
-          <button className="primary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'approve')}>Согласовать изменение</button>
-          <button className="secondary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'reject')}>Отклонить и вернуть разработчику</button>
-         </div>
-        </div>;
-       })()}
-      </div>}
-     {requirements&&<details className="task-requirements-history">
-      <summary>История требований · версия {requirements.task.spec_version}</summary>
-      {requirements.versions.map(v=><div key={v.version}><strong>v{v.version}</strong> · {v.origin} · {new Date(v.created_at).toLocaleString('ru-RU')}{v.reason&&<p>{v.reason}</p>}</div>)}
-     </details>}
      <div className="task-metadata">
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
       <span>Этап: <strong>{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</strong></span>
@@ -1457,38 +1435,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {!!activeTask.clarification_questions?.length&&<ol>{activeTask.clarification_questions.map((q,i)=><li key={i}>{q}</li>)}</ol>}
       {activeTask.analysis_state==='ready_for_development'&&<p className="muted">Блокирующих вопросов нет. Можно отправлять в разработку.</p>}
      </div>}
-     {!!activeTask.test_feedback&&<div className="task-test-feedback">
-      <strong>{newestTaskTest?.verdict==='blocked'?'Ограничения проверки':'Замечания AI-тестировщика'}</strong>
-      <pre>{activeTask.test_feedback}</pre>
-      <small>{newestTaskTest?.verdict==='blocked'?'Непроверенные сценарии нельзя считать успешно пройденными.':'Воспроизводимые дефекты возвращаются разработчику.'}</small>
-     </div>}
-     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&
-      <div className="qa-waiver-panel">
-       <strong>Не все сценарии удалось проверить</strong>
-       <p>{qaWaiver.assessment.summary||'Тестировщик указал ограничения инструментов и среды исполнения.'}</p>
-       <div className="qa-waiver-counts">
-        Проверено: <b>{qaWaiver.assessment.passed} из {qaWaiver.assessment.total}</b>. 
-        Не проверено: <b>{qaWaiver.assessment.unverified.length}</b>.
-       </div>
-       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities"><summary>Доступные инструменты QA-контейнера</summary><pre>{qaWaiver.assessment.capabilities}</pre></details>}
-       {qaWaiver.assessment.unverified.length>0&&<div className="qa-waiver-cases">
-        {qaWaiver.assessment.unverified.map(item=><div key={item.id} className="qa-waiver-case">
-         <b>{item.title}</b><span>{item.evidence}</span>
-        </div>)}
-       </div>}
-       {qaWaiver.assessment.eligible?<>
-        <p className="muted">Подтверждённых дефектов и упавших автоматических тестов нет. Можно явно разрешить слияние PR без перечисленных сценариев. Это не отменяет проверок GitHub и не означает, что сценарии пройдены.</p>
-        <textarea rows={3} placeholder="Почему допустимо слияние без этих проверок?" value={qaWaiverReason} onChange={e=>setQaWaiverReason(e.target.value)}/>
-        <label className="qa-waiver-confirm"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Я понимаю, что перечисленные сценарии не проверялись, и принимаю риск.</label>
-        <button className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20} onClick={()=>void approveQaWaiver()}>
-         {qaWaiverBusy?'Согласование…':'Разрешить слияние с непроверенными сценариями'}
-        </button>
-       </>:<div className="qa-waiver-blockers">
-        <strong>Слияние без тестов пока недопустимо</strong>
-        {qaWaiver.assessment.blockers.map((reason,i)=><p key={i}>{reason}</p>)}
-        <p className="muted">Можно исправить окружение или уточнить проверку и запустить QA повторно.</p>
-       </div>}
-      </div>}
      <div className="task-dependency">
       <label>Зависит от задачи
        <select value={activeTask.depends_on_task_id||''} disabled={!!activeTask.git_branch||['merge_queue','documentation','done'].includes(activeTask.stage)}
@@ -1534,6 +1480,62 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
       {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
+     </div>
+     <div className="task-action-feed" aria-label="Требования и решения по тестированию">
+     {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
+      <div className={'task-requirements-review '+requirements.task.spec_review_status}>
+       <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
+       <p>{requirements.task.spec_review_note||'Актуальная версия требований ожидает проверки.'}</p>
+       {requirements.task.spec_review_status==='pending'&&<button className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить проверку аналитиком</button>}
+       {requirements.task.spec_review_status==='needs_approval'&&(()=>{
+        const review=requirements.reviews.find(item=>item.status==='needs_approval'&&item.spec_version===requirements.task.spec_version);
+        if(!review)return null;
+        return <div className="requirement-proposal">
+         <strong>Предлагаемое ТЗ</strong><div className="task-readonly">{review.proposed_description}</div>
+         {!!review.questions?.length&&<div className="muted">{review.questions.map((q,i)=><p key={i}>{q}</p>)}</div>}
+         <div className="requirements-actions">
+          <button className="primary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'approve')}>Согласовать изменение</button>
+          <button className="secondary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'reject')}>Отклонить и вернуть разработчику</button>
+         </div>
+        </div>;
+       })()}
+      </div>}
+     {requirements&&<details className="task-requirements-history">
+      <summary>История требований · версия {requirements.task.spec_version}</summary>
+      {requirements.versions.map(v=><div key={v.version}><strong>v{v.version}</strong> · {v.origin} · {new Date(v.created_at).toLocaleString('ru-RU')}{v.reason&&<p>{v.reason}</p>}</div>)}
+     </details>}
+     {!!activeTask.test_feedback&&<div className="task-test-feedback">
+      <strong>{newestTaskTest?.verdict==='blocked'?'Ограничения проверки':'Замечания AI-тестировщика'}</strong>
+      <pre>{activeTask.test_feedback}</pre>
+      <small>{newestTaskTest?.verdict==='blocked'?'Непроверенные сценарии нельзя считать успешно пройденными.':'Воспроизводимые дефекты возвращаются разработчику.'}</small>
+     </div>}
+     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&
+      <div className="qa-waiver-panel">
+       <strong>Не все сценарии удалось проверить</strong>
+       <p>{qaWaiver.assessment.summary||'Тестировщик указал ограничения инструментов и среды исполнения.'}</p>
+       <div className="qa-waiver-counts">
+        Проверено: <b>{qaWaiver.assessment.passed} из {qaWaiver.assessment.total}</b>. 
+        Не проверено: <b>{qaWaiver.assessment.unverified.length}</b>.
+       </div>
+       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities"><summary>Доступные инструменты QA-контейнера</summary><pre>{qaWaiver.assessment.capabilities}</pre></details>}
+       {qaWaiver.assessment.unverified.length>0&&<div className="qa-waiver-cases">
+        {qaWaiver.assessment.unverified.map(item=><div key={item.id} className="qa-waiver-case">
+         <b>{item.title}</b><span>{item.evidence}</span>
+        </div>)}
+       </div>}
+       {qaWaiver.assessment.eligible?<>
+        <p className="muted">Подтверждённых дефектов и упавших автоматических тестов нет. Можно явно разрешить слияние PR без перечисленных сценариев. Это не отменяет проверок GitHub и не означает, что сценарии пройдены.</p>
+        <textarea rows={3} placeholder="Почему допустимо слияние без этих проверок?" value={qaWaiverReason} onChange={e=>setQaWaiverReason(e.target.value)}/>
+        <label className="qa-waiver-confirm"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Я понимаю, что перечисленные сценарии не проверялись, и принимаю риск.</label>
+        <button className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20} onClick={()=>void approveQaWaiver()}>
+         {qaWaiverBusy?'Согласование…':'Разрешить слияние с непроверенными сценариями'}
+        </button>
+       </>:<div className="qa-waiver-blockers">
+        <strong>Слияние без тестов пока недопустимо</strong>
+        {qaWaiver.assessment.blockers.map((reason,i)=><p key={i}>{reason}</p>)}
+        <p className="muted">Можно исправить окружение или уточнить проверку и запустить QA повторно.</p>
+       </div>}
+      </div>}
      </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
       <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
