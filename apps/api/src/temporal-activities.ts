@@ -441,8 +441,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    'Последняя переписка Менеджера с пользователем: '+JSON.stringify(history).slice(0,5500),
    'Сообщение пользователя: '+String(msg.rows[0].body).slice(0,4000)
   ].join('\n\n');
-  const response=await runner('/assistant','POST',{model:settings.rows[0].model,reasoning:settings.rows[0].reasoning,prompt});
-  const answer=String(response.message||'').trim().slice(0,10000);
+  const answer=String(await assistantCompletion(prompt,projectId,taskId,'project_manager')).trim().slice(0,10000);
   if(!answer)throw Error('Менеджер проекта не сформировал ответ');
   const client=await pool.connect();
   try{
