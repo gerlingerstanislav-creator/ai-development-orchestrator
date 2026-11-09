@@ -544,7 +544,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const element=taskThreadRef.current;
   if(!element)return;
   if(element.scrollHeight-element.scrollTop-element.clientHeight<180||element.scrollTop===0)element.scrollTop=element.scrollHeight;
- },[taskMessages,taskChatBusy,events,taskAgentNotes,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback]);
+ },[taskMessages,taskChatBusy,events,taskAgentNotes,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback,managerState?.messages.length,managerState?.requests.length]);
  // One live timeline for analysis, development, QA-design, testing and approvals.
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id)return;
@@ -1580,6 +1580,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </header>
      <div ref={taskThreadRef} className="assistant-thread manager-thread" role="log" aria-live="polite">
       {!managerState?.messages.length&&<p className="assistant-hint">Менеджер проекта координирует аналитика, разработчика и тестировщика. Все вопросы и решения для вас поступают только от него.</p>}
+      <details className="manager-internal-log">
+       <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
+       <p>Аналитик, разработчик и тестировщик общаются между собой. К вам обращается только Менеджер проекта.</p>
+       {timeline(activeTask.id).slice(-90).map(item=><div className="manager-internal-entry" key={item.id}>
+        <strong>{item.title|| (item.kind==='user'?'Историческое сообщение пользователя':item.kind==='assistant'?'Предыдущий AI-помощник':'Этап работы')}</strong>
+        <small>{new Date(item.time).toLocaleString('ru-RU')}</small>
+        <div>{item.text}</div>
+       </div>)}
+      </details>
       {managerState?.messages.map(m=><div className={'manager-message '+(m.role==='user'?'from-user':'from-manager')} key={m.id}>
        <div className="manager-message-heading">
         <strong>{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</strong>
@@ -1592,15 +1601,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void retryManagerMessage(m.id)}>Повторить</button>
        </div>}
       </div>)}
-      <details className="manager-internal-log">
-       <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
-       <p>Аналитик, разработчик и тестировщик общаются между собой. К вам обращается только Менеджер проекта.</p>
-       {timeline(activeTask.id).slice(-90).map(item=><div className="manager-internal-entry" key={item.id}>
-        <strong>{item.title|| (item.kind==='user'?'Историческое сообщение пользователя':item.kind==='assistant'?'Предыдущий AI-помощник':'Этап работы')}</strong>
-        <small>{new Date(item.time).toLocaleString('ru-RU')}</small>
-        <div>{item.text}</div>
-       </div>)}
-      </details>
+
      </div>
      <div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
       <div className="manager-action-row">
