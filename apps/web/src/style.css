@@ -759,6 +759,7 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
  gap:0;
 }
 .task-modal-overlay .task-details{
+ padding-left:30px;
  min-width:0;
  min-height:0;
  overflow-y:auto;

@@ -253,10 +253,8 @@ function App(){
  useEffect(()=>{
   if(!backgroundProcessMenuOpen)return;
   const onOutside=(event:MouseEvent)=>{if(processDropdownRef.current&&!processDropdownRef.current.contains(event.target as Node))setBackgroundProcessMenuOpen(false);};
-  const onKey=(event:KeyboardEvent)=>{if(event.key==='Escape')setBackgroundProcessMenuOpen(false);};
   document.addEventListener('mousedown',onOutside);
-  document.addEventListener('keydown',onKey);
-  return()=>{document.removeEventListener('mousedown',onOutside);document.removeEventListener('keydown',onKey);};
+  return()=>{document.removeEventListener('mousedown',onOutside);};
  },[backgroundProcessMenuOpen]);
 
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
@@ -323,6 +321,27 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [editingDoc,setEditingDoc]=useState<Doc|null>(null);
  const [docBusy,setDocBusy]=useState(false);
  const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
+ // Escape dismisses only the topmost UI layer. Leave in-progress operations intact.
+ useEffect(()=>{
+  const onEscape=(event:KeyboardEvent)=>{
+   if(event.key!=='Escape'||event.defaultPrevented||event.isComposing)return;
+   if(workflowModal){
+    if(workflowEditing){setWorkflowEditing(null);}
+    else if(!workflowSaving){setWorkflowModal(null);}
+   }else if(showConnection){setShowConnection(false);}
+   else if(showTask){setShowTask(false);}
+   else if(showProject){setShowProject(false);}
+   else if(activeTask){
+    if(editingField){setEditingField(null);}
+    else if(selected){navigate(projectUrl(selected.id,'tasks'));}
+   }else if(backgroundProcessMenuOpen){setBackgroundProcessMenuOpen(false);}
+   else if(projectMenuOpen){setProjectMenuOpen(false);}
+   else{return;}
+   event.preventDefault();
+  };
+  document.addEventListener('keydown',onEscape);
+  return()=>document.removeEventListener('keydown',onEscape);
+ },[workflowModal,workflowEditing,workflowSaving,showConnection,showTask,showProject,activeTask,editingField,selected,backgroundProcessMenuOpen,projectMenuOpen]);
  useEffect(()=>{
   const modalOpen=!!(activeTask||showProject||showTask||showConnection);
   if(!modalOpen)return;
@@ -1528,7 +1547,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {editingField==='title'?
        <input autoFocus value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}
         onBlur={e=>void autoSaveField('title',e.currentTarget.value)}
-        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){setEditingField(null);}}}/>:
+        onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){e.stopPropagation();setEditingField(null);}}}/>:
        <><h2>{activeTask.title}</h2>{agentWorking(activeTask.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}<button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
      </div>
     </div>
