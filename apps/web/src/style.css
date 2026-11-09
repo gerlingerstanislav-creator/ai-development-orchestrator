@@ -883,3 +883,14 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .tasks-page .task-card .task-name-line>strong{display:block;flex:1 1 0;min-width:0;max-width:100%;overflow-wrap:anywhere;word-break:normal}
 .tasks-page .task-card .task-card-activity{flex:0 0 16px;margin:2px 0 0;align-self:flex-start;white-space:nowrap}
 .tasks-page .task-card{overflow:hidden}
+
+
+/* Task decisions belong to the right-hand conversation, not the left specification. */
+.task-conversation .task-action-feed{display:flex;flex-direction:column;gap:7px;max-height:42%;overflow-y:auto;flex:0 1 auto;border-top:1px solid #e6eaf1;background:#fbfcff;padding:8px 12px}
+.task-conversation .task-action-feed:empty{display:none}
+.task-conversation .task-requirements-review,.task-conversation .qa-waiver-panel{margin:2px 0;padding:10px 12px}
+.task-conversation .task-requirements-history{margin:0}
+.task-conversation .task-action-feed .task-test-feedback{margin:2px 0}
+.task-conversation .task-action-feed .task-test-feedback pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:120px;overflow:auto}
+.task-conversation .assistant-bubble.activity-event>div,.task-conversation .assistant-bubble.activity-run>div{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:850px){.task-conversation .task-action-feed{max-height:290px}}
