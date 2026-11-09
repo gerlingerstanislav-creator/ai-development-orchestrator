@@ -42,6 +42,9 @@ type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;crea
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
+type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed';reply_to?:string|null;created_at:string};
+type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
+type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string};
 type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
@@ -356,6 +359,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
  const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
+ const [managerState,setManagerState]=useState<ManagerSnapshot|null>(null);
+ const [managerBusy,setManagerBusy]=useState(false);
+ const [managerAnswer,setManagerAnswer]=useState('');
+ const [managerFeedback,setManagerFeedback]=useState('');
+ const [managerSending,setManagerSending]=useState(false);
  function timeline(taskId:string):ActivityItem[]{
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
@@ -434,6 +442,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
    setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
+   setManagerState(await api<ManagerSnapshot>('/projects/'+projectId+'/tasks/'+taskId+'/manager'));
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
  }
@@ -517,7 +526,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentNotes([]);setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
      void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
@@ -544,9 +553,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const refresh=async()=>{
    if(document.hidden)return;
    try{
-    const [feed,messages]=await Promise.all([
+    const [feed,messages,manager]=await Promise.all([
      api<TaskActivityResponse>('/projects/'+id+'/tasks/'+taskId+'/activity'),
-     api<AssistantMessage[]>('/projects/'+id+'/tasks/'+taskId+'/assistant/messages')
+     api<AssistantMessage[]>('/projects/'+id+'/tasks/'+taskId+'/assistant/messages'),
+     api<ManagerSnapshot>('/projects/'+id+'/tasks/'+taskId+'/manager')
     ]);
     if(!alive)return;
     setEvents(old=>JSON.stringify(old)===JSON.stringify(feed.events)?old:feed.events);
@@ -555,6 +565,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setTaskAgentNotes(old=>JSON.stringify(old)===JSON.stringify(feed.notes||[])?old:feed.notes||[]);
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
+    setManagerState(old=>JSON.stringify(old)===JSON.stringify(manager)?old:manager);
    }catch{/* Network reconnection preserves the last known timeline. */}
   };
   void refresh();
