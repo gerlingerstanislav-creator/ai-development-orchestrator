@@ -1638,7 +1638,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        {['testing','development'].includes(activeTask.stage)&&!managerState?.owner&&!managerWorking&&!activeAgentRuns.length&&!decisions.length&&!deferredQa.length&&
         <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>Продолжить / восстановить работу</button>}
        {deferredQa.map(request=><button key={request.id} type="button" className="secondary" disabled={managerBusy}
-        onClick={()=>void decideAsManager(request,'approve_without_visual')}>Пересмотреть решение по визуальным проверкам</button>)}
+        onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить слияние без визуальных проверок</button>)}
        {timeline(activeTask.id).slice(-90).map(item=><div className="manager-internal-entry" key={item.id}>
         <strong>{item.title|| (item.kind==='user'?'Историческое сообщение пользователя':item.kind==='assistant'?'Предыдущий AI-помощник':'Этап работы')}</strong>
         <small>{new Date(item.time).toLocaleString('ru-RU')}</small>
