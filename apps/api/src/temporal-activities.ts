@@ -1,3 +1,5 @@
+import {heartbeat} from '@temporalio/activity';
+import {createAssistantService} from './assistant.js';
 import pg from 'pg';
 import {randomUUID,createDecipheriv} from 'node:crypto';
 import {ApplicationFailure} from '@temporalio/common';
@@ -557,4 +559,19 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string}
  }
  const pending=await pendingAgentQuestions(pool,projectId,taskId);
  return {resolved,pending};
+}
+
+
+export async function runProjectSpecification(jobId:string):Promise<void>{
+ const service=createAssistantService({pool,codexUrl,runnerKey,decryptToken:decrypt});
+ const timer=setInterval(()=>heartbeat(),10000);
+ try{
+  heartbeat();
+  await service.runDocumentationJob(jobId);
+ }finally{clearInterval(timer);}
+}
+
+export async function failProjectSpecification(jobId:string):Promise<void>{
+ const result=await pool.query("UPDATE document_import_jobs SET status='failed',message='Процесс аналитика прерван. Повтори запрос в чате.',updated_at=now() WHERE id=$1 AND status='running' RETURNING project_id",[jobId]);
+ if(result.rowCount)await event(result.rows[0].project_id,jobId,'document_import','failed','Процесс аналитика прерван','error');
 }

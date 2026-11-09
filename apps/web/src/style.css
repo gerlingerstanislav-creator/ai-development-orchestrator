@@ -1005,3 +1005,8 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .manager-action-row{flex-wrap:wrap;overflow:visible}
 .manager-answer-body{right:auto;left:0}
 .manager-conversation>.manager-action-error{margin:0;padding:5px 12px}
+
+.analyst-materials{display:flex;flex-wrap:wrap;gap:5px;padding:6px 10px;background:#fff}
+.analyst-materials span{display:flex;align-items:center;gap:5px;max-width:100%;padding:3px 6px;background:#f0f3fa;border-radius:5px;font-size:11px;overflow-wrap:anywhere}
+.analyst-materials button{display:grid;place-items:center;border:0;background:transparent;padding:3px;color:#475569;cursor:pointer}
+.project-chat .assistant-composer input[type=file]{display:none}
