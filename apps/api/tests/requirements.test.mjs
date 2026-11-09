@@ -44,7 +44,7 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   });
   assert.equal(aligned,'current');
   assert.equal(calls,1);
-  task=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0]);
+  task=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
   assert.equal(task.spec_review_status,'current');
   assert.equal(task.spec_reviewed_version,2);
 
