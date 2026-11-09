@@ -29,6 +29,9 @@ export async function saveSpecRevision(client:PoolClient,old:any,data:{title:str
  if(data.title===old.title&&data.description===old.description)return Number(old.spec_version);
  const version=Number(old.spec_version||1)+1;
  const reviewed=data.reviewStatus==='current';
+ // Preserve the pre-edit state for new tasks created after the migration.
+ await client.query("INSERT INTO task_spec_versions(id,project_id,task_id,version,title,description,origin) VALUES($1,$2,$3,$4,$5,$6,'previous') ON CONFLICT(task_id,version) DO NOTHING",
+  [randomUUID(),old.project_id,old.id,Number(old.spec_version||1),old.title,old.description]);
  await client.query("INSERT INTO task_spec_versions(id,project_id,task_id,version,title,description,origin,actor_id,reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(task_id,version) DO NOTHING",
   [randomUUID(),old.project_id,old.id,version,data.title,data.description,data.origin,data.actorId||null,data.reason||'']);
  const update=await client.query("UPDATE tasks SET title=$1,description=$2,spec_version=$3,spec_review_status=$4,spec_reviewed_version=CASE WHEN $5 THEN $3 ELSE spec_reviewed_version END,spec_reviewed_commit=CASE WHEN $5 THEN $6 ELSE '' END,spec_review_note=CASE WHEN $5 THEN $7 ELSE 'Изменение требований ожидает проверки аналитиком' END,updated_at=now() WHERE id=$8 AND project_id=$9 AND spec_version=$10",
