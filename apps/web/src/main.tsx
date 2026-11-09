@@ -205,7 +205,7 @@ function App(){
   return()=>window.removeEventListener('popstate',onPop);
  },[]);
   const [projects,setProjects]=useState<Project[]>([]);const [selected,setSelected]=useState<Project|null>(null);
- const [section,setSection]=useState<'overview'|'tasks'|'docs'|'rules'|'settings'>('tasks');
+ const [section,setSection]=useState<ProjectSection>('tasks');
  const [accountSettings,setAccountSettings]=useState(false);
  const [projectMenuOpen,setProjectMenuOpen]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
@@ -461,7 +461,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setDocBusy(true);
   try{
    const added=await api<{id:string}>('/projects/'+selected.id+'/docs',{method:'POST',body:JSON.stringify({title:'Новая страница',body:'',parent_id:parentId})});
-   const doc:Doc={id:added.id,title:'Новая страница',body:'',parent_id:parentId,updated_at:new Date().toISOString()};
+   const doc:Doc={id:added.id,title:'Новая страница',body:'',parent_id:parentId,updated_at:new Date().toISOString(),document_kind:'technical',implementation_status:'unverified',implementation_evidence:''};
    if(parentId)setCollapsedDocs(items=>items.filter(x=>x!==parentId));
    setDocs(old=>[...old,doc]);
    navigate(projectUrl(selected.id,'docs')+'/'+doc.id);
