@@ -4,13 +4,15 @@ import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,Lay
 import './style.css';
 
 type Project={id:string,name:string,description:string};
-type Task={id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number};
-type KanbanGroupKey='analytics'|'development'|'results'|'other';
+type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
- {key:'development',title:'Разработка',ids:['development','merge_queue']},
+ {key:'development',title:'Разработка',ids:['development']},
+ {key:'testing',title:'Тестирование',ids:['testing']},
+ {key:'merging',title:'Слияние',ids:['merge_queue']},
  {key:'results',title:'Итоги',ids:['documentation','done']}
 ];
 
@@ -24,9 +26,9 @@ type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checked
 type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:string;requests:number};
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
-type ProjectProcess={id:string;kind:'document_import'|'development'|'merge';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[]}|null;taskId?:string};
+type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
@@ -268,7 +270,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
  const [expandedGroups,setExpandedGroups]=useState<KanbanGroupKey[]>(()=>{
-  const all:KanbanGroupKey[]=['analytics','development','results','other'];
+  const all:KanbanGroupKey[]=['analytics','development','testing','merging','results','other'];
   try{
    // New layout starts fully expanded, while retaining subsequent user choices.
    const saved=localStorage.getItem('ado-kanban-groups-expanded-v2');
@@ -568,6 +570,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
 
  useEffect(()=>{if(token&&accountSettings){void refreshTokenUsage();}},[token,accountSettings]);
  async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
+ async function startTaskTesting(){
+  if(!selected||!activeTask)return;
+  setAiBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/start-testing',{method:'POST'});
+   setTaskFeedback('Проверка запущена через Temporal. Подробности — в Центре процессов.');
+   await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setAiBusy(false);}
+ }
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const response=await api<AiRun&{recovered?:boolean}>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
    if(response.recovered){
@@ -958,6 +969,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
      {process.result&&<div className="process-result"><strong>Результат</strong><p>{process.result.message||'Операция завершена'}</p>
       {process.result.created_document_id&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'docs')+'/'+process.result!.created_document_id)}>Открыть документацию</button>}
+      {process.result.verdict&&<p><strong>Вердикт: {process.result.verdict==='passed'?'Проверки пройдены':process.result.verdict==='failed'?'Обнаружены ошибки':'Не удалось проверить'}</strong></p>}
+      {process.result.commit&&<small>Проверенный коммит: {process.result.commit}</small>}
+      {process.result.findings?.map((finding,i)=><p key={i}><strong>{finding.severity}:</strong> {finding.description}{finding.steps?' · '+finding.steps:''}</p>)}
+      {process.result.checks?.map((check,i)=><p key={'check-'+i}>{check.name}: {check.result} · {check.details}</p>)}
       {process.result.prUrl&&<a href={process.result.prUrl} target="_blank" rel="noreferrer">Открыть PR</a>}
      </div>}
      {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
@@ -1131,6 +1146,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.stage==='analysis'&&<button className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>}
      
      {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
+     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Запустить тестирование</button>}
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
@@ -1155,6 +1171,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <strong>{activeTask.analysis_state==='needs_clarification'?'Нужно уточнить требования':activeTask.analysis_state==='ready_for_development'?'Анализ завершён':'Требуется анализ'}</strong>
       {!!activeTask.clarification_questions?.length&&<ol>{activeTask.clarification_questions.map((q,i)=><li key={i}>{q}</li>)}</ol>}
       {activeTask.analysis_state==='ready_for_development'&&<p className="muted">Блокирующих вопросов нет. Можно отправлять в разработку.</p>}
+     </div>}
+     {!!activeTask.test_feedback&&<div className="task-test-feedback">
+      <strong>Замечания AI-тестировщика</strong>
+      <pre>{activeTask.test_feedback}</pre>
+      <small>После ошибок задача возвращается разработчику автоматически (до трёх циклов исправлений).</small>
      </div>}
      <div className="task-dependency">
       <label>Зависит от задачи
