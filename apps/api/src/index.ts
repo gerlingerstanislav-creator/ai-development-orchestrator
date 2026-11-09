@@ -591,7 +591,7 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
- if(['needs_approval','rejected'].includes(task.rows[0].spec_review_status))return reply.code(409).send({error:'Сначала согласуй изменение ТЗ'});
+ if(['pending','needs_approval','rejected'].includes(task.rows[0].spec_review_status))return reply.code(409).send({error:'Сначала заверши сверку требований с аналитиком. QA нельзя запускать по неутверждённой версии ТЗ.'});
  const existing=await pool.query("SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
  if(existing.rowCount)return reply.code(409).send({error:'QA-исполнитель уже проверяет эту задачу'});
  // Older workflows started before the orchestration-owner migration must be
