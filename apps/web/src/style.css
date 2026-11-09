@@ -163,7 +163,8 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .workflow-arrow:disabled{opacity:.45;cursor:not-allowed}
 @media(max-width:850px){.task-modal-top{flex-direction:column;align-items:stretch;padding:12px 15px}.task-modal-actions{justify-content:flex-start}.task-dialog-columns{display:flex;flex-direction:column;overflow-y:auto}.task-dialog-wide .task-details{overflow:visible}.task-dialog-wide .task-conversation{flex:0 0 420px;border-left:0;border-top:1px solid #e6e9f0}.task-workflow{justify-content:flex-start;padding:9px}}
 
-.workflow-step.current svg{animation:workflow-spin 1.8s linear infinite}
+.workflow-step.current.working svg{animation:workflow-spin 1.8s linear infinite}
+.workflow-step.current.idle svg{animation:none}
 @keyframes workflow-spin{to{transform:rotate(360deg)}}
 
 
@@ -894,3 +895,19 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .task-conversation .task-action-feed .task-test-feedback pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:120px;overflow:auto}
 .task-conversation .assistant-bubble.activity-event>div,.task-conversation .assistant-bubble.activity-run>div{white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:850px){.task-conversation .task-action-feed{max-height:290px}}
+
+/* One task timeline: decisions, failures and QA evidence scroll with messages. */
+.task-conversation .task-thread-actions{display:flex;flex-direction:column;gap:9px;flex:0 0 auto;width:100%;box-sizing:border-box}
+.task-conversation .task-thread-actions:empty{display:none}
+.task-conversation .task-thread-actions .task-requirements-review,
+.task-conversation .task-thread-actions .qa-waiver-panel{margin:0;padding:11px 12px;max-height:none;overflow:visible}
+.task-conversation .task-thread-actions .task-requirements-history{margin:0}
+.task-conversation .task-thread-actions .task-test-feedback{margin:0}
+.task-conversation .task-thread-actions .task-test-feedback pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:none;overflow:visible}
+.task-conversation .task-thread-actions .task-qa-outcome{align-self:stretch;border:1px solid #dbe2f3;background:#f5f7fd;border-radius:9px;padding:12px;display:flex;flex-direction:column;gap:7px;font-size:12px}
+.task-conversation .task-thread-actions .task-qa-outcome.failed{border-color:#edd1cf;background:#fff7f6}
+.task-conversation .task-thread-actions .task-qa-outcome.blocked{border-color:#e8cfa3;background:#fffaf0}
+.task-conversation .task-thread-actions .task-qa-outcome.passed{border-color:#c8ded2;background:#f3faf5}
+.task-conversation .task-thread-actions .task-qa-outcome p{margin:0;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+.task-conversation .task-thread-actions .task-qa-outcome button{align-self:flex-start}
+.task-conversation .assistant-thread{min-height:0}
