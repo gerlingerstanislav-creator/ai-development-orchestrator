@@ -497,9 +497,10 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(t.rows[0].stage!=='development'||t.rows[0].analysis_state!=='approved')return reply.code(409).send({error:'Подтверди завершение анализа и отправь задачу в разработку'});
+ if(['pending','needs_approval'].includes(t.rows[0].spec_review_status))return reply.code(409).send({error:'Требования ещё проверяются аналитиком. Дождись завершения сверки.'});
  const relatedIds=(t.rows[0].related_task_ids||[]) as string[];
  const related=relatedIds.length?(await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[])',[id,relatedIds])).rows:[];
  // Informationally related tasks never block development; only a typed code dependency does.
@@ -579,10 +580,11 @@ app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
 app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const task=await pool.query('SELECT stage,pr_url,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const task=await pool.query('SELECT stage,pr_url,git_branch,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
+ if(task.rows[0].spec_review_status==='needs_approval'||task.rows[0].spec_review_status==='rejected')return reply.code(409).send({error:'Сначала согласуй или отклони изменение требований, отмеченное аналитиком'});
  const active=await pool.query("SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
  if(active.rowCount)return reply.code(409).send({error:'Проверка этой задачи уже запущена'});
  const cycleId=randomUUID();
@@ -756,10 +758,16 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  }
  if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
  // QA plans require a verified test run for the exact commit being merged.
- const qaPlan=await pool.query('SELECT id FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
+ const spec=await pool.query('SELECT spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
+ if(!spec.rowCount||spec.rows[0].spec_review_status!=='current'||spec.rows[0].spec_version!==spec.rows[0].spec_reviewed_version||(spec.rows[0].spec_reviewed_commit&&spec.rows[0].spec_reviewed_commit!==pr.head.sha))
+  throw Object.assign(new Error('Требования изменились или аналитик проверял другую версию PR. Повтори сверку требований и тестирование.'),{statusCode:409});
+ const qaPlan=await pool.query('SELECT id,spec_version FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
+ const orchestrated=await pool.query('SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND cycle_id IS NOT NULL LIMIT 1',[projectId,taskId]);
+ if((qaPlan.rowCount||orchestrated.rowCount)&&(!qaPlan.rowCount||qaPlan.rows[0].spec_version!==spec.rows[0].spec_version))
+  throw Object.assign(new Error('Нет QA-плана для актуальной версии ТЗ. Сначала выполни тестирование.'),{statusCode:409});
  if(qaPlan.rowCount){
-  const lastTest=await pool.query('SELECT verdict,report,status FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
-  if(!lastTest.rowCount||lastTest.rows[0].status!=='completed'||lastTest.rows[0].verdict!=='passed'||lastTest.rows[0].report?.commit!==pr.head.sha)
+  const lastTest=await pool.query('SELECT verdict,report,status,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
+  if(!lastTest.rowCount||lastTest.rows[0].status!=='completed'||lastTest.rows[0].verdict!=='passed'||lastTest.rows[0].report?.commit!==pr.head.sha||lastTest.rows[0].qa_spec_version!==spec.rows[0].spec_version)
    throw Object.assign(new Error('PR изменился после успешного тестирования или последний QA-прогон не пройден. Повтори тестирование текущего коммита.'),{statusCode:409});
  }
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
