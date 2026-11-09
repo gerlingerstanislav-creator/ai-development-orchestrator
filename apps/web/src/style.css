@@ -774,3 +774,11 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
  .task-modal-overlay .task-modal-top{padding:7px 12px}
  .task-modal-overlay .task-workflow{padding:5px 10px}
 }
+
+/* QA agent shares the developer activity visual language, with a distinct label. */
+.task-testing-live{border-left:3px solid #d8a15d}
+.task-testing-live>.agent-equalizer{margin-top:3px}
+.task-testing-live .agent-equalizer i{background:#c99a5e}
+.task-process-link{display:inline-flex;align-items:center;align-self:flex-start;margin:5px 0 0;padding:0;color:#5b68cd;font-size:11px;border:0;background:transparent;text-decoration:underline;cursor:pointer}
+.task-process-link:hover{color:#3e4cb0}
+.process-list-item .agent-equalizer i{background:#c99a5e}
