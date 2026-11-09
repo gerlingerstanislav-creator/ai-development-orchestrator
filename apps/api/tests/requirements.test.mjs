@@ -4,6 +4,7 @@ import pg from 'pg';
 import {randomUUID} from 'node:crypto';
 import {initRequirementsSchema,saveSpecRevision,reconcileTaskRequirements} from '../dist/requirements.js';
 import {initQaWaiverSchema} from '../dist/qa-waiver.js';
+import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from '../dist/task-orchestration.js';
 
 test('spec revisions, analyst reconciliation and human-approval gate persist in PostgreSQL',async()=>{
  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
@@ -24,6 +25,16 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await initRequirementsSchema(pool);
   await initQaWaiverSchema(pool);
   await initQaWaiverSchema(pool); // Startup migrations must be idempotent.
+  await initTaskOrchestrationSchema(pool);
+  await initTaskOrchestrationSchema(pool);
+  const owner1=randomUUID(),owner2=randomUUID();
+  assert.equal(await acquireTaskOrchestration(pool,projectId,taskId,owner1,'task-cycle-'+owner1,'development'),true);
+  assert.equal(await acquireTaskOrchestration(pool,projectId,taskId,owner2,'manual-test-'+owner2,'testing'),false,'Second workflow cannot start during analyst or QA preparation');
+  await releaseTaskOrchestration(pool,projectId,taskId,owner2);
+  assert.equal((await pool.query('SELECT owner_id,state FROM task_orchestration_owners WHERE task_id=$1',[taskId])).rows[0].state,'active','Unrelated owner cannot release an active workflow');
+  await releaseTaskOrchestration(pool,projectId,taskId,owner1);
+  assert.equal(await acquireTaskOrchestration(pool,projectId,taskId,owner2,'manual-test-'+owner2,'testing'),true,'New QA cycle starts after the first workflow finishes');
+  await releaseTaskOrchestration(pool,projectId,taskId,owner2);
 
   const before=(await pool.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
   assert.equal(before.spec_version,1);

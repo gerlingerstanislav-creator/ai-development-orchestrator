@@ -3,6 +3,7 @@ import {randomUUID,createDecipheriv} from 'node:crypto';
 import {ApplicationFailure} from '@temporalio/common';
 import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
+import {releaseTaskOrchestration} from './task-orchestration.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -112,6 +113,9 @@ export async function reconcileRequirements(args:{projectId:string;taskId:string
   await event(projectId,runId,'analysis','failed',message,'error');
   throw e;
  }
+}
+export async function finishTaskOrchestration(args:{projectId:string;taskId:string;ownerId:string}):Promise<void>{
+ await releaseTaskOrchestration(pool,args.projectId,args.taskId,args.ownerId);
 }
 export async function checkRequirementStatus(args:{projectId:string;taskId:string}):Promise<'current'|'pending'|'needs_approval'|'rejected'>{
  return requirementState(pool,args.projectId,args.taskId);
@@ -244,7 +248,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  }
  const record=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const id=record.rows[0].id;
- if(['completed','failed'].includes(record.rows[0].status))return id;
+ if(['running','completed','failed'].includes(record.rows[0].status))return id; // Activity retry must not enqueue the same Codex test twice.
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,

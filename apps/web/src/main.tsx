@@ -10,6 +10,8 @@ type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',posit
 type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
+type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
+type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string}};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
@@ -29,7 +31,7 @@ type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:s
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
-type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
+type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
@@ -325,7 +327,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [form,setForm]=useState({name:'',description:'',title:'',type:'task',parent_id:''});
  const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
  const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
- const [events,setEvents]=useState<{id:string,event:string,detail:string,created_at:string}[]>([]);
+ const [events,setEvents]=useState<{id:string;event:string;detail:string;created_at:string}[]>([]);
+ const [taskProcessEvents,setTaskProcessEvents]=useState<TaskProcessEvent[]>([]);
+ const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
  const [projectChatOpen,setProjectChatOpen]=useState(false);
@@ -341,9 +345,27 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  function timeline(taskId:string):ActivityItem[]{
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
-   ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:ev.event==='created'?'Задача создана':ev.event==='analyzed'?'Анализ обновлён':ev.event==='merged'?'PR слит':ev.event==='documentation_updated'?'Документация обновлена':'Изменение задачи',text:ev.detail,time:ev.created_at})),
+   ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:({
+    created:'Задача создана',analyzed:'Анализ завершён',stage_changed:'Переход этапа',spec_changed:'Изменение требований',
+    requirements_proposed:'Аналитик · требуется согласование',requirements_reviewed:'Аналитик · ТЗ проверено',requirements_approved:'Изменение ТЗ согласовано',
+    requirements_rejected:'Изменение ТЗ отклонено',tests_passed:'Тестирование пройдено',
+    tests_failed:'Замечания тестировщика',qa_tools_unavailable:'Тестировщик · проверки ограничены средой',
+    qa_waiver_approved:'Непроверенные сценарии согласованы',handoff_blocked:'Передача на следующий этап остановлена',
+    merged:'PR слит',documentation_updated:'Документация обновлена'
+   } as Record<string,string>)[ev.event]||'Событие задачи',text:ev.detail,time:ev.created_at})),
+   ...taskProcessEvents.map(ev=>({id:'process-'+ev.id,kind:'event' as const,title:(ev.process_kind==='testing'?'Тестировщик':ev.process_kind==='analysis'?'Аналитик':ev.process_kind==='development'?'Разработчик':'Процесс')+' · '+({
+    review_started:'Сверка требований',needs_approval:'Нужно решение',current:'ТЗ актуально',test_design_started:'Генерация тест-кейсов',
+    test_design_ready:'QA-план готов',test_design_failed:'Ошибка подготовки QA',started:'Работа запущена',
+    progress:'Выполнение',passed:'Проверки пройдены',failed:'Ошибка или дефект',blocked:'Не удалось проверить',
+    approved:'Переход к слиянию',awaiting_manual_qa_decision:'Требуется решение по тестам'
+   } as Record<string,string>)[ev.stage]||ev.stage,text:ev.detail,time:ev.created_at,failed:ev.level==='error'})),
    ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined})),
-   ...testRuns.filter(r=>r.task_id===taskId).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',text:r.report?.summary||r.message||'Тестировщик выполняет проверку',time:r.created_at,status:r.status}))
+   ...testRuns.filter(r=>r.task_id===taskId).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',
+    text:[r.report?.summary||r.message||'Тестировщик выполняет проверку',
+     ...(r.report?.checks||[]).map(c=>c.name+': '+c.result+(c.details?' — '+c.details:'')),
+     ...(r.report?.findings||[]).map(f=>'Дефект ('+f.severity+'): '+f.description+(f.steps?' · '+f.steps:'')),
+     ...(r.report?.caseResults||[]).slice(0,30).map(c=>c.case_id+': '+c.result+(c.evidence?' — '+c.evidence:''))
+    ].filter(Boolean).join('\n'),time:r.created_at,status:r.status}))
   ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
  }
  async function loadRequirements(projectId:string,taskId:string){
@@ -387,12 +409,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function refreshTaskActivity(projectId:string,taskId:string){
   try{
-   const [ts,ev,ms]=await Promise.all([
+   const [ts,activity,ms]=await Promise.all([
     api<Task[]>('/projects/'+projectId+'/tasks'),
-    api<typeof events>('/projects/'+projectId+'/tasks/'+taskId+'/events'),
+    api<TaskActivityResponse>('/projects/'+projectId+'/tasks/'+taskId+'/activity'),
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
-   setTasks(ts);setEvents(ev);setTaskMessages(ms);
+   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskOrchestration(activity.owner);setTaskMessages(ms);
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
  }
@@ -476,8 +498,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);
-     void api<Array<{id:string;event:string;detail:string;created_at:string}>>('/projects/'+selected.id+'/tasks/'+task.id+'/events').then(setEvents).catch(fail);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskOrchestration(null);
+     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskOrchestration(a.owner);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
   }else if(activeTask){setActiveTask(null);}
@@ -493,8 +515,31 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{
   const element=taskThreadRef.current;
   if(!element)return;
-  element.scrollTop=element.scrollHeight;
- },[taskMessages,taskChatBusy,events,aiRuns,activeTask?.id,taskFeedback]);
+  if(element.scrollHeight-element.scrollTop-element.clientHeight<180||element.scrollTop===0)element.scrollTop=element.scrollHeight;
+ },[taskMessages,taskChatBusy,events,taskProcessEvents,testRuns,aiRuns,activeTask?.id,taskFeedback]);
+ // One live timeline for analysis, development, QA-design, testing and approvals.
+ useEffect(()=>{
+  if(!selected?.id||!activeTask?.id)return;
+  const id=selected.id,taskId=activeTask.id;
+  let alive=true;
+  const refresh=async()=>{
+   if(document.hidden)return;
+   try{
+    const [feed,messages]=await Promise.all([
+     api<TaskActivityResponse>('/projects/'+id+'/tasks/'+taskId+'/activity'),
+     api<AssistantMessage[]>('/projects/'+id+'/tasks/'+taskId+'/assistant/messages')
+    ]);
+    if(!alive)return;
+    setEvents(old=>JSON.stringify(old)===JSON.stringify(feed.events)?old:feed.events);
+    setTaskProcessEvents(old=>JSON.stringify(old)===JSON.stringify(feed.processEvents)?old:feed.processEvents);
+    setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
+    setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
+   }catch{/* Network reconnection preserves the last known timeline. */}
+  };
+  void refresh();
+  const timer=window.setInterval(()=>void refresh(),4000);
+  return()=>{alive=false;window.clearInterval(timer);};
+ },[selected?.id,activeTask?.id]);
  useEffect(()=>{setProjectMessages([]);setProjectInput('');setProjectPendingId(null);if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages?mode='+projectChatMode).then(setProjectMessages).catch(fail);}},[selected?.id,projectChatMode]);
  useEffect(()=>{setProjectChatOpen(false);setProjectChatMode('project');},[selected?.id]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
@@ -718,7 +763,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(error){fail(error);}finally{setQaWaiverBusy(false);}
  }
  const activeTestFor=(taskId:string)=>testRuns.find(r=>r.task_id===taskId&&['running','queued'].includes(r.status));
- const agentWorking=(taskId:string)=>aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
+ const agentWorking=(taskId:string)=>backgroundProcesses.some(p=>p.taskId===taskId&&['queued','running'].includes(p.status))||
+  (activeTask?.id===taskId&&!!taskOrchestration)||aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
   testRuns.some(r=>r.task_id===taskId&&r.status==='running')||
   projectProcesses.some(p=>p.kind==='analysis'&&p.taskId===taskId&&['queued','running'].includes(p.status));
  // A Temporal test can complete after the development run has finished.
@@ -873,12 +919,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
  if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
  function renderKanbanCard(t:Task,showStage=false){
-  const stage=stages.find(s=>s.stage===t.stage);
   return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
     draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
     <span className="task-card-top"><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
-    <span className="task-name-line"><strong>{t.title}</strong><span className="task-card-state"><span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span></span>
+    <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     <p>{t.description||'Без описания'}</p>
     {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
   </a>;
@@ -1362,8 +1407,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.stage==='analysis'&&<button className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>}
      
      {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
-     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)} onClick={()=>void startTaskTesting()}>
-      {activeTestFor(activeTask.id)?'Тестирование выполняется':'Запустить тестирование'}</button>}
+     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)||!!taskOrchestration} onClick={()=>void startTaskTesting()}>
+      {activeTestFor(activeTask.id)||taskOrchestration?'AI-цикл выполняется':'Запустить тестирование'}</button>}
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
@@ -1380,28 +1425,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <><div className="task-readonly">{activeTask.description||'Описание пока пустое'}</div>
         <button className="pencil" title="Изменить описание" onClick={()=>setEditingField('description')}><Pencil size={15}/></button></>}
      </div>
-     {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
-      <div className={'task-requirements-review '+requirements.task.spec_review_status}>
-       <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
-       <p>{requirements.task.spec_review_note||'Актуальная версия требований ожидает проверки.'}</p>
-       {requirements.task.spec_review_status==='pending'&&<button className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить проверку аналитиком</button>}
-       {requirements.task.spec_review_status==='needs_approval'&&(()=>{
-        const review=requirements.reviews.find(item=>item.status==='needs_approval'&&item.spec_version===requirements.task.spec_version);
-        if(!review)return null;
-        return <div className="requirement-proposal">
-         <strong>Предлагаемое ТЗ</strong><div className="task-readonly">{review.proposed_description}</div>
-         {!!review.questions?.length&&<div className="muted">{review.questions.map((q,i)=><p key={i}>{q}</p>)}</div>}
-         <div className="requirements-actions">
-          <button className="primary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'approve')}>Согласовать изменение</button>
-          <button className="secondary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'reject')}>Отклонить и вернуть разработчику</button>
-         </div>
-        </div>;
-       })()}
-      </div>}
-     {requirements&&<details className="task-requirements-history">
-      <summary>История требований · версия {requirements.task.spec_version}</summary>
-      {requirements.versions.map(v=><div key={v.version}><strong>v{v.version}</strong> · {v.origin} · {new Date(v.created_at).toLocaleString('ru-RU')}{v.reason&&<p>{v.reason}</p>}</div>)}
-     </details>}
      <div className="task-metadata">
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
       <span>Этап: <strong>{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</strong></span>
@@ -1412,38 +1435,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {!!activeTask.clarification_questions?.length&&<ol>{activeTask.clarification_questions.map((q,i)=><li key={i}>{q}</li>)}</ol>}
       {activeTask.analysis_state==='ready_for_development'&&<p className="muted">Блокирующих вопросов нет. Можно отправлять в разработку.</p>}
      </div>}
-     {!!activeTask.test_feedback&&<div className="task-test-feedback">
-      <strong>{newestTaskTest?.verdict==='blocked'?'Ограничения проверки':'Замечания AI-тестировщика'}</strong>
-      <pre>{activeTask.test_feedback}</pre>
-      <small>{newestTaskTest?.verdict==='blocked'?'Непроверенные сценарии нельзя считать успешно пройденными.':'Воспроизводимые дефекты возвращаются разработчику.'}</small>
-     </div>}
-     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&
-      <div className="qa-waiver-panel">
-       <strong>Не все сценарии удалось проверить</strong>
-       <p>{qaWaiver.assessment.summary||'Тестировщик указал ограничения инструментов и среды исполнения.'}</p>
-       <div className="qa-waiver-counts">
-        Проверено: <b>{qaWaiver.assessment.passed} из {qaWaiver.assessment.total}</b>. 
-        Не проверено: <b>{qaWaiver.assessment.unverified.length}</b>.
-       </div>
-       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities"><summary>Доступные инструменты QA-контейнера</summary><pre>{qaWaiver.assessment.capabilities}</pre></details>}
-       {qaWaiver.assessment.unverified.length>0&&<div className="qa-waiver-cases">
-        {qaWaiver.assessment.unverified.map(item=><div key={item.id} className="qa-waiver-case">
-         <b>{item.title}</b><span>{item.evidence}</span>
-        </div>)}
-       </div>}
-       {qaWaiver.assessment.eligible?<>
-        <p className="muted">Подтверждённых дефектов и упавших автоматических тестов нет. Можно явно разрешить слияние PR без перечисленных сценариев. Это не отменяет проверок GitHub и не означает, что сценарии пройдены.</p>
-        <textarea rows={3} placeholder="Почему допустимо слияние без этих проверок?" value={qaWaiverReason} onChange={e=>setQaWaiverReason(e.target.value)}/>
-        <label className="qa-waiver-confirm"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Я понимаю, что перечисленные сценарии не проверялись, и принимаю риск.</label>
-        <button className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20} onClick={()=>void approveQaWaiver()}>
-         {qaWaiverBusy?'Согласование…':'Разрешить слияние с непроверенными сценариями'}
-        </button>
-       </>:<div className="qa-waiver-blockers">
-        <strong>Слияние без тестов пока недопустимо</strong>
-        {qaWaiver.assessment.blockers.map((reason,i)=><p key={i}>{reason}</p>)}
-        <p className="muted">Можно исправить окружение или уточнить проверку и запустить QA повторно.</p>
-       </div>}
-      </div>}
      <div className="task-dependency">
       <label>Зависит от задачи
        <select value={activeTask.depends_on_task_id||''} disabled={!!activeTask.git_branch||['merge_queue','documentation','done'].includes(activeTask.stage)}
@@ -1489,6 +1480,62 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
       {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
+     </div>
+     <div className="task-action-feed" aria-label="Требования и решения по тестированию">
+     {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
+      <div className={'task-requirements-review '+requirements.task.spec_review_status}>
+       <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
+       <p>{requirements.task.spec_review_note||'Актуальная версия требований ожидает проверки.'}</p>
+       {requirements.task.spec_review_status==='pending'&&<button className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить проверку аналитиком</button>}
+       {requirements.task.spec_review_status==='needs_approval'&&(()=>{
+        const review=requirements.reviews.find(item=>item.status==='needs_approval'&&item.spec_version===requirements.task.spec_version);
+        if(!review)return null;
+        return <div className="requirement-proposal">
+         <strong>Предлагаемое ТЗ</strong><div className="task-readonly">{review.proposed_description}</div>
+         {!!review.questions?.length&&<div className="muted">{review.questions.map((q,i)=><p key={i}>{q}</p>)}</div>}
+         <div className="requirements-actions">
+          <button className="primary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'approve')}>Согласовать изменение</button>
+          <button className="secondary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'reject')}>Отклонить и вернуть разработчику</button>
+         </div>
+        </div>;
+       })()}
+      </div>}
+     {requirements&&<details className="task-requirements-history">
+      <summary>История требований · версия {requirements.task.spec_version}</summary>
+      {requirements.versions.map(v=><div key={v.version}><strong>v{v.version}</strong> · {v.origin} · {new Date(v.created_at).toLocaleString('ru-RU')}{v.reason&&<p>{v.reason}</p>}</div>)}
+     </details>}
+     {!!activeTask.test_feedback&&<div className="task-test-feedback">
+      <strong>{newestTaskTest?.verdict==='blocked'?'Ограничения проверки':'Замечания AI-тестировщика'}</strong>
+      <pre>{activeTask.test_feedback}</pre>
+      <small>{newestTaskTest?.verdict==='blocked'?'Непроверенные сценарии нельзя считать успешно пройденными.':'Воспроизводимые дефекты возвращаются разработчику.'}</small>
+     </div>}
+     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&
+      <div className="qa-waiver-panel">
+       <strong>Не все сценарии удалось проверить</strong>
+       <p>{qaWaiver.assessment.summary||'Тестировщик указал ограничения инструментов и среды исполнения.'}</p>
+       <div className="qa-waiver-counts">
+        Проверено: <b>{qaWaiver.assessment.passed} из {qaWaiver.assessment.total}</b>. 
+        Не проверено: <b>{qaWaiver.assessment.unverified.length}</b>.
+       </div>
+       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities"><summary>Доступные инструменты QA-контейнера</summary><pre>{qaWaiver.assessment.capabilities}</pre></details>}
+       {qaWaiver.assessment.unverified.length>0&&<div className="qa-waiver-cases">
+        {qaWaiver.assessment.unverified.map(item=><div key={item.id} className="qa-waiver-case">
+         <b>{item.title}</b><span>{item.evidence}</span>
+        </div>)}
+       </div>}
+       {qaWaiver.assessment.eligible?<>
+        <p className="muted">Подтверждённых дефектов и упавших автоматических тестов нет. Можно явно разрешить слияние PR без перечисленных сценариев. Это не отменяет проверок GitHub и не означает, что сценарии пройдены.</p>
+        <textarea rows={3} placeholder="Почему допустимо слияние без этих проверок?" value={qaWaiverReason} onChange={e=>setQaWaiverReason(e.target.value)}/>
+        <label className="qa-waiver-confirm"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Я понимаю, что перечисленные сценарии не проверялись, и принимаю риск.</label>
+        <button className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20} onClick={()=>void approveQaWaiver()}>
+         {qaWaiverBusy?'Согласование…':'Разрешить слияние с непроверенными сценариями'}
+        </button>
+       </>:<div className="qa-waiver-blockers">
+        <strong>Слияние без тестов пока недопустимо</strong>
+        {qaWaiver.assessment.blockers.map((reason,i)=><p key={i}>{reason}</p>)}
+        <p className="muted">Можно исправить окружение или уточнить проверку и запустить QA повторно.</p>
+       </div>}
+      </div>}
      </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
       <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
