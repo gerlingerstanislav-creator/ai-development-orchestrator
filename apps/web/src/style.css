@@ -346,3 +346,60 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .tasks-page .lane-heading:has(> button.secondary) > b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .tasks-page .lane-heading:has(> button.secondary) > .count{margin-left:0;flex-shrink:0}
 .tasks-page .lane-heading:has(> button.secondary) > button.secondary{grid-column:1/-1;grid-row:2;min-width:0;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;justify-content:center}
+
+/* Fixed application chrome: independent sidebar, compact sticky header. */
+.shell{align-items:flex-start;min-height:100vh}
+.sidebar{position:sticky;top:0;height:100vh;min-height:0;overflow:visible;z-index:22;padding:18px 12px 12px}
+.sidebar .brand{padding:2px 9px 19px}
+.sidebar-nav{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-top:4px}
+.sidebar-bottom{margin-top:auto;flex-shrink:0;gap:8px;padding:12px 4px 2px}
+.sidebar-bottom .account-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sidebar-bottom .account-settings-button,.sidebar-bottom .logout-button{margin:0;flex:0 0 28px;width:28px;height:28px;display:grid;place-items:center;color:#8993a6;border:0;border-radius:7px;background:transparent;text-decoration:none;padding:0}
+.sidebar-bottom .account-settings-button:hover,.sidebar-bottom .logout-button:hover,.sidebar-bottom .account-settings-button.active{background:#edf0ff;color:#5362d2}
+.sidebar-projects{position:relative;flex:0 0 auto;padding:0 3px 5px}
+.project-selector{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-width:0;text-align:left;border:1px solid #e1e5ef;border-radius:9px;background:#f8f9fd;color:#2f3a50;padding:11px 9px;font-size:12px;font-weight:700}
+.project-selector-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.project-selector svg{flex:0 0 auto;transition:transform .18s}
+.project-selector svg.rotate{transform:rotate(180deg)}
+.project-selector:focus-visible{outline:2px solid #8794e8;outline-offset:2px}
+.project-menu{position:absolute;left:3px;right:3px;top:calc(100% - 1px);z-index:30;background:white;border:1px solid #e0e5f0;border-radius:10px;padding:5px;box-shadow:0 12px 25px #25334f24;max-height:min(350px,60vh);overflow-y:auto}
+.project-menu a,.project-menu button{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:10px 8px;color:#47536a;text-decoration:none;background:white;border:0;border-radius:7px;font-size:12px}
+.project-menu a:hover,.project-menu button:hover,.project-menu a.selected{background:#f0f2ff;color:#5362d2}
+.project-menu button{border-top:1px solid #e9ecf4;margin-top:4px;color:#5868df;font-weight:650}
+.project-menu-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.main{min-width:0;flex:1}
+.topbar{position:sticky;top:0;z-index:20;height:45px;min-height:45px;padding:0 20px;gap:8px;background:rgba(255,255,255,.98);backdrop-filter:blur(8px);white-space:nowrap}
+.topbar .crumb,.topbar>strong,.topbar .project-crumb{overflow:hidden;text-overflow:ellipsis;max-width:30vw}
+.top-right{margin-left:auto;display:flex;align-items:center;flex:0 0 auto}
+.quota-widget{position:relative;display:flex;align-items:center;justify-content:center;width:91px;height:27px;border:1px solid transparent;border-radius:6px;outline-offset:2px;cursor:default}
+.quota-widget:hover,.quota-widget:focus-visible{border-color:#e3e8f0;background:#f8f9fc}
+.quota-compact{width:76px;display:flex;flex-direction:column;gap:5px}
+.quota-compact .quota-track{height:4px}
+.quota-track{background:#e6eaf1;width:100%;overflow:hidden;border-radius:30px}
+.quota-fill{height:100%;border-radius:30px;transition:width .35s ease,background-color .7s ease}
+.quota-unknown{width:100%;height:100%;background:repeating-linear-gradient(90deg,#cbd2df,#cbd2df 6px,#ecedf3 6px,#ecedf3 12px)}
+.quota-popover{display:none;position:absolute;top:calc(100% + 8px);right:0;width:255px;max-width:calc(100vw - 30px);padding:16px;background:white;border:1px solid #e2e6f0;border-radius:11px;box-shadow:0 16px 44px #18294725;white-space:normal;color:#354259}
+.quota-widget:hover .quota-popover,.quota-widget:focus .quota-popover,.quota-widget:focus-within .quota-popover{display:block}
+.quota-popover>strong{display:block;font-size:12px;margin-bottom:11px}
+.quota-popover .quota-line.expanded{margin:10px 0 14px}
+.quota-popover .quota-track{height:10px;margin:7px 0 4px}
+.quota-label{display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px}
+.quota-label strong{font-size:11px}
+.quota-popover small{font-size:10px;color:#8a95a9}
+.quota-updated{display:block;border-top:1px solid #eef0f5;padding-top:10px;margin-top:10px}
+@media(max-width:700px){
+ .sidebar{width:70px;flex-basis:70px;padding:13px 5px}
+ .sidebar-projects{padding:0 1px}
+ .project-selector{justify-content:center;padding:8px 3px}
+ .project-selector-title{display:none}
+ .project-menu{left:0;right:auto;width:230px}
+ .sidebar .brand{padding:2px 3px 16px}
+ .sidebar .sidebar-nav .nav{font-size:0}
+ .sidebar-bottom{flex-wrap:wrap;justify-content:center}
+ .sidebar-bottom .account-name{display:none}
+ .sidebar-bottom .account-settings-button,.sidebar-bottom .logout-button{display:grid}
+ .topbar{height:43px;min-height:43px;padding:0 10px}
+ .topbar .crumb,.topbar>strong{max-width:20vw}
+ .quota-widget{width:77px}
+ .quota-compact{width:64px}
+}
