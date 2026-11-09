@@ -175,6 +175,10 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     if(!files.length)throw Error('В указанном каталоге нет Markdown-файлов.');
     const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
     const existingDocs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 20',[id]);
+    const getInstructions=async()=>{
+     const instructions=await pool.query('SELECT body FROM process_instructions WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 8',[id,jobId]);
+     return instructions.rows.reverse().map((row:any)=>'- '+String(row.body).slice(0,2000)).join('\n');
+    };
     const rules=await rulesContext(id);
     // Summarise every source chunk separately: the Codex assistant endpoint has
     // a strict 24k-character prompt limit. Never silently drop source tails.
@@ -198,6 +202,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
       'Верни ТОЛЬКО JSON: {"notes":"подробные, но компактные Markdown-заметки с фактами, требованиями, ограничениями, решениями, гипотезами, противоречиями и именами сущностей"}',
       'Учитывай точные значения, имена, параметры, статусы и ограничения. Ничего не выдумывай. Отмечай, если мысль обрывается на границе фрагмента.',
       'Источник: '+chunk.path+'; фрагмент '+chunk.part+' из '+chunk.total+'.',
+      'Дополнительные уточнения пользователя (если есть): '+(await getInstructions()),
       'Файл ('+partNumber+'/'+chunks.length+'):',
       chunk.content
      ].join('\n\n');
@@ -260,6 +265,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      'Правила: '+rules.slice(0,1500),
      'Существующие документы: '+JSON.stringify(existingDocs.rows.map((d:any)=>({title:d.title}))).slice(0,2200),
      'Запрос: '+message.slice(0,2000),
+     'Уточнения пользователя, поступившие во время импорта: '+(await getInstructions()),
      'Источник: '+location.owner+'/'+location.repository+'@'+location.branch+'/'+location.path,
      'Исходные пути файлов: '+files.map(f=>f.path).join(', ').slice(0,1800),
      'Конспекты всех фрагментов:\n'+summaries.join('\n\n')
