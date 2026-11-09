@@ -783,11 +783,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setNoteBusy(true);
   try{
    const id=selected.id,taskId=activeTask.id;
-   await api('/projects/'+id+'/tasks/'+taskId+'/agent-notes/'+answerNoteId+'/answer',{method:'POST',body:JSON.stringify({answer:answerText.trim()})});
+   const response=await api<{pending_questions:number;requires_approval:boolean;requirements_review?:{started?:boolean;message?:string}|null}>('/projects/'+id+'/tasks/'+taskId+'/agent-notes/'+answerNoteId+'/answer',{method:'POST',body:JSON.stringify({answer:answerText.trim()})});
    setAnswerNoteId(null);setAnswerText('');
    await refreshTaskActivity(id,taskId);
    await loadRequirements(id,taskId);
-   setTaskFeedback('Ответ сохранён. Аналитик должен учесть уточнение до продолжения работы.');
+   setTaskFeedback(response.pending_questions>0?'Ответ сохранён. Осталось ответить на '+response.pending_questions+' вопрос(а).':response.requires_approval?'Вопрос закрыт, но изменение поведения требует отдельного согласования. Рассмотри предложение аналитика.':response.requirements_review?.message||'Ответ сохранён. Сверка аналитика требуется перед продолжением.');
   }catch(e){fail(e);}finally{setNoteBusy(false);}
  }
  async function showTaskCancellation(){
