@@ -5,6 +5,11 @@ import {z} from 'zod';
 
 const params=z.object({id:z.string().uuid(),taskId:z.string().uuid()});
 type Dependencies={pool:Pool;access:(r:any,p:any,id:string)=>Promise<boolean>;requireAdmin:(r:any,p:any)=>Promise<boolean>;uid:(r:any)=>string;decryptToken:(value:string)=>string};
+/** Failed Codex attempts can create a remote UUID branch before tasks.git_branch is saved. */
+export function needsGitHubCleanup(task:{git_branch?:string|null;pr_number?:number|null},hadDevelopmentRuns:boolean){
+ return Boolean(task.git_branch||task.pr_number||hadDevelopmentRuns);
+}
+
 
 export async function initTaskCancellationSchema(pool:Pool){
  await pool.query("ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_by_task_id uuid REFERENCES tasks(id) ON DELETE SET NULL");
@@ -14,12 +19,13 @@ export async function initTaskCancellationSchema(pool:Pool){
 async function taskPreview(client:Pool|PoolClient,projectId:string,taskId:string){
  const t=await client.query("SELECT id,title,display_number,stage,git_branch,pr_url,pr_number FROM tasks WHERE project_id=$1 AND id=$2",[projectId,taskId]);
  if(!t.rowCount)return null;
- const [dependents,active,activeTest,legacyRuns,activeReview,docs,plans,cases,flows,versions]=await Promise.all([
+ const [dependents,active,activeTest,legacyRuns,activeReview,developmentHistory,docs,plans,cases,flows,versions]=await Promise.all([
   client.query('SELECT display_number,title FROM tasks WHERE project_id=$1 AND depends_on_task_id=$2 LIMIT 15',[projectId,taskId]),
   client.query("SELECT workflow_id FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[projectId,taskId]),
   client.query("SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('running','queued') LIMIT 1",[projectId,taskId]),
   client.query("SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('running','queued') LIMIT 1",[projectId,taskId]),
   client.query("SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('running','queued') LIMIT 1",[projectId,taskId]),
+  client.query('SELECT count(*)::int AS total FROM ai_task_runs WHERE project_id=$1 AND task_id=$2',[projectId,taskId]),
   client.query("SELECT count(*)::int AS n FROM documents WHERE project_id=$1 AND created_by_task_id=$2",[projectId,taskId]),
   client.query("SELECT count(*)::int AS n FROM qa_test_plans WHERE project_id=$1 AND task_id=$2",[projectId,taskId]),
   client.query("SELECT count(*)::int AS n FROM qa_test_cases WHERE project_id=$1 AND source_task_id=$2",[projectId,taskId]),
@@ -34,7 +40,7 @@ async function taskPreview(client:Pool|PoolClient,projectId:string,taskId:string
  if(versions.rows[0].n)blocked.push('Есть версии общей проектной документации с этой задачей; сначала разреши историю документации');
  const sharedChildren=await client.query("SELECT count(*)::int AS n FROM documents d WHERE d.project_id=$1 AND d.parent_id IN (SELECT id FROM documents WHERE project_id=$1 AND created_by_task_id=$2) AND d.created_by_task_id IS DISTINCT FROM $2",[projectId,taskId]);
  if(sharedChildren.rows[0].n)blocked.push('Документы задачи используются как родительские страницы для чужой документации');
- return {task:row,blocked,stats:{documents:docs.rows[0].n,qa_plans:plans.rows[0].n,qa_cases:cases.rows[0].n,qa_flows:flows.rows[0].n},confirmation:'ОТМЕНИТЬ #'+row.display_number};
+ return {task:row,blocked,github_cleanup_required:needsGitHubCleanup(row,developmentHistory.rows[0].total>0),warnings:['Автоматически удаляются только документы, явно привязанные к задаче. Исторические или общие страницы без такой привязки сохраняются.'],stats:{documents:docs.rows[0].n,qa_plans:plans.rows[0].n,qa_cases:cases.rows[0].n,qa_flows:flows.rows[0].n},confirmation:'ОТМЕНИТЬ #'+row.display_number};
 }
 async function github(token:string,repository:string,path:string,method:'GET'|'PATCH'|'DELETE'='GET',body?:unknown){
  const response=await fetch('https://api.github.com/repos/'+repository+path,{method,headers:{
@@ -96,10 +102,10 @@ export function registerTaskCancellationRoutes(app:FastifyInstance,deps:Dependen
    }
    const task=row.rows[0];
    const link=await client.query("SELECT g.repository,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id AND c.owner_id=$2 WHERE g.project_id=$1",[id,uid(req)]);
-   if((task.git_branch||task.pr_number)&&!link.rowCount){
+   if(preview.github_cleanup_required&&!link.rowCount){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Сначала подключи GitHub-токен владельца для безопасной очистки ветки и PR'});
    }
-   if((task.git_branch||task.pr_number)&&link.rowCount)await closeGitHubArtifacts(link.rows[0].repository,decryptToken(link.rows[0].secret_encrypted),task);
+   if(preview.github_cleanup_required&&link.rowCount)await closeGitHubArtifacts(link.rows[0].repository,decryptToken(link.rows[0].secret_encrypted),task);
    const processIds=await client.query("SELECT id FROM ai_task_runs WHERE task_id=$1 UNION SELECT id FROM ai_test_runs WHERE task_id=$1 UNION SELECT id FROM requirement_review_runs WHERE task_id=$1",[taskId]);
    if(processIds.rowCount)await client.query('DELETE FROM process_events WHERE project_id=$1 AND process_id=ANY($2::uuid[])',[id,processIds.rows.map(x=>x.id)]);
    // The QA plan may reuse shared regression cases; delete only those no longer used.
