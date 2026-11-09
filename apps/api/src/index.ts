@@ -71,6 +71,42 @@ async function dbInit() {
   created_at timestamptz not null default now(), updated_at timestamptz not null default now()
  );
  CREATE INDEX IF NOT EXISTS idx_document_import_jobs_project ON document_import_jobs(project_id,created_at DESC);
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_url text;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS request_text text;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_file_count int;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS analyzed_chunks int not null default 0;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS total_chunks int;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS saved_documents int not null default 0;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS draft_result jsonb;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_key text;
+ CREATE TABLE IF NOT EXISTS process_events (
+  id uuid primary key, project_id uuid not null references projects(id) on delete cascade,
+  process_id uuid not null, process_kind text not null, level text not null default 'info',
+  stage text not null, detail text not null default '',
+  created_at timestamptz not null default now()
+ );
+ CREATE INDEX IF NOT EXISTS idx_process_events_history ON process_events(project_id,process_id,created_at);
+ CREATE TABLE IF NOT EXISTS process_instructions (
+  id uuid primary key,project_id uuid not null references projects(id) on delete cascade,
+  process_id uuid not null,actor_id uuid not null references users(id),
+  body text not null,created_at timestamptz not null default now()
+ );
+ CREATE INDEX IF NOT EXISTS idx_process_instructions ON process_instructions(project_id,process_id,created_at);
+
+ CREATE TABLE IF NOT EXISTS merge_process_runs (
+  id uuid primary key,project_id uuid not null references projects(id) on delete cascade,
+  actor_id uuid not null references users(id),status text not null default 'running',
+  message text not null default '',current_task uuid,
+  results jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),finished_at timestamptz
+ );
+ CREATE INDEX IF NOT EXISTS idx_merge_process_runs_project ON merge_process_runs(project_id,created_at DESC);
+ UPDATE merge_process_runs SET status='failed',message='Слияние прервано перезапуском API',finished_at=now() WHERE status='running';
+
+ ALTER TABLE documents ADD COLUMN IF NOT EXISTS document_kind text not null default 'technical';
+ ALTER TABLE documents ADD COLUMN IF NOT EXISTS implementation_status text not null default 'unverified';
+ ALTER TABLE documents ADD COLUMN IF NOT EXISTS implementation_evidence text not null default '';
+
  UPDATE document_import_jobs SET status='failed',message='Импорт прерван перезапуском сервера. Повтори импорт.' WHERE status='running';
 
  CREATE TABLE IF NOT EXISTS project_rules (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, body text not null, origin text not null default 'manual', source_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
@@ -443,6 +479,8 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
   title:t.rows[0].title,description:t.rows[0].description,dependsOnTaskId:parentId,projectRules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),relatedTasks:related.map(x=>({title:x.title,description:x.description.slice(0,1500),stage:x.stage}))};
  await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status) VALUES($1,$2,$3,$4,$5,'queued')",
  [runId,id,taskId,uid(req),ai.model]);
+ await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','queued',$4)",
+  [randomUUID(),id,runId,'Запуск разработки принят в очередь']);
  try{
   const worker=await agentCall('/jobs','POST',job);
   await pool.query('UPDATE ai_task_runs SET status=$2,message=$3 WHERE id=$1',[runId,worker.status==='queued'?'queued':'running',String(worker.message||'Запуск принят')]);
@@ -470,6 +508,8 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
    if(remote.status!==current.status)await pool.query('UPDATE ai_task_runs SET status=$2 WHERE id=$1',[runId,remote.status]);
    if(phase && phase!==current.message){
     await pool.query('UPDATE ai_task_runs SET message=$2 WHERE id=$1',[runId,phase]);
+    await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'development',$4,$5,$6)",
+     [randomUUID(),id,runId,remote.status==='failed'?'error':'info',remote.status||'running',phase]).catch(()=>{});
     await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
       [randomUUID(),current.task_id,uid(req),remote.status==='failed'?'ai_failed':remote.status==='completed'?'ai_completed':'ai_progress',phase]);
    }
@@ -670,7 +710,7 @@ const runningMergeProjects=new Map<string,string>();
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
- const [developments,imports,accessibleProjects]=await Promise.all([
+ const [developments,imports,accessibleProjects,merges]=await Promise.all([
   pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.title AS task_title,t.display_number,a.status,a.message,a.created_at
     FROM ai_task_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
     JOIN tasks t ON t.id=a.task_id
@@ -680,7 +720,8 @@ app.get('/api/background-processes',async(req:any)=>{
     FROM document_import_jobs j JOIN projects p ON p.id=j.project_id
     JOIN memberships m ON m.project_id=j.project_id AND m.user_id=$1
     WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50`,[userId]),
-  pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId])
+  pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId]),
+  pool.query("SELECT j.id,j.project_id,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50",[userId])
  ]);
  const processes:BackgroundProcess[]=[];
  for(const row of developments.rows){
@@ -692,8 +733,20 @@ app.get('/api/background-processes',async(req:any)=>{
    status=String(remote.status||status);
    detail=String(remote.message||detail).slice(0,250);
    if(['completed','failed'].includes(status)){
-    // Preserve the existing full reconciliation workflow in the task-run endpoint.
-    // Do not present a finished process as active.
+    await pool.query("UPDATE ai_task_runs SET status=$2,message=$3,branch=COALESCE($4,branch),pr_url=COALESCE($5,pr_url),completed_at=now() WHERE id=$1 AND status IN ('running','queued')",
+     [row.id,status,detail,remote.branch||null,remote.prUrl||null]).catch(()=>{});
+    if(status==='completed'&&remote.prUrl){
+     const match=/\/pull\/(\d+)$/.exec(remote.prUrl);
+     await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",
+      [row.task_id,remote.branch||null,remote.prUrl,match?Number(match[1]):null,row.project_id,remote.baseBranch||null]).catch(()=>{});
+    }
+    if(remote.usage){
+     const u=remote.usage;
+     await pool.query("INSERT INTO ai_token_usage(id,project_id,task_id,source_id,operation,model,input_tokens,cached_input_tokens,output_tokens) SELECT $1,$2,$3,$4,'development',a.model,$5,$6,$7 FROM ai_task_runs a WHERE a.id=$4 ON CONFLICT(source_id) DO NOTHING",
+      [randomUUID(),row.project_id,row.task_id,row.id,Math.max(0,Number(u.input_tokens)||0),Math.max(0,Number(u.cached_input_tokens)||0),Math.max(0,Number(u.output_tokens)||0)]).catch(()=>{});
+    }
+    await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'development',$4,$5,$6)",
+     [randomUUID(),row.project_id,row.id,status==='failed'?'error':'info',status,detail]).catch(()=>{});
     continue;
    }
   }catch(error){
@@ -702,22 +755,24 @@ app.get('/api/background-processes',async(req:any)=>{
    detail='Связь с исполнителем временно недоступна · '+detail;
   }
   if(status!=='queued'&&status!=='running')continue;
+  if(status!==row.status||detail!==row.message){
+   await pool.query('UPDATE ai_task_runs SET status=$2,message=$3 WHERE id=$1',[row.id,status,detail]).catch(()=>{});
+   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development',$4,$5)",
+    [randomUUID(),row.project_id,row.id,status,detail]).catch(()=>{});
+  }
   processes.push({id:'development:'+row.id,kind:'development',projectId:row.project_id,projectName:row.project_name,
    taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
-   detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/tasks/'+row.task_id});
+   detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  for(const row of imports.rows){
   processes.push({id:'import:'+row.id,kind:'document_import',projectId:row.project_id,projectName:row.project_name,
    title:'Импорт документации',detail:String(row.message||'Обработка Markdown-документов').slice(0,250),
-   status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/docs'});
+   status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
- const projectNames=new Map<string,string>(accessibleProjects.rows.map((row:any)=>[row.id,row.name]));
- for(const batch of mergeBatches.values()){
-  const projectName=projectNames.get(batch.projectId);
-  if(!projectName||batch.status!=='running')continue;
-  processes.push({id:'merge:'+batch.id,kind:'merge',projectId:batch.projectId,projectName,
-   title:'Последовательное слияние PR',detail:batch.message||'Обработка очереди Pull Request',
-   status:'running',createdAt:batch.createdAt,url:'/projects/'+batch.projectId+'/tasks'});
+ for(const row of merges.rows){
+  processes.push({id:'merge:'+row.id,kind:'merge',projectId:row.project_id,projectName:row.project_name,
+   title:'Последовательное слияние PR',detail:row.message||'Обработка PR',status:'running',
+   createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  processes.sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
  return {count:processes.length,processes,checkedAt:new Date().toISOString()};
@@ -798,10 +853,16 @@ async function runMergeBatch(batch:MergeBatch,userId:string){
     }
    }
    if(!success)batch.results.push({taskId:task.id,status:'skipped',reason});
+   await pool.query("UPDATE merge_process_runs SET message=$2,current_task=$3,results=$4 WHERE id=$1",
+    [batch.id,batch.message,task.id,JSON.stringify(batch.results)]).catch(()=>{});
+   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'merge',$4,$5,$6)",
+    [randomUUID(),batch.projectId,batch.id,success?'info':'warning',success?'merged':'skipped',success?'PR успешно слит':reason.slice(0,1200)]).catch(()=>{});
   }
  }catch(e){batch.message='Ошибка обработки очереди: '+(e instanceof Error?e.message:String(e));}
  finally{
   batch.currentTask=null;batch.status='completed';batch.finishedAt=new Date().toISOString();
+  await pool.query("UPDATE merge_process_runs SET status=$2,message=$3,results=$4,finished_at=now(),current_task=NULL WHERE id=$1",
+   [batch.id,'completed',batch.message,JSON.stringify(batch.results)]).catch(()=>{});
   if(runningMergeProjects.get(batch.projectId)===batch.id)runningMergeProjects.delete(batch.projectId);
  }
 }
@@ -812,6 +873,8 @@ app.post('/api/projects/:id/merge-ready',async(req:any,reply)=>{
  if(existingId)return reply.code(409).send({error:'Слияние уже выполняется',batchId:existingId});
  const batch:MergeBatch={id:randomUUID(),projectId:id,status:'running',results:[],currentTask:null,message:'Подготовка очереди',createdAt:new Date().toISOString()};
  mergeBatches.set(batch.id,batch);runningMergeProjects.set(id,batch.id);
+ await pool.query("INSERT INTO merge_process_runs(id,project_id,actor_id,status,message) VALUES($1,$2,$3,'running',$4)",[batch.id,id,uid(req),batch.message]);
+ await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'merge','started','Запущено последовательное слияние')",[randomUUID(),id,batch.id]);
  void runMergeBatch(batch,uid(req));
  return reply.code(202).send(batch);
 });
@@ -915,26 +978,66 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
  }
  return true;
 }
+// Project-scoped process center. The global counter uses this same data model.
+app.get('/api/projects/:id/processes',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const [imports,developments,merges]=await Promise.all([
+  pool.query("SELECT id,status,message,source_url,source_file_count,analyzed_chunks,total_chunks,saved_documents,created_at,updated_at,result,draft_result IS NOT NULL AS has_draft FROM document_import_jobs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT id,status,message,created_at,finished_at,results FROM merge_process_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id])
+ ]);
+ const processes:any[]=[
+  ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:'Импорт документации'+(r.source_url?' · '+r.source_url.split('/').slice(-1)[0]:''),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,progress:{completed:r.analyzed_chunks,total:r.total_chunks},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
+  ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
+ ];
+ for(const row of merges.rows){
+  processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
+ }
+ processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
+ return {processes,checkedAt:new Date().toISOString()};
+});
+app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,reply)=>{
+ const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {message}=parse(z.object({message:z.string().trim().min(3).max(2000)}),req.body);
+ const job=await pool.query("SELECT status,message FROM document_import_jobs WHERE project_id=$1 AND id=$2 AND actor_id=$3",[id,processId,uid(req)]);
+ if(!job.rowCount)return reply.code(404).send({error:'Процесс импорта не найден'});
+ if(job.rows[0].status!=='running')return reply.code(409).send({error:'Уточнения можно отправлять, пока импорт выполняется'});
+ if(/Формирование итоговой структуры|Сохранение документов/.test(String(job.rows[0].message)))
+  return reply.code(409).send({error:'Агент уже формирует или сохраняет итоговый результат. Уточнение на этой стадии не успеет примениться.'});
+ await pool.query('INSERT INTO process_instructions(id,project_id,process_id,actor_id,body) VALUES($1,$2,$3,$4,$5)',
+  [randomUUID(),id,processId,uid(req),message]);
+ await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','user_instruction',$4)",
+  [randomUUID(),id,processId,message]);
+ return {ok:true,message:'Уточнение принято и будет учтено на следующем этапе анализа или формирования документации.'};
+});
+app.get('/api/projects/:id/processes/:processId/events',async(req:any,reply)=>{
+ const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const rows=await pool.query("SELECT id,process_kind,level,stage,detail,created_at FROM process_events WHERE project_id=$1 AND process_id=$2 ORDER BY created_at ASC LIMIT 500",[id,processId]);
+ return rows.rows;
+});
 app.get('/api/projects/:id/docs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
  return (await pool.query('SELECT * FROM documents WHERE project_id=$1 ORDER BY title ASC, id ASC',[id])).rows;
 });
 app.post('/api/projects/:id/docs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
- const {title,body,parent_id}=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:docParent}),req.body);
+ const {title,body,parent_id,document_kind,implementation_status,implementation_evidence}=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:docParent,document_kind:z.enum(['technical','functional']).default('technical'),implementation_status:z.enum(['unverified','planned','partial','implemented']).default('unverified'),implementation_evidence:z.string().max(2000).default('')}),req.body);
  if(!await validDocParent(id,null,parent_id??null))return reply.code(400).send({error:'Родительская страница не найдена в проекте'});
  const docId=randomUUID();
- await pool.query('INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,$3,$4,$5)',[docId,id,title,body,parent_id??null]);
+ await pool.query('INSERT INTO documents(id,project_id,title,body,parent_id,document_kind,implementation_status,implementation_evidence) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[docId,id,title,body,parent_id??null,document_kind,implementation_status,implementation_evidence]);
  return reply.code(201).send({id:docId});
 });
 app.patch('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
  const {id,docId}=parse(z.object({id:z.string().uuid(),docId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
- const data=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000),parent_id:docParent}),req.body);
+ const data=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000),parent_id:docParent,document_kind:z.enum(['technical','functional']).optional(),implementation_status:z.enum(['unverified','planned','partial','implemented']).optional(),implementation_evidence:z.string().max(2000).optional()}),req.body);
  const old=await pool.query('SELECT parent_id FROM documents WHERE id=$1 AND project_id=$2',[docId,id]);
  if(!old.rowCount)return reply.code(404).send({error:'Документ не найден'});
  const parentId=data.parent_id===undefined?old.rows[0].parent_id:data.parent_id;
  if(!await validDocParent(id,docId,parentId))return reply.code(400).send({error:'Нельзя переместить страницу в себя, своего потомка или другой проект'});
- await pool.query('UPDATE documents SET title=$1,body=$2,parent_id=$3,updated_at=now() WHERE id=$4 AND project_id=$5',[data.title,data.body,parentId,docId,id]);
+ await pool.query('UPDATE documents SET title=$1,body=$2,parent_id=$3,document_kind=COALESCE($6,document_kind),implementation_status=COALESCE($7,implementation_status),implementation_evidence=COALESCE($8,implementation_evidence),updated_at=now() WHERE id=$4 AND project_id=$5',[data.title,data.body,parentId,docId,id,data.document_kind||null,data.implementation_status||null,data.implementation_evidence??null]);
  return {ok:true};
 });
 app.delete('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
