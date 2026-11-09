@@ -471,7 +471,7 @@ function managerRequestSummary(request:any){
 export async function resolvePeerQuestions(args:{projectId:string;taskId:string}):Promise<{resolved:number;pending:number}>{
  const {projectId,taskId}=args;
  const notes=await pool.query(
-  "SELECT id,author_stage,target_stage,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND source_kind='agent' AND target_stage IN ('analysis','development','testing','documentation') AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) ORDER BY created_at LIMIT 5",
+  "SELECT id,author_stage,target_stage,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND source_kind='agent' AND target_stage IN ('analysis','development','testing','documentation') AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) ORDER BY created_at LIMIT 2",
   [projectId,taskId]);
  let resolved=0;
  for(const note of notes.rows){
