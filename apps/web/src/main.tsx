@@ -1176,11 +1176,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return <div className="lane" key={s.stage}
    onDragOver={isQuestions?undefined:e=>e.preventDefault()}
    onDrop={isQuestions?undefined:e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
-   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
+   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length+(isQuestions?docQuestions.length:0)}</span>
     {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
     {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
    </div>
-   <div className="cards">{stageTasks.map(t=>renderKanbanCard(t))}{stageTasks.length===0&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}</div>
+   <div className="cards">
+     {stageTasks.map(t=>renderKanbanCard(t))}
+     {isQuestions&&docQuestions.map(question=><div className="task-card docs-question-card" key={'doc-question-'+question.id}>
+      <span className="task-type">Уточнение документации</span>
+      <strong>{question.question}</strong>
+      <a href={projectUrl(selected!.id,'docs')+'/'+question.document_id} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+question.document_id)}>ТЗ: {question.document_title}</a>
+      {question.status==='answered'?<small className="muted">Ответ получен. Аналитик обновляет страницу.</small>:<>
+       <textarea rows={3} value={questionAnswers[question.id]||''} onChange={e=>setQuestionAnswers(old=>({...old,[question.id]:e.target.value}))} placeholder="Решение владельца продукта"/>
+       <button className="secondary" disabled={processActionBusy||!(questionAnswers[question.id]||'').trim()} onClick={()=>void answerDocumentationQuestion(question)}>Ответить аналитику</button>
+      </>}
+     </div>)}
+     {stageTasks.length===0&&(!isQuestions||docQuestions.length===0)&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}
+    </div>
   </div>;
  }
  function renderCollapsedGroup(group:KanbanGroup){
@@ -1199,6 +1211,25 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {group.stages.some(stage=>stage.stage==='documentation')&&tasks.some(t=>t.stage==='documentation')&&
     <button className="secondary group-action" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
   </div>;
+ }
+ async function answerDocumentationQuestion(question:DocumentationQuestion){
+  if(!selected||processActionBusy)return;
+  const answer=questionAnswers[question.id]?.trim();
+  if(!answer){setError('Введи ответ владельца продукта');return;}
+  setProcessActionBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/documentation/questions/'+question.id+'/answer',{method:'POST',body:JSON.stringify({answer})});
+   setQuestionAnswers(old=>({...old,[question.id]:''}));
+   await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setProcessActionBusy(false);}
+ }
+ async function decideDocumentationProposal(proposal:DocumentationProposal,decision:'approve'|'reject'){
+  if(!selected||processActionBusy)return;
+  setProcessActionBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/documentation/proposals/'+proposal.id+'/decision',{method:'POST',body:JSON.stringify({decision})});
+   await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setProcessActionBusy(false);}
  }
  async function restartImport(process:ProjectProcess){
   if(!selected||processActionBusy)return;
@@ -1438,7 +1469,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </>}
       </div>
      </header>
-     {editingDoc?.id===doc.id? <div className="docs-editing">
+     {docProposals.filter(proposal=>proposal.document_id===doc.id).map(proposal=><div className="docs-proposal" key={proposal.id}>
+       <strong>Аналитик предложил изменение, сохранена ручная версия</strong>
+       <p>Тема: {proposal.title}. Перед применением проверь обновлённый Markdown.</p>
+       <details><summary>Посмотреть предложение</summary><DocumentMarkdown source={proposal.proposed_body}/></details>
+       <div className="docs-actions">
+        <button className="primary" disabled={processActionBusy} onClick={()=>void decideDocumentationProposal(proposal,'approve')}>Применить предложение</button>
+        <button className="secondary" disabled={processActionBusy} onClick={()=>void decideDocumentationProposal(proposal,'reject')}>Отклонить</button>
+       </div>
+      </div>)}
+      {editingDoc?.id===doc.id? <div className="docs-editing">
       {!doc.system_key&&<label>Расположение<select value={editingDoc.parent_id||''} onChange={e=>setEditingDoc({...editingDoc,parent_id:e.target.value||null})}>
               {docs.filter(d=>d.id!==doc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
       </select></label>}
