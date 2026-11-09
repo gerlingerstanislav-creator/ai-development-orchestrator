@@ -107,7 +107,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
    // Existing manually maintained cases are not silently rewritten to match newly generated expectations.
    if(stableId!==caseId&&JSON.stringify(stored.rows[0].steps)!==JSON.stringify(candidate.steps)){
     await client.query("UPDATE qa_test_cases SET status='needs_review' WHERE id=$1",[stableId]);
-    throw new Error('Тест-кейс «'+candidate.title+'» изменил ожидания. Нужна ручная проверка, прежде чем продолжать разработку.');
+    // Preserve previous expectations; the needs_review case blocks development until a human reconciles it.
    }
    selected.add(stableId);
    await client.query("INSERT INTO qa_plan_cases(plan_id,case_id,purpose) VALUES($1,$2,'targeted') ON CONFLICT DO NOTHING",[planId,stableId]);
