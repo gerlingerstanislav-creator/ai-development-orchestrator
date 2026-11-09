@@ -94,7 +94,10 @@ async function prEvidence(projectId:string,taskId:string):Promise<{commitSha:str
 
 export async function reconcileRequirements(args:{projectId:string;taskId:string;runId:string;mode:'handoff'|'edit'}):Promise<'current'|'pending'|'needs_approval'|'rejected'>{
  const {projectId,taskId,runId,mode}=args;
- await pool.query("UPDATE requirement_review_runs SET status='running',message='AI-аналитик сверяет изменения' WHERE id=$1 AND project_id=$2",[runId,projectId]);
+ const version=await pool.query('SELECT spec_version FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
+ if(!version.rowCount)throw Error('Задача не найдена');
+ await pool.query("INSERT INTO requirement_review_runs(id,project_id,task_id,spec_version,status,message) VALUES($1,$2,$3,$4,'running','AI-аналитик сверяет изменения') ON CONFLICT(id) DO UPDATE SET status='running',message=EXCLUDED.message,spec_version=EXCLUDED.spec_version,completed_at=NULL",
+  [runId,projectId,taskId,version.rows[0].spec_version]);
  await event(projectId,runId,'analysis','review_started',mode==='handoff'?'Сверка реализации с утверждённым ТЗ перед тестированием':'Анализ изменения требований');
  try{
   const evidence=await prEvidence(projectId,taskId);
@@ -136,6 +139,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
  const settings=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=settings.rows[0];
  if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI отключён для проекта');
+ await pool.query("UPDATE requirement_review_runs SET status='running',message='QA-агент формирует тест-кейсы',completed_at=NULL WHERE id=$1 AND project_id=$2",[runId,projectId]);
  await event(projectId,runId,'testing','test_design_started','AI-тестировщик формирует тесты по актуализированному ТЗ перед проверкой PR');
  try{
   const evidence=await prEvidence(projectId,taskId);
@@ -152,9 +156,11 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
    if(typeof data.message!=='string')throw new Error('Codex не вернул QA-документацию');
    return data.message;
   });
+  await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,'QA-документация подготовлена: '+count+' проверок',projectId]);
   await event(projectId,runId,'testing','test_design_ready','QA-документация подготовлена: '+count+' проверок');
   return count;
  }catch(e){
+  await pool.query("UPDATE requirement_review_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,String(e).slice(0,1800),projectId]);
   await event(projectId,runId,'testing','test_design_failed',String(e).slice(0,1900),'error');
   throw e;
  }
