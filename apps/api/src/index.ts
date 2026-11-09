@@ -584,6 +584,65 @@ app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
   [id]);
  return result.rows;
 });
+// Recovery of a completed QA result when a historical Temporal workflow ended
+// between persisting the verdict and advancing the task. Never invent a test pass.
+app.post('/api/projects/:id/tasks/:taskId/apply-qa-result',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const task=await pool.query("SELECT t.id,t.stage,t.pr_number,t.spec_version,t.spec_reviewed_version,t.spec_review_status,t.spec_reviewed_commit,g.repository,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
+  [taskId,id,uid(req)]);
+ if(!task.rowCount)return reply.code(404).send({error:'Задача или GitHub-подключение не найдены'});
+ if(task.rows[0].stage!=='testing')return reply.code(409).send({error:'Задача уже вышла из этапа тестирования'});
+ const [owner,active,latest]=await Promise.all([
+  pool.query("SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND project_id=$2 AND state='active'",[taskId,id]),
+  pool.query("SELECT 1 FROM ai_test_runs WHERE task_id=$1 AND project_id=$2 AND status IN ('running','queued')",[taskId,id]),
+  pool.query('SELECT id,verdict,status,qa_spec_version,report,qa_plan_snapshot FROM ai_test_runs WHERE task_id=$1 AND project_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[taskId,id])
+ ]);
+ if(owner.rowCount||active.rowCount)return reply.code(409).send({error:'AI-цикл ещё выполняется. Итог будет применён самим процессом.'});
+ const test=latest.rows[0], t=task.rows[0];
+ if(!test||test.status!=='completed'||!['passed','failed'].includes(test.verdict))
+  return reply.code(409).send({error:'Нет завершённого подтверждённого QA-результата. Повтори тестирование или рассмотри непроверенные сценарии.'});
+ const findings=Array.isArray(test.report?.findings)?test.report.findings:[];
+ const checks=Array.isArray(test.report?.checks)?test.report.checks:[];
+ const cases=Array.isArray(test.report?.caseResults)?test.report.caseResults:[];
+ const failed=cases.some((c:any)=>c.result==='failed')||checks.some((c:any)=>c.result==='failed')||findings.length>0;
+ if(test.verdict==='passed'){
+  if(t.spec_review_status!=='current'||t.spec_version!==t.spec_reviewed_version||t.spec_version!==test.qa_spec_version)
+   return reply.code(409).send({error:'Результат QA относится к устаревшему ТЗ'});
+  const snapshot=Array.isArray(test.qa_plan_snapshot?.cases)?test.qa_plan_snapshot.cases:[];
+  const tested=new Map(cases.map((c:any)=>[c.case_id,c]));
+  if(!snapshot.length||failed||!checks.length||checks.some((c:any)=>c.result!=='passed')||snapshot.some((c:any)=>!tested.has(c.id)||(tested.get(c.id) as any)?.result!=='passed'))
+   return reply.code(409).send({error:'Отчёт не подтверждает успешное прохождение всех обязательных проверок'});
+  if(!t.pr_number)return reply.code(409).send({error:'У задачи нет PR для проверки'});
+  const gh=await fetch('https://api.github.com/repos/'+t.repository+'/pulls/'+t.pr_number,{
+   headers:{Authorization:'Bearer '+decryptToken(t.secret_encrypted),Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+   signal:AbortSignal.timeout(15000)
+  });
+  if(!gh.ok)return reply.code(502).send({error:'Не удалось сверить текущий PR с QA-результатом: GitHub HTTP '+gh.status});
+  const pr=await gh.json() as any;
+  if(pr.state!=='open'||pr.head?.sha!==test.report?.commit||pr.head?.sha!==t.spec_reviewed_commit)
+   return reply.code(409).send({error:'SHA PR изменился или аналитик проверял другую версию. Нужен повторный QA.'});
+ }else if(!failed){
+  return reply.code(409).send({error:'Для возврата разработчику нужны воспроизводимые дефекты или проваленные проверки; сбой QA-исполнителя не является дефектом.'});
+ }
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const locked=await client.query("SELECT stage,spec_version,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,id]);
+  const still=await client.query('SELECT id,status,verdict FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[id,taskId]);
+  const running=await client.query("SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND state='active'",[taskId]);
+  if(!locked.rowCount||locked.rows[0].stage!=='testing'||locked.rows[0].spec_version!==t.spec_version||locked.rows[0].spec_review_status!==t.spec_review_status||still.rows[0]?.id!==test.id||running.rowCount){
+   await client.query('ROLLBACK');return reply.code(409).send({error:'Состояние задачи изменилось. Обнови историю и повтори действие.'});
+  }
+  const passed=test.verdict==='passed';
+  await client.query("UPDATE tasks SET stage=$3,test_feedback=$4,updated_at=now() WHERE id=$1 AND project_id=$2",
+   [taskId,id,passed?'merge_queue':'development',passed?'':JSON.stringify(test.report).slice(0,9000)]);
+  await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+   [randomUUID(),taskId,uid(req),passed?'tests_passed':'tests_failed',passed?'Результат QA подтверждён: PR готов к слиянию':'Подтверждённые дефекты переданы разработчику. '+String(test.report?.summary||'').slice(0,1500)]);
+  await client.query('COMMIT');
+  return {ok:true,stage:passed?'merge_queue':'development',message:passed?'Тесты подтверждены, PR ожидает слияния':'Дефекты переданы разработчику'};
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+});
 app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
