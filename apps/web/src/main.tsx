@@ -254,12 +254,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
  const [expandedGroups,setExpandedGroups]=useState<KanbanGroupKey[]>(()=>{
+  const all:KanbanGroupKey[]=['analytics','development','results','other'];
   try{
-   const saved=localStorage.getItem('ado-kanban-groups-expanded');
-   return saved?JSON.parse(saved).filter((id:unknown)=>['analytics','development','results','other'].includes(String(id))):[];
-  }catch{return [];}
+   // New layout starts fully expanded, while retaining subsequent user choices.
+   const saved=localStorage.getItem('ado-kanban-groups-expanded-v2');
+   if(!saved)return all;
+   const value:unknown=JSON.parse(saved);
+   return Array.isArray(value)?value.filter((id):id is KanbanGroupKey=>all.includes(id as KanbanGroupKey)):all;
+  }catch{return all;}
  });
- useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded',JSON.stringify(expandedGroups));},[expandedGroups]);
+ useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded-v2',JSON.stringify(expandedGroups));},[expandedGroups]);
  function toggleKanbanGroup(group:KanbanGroupKey){
   setExpandedGroups(old=>old.includes(group)?old.filter(x=>x!==group):[...old,group]);
  }
@@ -685,18 +689,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  })).filter(group=>group.stages.length>0);
  const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
  if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
- function renderKanbanLane(s:Stage,compact:boolean){
-  const stageTasks=filtered.filter(t=>t.stage===s.stage);
-  return <div className={'lane '+(compact?'lane-in-group':'')} key={s.stage}
-   onDragOver={e=>e.preventDefault()}
-   onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}>
-   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
-    {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
-    {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
-   </div>
-   <div className="cards">{stageTasks.map(t=><a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
+ function renderKanbanCard(t:Task,showStage=false){
+  const stage=stages.find(s=>s.stage===t.stage);
+  return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
     draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
+    {showStage&&<span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>}
     <span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span>
     <span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span>
     <span className="task-name-line"><strong>{t.title}</strong>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
@@ -704,7 +702,35 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
     {t.stage==='merge_queue'&&<small className="task-warning">PR ожидает слияния</small>}
     <span className="task-footer"><span>Задача</span><span>↗</span></span>
-   </a>)}{stageTasks.length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div>
+  </a>;
+ }
+ function renderKanbanLane(s:Stage){
+  const stageTasks=filtered.filter(t=>t.stage===s.stage);
+  return <div className="lane" key={s.stage}
+   onDragOver={e=>e.preventDefault()}
+   onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}>
+   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
+    {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
+    {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
+   </div>
+   <div className="cards">{stageTasks.map(t=>renderKanbanCard(t))}{stageTasks.length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div>
+  </div>;
+ }
+ function renderCollapsedGroup(group:KanbanGroup){
+  const groupTasks=filtered.filter(t=>group.stages.some(stage=>stage.stage===t.stage));
+  // One list, not nested stage columns. Keep stage identity on each card.
+  const ordered=groupTasks.slice().sort((a,b)=>{
+   const ai=group.stages.findIndex(stage=>stage.stage===a.stage);
+   const bi=group.stages.findIndex(stage=>stage.stage===b.stage);
+   return ai-bi || new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
+  });
+  return <div className="kanban-group-combined">
+   {ordered.length?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}</div>:
+    <div className="lane-empty">В группе пока нет задач</div>}
+   {group.stages.some(stage=>stage.stage==='merge_queue')&&tasks.some(t=>t.stage==='merge_queue')&&
+    <button className="secondary group-action" disabled={mergeBusy} onClick={()=>void mergeReady()}>Слить готовые</button>}
+   {group.stages.some(stage=>stage.stage==='documentation')&&tasks.some(t=>t.stage==='documentation')&&
+    <button className="secondary group-action" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
   </div>;
  }
  const filtered=tasks.filter(t=>t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,'')));
@@ -828,7 +854,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <strong>{group.title}</strong><span className="group-stage-count">{group.stages.length} эт.</span><span className="group-task-count">{count}</span>
     <ChevronDown size={16} className={'group-chevron '+(expanded?'expanded':'')}/>
    </button>
-   <div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage,!expanded))}</div>
+   {expanded?<div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage))}</div>:renderCollapsedGroup(group)}
   </section>;
  })}
  </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
