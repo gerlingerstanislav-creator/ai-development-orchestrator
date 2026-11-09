@@ -21,9 +21,9 @@ test('new project roots, repeat migration, legacy links and server-side guard',a
    import_source text,updated_at timestamptz DEFAULT now());
   CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id));
  `);
- const project=randomUUID(),root=randomUUID(),legacy=randomUUID(),child=randomUUID();
+ const project=randomUUID(),root=randomUUID(),legacy=randomUUID(),child=randomUUID(),legacySpec=randomUUID();
  await db.query('INSERT INTO projects(id) VALUES($1)',[project]);
- await db.query("INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,'Техническое задание','# Согласованное',NULL),($3,$2,'Старая заметка','# Осталась',NULL),($4,$2,'Вложенный сценарий','Описание',$3)",[root,project,legacy,child]);
+ await db.query("INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,'Техническое задание','# Согласованное',NULL,NULL),($3,$2,'Старая заметка','# Осталась',NULL,NULL),($4,$2,'Вложенный сценарий','Описание',$3,NULL),($5,$2,'ТЗ предзаказа','# Условия',NULL,'legacy:coffee')",[root,project,legacy,child,legacySpec]);
  const pool={query:(...args)=>db.query(...args)};
  await initDocumentationSystem(pool);
  const rows=(await db.query('SELECT id,title,parent_id,system_key,body FROM documents WHERE project_id=$1 ORDER BY system_key',[project])).rows;
@@ -33,10 +33,12 @@ test('new project roots, repeat migration, legacy links and server-side guard',a
  const research=rows.find(x=>x.system_key==='research');
  assert.equal(rows.find(x=>x.id===legacy).parent_id,research.id);
  assert.equal(rows.find(x=>x.id===child).parent_id,legacy);
+ assert.equal(rows.find(x=>x.id===legacySpec).parent_id,root,'Clear legacy specification is filed under specification');
+ assert.equal((await db.query('SELECT import_source FROM documents WHERE id=$1',[legacySpec])).rows[0].import_source,'legacy:coffee');
  assert.equal(rows.find(x=>x.id===root).body,'# Согласованное');
  await initDocumentationSystem(pool);
  const after=(await db.query('SELECT id,system_key FROM documents WHERE project_id=$1',[project])).rows;
- assert.equal(after.length,7,'Repeat migration must not create duplicate roots');
+ assert.equal(after.length,8,'Repeat migration must not create duplicate roots');
  assert.equal(after.find(x=>x.system_key==='spec').id,root);
  const other=randomUUID();
  await db.query('INSERT INTO projects(id) VALUES($1)',[other]);
