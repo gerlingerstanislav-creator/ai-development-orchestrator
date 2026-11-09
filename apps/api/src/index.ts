@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { registerAssistantRoutes } from './assistant.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
+import { initQaSchema,registerQaRoutes } from './qa.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
@@ -744,6 +745,13 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
   return {taskId,status:'merged',url:row.pr_url};
  }
  if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
+ // QA plans require a verified test run for the exact commit being merged.
+ const qaPlan=await pool.query('SELECT id FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
+ if(qaPlan.rowCount){
+  const lastTest=await pool.query('SELECT verdict,report,status FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
+  if(!lastTest.rowCount||lastTest.rows[0].status!=='completed'||lastTest.rows[0].verdict!=='passed'||lastTest.rows[0].report?.commit!==pr.head.sha)
+   throw Object.assign(new Error('PR изменился после успешного тестирования или последний QA-прогон не пройден. Повтори тестирование текущего коммита.'),{statusCode:409});
+ }
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
  if(pr.mergeable===null || pr.mergeable_state==='unknown')
   throw Object.assign(new Error('GitHub ещё вычисляет mergeability PR, повторная проверка необходима'),{statusCode:409});
@@ -1182,5 +1190,6 @@ app.get('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse(
 app.post('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;const {connectionId}=parse(z.object({connectionId:z.string().uuid()}),req.body);const r=await pool.query('INSERT INTO project_connections(project_id,connection_id) SELECT $1,id FROM connections WHERE id=$2 AND owner_id=$3 ON CONFLICT DO NOTHING RETURNING connection_id',[id,connectionId,uid(req)]);if(!r.rowCount)return reply.code(400).send({error:'Подключение не найдено или уже добавлено'});return {ok:true};});
 registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken});
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
-async function main(){await dbInit();await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+registerQaRoutes(app,{pool,uid,access,requireAdmin});
+async function main(){await dbInit();await initQaSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});
