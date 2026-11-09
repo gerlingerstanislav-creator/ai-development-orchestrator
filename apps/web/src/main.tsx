@@ -254,6 +254,7 @@ function App(){
  const [processEvents,setProcessEvents]=useState<ProjectProcessEvent[]>([]);
  const [processFilter,setProcessFilter]=useState<'all'|'active'|'failed'|'completed'>('all');
  const [processActionBusy,setProcessActionBusy]=useState(false);
+ const [processInstruction,setProcessInstruction]=useState('');
 
  const [docs,setDocs]=useState<Doc[]>([]);
  const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
@@ -773,6 +774,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <button className="secondary group-action" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
   </div>;
  }
+ async function sendProcessInstruction(process:ProjectProcess){
+  if(!selected||!processInstruction.trim()||processActionBusy)return;
+  setProcessActionBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/processes/'+process.id+'/instructions',
+    {method:'POST',body:JSON.stringify({message:processInstruction.trim()})});
+   setProcessInstruction('');
+   const events=await api<ProjectProcessEvent[]>('/projects/'+selected.id+'/processes/'+process.id+'/events');
+   setProcessEvents(events);
+  }catch(e){fail(e);}finally{setProcessActionBusy(false);}
+ }
  async function retryProcessSave(process:ProjectProcess){
   if(!selected||processActionBusy)return;
   setProcessActionBusy(true);
@@ -940,6 +952,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
       <button className="secondary" disabled={processActionBusy} onClick={()=>void retryProcessSave(process)}>Повторить сохранение готового результата</button>
       <small>Если результат генерации ещё не сохранён, будет предложен повторный импорт.</small>
+     </div>}
+     {process.kind==='document_import'&&process.status==='running'&&<div className="process-instruction-box">
+      <strong>Уточнить задание для AI</strong>
+      <p>Сообщение будет учтено на следующем этапе анализа или формирования документов.</p>
+      <textarea rows={3} value={processInstruction} onChange={e=>setProcessInstruction(e.target.value)} placeholder="Добавить требование или уточнить решение…"/>
+      <button className="secondary" disabled={processActionBusy||!processInstruction.trim()} onClick={()=>void sendProcessInstruction(process)}>Отправить уточнение</button>
      </div>}
      <h4>Журнал событий</h4>
      {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{processEvents.map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
