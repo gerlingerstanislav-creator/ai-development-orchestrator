@@ -806,7 +806,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setCancelBusy(true);setCancelError('');
   try{
    const preview=await api<CancelPreview>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel-preview');
-   setCancelPreview(preview);setCancelPhrase('');
+   setCancelPreview(preview);
   }catch(e){setCancelError(e instanceof Error?e.message:'Не удалось получить условия отмены');}
   finally{setCancelBusy(false);}
  }
@@ -814,7 +814,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!selected||!activeTask||!cancelPreview||cancelBusy)return;
   setCancelBusy(true);setCancelError('');
   try{
-   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel',{method:'POST',body:JSON.stringify({confirmation:cancelPhrase.trim()})});
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel',{method:'POST',body:JSON.stringify({confirm:true})});
    setCancelPreview(null);setActiveTask(null);
    const id=selected.id;
    navigate(projectUrl(id,'tasks'));
@@ -1523,7 +1523,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <div className="dialog task-dialog task-dialog-wide" role="dialog" aria-modal="true" aria-label={'Задача #'+activeTask.display_number+': '+activeTask.title} onMouseDown={e=>e.stopPropagation()}>
    <div className="task-modal-top">
     <div className="task-modal-heading">
-     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number} · {stages.find(s=>s.stage===activeTask.stage)?.label||activeTask.stage}</span>
+     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
      <div className="task-editable task-title-editable">
       {editingField==='title'?
        <input autoFocus value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}
@@ -1634,6 +1634,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         </button>}
        {!['documentation','done'].includes(activeTask.stage)&&
         <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
+      </div>
+      {cancelPreview&&<div className="task-command-expansion task-cancel-confirm">
+       <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить её артефакты?</strong>
+       <p>GitHub PR будет закрыт (история PR сохранится), UUID-ветка удалена. Удаляются {cancelPreview.stats.qa_plans} планов, до {cancelPreview.stats.qa_cases} кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} собственных документов. Общие данные останутся.</p>
+       {cancelPreview.warnings?.map((warning,i)=><p key={i}>{warning}</p>)}
+       {cancelPreview.blocked.length>0&&<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>}
+       {cancelError&&<p className="task-action-error">{cancelError}</p>}
+       <div className="task-action-buttons">
+        <button type="button" className="secondary" onClick={()=>{setCancelPreview(null);setCancelError('');}}>Не отменять</button>
+        <button type="button" className="task-action-danger" disabled={cancelBusy||cancelPreview.blocked.length>0} onClick={()=>void confirmTaskCancellation()}>{cancelBusy?'Очистка…':'Да, отменить и очистить'}</button>
+       </div>
       </div>
       {managerFeedback&&<p className="manager-action-error">{managerFeedback}</p>}
      </div>
