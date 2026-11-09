@@ -9,7 +9,7 @@ type Task={spec_version?:number;spec_review_status?:'current'|'pending'|'needs_a
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
 type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
-type RequirementInfo={task:{id:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
+type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
@@ -29,9 +29,9 @@ type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:s
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
-type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
+type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
@@ -352,13 +352,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const refresh=async()=>{
    try{
     const data=await api<RequirementInfo>('/projects/'+projectId+'/tasks/'+taskId+'/requirements');
-    if(live)setRequirements(data);
+    if(live){
+     setRequirements(data);
+     setActiveTask(old=>old&&old.id===data.task.id&&old.spec_version!==data.task.spec_version&&editingField===null
+      ?{...old,title:data.task.title,description:data.task.description,spec_version:data.task.spec_version,spec_review_status:data.task.spec_review_status as Task['spec_review_status'],spec_review_note:data.task.spec_review_note}:old);
+    }
    }catch{/* Keep previous review data while reconnecting. */}
   };
   void refresh();
   const timer=window.setInterval(()=>{if(!document.hidden)void refresh();},8000);
   return()=>{live=false;window.clearInterval(timer);};
- },[selected?.id,activeTask?.id]);
+ },[selected?.id,activeTask?.id,editingField]);
  async function decideRequirements(reviewId:string,decision:'approve'|'reject'){
   if(!selected||!activeTask||requirementsBusy)return;
   setRequirementsBusy(true);
