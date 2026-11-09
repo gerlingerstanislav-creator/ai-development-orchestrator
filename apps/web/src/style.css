@@ -350,8 +350,9 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 
 /* Fixed application chrome: independent sidebar, compact sticky header. */
 .shell{align-items:flex-start;min-height:100vh}
-.sidebar{position:sticky;top:0;height:100vh;min-height:0;overflow:visible;z-index:22;padding:18px 12px 12px}
-.sidebar .brand{padding:2px 9px 19px}
+.sidebar{position:sticky;top:0;height:100vh;min-height:0;overflow:visible;z-index:22;padding:9px 12px 12px}
+.sidebar .brand{padding:0 9px 13px;min-height:36px}
+.sidebar .brand .logo-icon{width:30px;height:30px;flex:0 0 30px;border-radius:9px;font-size:21px}
 .sidebar-nav{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding-top:4px}
 .sidebar-bottom{margin-top:auto;flex-shrink:0;gap:8px;padding:12px 4px 2px}
 .sidebar-bottom .account-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -369,7 +370,7 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .project-menu button{border-top:1px solid #e9ecf4;margin-top:4px;color:#5868df;font-weight:650}
 .project-menu-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .main{min-width:0;flex:1}
-.topbar{position:sticky;top:0;z-index:20;height:45px;min-height:45px;padding:0 20px;gap:8px;background:rgba(255,255,255,.98);backdrop-filter:blur(8px);white-space:nowrap}
+.topbar{position:sticky;top:0;z-index:26;height:45px;min-height:45px;padding:0 20px;gap:8px;background:rgba(255,255,255,.98);backdrop-filter:blur(8px);white-space:nowrap}
 .topbar .crumb,.topbar>strong,.topbar .project-crumb{overflow:hidden;text-overflow:ellipsis;max-width:30vw}
 .top-right{margin-left:auto;display:flex;align-items:center;flex:0 0 auto}
 .quota-widget{position:relative;display:flex;align-items:center;justify-content:center;width:91px;height:27px;border:1px solid transparent;border-radius:6px;outline-offset:2px;cursor:default}
