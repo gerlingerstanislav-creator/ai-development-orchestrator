@@ -583,3 +583,9 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .doc-metadata-editor label{font-size:11px}
 .doc-metadata-editor input,.doc-metadata-editor select{min-width:0}
 @media(max-width:800px){.process-center-grid{grid-template-columns:1fr}.process-center-grid>.panel{min-height:230px}.process-list{max-height:350px}.doc-metadata-editor{grid-template-columns:1fr}.doc-metadata-editor label:last-child{grid-column:auto}}
+
+.process-instruction-box{display:flex;flex-direction:column;align-items:start;gap:7px;background:#f6f7fc;border:1px solid #e5e9f4;border-radius:8px;padding:12px}
+.process-instruction-box strong{font-size:12px}
+.process-instruction-box p{margin:0;color:#708098;font-size:11px}
+.process-instruction-box textarea{font-size:12px;min-height:76px;max-height:160px}
+.process-instruction-box button{font-size:11px}
