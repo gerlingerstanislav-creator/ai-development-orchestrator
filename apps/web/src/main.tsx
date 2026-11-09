@@ -11,7 +11,9 @@ type RequirementReview={id:string;classification:string;status:string;summary:st
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
 type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
-type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[]};
+type AgentTaskNote={id:string;author_stage:string;author_name:string;target_stage:string;kind:'handoff'|'observation'|'question'|'risk'|'resolution';body:string;source_kind:string;status:string;answer?:string|null;answered_at?:string|null;created_at:string};
+type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_note:string};
+type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[]};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
@@ -43,7 +45,7 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string};
 type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
-type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
+type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
 const defaultStages=['backlog','analysis','development','merge_queue','documentation','done'];
@@ -301,6 +303,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [qaWaiverAcknowledged,setQaWaiverAcknowledged]=useState(false);
  const [requirements,setRequirements]=useState<RequirementInfo|null>(null);
  const [requirementsBusy,setRequirementsBusy]=useState(false);
+ const [taskAgentNotes,setTaskAgentNotes]=useState<AgentTaskNote[]>([]);
+ const [noteBusy,setNoteBusy]=useState(false);
+ const [noteDraft,setNoteDraft]=useState('');
+ const [noteTarget,setNoteTarget]=useState('all');
+ const [answerNoteId,setAnswerNoteId]=useState<string|null>(null);
+ const [answerText,setAnswerText]=useState('');
+ const [cancelPreview,setCancelPreview]=useState<CancelPreview|null>(null);
+ const [cancelPhrase,setCancelPhrase]=useState('');
+ const [cancelBusy,setCancelBusy]=useState(false);
+ const [cancelError,setCancelError]=useState('');
  const [elapsedNow,setElapsedNow]=useState(Date.now());
  const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
  const [savingField,setSavingField]=useState(false);const [taskFeedback,setTaskFeedback]=useState('');
@@ -347,6 +359,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  function timeline(taskId:string):ActivityItem[]{
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
+   ...taskAgentNotes.map(note=>({id:'note-'+note.id,kind:'note' as const,title:note.author_name+
+    ' → '+(note.target_stage==='all'?'всем участникам':({analysis:'аналитику',development:'разработчику',testing:'тестировщику',merge_queue:'ответственному за слияние',documentation:'документатору'} as Record<string,string>)[note.target_stage]||note.target_stage)+
+    ' · '+(note.kind==='question'?'Вопрос':note.kind==='risk'?'Риск':'Рабочий комментарий'),
+    text:note.body+(note.answer?'\n\nОтвет: '+note.answer:note.status==='open'?'\n\nОжидает ответа':''),
+    time:note.created_at})),
    ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:({
     created:'Задача создана',analyzed:'Анализ завершён',stage_changed:'Переход этапа',spec_changed:'Изменение требований',
     requirements_proposed:'Аналитик · требуется согласование',requirements_reviewed:'Аналитик · ТЗ проверено',requirements_approved:'Изменение ТЗ согласовано',
@@ -416,7 +433,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     api<TaskActivityResponse>('/projects/'+projectId+'/tasks/'+taskId+'/activity'),
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
-   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
+   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
  }
@@ -500,8 +517,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskOrchestration(null);
-     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskOrchestration(a.owner);}).catch(fail);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentNotes([]);setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
+     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
   }else if(activeTask){setActiveTask(null);}
@@ -518,7 +535,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const element=taskThreadRef.current;
   if(!element)return;
   if(element.scrollHeight-element.scrollTop-element.clientHeight<180||element.scrollTop===0)element.scrollTop=element.scrollHeight;
- },[taskMessages,taskChatBusy,events,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback]);
+ },[taskMessages,taskChatBusy,events,taskAgentNotes,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback]);
  // One live timeline for analysis, development, QA-design, testing and approvals.
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id)return;
@@ -535,6 +552,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setEvents(old=>JSON.stringify(old)===JSON.stringify(feed.events)?old:feed.events);
     setTaskProcessEvents(old=>JSON.stringify(old)===JSON.stringify(feed.processEvents)?old:feed.processEvents);
     setTaskTestRuns(old=>JSON.stringify(old)===JSON.stringify(feed.tests||[])?old:feed.tests||[]);
+    setTaskAgentNotes(old=>JSON.stringify(old)===JSON.stringify(feed.notes||[])?old:feed.notes||[]);
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
    }catch{/* Network reconnection preserves the last known timeline. */}
