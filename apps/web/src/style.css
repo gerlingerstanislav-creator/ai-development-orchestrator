@@ -340,3 +340,9 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .tasks-page .board{display:grid;grid-template-columns:repeat(6,minmax(210px,1fr));grid-template-rows:1fr;grid-auto-flow:column;overflow-x:auto;overflow-y:visible;align-items:start}
 .tasks-page .board>.lane{min-width:0}
 @media(max-width:1200px){.tasks-page .board{grid-template-columns:repeat(6,minmax(210px,1fr))}}
+
+/* Action buttons occupy their own row in compact Kanban lane headers. */
+.tasks-page .lane-heading:has(> button.secondary){display:grid;grid-template-columns:9px minmax(0,1fr) auto;align-items:center;column-gap:6px;row-gap:7px}
+.tasks-page .lane-heading:has(> button.secondary) > b{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tasks-page .lane-heading:has(> button.secondary) > .count{margin-left:0;flex-shrink:0}
+.tasks-page .lane-heading:has(> button.secondary) > button.secondary{grid-column:1/-1;grid-row:2;min-width:0;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;justify-content:center}
