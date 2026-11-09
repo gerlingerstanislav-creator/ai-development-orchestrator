@@ -221,7 +221,10 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   await event(projectId,testId,'testing',verdict,JSON.stringify(report).slice(0,2200),verdict==='passed'?'info':verdict==='failed'?'error':'warning');
   return {status,message,verdict};
  }
- if(message!==row.rows[0].message)await pool.query('UPDATE ai_test_runs SET status=$2,message=$3 WHERE id=$1',[testId,status,message]);
+ if(message!==row.rows[0].message){
+  await pool.query('UPDATE ai_test_runs SET status=$2,message=$3 WHERE id=$1',[testId,status,message]);
+  await event(projectId,testId,'testing','progress',message);
+ }
  return {status,message};
 }
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string}){

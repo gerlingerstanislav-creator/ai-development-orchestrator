@@ -566,6 +566,15 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  }
  return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:ai.model,created_at:new Date().toISOString()});
 });
+// One project-scoped source for QA activity in Kanban, task chat and Process Center.
+app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const result=await pool.query(
+  'SELECT id,task_id,cycle_id,attempt,status,message,verdict,report,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 150',
+  [id]);
+ return result.rows;
+});
 app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;

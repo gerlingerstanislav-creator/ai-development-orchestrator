@@ -27,6 +27,7 @@ type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checked
 type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:string;requests:number};
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
+type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
@@ -269,7 +270,7 @@ function App(){
 const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
  const [projectConnections,setProjectConnections]=useState<Connection[]>([]);
  const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',enabled:false});
- const [aiBusy,setAiBusy]=useState(false);const [aiRuns,setAiRuns]=useState<AiRun[]>([]);const [aiMessage,setAiMessage]=useState('');
+ const [aiBusy,setAiBusy]=useState(false);const [aiRuns,setAiRuns]=useState<AiRun[]>([]);const [testRuns,setTestRuns]=useState<TestRun[]>([]);const [aiMessage,setAiMessage]=useState('');
  const [targetBranch,setTargetBranch]=useState('');const [mergeBusy,setMergeBusy]=useState(false);const [mergeReport,setMergeReport]=useState('');
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
@@ -304,10 +305,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>{document.body.style.overflow=previous;};
  },[activeTask,showProject,showTask,showConnection]);
  useEffect(()=>{
-  if(!aiRuns.some(r=>r.status==='running'||r.status==='queued'))return;
+  if(!aiRuns.some(r=>r.status==='running'||r.status==='queued')&&!testRuns.some(r=>r.status==='running'||r.status==='queued'))return;
   const interval=window.setInterval(()=>setElapsedNow(Date.now()),1000);
   return()=>window.clearInterval(interval);
- },[aiRuns]);
+ },[aiRuns,testRuns]);
 
 
  const [error,setError]=useState('');
@@ -333,7 +334,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
    ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:ev.event==='created'?'Задача создана':ev.event==='analyzed'?'Анализ обновлён':ev.event==='merged'?'PR слит':ev.event==='documentation_updated'?'Документация обновлена':'Изменение задачи',text:ev.detail,time:ev.created_at})),
-   ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined}))
+   ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined})),
+   ...testRuns.filter(r=>r.task_id===taskId).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',text:r.report?.summary||r.message||'Тестировщик выполняет проверку',time:r.created_at,status:r.status}))
   ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
  }
  async function refreshTaskActivity(projectId:string,taskId:string){
@@ -372,8 +374,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function loadProjects(){try{setProjects(await api('/projects'));setProjectsLoaded(true);}catch(e){fail(e);}}
  async function loadProject(id:string){
   try{
-   const [t,s,d,c,pc,gl,ai,runs,pr,suggestions,versions]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions')]);
-   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);
+   const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions')]);
+   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
@@ -622,6 +624,27 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   },4000);
   return()=>clearInterval(timer);
  },[token,selected?.id,aiRuns,activeTask?.id]);
+ // QA jobs belong to the same task timeline as developer runs.
+ // Refresh them independently because Temporal creates testing runs after development completes.
+ useEffect(()=>{
+  if(!token||!selected?.id)return;
+  let active=true;
+  const refresh=async()=>{
+   if(document.hidden)return;
+   try{
+    const latest=await api<TestRun[]>('/projects/'+selected.id+'/test-runs');
+    if(active)setTestRuns(latest);
+   }catch{/* Transient network errors should not erase the last known QA status. */}
+  };
+  void refresh();
+  const timer=window.setInterval(()=>void refresh(),5000);
+  const onVisible=()=>{if(!document.hidden)void refresh();};
+  document.addEventListener('visibilitychange',onVisible);
+  return()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
+ },[token,selected?.id]);
+ const activeTestFor=(taskId:string)=>testRuns.find(r=>r.task_id===taskId&&['running','queued'].includes(r.status));
+ const agentWorking=(taskId:string)=>aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
+  testRuns.some(r=>r.task_id===taskId&&r.status==='running');
  // A Temporal test can complete after the development run has finished.
  // Refresh board state independently of the former development-run poller.
  useEffect(()=>{
@@ -781,7 +804,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {showStage&&<span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>}
     <span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span>
     <span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span>
-    <span className="task-name-line"><strong>{t.title}</strong>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
+    <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     <p>{t.description||'Без описания'}</p>
     {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
     {t.stage==='merge_queue'&&<small className="task-warning">PR ожидает слияния</small>}
@@ -975,7 +998,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {expanded?<div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage))}</div>:renderCollapsedGroup(group)}
   </section>;
  })}
- </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
+ </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='processes'&&<div className="process-center">
   <div className="process-center-heading"><div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div></div>
   <div className="process-center-filters">{([['all','Все'],['active','Активные'],['failed','Ошибки'],['completed','Завершённые']] as const).map(([value,label])=>
@@ -984,7 +1007,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="panel process-list">
     {projectProcesses.filter(p=>processFilter==='all'||(processFilter==='active'?['queued','running'].includes(p.status):p.status===processFilter)).map(process=>
      <button type="button" key={process.id} className={'process-list-item '+(selectedProcessId===process.id?'selected':'')} onClick={()=>setSelectedProcessId(process.id)}>
-      <span className="process-list-title"><span className={'process-dot '+process.status}/><strong>{process.title}</strong></span>
+      <span className="process-list-title">{['running','queued'].includes(process.status)&&process.kind==='testing'?
+       <span className="agent-equalizer" aria-label="Тестировщик выполняет проверку" role="status"><i/><i/><i/></span>:
+       <span className={'process-dot '+process.status}/>}<strong>{process.title}</strong></span>
       <small>{processStatus(process.status)} · {new Date(process.createdAt).toLocaleString('ru-RU')}</small>
       <span>{process.detail}</span>
      </button>)}
@@ -1257,7 +1282,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <input autoFocus value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}
         onBlur={e=>void autoSaveField('title',e.currentTarget.value)}
         onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();e.currentTarget.blur();}if(e.key==='Escape'){setEditingField(null);}}}/>:
-       <><h2>{activeTask.title}</h2>{aiRuns.some(r=>r.task_id===activeTask.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}<button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
+       <><h2>{activeTask.title}</h2>{agentWorking(activeTask.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}<button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
      </div>
     </div>
     <div className="task-modal-actions">
@@ -1265,7 +1290,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.stage==='analysis'&&<button className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>}
      
      {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
-     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Запустить тестирование</button>}
+     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)} onClick={()=>void startTaskTesting()}>
+      {activeTestFor(activeTask.id)?'Тестирование выполняется':'Запустить тестирование'}</button>}
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
@@ -1314,7 +1340,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
     <aside className="task-conversation">
-     <header><MessageCircle size={17}/><strong>Переписка и ход работы</strong><small>{taskChatBusy?'AI отвечает…':aiRuns.some(r=>r.task_id===activeTask.id&&r.status==='running')?'Выполняется':'История сохранена'}</small></header>
+     <header><MessageCircle size={17}/><strong>Переписка и ход работы</strong><small>{taskChatBusy?'AI отвечает…':agentWorking(activeTask.id)?'Выполняется':'История сохранена'}</small></header>
      <div ref={taskThreadRef} className="assistant-thread" role="log" aria-live="polite">
       {timeline(activeTask.id).length===0&&<p className="assistant-hint">Здесь будут вопросы, ответы AI, действия и ход разработки.</p>}
       {timeline(activeTask.id).map(item=><div key={item.id} className={'assistant-bubble '+(item.kind==='user'?'mine':item.kind==='event'?'activity-event':item.kind==='run'?'activity-run':'bot')}>
@@ -1331,6 +1357,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <small>{r.status==='queued'?'В очереди: ': 'Выполняется: '}{Math.max(0,Math.floor((elapsedNow-new Date(r.started_at||r.created_at||Date.now()).getTime())/60000))} мин.</small>
    </div>
   </div>)}
+      {testRuns.filter(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status)).map(r=>
+       <div className="task-execution-live task-testing-live" key={'qa-live-'+r.id}>
+        <span className="agent-equalizer" role="status" aria-label="AI-тестировщик работает"><i/><i/><i/></span>
+        <div><strong>{r.status==='queued'?'Тестирование ожидает запуска':'AI-тестировщик выполняет проверку'}</strong>
+         <p>{r.message||'Подготовка проверок'}</p>
+         <small>Цикл проверки: {r.attempt+1} · {Math.max(0,Math.floor((elapsedNow-new Date(r.created_at).getTime())/60000))} мин.</small>
+         <button className="task-process-link" type="button" onClick={()=>{setSelectedProcessId(r.id);navigate(projectUrl(selected!.id,'processes')+'?process='+r.id);}}>Посмотреть процесс</button>
+        </div>
+       </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
       {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
      </div>
