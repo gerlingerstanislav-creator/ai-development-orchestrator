@@ -475,7 +475,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Не создавай задачу разработки. Подготовь содержательный документ на русском с заголовками и разделами.',
     'Не выдумывай факты о проекте. Когда информации мало, явно отмечай предположения и открытые вопросы.',
     'Разрешено выбрать parent_id исключительно из приведённых UUID. Если подходящего родителя нет, используй null.',
-    'Если просят создать новый раздел документации, создай корневую страницу (parent_id: null) с осмысленным заголовком и содержимым. Если пользователь уточняет ранее заданную команду, выполни исходную команду с учётом уточнения.',
+    'Корневых системных разделов пять, создавать новые корни нельзя. Выбирай существующий parent_id; если подходящего нет, новая страница попадёт в «Исходные материалы и исследования». Если пользователь уточняет ранее заданную команду, выполни исходную команду с учётом уточнения.',
     'Название проекта: '+project.rows[0].name,
     'Описание проекта: '+project.rows[0].description.slice(0,3000),
     'Правила проекта:\n'+rules,
@@ -530,7 +530,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const parent=parsed.parent_id
     ?await pool.query('SELECT 1 FROM documents WHERE project_id=$1 AND id=$2',[id,parsed.parent_id])
     :null;
-   const parentId=parent?.rowCount?parsed.parent_id:null;
+   const defaultParent=(await pool.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='research'",[id])).rows[0]?.id;
+    const parentId=parent?.rowCount?parsed.parent_id:defaultParent;
+    if(!parentId)throw Error('Системные разделы документации не инициализированы');
    documentId=randomUUID();
    await pool.query('INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,$3,$4,$5)',
     [documentId,id,parsed.title,parsed.body,parentId]);
