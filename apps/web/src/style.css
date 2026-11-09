@@ -855,3 +855,20 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .task-requirements-history>summary{cursor:pointer;color:#6574a5;font-weight:600}
 .task-requirements-history>div{padding:6px 8px;border-bottom:1px solid #e8ecf3;overflow-wrap:anywhere}
 .task-requirements-history p{margin:3px 0}
+
+
+/* QA verification gaps are visible and require an explicit, audited human choice. */
+.qa-waiver-panel{display:flex;flex-direction:column;gap:9px;padding:12px;border:1px solid #e6cfb0;border-radius:9px;background:#fffaf2;color:#53402b;margin:10px 0}
+.qa-waiver-panel>strong{font-size:12px}
+.qa-waiver-panel>p{font-size:12px;margin:0;line-height:1.45}
+.qa-waiver-counts{font-size:12px}
+.qa-waiver-cases{display:flex;flex-direction:column;gap:5px;max-height:245px;overflow:auto}
+.qa-waiver-case{display:flex;flex-direction:column;gap:3px;padding:8px 10px;background:#fff;border:1px solid #eadbc7;border-radius:6px;font-size:12px}
+.qa-waiver-case span{font-size:11px;color:#796a58;white-space:pre-wrap;overflow-wrap:anywhere}
+.qa-waiver-confirm{font-size:12px;display:flex;gap:8px;align-items:flex-start}
+.qa-waiver-confirm>input{flex:0 0 auto;margin-top:3px}
+.qa-waiver-panel textarea{width:100%;min-height:67px;resize:vertical;box-sizing:border-box}
+.qa-waiver-panel button{align-self:flex-start}
+.qa-waiver-blockers{display:flex;flex-direction:column;gap:5px}
+.qa-waiver-blockers>p{font-size:11px;margin:0;color:#9c614b}
+.qa-waiver-blockers>strong{font-size:12px}
