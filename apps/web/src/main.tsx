@@ -1455,7 +1455,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </main>
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
-   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'AI-аналитик проекта':'AI-помощник проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
+   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Менеджер проекта · документация':'Менеджер проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
     {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Расскажи об идее проекта, требованиях или пришли ссылку на GitHub-каталог с Markdown. Я буду раскладывать подтверждённые детали по документам и уточнять недостающие.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
