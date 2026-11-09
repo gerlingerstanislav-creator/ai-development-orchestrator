@@ -35,7 +35,8 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   const data=await response.json() as any;
   if(!response.ok)throw new Error(String(data.error||'Codex недоступен').slice(0,700));
   if(typeof data.message!=='string'||!data.message.trim())throw new Error('Codex вернул пустой ответ');
-  return {text:data.message.trim().slice(0,16000),usage:data.usage as {input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined};
+  if(data.message.length>120000)throw new Error('Ответ Codex превысил безопасный объём. Нужно уменьшить размер итоговых разделов документации.');
+  return {text:data.message.trim(),usage:data.usage as {input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined};
  }
 
  async function processEvent(projectId:string,processId:string,stage:string,detail:string,level='info'){
