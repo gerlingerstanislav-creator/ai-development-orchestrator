@@ -39,9 +39,9 @@ export function parseAgentObject(raw:string):unknown{
 }
 
 type AgentReply={text:string;usage?:{input_tokens:number;cached_input_tokens:number;output_tokens:number}};
-type StructuredCall<T>={
+type StructuredCall<S extends z.ZodType>={
  prompt:string;
- schema:z.ZodType<T>;
+ schema:S;
  label:string;
  formatExample:string;
  complete:(prompt:string)=>Promise<AgentReply>;
@@ -55,7 +55,7 @@ type StructuredCall<T>={
  * document cursor or silently discard a second JSON object. Exhaustion leaves
  * the current topic pending so the job can be resumed from its last checkpoint.
  */
-export async function completeStructured<T>(args:StructuredCall<T>):Promise<T>{
+export async function completeStructured<S extends z.ZodType>(args:StructuredCall<S>):Promise<z.output<S>>{
  const {prompt,schema,label,formatExample,complete,recordUsage,progress}=args;
  let initialText='',lastError='';
  for(let attempt=1;attempt<=3;attempt++){
