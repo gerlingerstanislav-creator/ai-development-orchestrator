@@ -203,7 +203,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  const replayProject=randomUUID(),replayRoot=randomUUID(),replayPage=randomUUID(),replayJobId=randomUUID();
  const replayKey='topic:coffee-json-regression:preorder';
  const replayFiles=[{path:'replay-preorder.md',
-  body:Array.from({length:11},(_,i)=>'## Раздел '+(i+1)+'\n'+('Подтверждённое требование сценария предзаказа №'+(i+1)+'. ').repeat(110)).join('\n')}];
+  body:Array.from({length:11},(_,i)=>'## Раздел '+(i+1)+'\n'+('Подтверждённое требование сценария предзаказа №'+(i+1)+'. ').repeat(100)).join('\n')}];
  const replayFragments=splitSourceFragments(replayFiles);
  assert.equal(replayFragments.length,11);
  const replayDraft='## Ранее согласованные требования\nТри части уже проверены и сохранены.';
@@ -220,7 +220,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  for(const fragment of replayFragments){
   await db.query(
    "INSERT INTO document_import_fragments(job_id,fragment_index,file_path,heading,content_sha,notes,topics,exclusion_reason) VALUES($1,$2,$3,$4,$5,$6,$7,NULL)",
-   [replayJobId,fragment.index,fragment.path,fragment.heading,fragment.sha,'Подтверждённая постановка.',
+   [replayJobId,fragment.index,fragment.path,fragment.heading,fragment.sha,'Подтверждённая постановка. '.repeat(30),
     JSON.stringify([{key:'preorder',title:'Предзаказ и выдача'}])]);
  }
  await db.query(
