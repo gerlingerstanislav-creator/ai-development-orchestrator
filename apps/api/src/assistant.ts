@@ -159,6 +159,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    if(!config.enabled)throw Error('Включи AI в настройках проекта.');
    if(job.draft_result){
     await saveImportedDraft(id,jobId,job.draft_result,'analyst:'+jobId,input);
+   }else if(questionId){
+    await updateProgress('resolving_question','Аналитик учитывает решение владельца продукта в ТЗ');
+    await applyOwnerAnswer(config);
    }else if(location||attachments.length){
     await updateProgress('started','Аналитик фиксирует источники и составляет тематическую карту');
     const getInstructions=async()=>{
@@ -204,6 +207,52 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    await processEvent(id,jobId,'failed',reason,'error').catch(()=>{});
    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2,updated_at=now() WHERE id=$1 AND status='running'",
     [jobId,'Ошибка подготовки ТЗ: '+reason.slice(0,600)]);
+  }
+
+  async function applyOwnerAnswer(config:Awaited<ReturnType<typeof configuration>>){
+   if(!questionId||!documentId)throw Error('Отсутствует связанный вопрос или страница ТЗ');
+   const found=await pool.query(
+    "SELECT q.id,q.question,q.answer,q.status,d.title,d.body FROM documentation_questions q JOIN documents d ON d.id=q.document_id AND d.project_id=q.project_id WHERE q.id=$1 AND q.project_id=$2 AND q.document_id=$3",
+    [questionId,id,documentId]);
+   if(!found.rowCount)throw Error('Связанный вопрос к ТЗ не найден');
+   const current=found.rows[0];
+   if(current.status==='resolved')return;
+   if(current.status!=='answered'||!current.answer)throw Error('Ответ владельца продукта ещё не зафиксирован');
+   const prompt=[
+    'Ты системный аналитик. Владельцем продукта дан ответ на один вопрос в ТЗ.',
+    'Сформулируй только новые или уточнённые СОГЛАСОВАННЫЕ требования, без утверждений об уже реализованной функциональности.',
+    'Не придумывай отсутствующие условия. Не изменяй архитектуру, тест-кейсы или backlog. Не запускай разработку.',
+    'Не переписывай всю страницу: ответ будет добавлен в конец существующей страницы как отдельное подтверждённое решение. Сохрани все исходные требования и ссылки.',
+    'Верни JSON {"addition":"Проверяемое требование Markdown","summary":"Краткий результат обновления"}.',
+    'Тема: '+current.title,
+    'Вопрос: '+current.question,
+    'Ответ владельца продукта: '+current.answer,
+    'Существующая страница, начало:\n'+String(current.body).slice(0,5200),
+    'Существующая страница, конец:\n'+String(current.body).slice(-4800),
+    'Последние правила аналитика:\n'+(await stageAgentContext(id,'analysis')).slice(0,850)
+   ].join('\n\n');
+   const response=await completion(prompt,config,{maxAttempts:3});
+   await storeTokenUsage(id,null,config.model,response.usage);
+   const parsed=z.object({addition:z.string().trim().min(15).max(3400),summary:z.string().trim().min(5).max(700)}).parse(jsonObject(response.text));
+   const client=await pool.connect();
+   try{
+    await client.query('BEGIN');
+    const liveJob=await client.query("SELECT id FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='running' FOR UPDATE",[jobId,id]);
+    if(!liveJob.rowCount){await client.query('ROLLBACK');return;}
+    const q=(await client.query("SELECT status,answer,question FROM documentation_questions WHERE id=$1 AND project_id=$2 AND document_id=$3 FOR UPDATE",[questionId,id,documentId])).rows[0];
+    if(!q||q.status!=='answered'){await client.query('ROLLBACK');if(q?.status==='resolved')return;throw Error('Связанный вопрос больше не ожидает обновления');}
+    const d=(await client.query("SELECT body,system_key FROM documents WHERE project_id=$1 AND id=$2 FOR UPDATE",[id,documentId])).rows[0];
+    if(!d||d.system_key)throw Error('Страница ТЗ недоступна для обновления');
+    const addition='\n\n---\n\n### Решение владельца продукта\n\n**Вопрос:** '+q.question+'\n\n'+parsed.addition;
+    if(d.body.length+addition.length>100000)throw Error('Размер страницы ТЗ превышает допустимый лимит; нельзя безопасно дописать решение');
+    await client.query('UPDATE documents SET body=body || $2,updated_at=now() WHERE id=$1',[documentId,addition]);
+    await client.query("UPDATE documentation_questions SET status='resolved' WHERE id=$1 AND status='answered'",[questionId]);
+    const result={message:parsed.summary,created_task_id:null,created_document_id:documentId,changed_documents:1};
+    await store(id,null,actorId,'user',message,null,null,mode,client);
+    await store(id,null,null,'assistant',result.message,null,documentId,mode,client);
+    await client.query("UPDATE document_import_jobs SET status='completed',message='ТЗ уточнено по ответу ПО',result=$2,saved_documents=1,updated_at=now() WHERE id=$1",[jobId,JSON.stringify(result)]);
+    await client.query('COMMIT');
+   }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
   }
 
   async function applyDocumentationEdit(config:Awaited<ReturnType<typeof configuration>>,materials=''){
