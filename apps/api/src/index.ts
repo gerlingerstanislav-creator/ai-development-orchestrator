@@ -77,6 +77,8 @@ async function dbInit() {
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS analyzed_chunks int not null default 0;
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS total_chunks int;
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS saved_documents int not null default 0;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS draft_result jsonb;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_key text;
  CREATE TABLE IF NOT EXISTS process_events (
   id uuid primary key, project_id uuid not null references projects(id) on delete cascade,
   process_id uuid not null, process_kind text not null, level text not null default 'info',
