@@ -699,7 +699,7 @@ const runningMergeProjects=new Map<string,string>();
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
- const [developments,imports,accessibleProjects]=await Promise.all([
+ const [developments,imports,accessibleProjects,merges]=await Promise.all([
   pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.title AS task_title,t.display_number,a.status,a.message,a.created_at
     FROM ai_task_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
     JOIN tasks t ON t.id=a.task_id
@@ -709,7 +709,8 @@ app.get('/api/background-processes',async(req:any)=>{
     FROM document_import_jobs j JOIN projects p ON p.id=j.project_id
     JOIN memberships m ON m.project_id=j.project_id AND m.user_id=$1
     WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50`,[userId]),
-  pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId])
+  pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId]),
+  pool.query("SELECT j.id,j.project_id,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50",[userId])
  ]);
  const processes:BackgroundProcess[]=[];
  for(const row of developments.rows){
@@ -733,20 +734,17 @@ app.get('/api/background-processes',async(req:any)=>{
   if(status!=='queued'&&status!=='running')continue;
   processes.push({id:'development:'+row.id,kind:'development',projectId:row.project_id,projectName:row.project_name,
    taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
-   detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/tasks/'+row.task_id});
+   detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  for(const row of imports.rows){
   processes.push({id:'import:'+row.id,kind:'document_import',projectId:row.project_id,projectName:row.project_name,
    title:'Импорт документации',detail:String(row.message||'Обработка Markdown-документов').slice(0,250),
-   status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/docs'});
+   status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
- const projectNames=new Map<string,string>(accessibleProjects.rows.map((row:any)=>[row.id,row.name]));
- for(const batch of mergeBatches.values()){
-  const projectName=projectNames.get(batch.projectId);
-  if(!projectName||batch.status!=='running')continue;
-  processes.push({id:'merge:'+batch.id,kind:'merge',projectId:batch.projectId,projectName,
-   title:'Последовательное слияние PR',detail:batch.message||'Обработка очереди Pull Request',
-   status:'running',createdAt:batch.createdAt,url:'/projects/'+batch.projectId+'/tasks'});
+ for(const row of merges.rows){
+  processes.push({id:'merge:'+row.id,kind:'merge',projectId:row.project_id,projectName:row.project_name,
+   title:'Последовательное слияние PR',detail:row.message||'Обработка PR',status:'running',
+   createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  processes.sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
  return {count:processes.length,processes,checkedAt:new Date().toISOString()};
