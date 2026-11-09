@@ -23,8 +23,33 @@ services:
       PORT: 3001
       CODEX_RUNNER_URL: http://codex:4300
       RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      TEMPORAL_ADDRESS: temporal:7233
     depends_on:
       db: {condition: service_healthy}
+  temporal:
+    image: temporalio/temporal:1.10.0
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
+    volumes:
+      - temporal_data:/home/temporal
+    restart: unless-stopped
+    # Development service with persistent SQLite. Keep Web UI private.
+    # Expose explicitly only on a trusted host if needed: 127.0.0.1:8233:8233
+  temporal-worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    command: ["npm", "run", "worker", "-w", "apps/api"]
+    environment:
+      DATABASE_URL: postgres://orchestrator:${POSTGRES_PASSWORD}@db:5432/orchestrator
+      CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY}
+      CODEX_RUNNER_URL: http://codex:4300
+      RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      db: {condition: service_healthy}
+      temporal: {condition: service_started}
+      codex: {condition: service_started}
+    restart: unless-stopped
   codex:
     build:
       context: .
@@ -50,3 +75,4 @@ services:
 volumes:
   db_data:
   codex_auth:
+  temporal_data:

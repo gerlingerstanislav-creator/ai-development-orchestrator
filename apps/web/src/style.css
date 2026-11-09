@@ -589,3 +589,12 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .process-instruction-box p{margin:0;color:#708098;font-size:11px}
 .process-instruction-box textarea{font-size:12px;min-height:76px;max-height:160px}
 .process-instruction-box button{font-size:11px}
+
+/* Testing stage and AI feedback in the approval workflow. */
+.task-test-feedback{border:1px solid #ecd1d5;border-left:3px solid #c96575;background:#fff7f7;padding:11px;border-radius:8px;display:flex;flex-direction:column;gap:7px}
+.task-test-feedback>strong{font-size:12px;color:#9d3c52}
+.task-test-feedback pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;font-size:11px;line-height:1.5;margin:0;color:#553b42}
+.task-test-feedback small{font-size:10px;color:#89636c}
+.tasks-page .kanban-group:nth-child(3) .group-mark{background:#d5a850}
+.tasks-page .kanban-group:nth-child(4) .group-mark{background:#879dda}
+.tasks-page .kanban-group:nth-child(5) .group-mark{background:#75bba8}

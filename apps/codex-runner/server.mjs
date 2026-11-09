@@ -131,7 +131,7 @@ function startNextJobs(){
   runningJobs++;
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Запуск разработки в изолированной рабочей папке';
-  void (job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
+  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
    activeBranches.delete(branchKey);runningJobs--;startNextJobs();
   });
  }
@@ -324,6 +324,59 @@ async function runJob(job,state){
  * The worker holds the per-task branch lock while resolving and pushing.
  * Codex never receives the GitHub token; git commands carry it through env.
  */
+// A first-pass AI test agent runs within the disposable Codex container.
+// No persistent environment provisioning or Docker socket is exposed to it.
+async function runTestJob(job,state){
+ const workdir=await mkdtemp(join(tmpdir(),'ado-test-'));
+ const dir=join(workdir,'repo');
+ const auth=Buffer.from('x-access-token:'+job.token).toString('base64');
+ const gitEnv={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',
+  GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',
+  GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+auth};
+ try{
+  state.message='Получение ветки для независимой проверки';
+  await command('git',['clone','--depth','1','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],
+   {cwd:workdir,env:gitEnv,timeout:90000});
+  const rev=await command('git',['rev-parse','HEAD'],{cwd:dir,timeout:10000});
+  state.testedCommit=rev.stdout.trim();
+  const prompt=[
+   'Ты независимый AI-тестировщик в отдельной временной копии репозитория.',
+   'Проанализируй ТЗ, код и доказательства. По возможности запусти доступные локальные проверки (build, unit, integration, API).',
+   'НЕ устанавливай зависимости из интернета, НЕ запускай развертывание, НЕ читай секреты, НЕ меняй GitHub.',
+   'Это ограниченное тестирование без отдельного стенда и браузера. Не заявляй, что провёл E2E-тесты, если их реально не запускал.',
+   'Если проверку выполнить нельзя из-за отсутствующих инструментов/зависимостей, укажи blocked и не заявляй об успешном тестировании.',
+   'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}]}.',
+   'Вердикт failed при обнаружении воспроизводимых проблем. Вердикт passed только при достаточных проверках и отсутствии дефектов. blocked — если проверить нельзя.',
+   'Задача: '+job.title,
+   'Требования: '+String(job.description).slice(0,16000),
+   'Правила: '+String(job.projectRules||'').slice(0,5000),
+   'Текущий git commit: '+state.testedCommit
+  ].join('\n\n');
+  state.message='Codex выполняет независимую проверку кода и доступных тестов';
+  const result=await command('codex',['exec','-m',job.model,
+   '-c','model_reasoning_effort="'+job.reasoning+'"','--json','--ephemeral','--skip-git-repo-check',
+   '--sandbox','danger-full-access',prompt],
+   {cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000});
+  const parsed=codexJsonResult(result.stdout);
+  state.usage=parsed.usage;
+  const text=parsed.message||'';
+  const start=text.indexOf('{'),end=text.lastIndexOf('}');
+  if(start<0||end<=start)throw Error('AI-тестировщик не вернул структурированный результат');
+  let report;
+  try{report=JSON.parse(text.slice(start,end+1));}catch{throw Error('AI-тестировщик вернул некорректный JSON');}
+  if(!['passed','failed','blocked'].includes(report.verdict)||typeof report.summary!=='string'||!Array.isArray(report.findings)||!Array.isArray(report.checks))
+   throw Error('Недопустимый формат отчёта AI-тестировщика');
+  state.verdict=report.verdict;
+  state.summary=report.summary.slice(0,3500);
+  state.findings=report.findings.slice(0,20);
+  state.checks=report.checks.slice(0,30);
+  state.status='completed';
+  state.message='Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
+ }catch(e){
+  state.status='failed';
+  state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);
+ }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
+}
 async function runConflictJob(job,state){
  const workspace=await mkdtemp(join(tmpdir(),'ado-conflict-'));
  const dir=join(workspace,'repo');
@@ -500,7 +553,7 @@ http.createServer(async(req,res)=>{
   if(req.url==='/jobs'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    const job=await readJson(req);
-   if(job.kind && job.kind!=='resolve-conflict')return reply(res,400,{error:'Недопустимый тип задания'});
+   if(job.kind && !['resolve-conflict','test'].includes(job.kind))return reply(res,400,{error:'Недопустимый тип задания'});
    if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
     typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
     typeof job.repository!=='string'|| !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(job.repository) ||
