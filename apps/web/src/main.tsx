@@ -14,7 +14,7 @@ const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'results',title:'Итоги',ids:['documentation','done']}
 ];
 
-type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
+type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string};
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
 type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';enabled:boolean};
@@ -26,6 +26,8 @@ type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
+type ProjectProcess={id:string;kind:'document_import'|'development'|'merge';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;sourceFileCount?:number|null;savedDocuments?:number;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[]}|null;taskId?:string};
+type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
@@ -148,7 +150,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
 }
-type ProjectSection='overview'|'tasks'|'docs'|'rules'|'settings';
+type ProjectSection='overview'|'tasks'|'docs'|'processes'|'rules'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function parseAppRoute(pathname:string):AppRoute{
@@ -158,7 +160,7 @@ function parseAppRoute(pathname:string):AppRoute{
  if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
   const projectId=parts[1];
   if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
-  if(parts.length===3&&['overview','tasks','docs','rules','settings'].includes(parts[2]))
+  if(parts.length===3&&['overview','tasks','docs','processes','rules','settings'].includes(parts[2]))
    return {kind:'project',projectId,section:parts[2] as ProjectSection};
   if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
    return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
@@ -242,6 +244,12 @@ function App(){
  },[backgroundProcessMenuOpen]);
 
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
+ const [projectProcesses,setProjectProcesses]=useState<ProjectProcess[]>([]);
+ const [selectedProcessId,setSelectedProcessId]=useState<string|null>(null);
+ const [processEvents,setProcessEvents]=useState<ProjectProcessEvent[]>([]);
+ const [processFilter,setProcessFilter]=useState<'all'|'active'|'failed'|'completed'>('all');
+ const [processActionBusy,setProcessActionBusy]=useState(false);
+
  const [docs,setDocs]=useState<Doc[]>([]);
  const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
  const [ruleDraft,setRuleDraft]=useState('');const [knowledgeBusy,setKnowledgeBusy]=useState(false);
@@ -357,6 +365,33 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
+ useEffect(()=>{
+  if(!token||!selected?.id)return;
+  let live=true;
+  const refresh=async()=>{
+   try{
+    const res=await api<{processes:ProjectProcess[]}>('/projects/'+selected.id+'/processes');
+    if(live)setProjectProcesses(res.processes);
+   }catch(e){if(live&&section==='processes')fail(e);}
+  };
+  void refresh();
+  const timer=window.setInterval(()=>{if(!document.hidden)void refresh();},9000);
+  return()=>{live=false;window.clearInterval(timer);};
+ },[token,selected?.id,section]);
+ useEffect(()=>{
+  if(!token||!selected?.id||!selectedProcessId)return;
+  let live=true;
+  const refresh=async()=>{
+   try{
+    const items=await api<ProjectProcessEvent[]>('/projects/'+selected.id+'/processes/'+selectedProcessId+'/events');
+    if(live)setProcessEvents(items);
+   }catch(e){if(live&&section==='processes')fail(e);}
+  };
+  void refresh();
+  const timer=window.setInterval(refresh,9000);
+  return()=>{live=false;window.clearInterval(timer);};
+ },[token,selected?.id,selectedProcessId,section]);
+
  useEffect(()=>{
   if(!token||!projectsLoaded)return;
   if(route.kind==='not-found'){navigate('/projects',true);setError('Адрес страницы не найден');return;}
@@ -733,6 +768,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <button className="secondary group-action" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
   </div>;
  }
+ async function retryProcessSave(process:ProjectProcess){
+  if(!selected||processActionBusy)return;
+  setProcessActionBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/document-import/'+process.id+'/retry-save',{method:'POST'});
+   const res=await api<{processes:ProjectProcess[]}>('/projects/'+selected.id+'/processes');
+   setProjectProcesses(res.processes);
+   await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setProcessActionBusy(false);}
+ }
+ const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status;
+ const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
+ const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
  const filtered=tasks.filter(t=>t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,'')));
  if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
@@ -749,7 +797,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <div className="sidebar-nav">
   {selected?<><div className="sidebar-label">ПРОЕКТ</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['processes','Процессы',Clock3],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
   </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
   </div>
   <div className="sidebar-bottom">
@@ -758,7 +806,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
   </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='processes'?'Процессы':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
     <div className="quota-popover" role="tooltip">
@@ -858,6 +906,43 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </section>;
  })}
  </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
+ {section==='processes'&&<div className="process-center">
+  <div className="process-center-heading"><div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div></div>
+  <div className="process-center-filters">{([['all','Все'],['active','Активные'],['failed','Ошибки'],['completed','Завершённые']] as const).map(([value,label])=>
+   <button key={value} className={processFilter===value?'selected':''} type="button" onClick={()=>setProcessFilter(value)}>{label}</button>)}</div>
+  <div className="process-center-grid">
+   <div className="panel process-list">
+    {projectProcesses.filter(p=>processFilter==='all'||(processFilter==='active'?['queued','running'].includes(p.status):p.status===processFilter)).map(process=>
+     <button type="button" key={process.id} className={'process-list-item '+(selectedProcessId===process.id?'selected':'')} onClick={()=>setSelectedProcessId(process.id)}>
+      <span className="process-list-title"><span className={'process-dot '+process.status}/><strong>{process.title}</strong></span>
+      <small>{processStatus(process.status)} · {new Date(process.createdAt).toLocaleString('ru-RU')}</small>
+      <span>{process.detail}</span>
+     </button>)}
+    {!projectProcesses.length&&<p className="muted process-empty">Процессов пока нет</p>}
+   </div>
+   <div className="panel process-detail">{(()=>{
+    const process=projectProcesses.find(p=>p.id===selectedProcessId)||projectProcesses.find(p=>processFilter==='all'||(processFilter==='active'?['queued','running'].includes(p.status):p.status===processFilter));
+    if(!process)return <div className="process-detail-empty"><Clock3 size={28}/><p>Выбери процесс слева, чтобы увидеть его результат и историю.</p></div>;
+    return <>
+     <div className="process-detail-header"><h3>{process.title}</h3><span className={'process-status '+process.status}>{processStatus(process.status)}</span></div>
+     <p className="muted">{process.detail}</p>
+     {process.kind==='document_import'&&<div className="process-metrics"><span>Файлов: {process.sourceFileCount??'—'}</span><span>Фрагментов: {process.progress?.completed??0} / {process.progress?.total??'—'}</span><span>Сохранено страниц: {process.savedDocuments??0}</span></div>}
+     {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
+     {process.result&&<div className="process-result"><strong>Результат</strong><p>{process.result.message||'Операция завершена'}</p>
+      {process.result.created_document_id&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'docs')+'/'+process.result!.created_document_id)}>Открыть документацию</button>}
+      {process.result.prUrl&&<a href={process.result.prUrl} target="_blank" rel="noreferrer">Открыть PR</a>}
+     </div>}
+     {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
+      <button className="secondary" disabled={processActionBusy} onClick={()=>void retryProcessSave(process)}>Повторить сохранение готового результата</button>
+      <small>Если результат генерации ещё не сохранён, будет предложен повторный импорт.</small>
+     </div>}
+     <h4>Журнал событий</h4>
+     {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{processEvents.map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
+      <p className="muted">Для этого процесса подробный журнал пока отсутствует или загружается.</p>}
+    </>;
+   })()}</div>
+  </div>
+ </div>}
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
    <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
@@ -874,6 +959,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <div>{editingDoc?.id===doc.id?
        <input className="docs-title-input" aria-label="Название документа" value={editingDoc.title} onChange={e=>setEditingDoc({...editingDoc,title:e.target.value})}/>:
        <h2>{doc.title}</h2>}
+       <div className="doc-status-labels"><span>{docKindLabel(doc.document_kind)}</span><span>{implementationLabel(doc.implementation_status)}</span></div>
+       {doc.implementation_evidence&&<small>Подтверждение: {doc.implementation_evidence}</small>}
        <small>Обновлено: {new Date(doc.updated_at).toLocaleString('ru-RU')}</small>
       </div>
       <div className="docs-actions">
@@ -891,6 +978,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <option value="">Корень документации</option>
        {docs.filter(d=>d.id!==doc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
       </select></label>
+      <div className="doc-metadata-editor">
+       <label>Тип документа<select value={editingDoc.document_kind} onChange={e=>setEditingDoc({...editingDoc,document_kind:e.target.value as Doc['document_kind']})}>
+        <option value="technical">Техническая документация</option><option value="functional">Описание функциональности</option>
+       </select></label>
+       <label>Статус реализации<select value={editingDoc.implementation_status} onChange={e=>setEditingDoc({...editingDoc,implementation_status:e.target.value as Doc['implementation_status']})}>
+        <option value="unverified">Не подтверждено</option><option value="planned">Запланировано</option><option value="partial">Реализовано частично</option><option value="implemented">Реализовано</option>
+       </select></label>
+       <label>Основание для статуса<input value={editingDoc.implementation_evidence||''} onChange={e=>setEditingDoc({...editingDoc,implementation_evidence:e.target.value})} placeholder="PR, задача, релиз или ручное подтверждение"/></label>
+      </div>
       <label>Содержание (Markdown)
        <textarea className="docs-editor-area" rows={22} value={editingDoc.body} onChange={e=>setEditingDoc({...editingDoc,body:e.target.value})} placeholder="Введите текст документа…"/>
       </label>
