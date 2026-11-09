@@ -402,7 +402,7 @@ export async function noteCycleFailure(args:{projectId:string;taskId:string;mess
  * not full source trees, PR patches or the entire conversation. The existing
  * Codex CLI runs through the configured subscription; no paid API is required.
  */
-export async function completeManagerMessage(args:{projectId:string;taskId:string;messageId:string}):Promise<void>{
+export async function completeManagerMessage(args:{projectId:string;taskId:string;messageId:string;continuation?:string}):Promise<void>{
  const {projectId,taskId,messageId}=args;
  const msg=await pool.query(
   "SELECT id,role,body,status FROM manager_messages WHERE id=$1 AND project_id=$2 AND task_id=$3",
@@ -435,6 +435,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    'Задача и текущая стадия: '+JSON.stringify({id:snapshot.task.id,title:snapshot.task.title,
     stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,2600),
     spec_status:snapshot.task.spec_review_status,pr_url:snapshot.task.pr_url,workflow:snapshot.owner?.kind||'idle'}),
+   'Подтверждённое действие системы после обращения: '+(args.continuation||'автоматический запуск не выполнялся'),
    'Последняя проверка: '+JSON.stringify(latest?{status:latest.status,verdict:latest.verdict,
     summary:String(latest.report?.summary||'').slice(0,850)}:null),
    'Ожидаемые решения: '+JSON.stringify(pending).slice(0,3500),
@@ -443,7 +444,8 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    'Последняя переписка Менеджера с пользователем: '+JSON.stringify(history).slice(0,5500),
    'Сообщение пользователя: '+String(msg.rows[0].body).slice(0,4000)
   ].join('\n\n');
-  const answer=String(await assistantCompletion(prompt,projectId,taskId,'project_manager')).trim().slice(0,10000);
+  const generated=String(await assistantCompletion(prompt,projectId,taskId,'project_manager')).trim();
+  const answer=[args.continuation,generated].filter(Boolean).join('\n\n').slice(0,10000);
   if(!answer)throw Error('Менеджер проекта не сформировал ответ');
   const client=await pool.connect();
   try{
@@ -458,6 +460,25 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
   throw error;
  }
 }
+export async function continueManagedTask(args:{projectId:string;taskId:string;messageId:string}):Promise<string>{
+ const apiUrl=process.env.ORCHESTRATOR_API_URL||'http://api:3001';
+ let message:string;
+ try{
+  const response=await fetch(apiUrl+'/internal/manager/continue',{
+   method:'POST',
+   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
+   body:JSON.stringify(args),
+   signal:AbortSignal.timeout(180000)
+  });
+  const result=await response.json() as {message?:string;error?:string};
+  message=response.ok?String(result.message||''):'Автоматическое продолжение пока невозможно. '+String(result.error||'API HTTP '+response.status);
+ }catch{
+  message='API недоступен. Проверь состояние задачи в Центре процессов.';
+ }
+ if(message)await event(args.projectId,args.messageId,'analysis','manager_continuation',message);
+ return message;
+}
+
 function managerRequestSummary(request:any){
  if(request.kind==='qa_visual'){
   const a=request.payload?.assessment;

@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import Fastify from 'fastify';
 import {checkedWithActualCapabilities,isVisualAcceptanceCase} from '../dist/qa-evidence.js';
-import {managerRequestText} from '../dist/project-manager.js';
+import {isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes} from '../dist/project-manager.js';
 
 test('browserless QA cannot certify a visual circle layout by reading CSS',()=>{
  const planned=[{id:'circle',title:'Фигуры расположены по окружности и стрелки видны',
@@ -39,4 +40,47 @@ test('the manager asks for an explicit decision without asserting that skipped t
  assert.match(message,/не смог проверить 3 сценариев/);
  assert.match(message,/ждём появления инструментов/);
  assert.match(message,/не объявляю эти проверки успешными/);
+});
+
+test('legacy requests for PR evidence are distinct from acceptance decisions',()=>{
+ assert.equal(isPrEvidenceRequest('Аналитику нужен полный diff PR по ветке задачи'),true);
+ assert.equal(isPrEvidenceRequest('Предоставьте доступ к исходному коду'),true);
+ assert.equal(isPrEvidenceRequest('Нужно ли оставлять стрелки между фигурами?'),false);
+ assert.equal(isPrEvidenceRequest('Согласовать изменение критериев приёмки?'),false);
+});
+
+test('a durable manager turn continues idle development and respects open decisions',async t=>{
+ const app=Fastify();
+ t.after(()=>app.close());
+ const projectId='00000000-0000-4000-8000-000000000001';
+ const taskId='00000000-0000-4000-8000-000000000002';
+ const messageId='00000000-0000-4000-8000-000000000003';
+ const actorId='00000000-0000-4000-8000-000000000004';
+ let requests=[],active=[],calls=0;
+ const pool={query:async sql=>{
+  if(sql.startsWith('SELECT m.actor_id'))return {rows:[{actor_id:actorId,email:'admin@example.org'}]};
+  if(sql.startsWith('SELECT id,stage,spec_review_status'))return {rows:[{stage:'development'}]};
+  if(sql.startsWith('SELECT id,title,description,stage'))return {rows:[{stage:'development'}]};
+  if(sql.startsWith('SELECT id,kind,source_id'))return {rows:requests};
+  if(sql.startsWith('SELECT workflow_id,kind'))return {rows:active};
+  return {rows:[]};
+ }};
+ registerProjectManagerRoutes(app,{pool,workerSecret:'worker-test-secret',uid:req=>req.userId,
+  workerAuthorization:async actor=>{assert.equal(actor,actorId);return 'Bearer scoped-test';},
+  access:async caller=>caller.userId===actorId,requireAdmin:async caller=>caller.userId===actorId,
+  startManagerWorkflow:async()=>{},recoverTask:async input=>{
+   calls++;
+   assert.deepEqual(input,{projectId,taskId,auth:'Bearer scoped-test',cookie:''});
+   return {ok:true,status:202,message:'Разработка запущена'};
+  }
+ });
+ const turn=secret=>app.inject({method:'POST',url:'/internal/manager/continue',
+  headers:{'x-runner-secret':secret},payload:{projectId,taskId,messageId}});
+ assert.equal((await turn('wrong')).statusCode,403);
+ assert.deepEqual((await turn('worker-test-secret')).json(),{message:'Разработка запущена'});
+ requests=[{kind:'requirements',status:'open'}];
+ assert.deepEqual((await turn('worker-test-secret')).json(),{message:''});
+ requests=[];active=[{kind:'development'}];
+ assert.match((await turn('worker-test-secret')).json().message,/уже работает/);
+ assert.equal(calls,1);
 });

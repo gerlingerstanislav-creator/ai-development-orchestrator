@@ -7,7 +7,7 @@ import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
 import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
-import {initProjectManagerSchema,registerProjectManagerRoutes} from './project-manager.js';
+import {initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
@@ -1474,85 +1474,85 @@ registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview});
 registerTaskCancellationRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
+ workerSecret:runnerKey,
+ workerAuthorization:async(actorId,email)=>'Bearer '+await new SignJWT({email}).setProtectedHeader({alg:'HS256'})
+  .setSubject(actorId).setIssuedAt().setExpirationTime('2m').sign(jwtKey),
  recoverTask:async({projectId,taskId,auth,cookie})=>{
-  const taskResult=await pool.query("SELECT t.id,t.stage,t.pr_number,t.git_branch,t.pr_url,t.spec_review_status,t.spec_version,t.test_feedback,g.repository,c.secret_encrypted FROM tasks t LEFT JOIN project_git_repositories g ON g.project_id=t.project_id LEFT JOIN connections c ON c.id=g.connection_id WHERE t.id=$1 AND t.project_id=$2",
-   [taskId,projectId]);
-  if(!taskResult.rowCount)return {ok:false,status:404,message:'Задача не найдена'};
-  let task=taskResult.rows[0];
+  const task=(await pool.query("SELECT t.stage,t.analysis_state,t.pr_number,t.git_branch,t.pr_url,t.spec_review_status,t.spec_version,t.test_feedback,g.repository,c.secret_encrypted FROM tasks t LEFT JOIN project_git_repositories g ON g.project_id=t.project_id LEFT JOIN connections c ON c.id=g.connection_id WHERE t.id=$1 AND t.project_id=$2",
+   [taskId,projectId])).rows[0];
+  if(!task)return {ok:false,status:404,message:'Задача не найдена'};
   if(!['testing','development'].includes(task.stage))
-   return {ok:false,status:409,message:'Менеджер может восстановить разработку или QA только на соответствующем этапе. Текущий: '+task.stage};
-  const owner=await pool.query("SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND state='active' LIMIT 1",[taskId]);
-  // Do not clear actual running workflows here. Existing start-testing verifies
-  // Temporal and runner state; run-ai enforces its own single-owner gate.
-  if(task.stage==='development'&&!task.pr_url&&!task.git_branch&&!task.test_feedback){
-   return {ok:false,status:409,message:'Разработка не была завершена. Необходимо запустить разработчика через менеджера проекта.'};
-  }
+   return {ok:false,status:409,message:'Восстановление доступно на этапе разработки или тестирования.'};
+  const taskPath='/api/projects/'+projectId+'/tasks/'+taskId;
+  const request=(route:string)=>app.inject({method:'POST',url:taskPath+route,headers:{authorization:auth,cookie},payload:{}});
+  const owner=await pool.query("SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[projectId,taskId]);
+  if(owner.rowCount&&task.stage==='development')
+   return {ok:false,status:409,message:'Для задачи уже зарегистрирован процесс разработки. Его состояние доступно в Центре процессов.'};
+  const notes=await pool.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' AND author_stage='analysis'",[projectId,taskId]);
+  const evidenceNotes=notes.rows.filter(note=>isPrEvidenceRequest(note.body));
+  const review=task.spec_review_status==='needs_approval'
+   ?(await pool.query("SELECT id,classification,questions FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status='needs_approval' ORDER BY created_at DESC LIMIT 1",[projectId,taskId,task.spec_version])).rows[0]
+   :null;
+  const evidenceReview=review?.classification==='uncertain'&&Array.isArray(review.questions)
+   &&review.questions.length>0&&review.questions.every(isPrEvidenceRequest);
+  if(task.spec_review_status==='needs_approval'&&!evidenceReview)
+   return {ok:false,status:409,message:'Сначала нужно разрешить содержательное замечание аналитика по требованиям.'};
   if(task.stage==='testing'){
-   // Legacy analyst questions about files/PR must never be escalated to the
-   // customer or silently block QA if GitHub already supplies that evidence.
-   const unresolved=await pool.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' AND author_stage='analysis' LIMIT 30",[projectId,taskId]);
-   const requests=unresolved.rows.filter(n=>
-    /(?:diff|patch|pull request|PR|репозитор|исходн.{0,15}код|файл)/i.test(n.body)
-    &&/(?:нуж|не вид|пришл|предостав|доступ|провер|отсутств)/i.test(n.body));
-   if(requests.length){
-    if(!task.pr_number||!task.repository||!task.secret_encrypted)
-     return {ok:false,status:409,message:'Нельзя получить PR через подключённый GitHub. Проверь GitHub-подключение проекта.'};
-    const response=await fetch('https://api.github.com/repos/'+task.repository+'/pulls/'+task.pr_number,{
-     headers:{Authorization:'Bearer '+decryptToken(task.secret_encrypted),Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
-     signal:AbortSignal.timeout(15000)
-    });
-    if(!response.ok)return {ok:false,status:503,message:'Не удалось подтвердить PR в GitHub: '+response.status};
-    const pr=await response.json() as any;
-    if(pr.state!=='open'||pr.head?.ref!==task.git_branch)
-     return {ok:false,status:409,message:'Текущий PR недействителен для ветки задачи. QA нельзя продолжить.'};
-    await pool.query("UPDATE task_agent_notes SET status='answered',answer='Менеджер проекта получил PR непосредственно из GitHub; проверку поведения выполняет QA, вопрос не требует ответа заказчика.',answer_author='Менеджер проекта',answered_at=now() WHERE project_id=$1 AND task_id=$2 AND status='open' AND id=ANY($3::uuid[])",
-     [projectId,taskId,requests.map(n=>n.id)]);
-   }
-   const latest=await pool.query("SELECT id,status,verdict FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1",[projectId,taskId]);
-   const decisions=await pool.query("SELECT id FROM manager_requests WHERE project_id=$1 AND task_id=$2 AND kind='qa_visual' AND status='open' LIMIT 1",[projectId,taskId]);
-   if(decisions.rowCount&&latest.rows[0]?.status==='completed'&&latest.rows[0]?.verdict==='blocked')
-    return {ok:false,status:409,message:'Тестировщик сообщил об отсутствии инструментов. Сначала ответь на предложение Менеджера проекта — согласовать риск или ждать.'};
-   if(task.spec_review_status==='needs_approval'){
-    const review=await pool.query("SELECT id,classification,commit_sha,questions FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status='needs_approval' ORDER BY created_at DESC LIMIT 1",[projectId,taskId,task.spec_version]);
-    const item=review.rows[0];
-    const toolQuestion=(text:string)=>/(diff|patch|PR|pull request|скриншот|визуальн|браузер|исходн.{0,15}код|файл)/i.test(text)&&/(нуж|не вид|пришл|предостав|доступ|провер|отсутств)/i.test(text);
-    if(item?.classification==='uncertain'&&Array.isArray(item.questions)&&item.questions.length>0&&item.questions.every((q:string)=>toolQuestion(q))){
-     if(!task.pr_number||!task.repository||!task.secret_encrypted)return {ok:false,status:409,message:'Менеджер не может получить PR: нужно восстановить GitHub-подключение, а не передавать diff вручную.'};
-     const gh=await fetch('https://api.github.com/repos/'+task.repository+'/pulls/'+task.pr_number,{
-      headers:{Authorization:'Bearer '+decryptToken(task.secret_encrypted),Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
-      signal:AbortSignal.timeout(15000)
-     });
-     if(!gh.ok)return {ok:false,status:503,message:'Менеджер не смог проверить PR через GitHub: HTTP '+gh.status};
-     const pr=await gh.json() as any;
-     if(pr.state!=='open'||pr.head?.ref!==task.git_branch)
-      return {ok:false,status:409,message:'PR не открыт или указывает на другую ветку. Нельзя продолжить QA по неподтверждённому коду.'};
-     const tx=await pool.connect();
-     try{
-      await tx.query('BEGIN');
-      const locked=await tx.query("SELECT spec_version,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId]);
-      if(!locked.rowCount||locked.rows[0].spec_version!==task.spec_version||locked.rows[0].spec_review_status!=='needs_approval'){
-       await tx.query('ROLLBACK');return {ok:false,status:409,message:'ТЗ изменилось. Обнови задачу.'};
-      }
-      await tx.query("UPDATE task_requirement_reviews SET status='superseded',resolved_at=now() WHERE id=$1 AND classification='uncertain' AND status='needs_approval'",[item.id]);
-      await tx.query("UPDATE task_agent_notes SET status='answered',answer='Менеджер проекта подтвердил существование PR через GitHub. Вопрос о просмотре diff направлен внутренним специалистам и QA.',answered_at=now() WHERE project_id=$1 AND task_id=$2 AND author_stage='analysis' AND kind='question' AND status='open' AND body ~* '(diff|patch|PR|скриншот|браузер)'",[projectId,taskId]);
-      await tx.query("UPDATE tasks SET spec_review_status='pending',spec_review_note='Менеджер проекта направил запрос о проверке кода на этап QA, аналитик повторно сверит ТЗ',updated_at=now() WHERE id=$1 AND project_id=$2",[taskId,projectId]);
-      await tx.query('COMMIT');
-     }catch(e){await tx.query('ROLLBACK');throw e;}finally{tx.release();}
-    }else{
-     return {ok:false,status:409,message:'Есть нерешённое содержательное предложение аналитика или изменение требований. Менеджер сначала должен получить твоё решение.'};
-    }
-   }
+   const decision=await pool.query("SELECT 1 FROM manager_requests WHERE project_id=$1 AND task_id=$2 AND kind='qa_visual' AND status IN ('open','waiting') AND source_id=(SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1)",[projectId,taskId]);
+   if(decision.rowCount)return {ok:false,status:409,message:'В Центре процессов ожидается решение по непроверенным визуальным сценариям.'};
   }
-  const endpoint=task.stage==='development'
-   ?'/api/projects/'+projectId+'/tasks/'+taskId+'/run-ai'
-   :'/api/projects/'+projectId+'/tasks/'+taskId+'/start-testing';
-  const forwarded=await app.inject({method:'POST',url:endpoint,headers:{authorization:auth,cookie},payload:{}});
-  const data=forwarded.json() as any;
-  if(forwarded.statusCode>=400)
-   return {ok:false,status:forwarded.statusCode,message:String(data.error||'Проверка условий перехода не прошла'),details:data};
+  // An existing PR may be parked in development even though no code revision is due.
+  // A real rejection or QA finding still goes back through the developer.
+  const handoff=task.stage==='development'&&task.analysis_state==='approved'&&task.pr_url&&task.git_branch&&!task.test_feedback&&task.spec_review_status!=='rejected';
+  if(evidenceNotes.length||evidenceReview||handoff){
+   if(!task.pr_number||!task.repository||!task.secret_encrypted)
+    return {ok:false,status:409,message:'Не удалось найти PR через подключение GitHub проекта.'};
+   const response=await fetch('https://api.github.com/repos/'+task.repository+'/pulls/'+task.pr_number,{
+    headers:{Authorization:'Bearer '+decryptToken(task.secret_encrypted),Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+    signal:AbortSignal.timeout(15000)
+   });
+   if(!response.ok)return {ok:false,status:503,message:'Не удалось подтвердить PR в GitHub: HTTP '+response.status};
+   const pr=await response.json() as any;
+   if(pr.state!=='open'||pr.head?.ref!==task.git_branch||!pr.head?.sha)
+    return {ok:false,status:409,message:'PR закрыт или не соответствует ветке задачи.'};
+   const tx=await pool.connect();
+   try{
+    await tx.query('BEGIN');
+    const current=(await tx.query("SELECT stage,analysis_state,spec_version,spec_review_status,pr_number,git_branch,test_feedback FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
+    if(!current||['stage','analysis_state','spec_version','spec_review_status','pr_number','git_branch','test_feedback'].some(key=>current[key]!==task[key])){
+     await tx.query('ROLLBACK');return {ok:false,status:409,message:'Состояние задачи изменилось во время проверки PR.'};
+    }
+    if(evidenceNotes.length)await tx.query("UPDATE task_agent_notes SET status='answered',answer='PR подтверждён в GitHub. Аналитик получит изменения PR при сверке, а тестировщик проверит реализацию.',answer_author='Менеджер проекта',answered_at=now(),processing_at=NULL,requires_customer=false WHERE project_id=$1 AND task_id=$2 AND status='open' AND id=ANY($3::uuid[])",
+     [projectId,taskId,evidenceNotes.map(note=>note.id)]);
+    if(evidenceReview){
+     const cleared=await tx.query("UPDATE task_requirement_reviews SET status='superseded',resolved_at=now() WHERE id=$1 AND status='needs_approval' RETURNING id",[review.id]);
+     if(!cleared.rowCount){await tx.query('ROLLBACK');return {ok:false,status:409,message:'Решение по требованиям уже изменилось.'};}
+     await tx.query("UPDATE tasks SET spec_review_status='pending',spec_review_note='Аналитик повторно сверит ТЗ по актуальному PR',updated_at=now() WHERE id=$1",[taskId]);
+    }
+    const pending=await tx.query("SELECT 1 FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND (target_stage='all' OR requires_customer) LIMIT 1",[projectId,taskId]);
+    if(handoff&&!pending.rowCount){
+     const advanced=await tx.query("UPDATE tasks SET stage='testing',updated_at=now() WHERE id=$1 AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND state='active') AND NOT EXISTS(SELECT 1 FROM ai_task_runs WHERE task_id=$1 AND status IN ('queued','running')) RETURNING id",[taskId]);
+     if(!advanced.rowCount){
+      await tx.query('ROLLBACK');return {ok:false,status:409,message:'Для задачи уже запущена разработка.'};
+     }
+     await tx.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'stage_changed',$3)",[randomUUID(),taskId,'Менеджер передал существующий PR на сверку и тестирование']);
+     task.stage='testing';
+    }
+    await tx.query('COMMIT');
+   }catch(e){await tx.query('ROLLBACK');throw e;}finally{tx.release();}
+  }
+  let response=await request(task.stage==='development'?'/run-ai':'/start-testing');
+  let data=response.json() as any;
+  if(task.stage==='development'&&response.statusCode<400&&data.recovered){
+   response=await request('/start-testing');
+   data=response.json();
+   task.stage='testing';
+  }
+  if(response.statusCode>=400)
+   return {ok:false,status:response.statusCode,message:String(data.error||'Проверка условий перехода не прошла'),details:data};
   return {ok:true,status:202,message:task.stage==='development'
-   ?'Менеджер проекта возобновил работу разработчика в существующей ветке. Затем аналитик проверит ТЗ, а тестировщик — результат.'
-   :'Менеджер проекта направил существующий PR на повторную сверку требований и тестирование. Отдельный PR создавать не нужно.',details:data};
+   ?'Менеджер запустил разработку. После неё система сверит ТЗ и запустит тестирование.'
+   :'Менеджер запустил сверку требований и тестирование существующего PR.',details:data};
  },
  startManagerWorkflow:async({projectId,taskId,messageId})=>{
   const client=await temporal();
