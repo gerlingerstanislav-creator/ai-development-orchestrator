@@ -66,9 +66,9 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
  });
  app.post('/api/projects/:id/documentation/update',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const body=z.object({task_id:z.string().uuid().optional()}).parse(req.body||{});
-  const pending=body.task_id
-   ?await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND id=$2 AND stage='documentation' ORDER BY updated_at LIMIT 1",[id,body.task_id])
+  const request=z.object({task_id:z.string().uuid().optional()}).parse(req.body||{});
+  const pending=request.task_id
+   ?await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND id=$2 AND stage='documentation' ORDER BY updated_at LIMIT 1",[id,request.task_id])
    :await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND stage='documentation' ORDER BY updated_at LIMIT 15",[id]);
   if(!pending.rowCount)return reply.code(409).send({error:'Нет слитых задач, ожидающих документации'});
   for(const task of pending.rows)if(await pendingAgentQuestions(pool,id,task.id))return reply.code(409).send({error:'Документация ожидает ответы на вопросы агентов по задаче '+task.title});
