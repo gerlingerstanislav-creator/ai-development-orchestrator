@@ -96,7 +96,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  assert.ok(preorder.source_refs.every(x=>x.url?.includes('/blob/'+fixture.source_commit+'/')),'Every GitHub citation is SHA-pinned');
  const questions=(await db.query('SELECT document_id FROM documentation_questions WHERE project_id=$1',[projectId])).rows;
  assert.ok(questions.some(x=>x.document_id===preorder.id));
- assert.equal((await db.query('SELECT count(*)::int n FROM document_import_topics WHERE job_id=$1 AND status NOT IN (\\'complete\\',\\'conflict\\')',[job.id])).rows[0].n,0);
+ assert.equal((await db.query('SELECT count(*)::int n FROM document_import_topics WHERE job_id=$1 AND status NOT IN ('complete','conflict')',[job.id])).rows[0].n,0);
  assert.ok(events.some(x=>x.stage==='topic_saved'));
 
  // Reimport the same repository reference after a manual edit: same document ID,
