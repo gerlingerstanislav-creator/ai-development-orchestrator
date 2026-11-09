@@ -57,8 +57,9 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
   }).parse(req.body);
   const task=await deps.pool.query('SELECT id FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
   if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+  const actor=await deps.pool.query('SELECT email FROM users WHERE id=$1',[deps.uid(req)]);
   const inserted=await recordTaskAgentNote(deps.pool,{
-   projectId:id,taskId,authorName:'Участник проекта',authorStage:'human',targetStage:body.target_stage,
+   projectId:id,taskId,authorName:String(actor.rows[0]?.email||'Участник проекта'),authorStage:'human',targetStage:body.target_stage,
    body:body.body,kind:body.kind,sourceKind:'human',sourceKey:'human:'+randomUUID(),actorId:deps.uid(req)
   });
   return reply.code(201).send({ok:inserted});
