@@ -335,3 +335,8 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .agent-equalizer i:nth-child(3){animation-delay:300ms}
 @keyframes agent-equalizer{0%,100%{height:4px;opacity:.55}50%{height:13px;opacity:1}}
 @media(prefers-reduced-motion:reduce){.agent-equalizer i{animation:none;height:9px}}
+
+/* Keep every Kanban stage, including Done, in one horizontal row. */
+.tasks-page .board{display:grid;grid-template-columns:repeat(6,minmax(210px,1fr));grid-template-rows:1fr;grid-auto-flow:column;overflow-x:auto;overflow-y:visible;align-items:start}
+.tasks-page .board>.lane{min-width:0}
+@media(max-width:1200px){.tasks-page .board{grid-template-columns:repeat(6,minmax(210px,1fr))}}
