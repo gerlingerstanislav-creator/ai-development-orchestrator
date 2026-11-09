@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {randomUUID,timingSafeEqual} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
@@ -31,6 +31,11 @@ export function managerRequestText(kind:string,payload:any):string{
  return 'Необходимо решение по задаче.';
 }
 export type ManagerRequest={id:string;kind:string;source_id:string;payload:any;status:string;created_at:string;decision:string|null};
+
+export function isPrEvidenceRequest(text:string):boolean{
+ return /(?:\b(?:diff|patch|PR|pull request)\b|репозитор|исходн.{0,15}код|файл)/i.test(text)
+  && /(?:нуж|не вид|пришл|предостав|доступ|провер|отсутств|получ|прочита|\bneed|\baccess|\bprovide)/i.test(text);
+}
 
 /** Deterministic gate projection: the manager does not hallucinate required approvals. */
 export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string){
@@ -67,8 +72,7 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
   "SELECT id,body,author_name,target_stage FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' AND (target_stage='all' OR requires_customer) ORDER BY created_at DESC LIMIT 15",
   [projectId,taskId]);
  for(const note of questions.rows){
-  const toolQuestion=/\b(diff|patch|PR|pull request|репозитор|файл|доступ к коду|скриншот|браузер)\b/i.test(note.body)&&/предостав|пришл|не (вижу|могу|хватает)|нужен|требует/i.test(note.body);
-  if(toolQuestion)continue;
+  if(isPrEvidenceRequest(note.body)||/(?:скриншот|браузер)/i.test(note.body)&&/(?:предостав|пришл|не вижу|нужен|отсутств)/i.test(note.body))continue;
   await add('question','note:'+note.id,note.id,{question:note.body,author:note.author_name,stage:task.stage});
  }
  // Old pending requests must not be shown after a task advances or a question is answered.
@@ -93,12 +97,39 @@ export async function managerSnapshot(pool:Pool,projectId:string,taskId:string){
 export type ManagerDeps={
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;
+ workerSecret:string;
+ workerAuthorization:(actorId:string,email:string)=>Promise<string>;
  startManagerWorkflow:(arg:{projectId:string;taskId:string;messageId:string})=>Promise<void>;
  recoverTask:(arg:{projectId:string;taskId:string;auth:string;cookie:string})=>Promise<{ok:boolean;status:number;message:string;details?:unknown}>
 };
 const scope=z.object({id:z.string().uuid(),taskId:z.string().uuid()});
 export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDeps){
  const {pool,access,requireAdmin,uid,startManagerWorkflow,recoverTask}=deps;
+ app.post('/internal/manager/continue',async(req,reply)=>{
+  const supplied=Buffer.from(String(req.headers['x-runner-secret']||''));
+  const expected=Buffer.from(deps.workerSecret);
+  if(!expected.length||supplied.length!==expected.length||!timingSafeEqual(supplied,expected))
+   return reply.code(403).send({error:'Недоступно'});
+  const body=z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),messageId:z.string().uuid()}).safeParse(req.body);
+  if(!body.success)return reply.code(400).send({error:'Некорректное обращение'});
+  const {projectId,taskId,messageId}=body.data;
+  const actor=(await pool.query(
+   "SELECT m.actor_id,u.email FROM manager_messages m JOIN users u ON u.id=m.actor_id WHERE m.id=$1 AND m.project_id=$2 AND m.task_id=$3 AND m.role='user' AND m.status IN ('queued','processing')",
+   [messageId,projectId,taskId])).rows[0];
+  if(!actor)return reply.code(404).send({error:'Активное обращение менеджеру не найдено'});
+  const caller={userId:actor.actor_id};
+  if(!await access(caller,reply,projectId)||!await requireAdmin(caller,reply))return;
+  const snapshot=await managerSnapshot(pool,projectId,taskId);
+  if(!snapshot)return reply.code(404).send({error:'Задача не найдена'});
+  if(!['development','testing'].includes(snapshot.task.stage))return {message:''};
+  if(snapshot.requests.length)return {message:''};
+  if(snapshot.owner)return {message:'По задаче уже работает автоматический процесс.'};
+  if(snapshot.task.stage==='testing'&&snapshot.latestTest?.status==='completed'&&snapshot.latestTest.verdict==='blocked')
+   return {message:''};
+  const auth=await deps.workerAuthorization(actor.actor_id,actor.email);
+  const result=await recoverTask({projectId,taskId,auth,cookie:''});
+  return {message:result.ok?result.message:'Автоматическое продолжение пока невозможно. '+result.message};
+ });
  app.get('/api/projects/:id/tasks/:taskId/manager',async(req:any,reply)=>{
   const {id,taskId}=scope.parse(req.params);
   if(!await access(req,reply,id))return;

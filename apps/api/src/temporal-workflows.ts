@@ -1,4 +1,4 @@
-import {proxyActivities,sleep} from '@temporalio/workflow';
+import {patched,proxyActivities,sleep} from '@temporalio/workflow';
 import type * as activities from './temporal-activities.js';
 
 const steps=proxyActivities<typeof activities>({
@@ -136,6 +136,11 @@ export async function requirementsReview(input:{projectId:string;taskId:string;r
  *  persisted message, not an invisible discarded request. */
 export async function projectManagerReply(input:{projectId:string;taskId:string;messageId:string}):Promise<string>{
  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
- await steps.completeManagerMessage(input);
+ if(patched('manager-continues-task')){
+  const continuation=await steps.continueManagedTask(input);
+  await steps.completeManagerMessage({...input,continuation});
+ }else{
+  await steps.completeManagerMessage(input);
+ }
  return 'responded';
 }
