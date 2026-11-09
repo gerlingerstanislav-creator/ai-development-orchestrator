@@ -87,6 +87,8 @@ export async function startDevelopment(args:TaskRef){
  if(['completed','failed'].includes(record.rows[0].status))return;
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
  const feedback=String(task.test_feedback||'').slice(0,10000);
+ const pendingReview=await pool.query("SELECT count(*)::int AS count FROM qa_plan_cases pc JOIN qa_test_cases c ON c.id=pc.case_id JOIN qa_test_plans p ON p.id=pc.plan_id WHERE p.project_id=$1 AND p.task_id=$2 AND c.status<>'active'",[projectId,taskId]);
+ if(pendingReview.rows[0].count>0)throw ApplicationFailure.nonRetryable('Некоторые тест-кейсы требуют пересмотра ожидаемых результатов. Проверь раздел «Тестирование»');
  const plan=await readQaPlan(pool,projectId,taskId);
  if(!plan?.cases.length)throw ApplicationFailure.nonRetryable('Отсутствует QA-план: разработка не может начаться без подготовки тестов');
  const description=String(task.description||'').slice(0,14000)+
@@ -192,7 +194,8 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   const providedMap=new Map<string,{result:string;evidence:string}>();
   for(const item of provided){
    if(typeof item?.case_id==='string'&&typeof item?.result==='string'&&['passed','failed','blocked','not_run'].includes(item.result)){
-    providedMap.set(item.case_id,{result:item.result,evidence:String(item.evidence||'').slice(0,3000)});
+    const evidence=String(item.evidence||'').slice(0,3000).trim();
+    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence});
    }
   }
   const checked=expected.map(c=>{
