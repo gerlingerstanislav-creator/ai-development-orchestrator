@@ -154,16 +154,23 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта: для переработки документации требуется Codex.'});
    const jobId=randomUUID();
-   await pool.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message) VALUES($1,$2,$3,'running','Чтение исходных Markdown-файлов')",[jobId,id,uid(req)]);
+   const sourceUrl='https://github.com/'+location.owner+'/'+location.repository+'/tree/'+location.branch+'/'+location.path;
+   const sourceKey='github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path;
+   await pool.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_url,source_key,request_text) VALUES($1,$2,$3,'running','Чтение исходных Markdown-файлов',$4,$5,$6)",[jobId,id,uid(req),sourceUrl,sourceKey,message]);
+   await processEvent(id,jobId,'started','Чтение источника: '+sourceUrl);
    const actorId=uid(req);
-   const updateProgress=async(message:string)=>pool.query("UPDATE document_import_jobs SET message=$2,updated_at=now() WHERE id=$1",[jobId,message]).then(()=>{});
+   const updateProgress=async(stage:string,message:string)=>{
+    await pool.query("UPDATE document_import_jobs SET message=$2,updated_at=now() WHERE id=$1",[jobId,message]);
+    await processEvent(id,jobId,stage,message);
+   };
    void (async()=>{
    try{
     const connected=await pool.query("SELECT secret_encrypted FROM connections WHERE owner_id=$1 AND provider='github_token' ORDER BY created_at DESC LIMIT 8",[uid(req)]);
     const tokens:string[]=[];
     for(const c of connected.rows){try{tokens.push(decryptToken(c.secret_encrypted));}catch{continue;}}
     const files=await readGitHubMarkdownFiles(location,tokens);
-    await updateProgress('Прочитано Markdown-файлов: '+files.length+'. Подготовка анализа.');
+    await pool.query('UPDATE document_import_jobs SET source_file_count=$2 WHERE id=$1',[jobId,files.length]);
+    await updateProgress('reading','Прочитано Markdown-файлов: '+files.length+'. Подготовка анализа.');
     if(!files.length)throw Error('В указанном каталоге нет Markdown-файлов.');
     const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
     const existingDocs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 20',[id]);
@@ -193,11 +200,13 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
       'Файл ('+partNumber+'/'+chunks.length+'):',
       chunk.content
      ].join('\n\n');
-     await updateProgress('Анализ файлов: фрагмент '+partNumber+' из '+chunks.length);
+     await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2,total_chunks=$3 WHERE id=$1',[jobId,partNumber-1,chunks.length]);
+     await updateProgress('analyzing','Анализ файлов: фрагмент '+partNumber+' из '+chunks.length);
      const result=await completion(instruction,config);
      await storeTokenUsage(id,null,config.model,result.usage);
      const parsed=z.object({notes:z.string().trim().min(20).max(12000)}).parse(jsonObject(result.text));
      digests.push({path:chunk.path,notes:parsed.notes});
+     await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2,total_chunks=$3 WHERE id=$1',[jobId,partNumber,chunks.length]);
     }
     // For larger repositories, recursively condense notes by bounded groups.
     // This protects the final synthesis prompt from exceeding the runner limit.
@@ -206,7 +215,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     while(summaries.join('\n\n').length>12500){
      rounds++;
      if(rounds>12)throw Error('Слишком большой объём документации для автоматического объединения за один запрос');
-     await updateProgress('Объединение конспектов: этап '+rounds);
+     await updateProgress('summarizing','Объединение конспектов: этап '+rounds);
      const next:string[]=[];
      let batch:string[]=[];
      let size=0;
@@ -255,7 +264,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      'Конспекты всех фрагментов:\n'+summaries.join('\n\n')
     ].join('\n\n');
     if(prompt.length>22000)throw Error('Конспекты не поместились в допустимый запрос Codex');
-    await updateProgress('Формирование итоговой структуры документации');
+    await updateProgress('generating','Формирование итоговой структуры документации');
     const result=await completion(prompt,config);
     await storeTokenUsage(id,null,config.model,result.usage);
     const structure=z.object({
@@ -267,38 +276,25 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      })).min(2).max(8),
      notes:z.string().max(2000).default('')
     }).parse(jsonObject(result.text));
-    await updateProgress('Сохранение документов в проект');
-    const client=await pool.connect();
-    let rootId:string;
-    const sourceKey='github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path;
+    const draft={...structure,sourcePaths:files.map(file=>file.path),sourceName:location.owner+'/'+location.repository};
+    // Persist generated content BEFORE attempting SQL writes, so a failed save
+    // can be repeated without paying to analyze the original files again.
+    await pool.query('UPDATE document_import_jobs SET draft_result=$2 WHERE id=$1',[jobId,JSON.stringify(draft)]);
+    await updateProgress('saving','Сохранение документов в проект');
+    const resultSaved=await saveImportedDraft(id,jobId,draft,sourceKey);
+    await processEvent(id,jobId,'completed','Документы сохранены: '+resultSaved.generated_documents+' страниц');
     try{
-     await client.query('BEGIN');
-     const root=await client.query(
-      "INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,NULL,$5) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title RETURNING id",
-      [randomUUID(),id,structure.collection_title,
-       '# '+structure.collection_title+'\n\nДокументация составлена AI на основе '+files.length+' Markdown-файлов из '+location.owner+'/'+location.repository+'.\n\n'+structure.notes,
-       sourceKey]);
-     rootId=root.rows[0].id;
-     for(const [idx,doc] of structure.documents.entries()){
-      const docKey=sourceKey+'/generated/'+idx;
-      const sources=doc.sources.filter(name=>files.some(file=>file.path===name));
-      const body=doc.body+(sources.length?'\n\n---\n**Исходные материалы:** '+sources.join(', '):'');
-      await client.query(
-       "INSERT INTO documents(id,project_id,title,body,parent_id,import_source) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,parent_id=EXCLUDED.parent_id,updated_at=now()",
-       [randomUUID(),id,doc.title,body,rootId,docKey]);
-     }
-     await client.query('COMMIT');
-    }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-    const answer='Создан новый набор документов на основе материалов из '+location.owner+'/'+location.repository+': '+structure.documents.length+' тематических страниц. AI переработал исходные материалы и разместил их в разделе «Документация» проекта. '+(structure.notes?'\n\nПримечания: '+structure.notes:'');
-    await store(id,null,actorId,'user',message,null,null,mode);
-    await store(id,null,null,'assistant',answer,null,rootId!,mode);
-    await countCall(id,actorId);
-    await pool.query("UPDATE document_import_jobs SET status='completed',message=$2,result=$3,updated_at=now() WHERE id=$1",
-     [jobId,'Документация импортирована',JSON.stringify({message:answer,created_task_id:null,created_document_id:rootId!,generated_documents:structure.documents.length})]);
+     await store(id,null,actorId,'user',message,null,null,mode);
+     await store(id,null,null,'assistant',resultSaved.message,null,resultSaved.created_document_id,mode);
+     await countCall(id,actorId);
+    }catch(error){
+     await processEvent(id,jobId,'chat_warning',String(error instanceof Error?error.message:error),'warning').catch(()=>{});
+    }
    }catch(error){
     const reason=error instanceof Error?error.message:'Неизвестная ошибка';
-    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2,updated_at=now() WHERE id=$1",
-     [jobId,'Не удалось создать набор документов: '+reason.slice(0,600)]).catch(()=>{});
+    await processEvent(id,jobId,'failed',reason,'error').catch(()=>{});
+    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2,updated_at=now() WHERE id=$1 AND status<>'completed'",
+     [jobId,'Ошибка импорта: '+reason.slice(0,600)]).catch(()=>{});
    }
    })();
    return reply.code(202).send({import_job_id:jobId,message:'Импорт начат'});
