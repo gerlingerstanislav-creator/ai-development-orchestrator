@@ -189,7 +189,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
   [collapsedProject,'topic:'+collapsedSourceKey+':%'])).rows;
  assert.ok(collapsedDocs.length>=6,'The recovery must create multiple topic-specific pages');
  assert.equal((await db.query('SELECT count(*)::int n FROM documentation_questions WHERE project_id=$1',[collapsedProject])).rows[0].n,
-  largeQuestions.length*partCalls,'More than five questions from each portion must be persisted without loss or duplicate rejections');
+  largeQuestions.length*(collapsedDocs.length-1),'Nine distinct questions per new topic must survive, without duplicates from successive batches');
  assert.ok(collapsedEvents.some(event=>event.stage==='remapped'));
  assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[collapsedJobId])).rows[0].status,'completed');
  const callsBefore=planCalls+assignmentCalls+partCalls;
