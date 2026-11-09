@@ -31,6 +31,7 @@ const analystRequest=messageSchema.extend({
 });
 type AnalystInput=Pick<z.infer<typeof analystRequest>,'mode'|'attachments'|'documentId'>&{
  location:ReturnType<typeof extractGitHubDocumentLocation>;
+ questionId?:string;
 };
 type AssistantRuntime=Pick<Dependencies,'pool'|'codexUrl'|'runnerKey'|'decryptToken'>;
 
@@ -101,9 +102,11 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const existing=(await client.query('SELECT status,result FROM document_import_jobs WHERE id=$1 AND project_id=$2 FOR UPDATE',[jobId,projectId])).rows[0];
    if(!existing)throw Error('Запуск аналитика не найден');
    if(existing.status==='completed'){await client.query('COMMIT');return existing.result;}
+   const parent=(await client.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[projectId])).rows[0];
+   if(!parent)throw Error('Не найден системный раздел ТЗ');
    const root=await client.query(
-    "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,document_kind,implementation_status) VALUES($1,$2,$3,$4,NULL,$5,'technical','unverified') ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,updated_at=now() RETURNING id",
-    [randomUUID(),projectId,draft.collection_title,'# '+draft.collection_title+'\n\nИсточник: '+draft.sourceName+'\n\n'+draft.notes,sourceKey]);
+    "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,document_kind,implementation_status) VALUES($1,$2,$3,$4,$6,$5,'technical','unverified') ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,updated_at=now() RETURNING id",
+    [randomUUID(),projectId,draft.collection_title,'# '+draft.collection_title+'\n\nИсточник: '+draft.sourceName+'\n\n'+draft.notes,sourceKey,parent.id]);
    const rootId:string=root.rows[0].id;
    for(const [idx,doc] of draft.documents.entries()){
     const sources=doc.sources.filter((name:string)=>draft.sourcePaths.includes(name));
@@ -145,7 +148,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const job=(await pool.query("SELECT * FROM document_import_jobs WHERE id=$1 AND status='running' AND analyst_input IS NOT NULL",[jobId])).rows[0];
   if(!job)return;
   const {project_id:id,actor_id:actorId,request_text:message,source_key:sourceKey}=job;
-  const {location,attachments,mode,documentId}=job.analyst_input as AnalystInput;
+  const {location,attachments,mode,documentId,questionId}=job.analyst_input as AnalystInput;
   const input={actorId,message:message+(attachments.length?'\n\nМатериалы: '+attachments.map(file=>file.name).join(', '):''),mode};
   const updateProgress=async(stage:string,message:string)=>{
    await pool.query('UPDATE document_import_jobs SET message=$2,updated_at=now() WHERE id=$1',[jobId,message]);
@@ -208,8 +211,10 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const project=(await pool.query('SELECT name,description FROM projects WHERE id=$1',[id])).rows[0];
    const lastDocument=(await pool.query("SELECT created_document_id FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 AND role='assistant' AND created_document_id IS NOT NULL ORDER BY created_at DESC,id DESC LIMIT 1",[id,mode])).rows[0]?.created_document_id;
    const contextId=documentId||lastDocument||null;
-   const docs=(await pool.query('SELECT id,title,body,parent_id,updated_at::text FROM documents WHERE project_id=$1 ORDER BY (id=$2) DESC NULLS LAST,(parent_id=$2) DESC NULLS LAST,updated_at DESC LIMIT 80',[id,contextId])).rows;
+   const docs=(await pool.query('SELECT id,title,body,parent_id,system_key,updated_at::text FROM documents WHERE project_id=$1 ORDER BY (id=$2) DESC NULLS LAST,(parent_id=$2) DESC NULLS LAST,updated_at DESC LIMIT 80',[id,contextId])).rows;
    if(documentId&&!docs.some(doc=>doc.id===documentId))throw Error('Выбранная страница больше недоступна.');
+    const specRoot=(await pool.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[id])).rows[0];
+    if(!specRoot)throw Error('Системный раздел ТЗ не найден');
    const editable=new Set<string>();
    const contents:string[]=[];
    let bodyBudget=materials?8000:12500;
@@ -222,7 +227,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const prompt=[
     'Ты системный аналитик проекта. Из описания и ответов Product Owner составляй техническое задание. Сам выбирай тематические страницы. Когда пользователь уточняет требования, обновляй затронутые страницы.',
     'Верни только JSON: {"reply":"ответ пользователю и при необходимости уточняющий вопрос","operations":[{"op":"create","key":"new-overview","title":"Название","body":"Markdown","parent_id":null,"parent_key":null},{"op":"update","id":"UUID существующего документа","title":"Название","body":"ПОЛНОЕ новое содержимое Markdown","parent_id":null}]}',
-    'Не удаляй страницы. Существующие документы обновляй бережно: сохраняй подтверждённые сведения, не перезаписывай их гипотезами.',
+    'Новые страницы создавай внутри корня Техническое задание: UUID '+specRoot.id+'. Не редактируй и не перемещай системные корни.',
+     'Не удаляй страницы. Существующие документы обновляй бережно: сохраняй подтверждённые сведения, не перезаписывай их гипотезами.',
     'Сохраняй проработанные части ТЗ даже при открытых вопросах по другим частям. В reply собери только существенные вопросы, указывая раздел и что зависит от ответа. Обсуждение само по себе может оставить operations пустым.',
     'Каждую новую страницу можно вложить в уже существующий документ через parent_id (UUID), или в созданную В ЭТОМ ЖЕ ОТВЕТЕ страницу через parent_key (её key). Все созданные key должны быть уникальными. Сначала родители, потом потомки.',
     'Поле id для update выбирай только из страниц, переданных с полным содержанием. Для create id не нужно. Не используй ключи, которых не существует.',
@@ -259,13 +265,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      if(op.op==='update'){
       if(!editable.has(op.id))throw Error('Открой страницу ТЗ, которую нужно обновить, и повтори уточнение.');
       const original=docs.find((d:any)=>d.id===op.id);
+      if(original?.system_key)throw Error('Системные корни не редактируются аналитиком');
       const parent=op.parent_id===undefined?(original?.parent_id||null):op.parent_id;
       if(parent!==null&&!known.has(parent))throw Error('Неизвестный родитель документа');
       if(parent===op.id)throw Error('Документ не может быть вложен в самого себя');
       prepared.push({id:op.id,op:'update',title:op.title,body:op.body,parentId:parent});
      }else{
       if(seenKeys.has(op.key))throw Error('Дублирующийся ключ новой страницы');
-      const parent:string|null=op.parent_key?(ids.get(op.parent_key)||null):(op.parent_id||null);
+      const parent:string|null=op.parent_key?(ids.get(op.parent_key)||null):(op.parent_id||specRoot.id);
       if(op.parent_key&&!parent)throw Error('Родительская страница должна быть создана раньше дочерней');
       if(parent!==null&&!known.has(parent)&&![...ids.values()].includes(parent))throw Error('Неизвестный родитель новой страницы');
       const newId=randomUUID();ids.set(op.key,newId);seenKeys.add(op.key);
@@ -284,6 +291,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
       cursor=parentLinks.get(cursor)||null;
      }
     }
+    if(questionId && !prepared.some(x=>x.op==='update'&&x.id===documentId))throw Error('По ответу владельца продукта необходимо обновить связанную страницу ТЗ');
     const made=prepared.filter(x=>x.op==='create').length,changed=prepared.length-made;
     const answer=output.reply+(prepared.length?'\n\nДокументация обновлена: создано '+made+', изменено '+changed+' страниц.':'');
     const resultSaved={message:answer,created_task_id:null,created_document_id:prepared[0]?.id||null,changed_documents:prepared.length};
@@ -302,6 +310,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      }
      await store(id,null,actorId,'user',input.message,null,null,mode,client);
      await store(id,null,null,'assistant',answer,null,resultSaved.created_document_id,mode,client);
+     if(questionId)await client.query("UPDATE documentation_questions SET status='resolved' WHERE id=$1 AND project_id=$2 AND document_id=$3 AND status='answered'",[questionId,id,documentId]);
      await client.query("UPDATE document_import_jobs SET status='completed',message='Анализ завершён',result=$2,saved_documents=$3,updated_at=now() WHERE id=$1",[jobId,JSON.stringify(resultSaved),prepared.length]);
      await client.query('COMMIT');
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
@@ -383,7 +392,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта'});
    const jobId=randomUUID(),actorId=uid(req);
    const sourceUrl=location?'https://github.com/'+location.owner+'/'+location.repository+(location.path.toLowerCase().endsWith('.md')?'/blob/':'/tree/')+location.branch+'/'+location.path:null;
-   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:attachments.length?'attachments:'+createHash('sha256').update(JSON.stringify(attachments.map(file=>({name:file.name,sha:createHash('sha256').update(file.body).digest('hex')})))).digest('hex'):'analyst:'+jobId;
+   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:attachments.length?'attachments:'+createHash('sha256').update(JSON.stringify(attachments.map(file=>file.name).sort())).digest('hex'):'analyst:'+jobId;
    const queued=await pool.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_url,source_key,request_text,analyst_input) VALUES($1,$2,$3,'running','Запрос передан аналитику',$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id",
     [jobId,id,actorId,sourceUrl,sourceKey,message,JSON.stringify({location,attachments,mode,documentId:targetDocumentId} satisfies AnalystInput)]);
    if(!queued.rowCount)return reply.code(409).send({error:'Аналитик уже работает над запросом проекта. Текущий запуск доступен в Центре процессов.'});
