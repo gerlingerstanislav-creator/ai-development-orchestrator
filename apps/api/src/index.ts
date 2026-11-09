@@ -1492,7 +1492,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
    // customer or silently block QA if GitHub already supplies that evidence.
    const unresolved=await pool.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' AND author_stage='analysis' LIMIT 30",[projectId,taskId]);
    const requests=unresolved.rows.filter(n=>
-    /(?:diff|patch|pull request|\\bPR\\b|репозитор|исходн.{0,15}код|файл)/i.test(n.body)
+    /(?:diff|patch|pull request|PR|репозитор|исходн.{0,15}код|файл)/i.test(n.body)
     &&/(?:нуж|не вид|пришл|предостав|доступ|провер|отсутств)/i.test(n.body));
    if(requests.length){
     if(!task.pr_number||!task.repository||!task.secret_encrypted)
