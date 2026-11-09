@@ -60,7 +60,7 @@ export async function startDevelopment(args:TaskRef){
  if(['completed','failed'].includes(record.rows[0].status))return;
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
  const feedback=String(task.test_feedback||'').slice(0,10000);
- const description=String(task.description||'').slice(0,14000)+(attempt>0?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ТЕСТИРОВАНИЯ:\n'+feedback:'');
+ const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ТЕСТИРОВАНИЯ:\n'+feedback:'');
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
   model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
   title:task.title,description,projectRules:rules,relatedTasks:[]};
