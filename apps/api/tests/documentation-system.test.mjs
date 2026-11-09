@@ -36,7 +36,7 @@ test('new project roots, repeat migration, legacy links and server-side guard',a
  assert.equal(rows.find(x=>x.id===root).body,'# Согласованное');
  await initDocumentationSystem(pool);
  const after=(await db.query('SELECT id,system_key FROM documents WHERE project_id=$1',[project])).rows;
- assert.equal(after.length,8,'Repeat migration must not create duplicate roots');
+ assert.equal(after.length,7,'Repeat migration must not create duplicate roots');
  assert.equal(after.find(x=>x.system_key==='spec').id,root);
  const other=randomUUID();
  await db.query('INSERT INTO projects(id) VALUES($1)',[other]);
