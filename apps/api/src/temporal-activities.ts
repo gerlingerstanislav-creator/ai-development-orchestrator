@@ -463,3 +463,63 @@ function managerRequestSummary(request:any){
  }
  return {summary:String(request.payload?.summary||request.payload?.question||'').slice(0,1000)};
 }
+
+/**
+ * Peer-to-peer specialist communication. The manager is not a relay for all
+ * messages: only unresolved customer decisions enter its inbox.
+ */
+export async function resolvePeerQuestions(args:{projectId:string;taskId:string}):Promise<{resolved:number;pending:number}>{
+ const {projectId,taskId}=args;
+ const notes=await pool.query(
+  "SELECT id,author_stage,target_stage,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND source_kind='agent' AND target_stage IN ('analysis','development','testing','documentation') AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) ORDER BY created_at LIMIT 5",
+  [projectId,taskId]);
+ let resolved=0;
+ for(const note of notes.rows){
+  const locked=await pool.query(
+   "UPDATE task_agent_notes SET status='processing',processing_at=now() WHERE id=$1 AND project_id=$2 AND status IN ('open','processing') RETURNING id",
+   [note.id,projectId]);
+  if(!locked.rowCount)continue;
+  try{
+   const [task,stage,rules]=await Promise.all([
+    pool.query('SELECT title,description,stage,pr_url,test_feedback FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]),
+    pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,note.target_stage]),
+    pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at DESC LIMIT 12',[projectId])
+   ]);
+   const name=String(stage.rows[0]?.agent_name||note.target_stage);
+   const context=await taskNotesContext(pool,projectId,taskId,note.target_stage,12);
+   const pr=note.target_stage==='development'||note.target_stage==='analysis'
+    ?await prEvidence(projectId,taskId).catch(e=>({commitSha:'',patch:'PR недоступен: '+String(e).slice(0,170),summary:''}))
+    :null;
+   const prompt=[
+    'Ты '+name+' — независимый специалист AI-команды. Отвечай на конкретный вопрос другого агента, НЕ заказчику.',
+    'Тебе доступны только перечисленные факты. Не притворяйся, что выполнял тесты, не выдумывай код или требования и не принимай решения за человека.',
+    'Если можно обоснованно ответить из контекста, status=answered и короткий ответ с подтверждающим источником.',
+    'Если вопрос касается отсутствующего инструмента, кода или объективной проверки, status=needs_tool. Если заказчик должен изменить ТЗ или выбрать бизнес-правило, status=needs_customer.',
+    'Верни строго JSON {"status":"answered|needs_tool|needs_customer","answer":"объяснение или конкретный недостающий факт"} без Markdown.',
+    'Роль и инструкции: '+String(stage.rows[0]?.agent_instructions||'').slice(0,1700),
+    'Задача: '+JSON.stringify(task.rows[0]||{}).slice(0,2300),
+    'Правила: '+JSON.stringify(rules.rows.map(x=>x.body)).slice(0,1000),
+    'Релевантные комментарии команды: '+context.slice(0,4500),
+    'Контекст PR: '+JSON.stringify(pr).slice(0,6500),
+    'Вопрос от '+note.author_stage+': '+String(note.body).slice(0,1600)
+   ].join('\n\n');
+   const raw=await assistantCompletion(prompt,projectId,taskId,'peer_question_'+note.target_stage);
+   const from=raw.indexOf('{'),to=raw.lastIndexOf('}');
+   const answer=JSON.parse(raw.slice(from,to+1)) as {status:string;answer:string};
+   const text=String(answer.answer||'').trim().slice(0,2200);
+   if(answer.status==='answered'&&text.length>=15){
+    await pool.query(
+     "UPDATE task_agent_notes SET status='answered',answer=$2,answer_author=$3,answered_at=now(),processing_at=NULL WHERE id=$1 AND status='processing'",
+     [note.id,text,name]);
+    resolved++;
+   }else{
+    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL WHERE id=$1 AND status='processing'",[note.id]);
+   }
+  }catch(e){
+   await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL WHERE id=$1 AND status='processing'",[note.id]);
+   await event(projectId,note.id,'analysis','peer_unanswered','Внутренний вопрос '+note.target_stage+' не удалось закрыть: '+String(e).slice(0,250),'warning');
+  }
+ }
+ const pending=await pendingAgentQuestions(pool,projectId,taskId);
+ return {resolved,pending};
+}
