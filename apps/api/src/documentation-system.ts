@@ -17,7 +17,7 @@ export const documentRootTitle=(key:string)=>DOCUMENT_ROOTS.find(x=>x.key===key)
  * A project trigger also seeds new projects in their creation transaction.
  */
 export async function initDocumentationSystem(pool:Pool){
- await pool.query(String.raw\`
+ await pool.query(String.raw`
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_commit text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS system_key text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS import_synced_hash text;
@@ -130,5 +130,5 @@ export async function initDocumentationSystem(pool:Pool){
   created_at timestamptz NOT NULL DEFAULT now(),answered_at timestamptz,
   UNIQUE(project_id,document_id,question_key)
  );
- \`);
+ `);
 }
