@@ -25,6 +25,8 @@ export function qaWaiverAssessment(run:QaRunRow|null|undefined){
  if(!Array.isArray(run?.report?.checks))blockers.push('Нет отчёта о доступных автоматических проверках.');
  if(findings.length)blockers.push('Обнаружены дефекты. Согласование непроверенных сценариев их не отменяет.');
  if(checks.some(c=>c.result==='failed'))blockers.push('Есть упавшие автоматические проверки.');
+ if(checks.some(c=>!['passed','not_run'].includes(String(c.result||''))))blockers.push('Есть проверки без достоверного статуса.');
+ if(checks.some(c=>c.result==='passed'&&String(c.details||'').trim().length<10))blockers.push('Нет доказательств успешных автоматических проверок.');
  if(results.some(r=>r?.result==='failed'))blockers.push('Есть тест-кейсы с обнаруженными ошибками.');
  for(const c of cases){
   const result=byId.get(c.id);
