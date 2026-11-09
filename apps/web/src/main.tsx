@@ -1096,9 +1096,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>
    {stages.some(stage=>stage.stage==='testing')&&stages.some(stage=>stage.stage==='development')&&
     <div className="workflow-feedback" aria-label="Возврат на исправление при дефектах">
-     <svg viewBox="0 0 1000 48" preserveAspectRatio="none" aria-hidden="true" className="workflow-feedback-path">
-      <path d="M 550 3 V 13 Q 550 25 537 25 H 350 Q 337 25 337 13 V 3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-      <path d="M 330 13 L 337 3 L 344 13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/>
+     <svg viewBox={`0 0 ${stages.length*148+(stages.length-1)*26} 48`} preserveAspectRatio="none" aria-hidden="true" className="workflow-feedback-path">
+      {(()=>{
+       const development=stages.findIndex(stage=>stage.stage==='development');
+       const testing=stages.findIndex(stage=>stage.stage==='testing');
+       const x1=development*174+74,x2=testing*174+74;
+       return <><path d={`M ${x2} 3 V 13 Q ${x2} 25 ${x2-12} 25 H ${x1+12} Q ${x1} 25 ${x1} 13 V 3`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+       <path d={`M ${x1-7} 13 L ${x1} 3 L ${x1+7} 13`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></>;
+      })()}
      </svg>
      <span><RotateCcw size={13}/> Тестирование → Разработка: ошибки, возврат с замечаниями, повторная проверка</span>
     </div>}
