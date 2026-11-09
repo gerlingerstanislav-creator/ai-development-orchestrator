@@ -1462,7 +1462,7 @@ app.get('/api/projects/:id/processes/:processId/events',async(req:any,reply)=>{
 });
 app.get('/api/projects/:id/docs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
- return (await pool.query('SELECT * FROM documents WHERE project_id=$1 ORDER BY CASE system_key WHEN 'spec' THEN 0 WHEN 'architecture' THEN 1 WHEN 'operations' THEN 2 WHEN 'design' THEN 3 WHEN 'research' THEN 4 ELSE 5 END, title ASC, id ASC',[id])).rows;
+ return (await pool.query("SELECT * FROM documents WHERE project_id=$1 ORDER BY CASE system_key WHEN 'spec' THEN 0 WHEN 'architecture' THEN 1 WHEN 'operations' THEN 2 WHEN 'design' THEN 3 WHEN 'research' THEN 4 ELSE 5 END, title ASC, id ASC",[id])).rows;
 });
 app.post('/api/projects/:id/docs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
