@@ -765,6 +765,52 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }).catch(()=>{if(valid)setQaWaiver(null);});
   return()=>{valid=false;};
  },[selected?.id,activeTask?.id,newestTaskTest?.id,newestTaskTest?.status,newestTaskTest?.verdict]);
+ const openAgentQuestions=taskAgentNotes.filter(n=>n.kind==='question'&&n.status==='open');
+ async function sendAgentNote(){
+  if(!selected||!activeTask||noteBusy||noteDraft.trim().length<3)return;
+  setNoteBusy(true);
+  try{
+   const id=selected.id,taskId=activeTask.id;
+   await api('/projects/'+id+'/tasks/'+taskId+'/agent-notes',{method:'POST',body:JSON.stringify({
+    body:noteDraft.trim(),target_stage:noteTarget,kind:'observation'
+   })});
+   setNoteDraft('');
+   await refreshTaskActivity(id,taskId);
+  }catch(e){fail(e);}finally{setNoteBusy(false);}
+ }
+ async function answerAgentQuestion(){
+  if(!selected||!activeTask||!answerNoteId||!answerText.trim()||noteBusy)return;
+  setNoteBusy(true);
+  try{
+   const id=selected.id,taskId=activeTask.id;
+   await api('/projects/'+id+'/tasks/'+taskId+'/agent-notes/'+answerNoteId+'/answer',{method:'POST',body:JSON.stringify({answer:answerText.trim()})});
+   setAnswerNoteId(null);setAnswerText('');
+   await refreshTaskActivity(id,taskId);
+   await loadRequirements(id,taskId);
+   setTaskFeedback('Ответ сохранён. Аналитик должен учесть уточнение до продолжения работы.');
+  }catch(e){fail(e);}finally{setNoteBusy(false);}
+ }
+ async function showTaskCancellation(){
+  if(!selected||!activeTask||cancelBusy)return;
+  setCancelBusy(true);setCancelError('');
+  try{
+   const preview=await api<CancelPreview>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel-preview');
+   setCancelPreview(preview);setCancelPhrase('');
+  }catch(e){setCancelError(e instanceof Error?e.message:'Не удалось получить условия отмены');}
+  finally{setCancelBusy(false);}
+ }
+ async function confirmTaskCancellation(){
+  if(!selected||!activeTask||!cancelPreview||cancelBusy)return;
+  setCancelBusy(true);setCancelError('');
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel',{method:'POST',body:JSON.stringify({confirmation:cancelPhrase.trim()})});
+   setCancelPreview(null);setActiveTask(null);
+   const id=selected.id;
+   navigate(projectUrl(id,'tasks'));
+   await loadProject(id);
+  }catch(e){setCancelError(e instanceof Error?e.message:'Отмена задачи не завершена');}
+  finally{setCancelBusy(false);}
+ }
  async function applyQaResult(){
   if(!selected||!activeTask||qaResultBusy||taskOrchestration)return;
   const taskId=activeTask.id,projectId=selected.id;
