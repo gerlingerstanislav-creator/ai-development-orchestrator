@@ -80,6 +80,9 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
+  const spec=await client.query('SELECT spec_version,spec_reviewed_version,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,projectId]);
+  if(!spec.rowCount||spec.rows[0].spec_version!==row.spec_version||spec.rows[0].spec_review_status!=='current'||spec.rows[0].spec_reviewed_version!==row.spec_version)
+   throw new Error('ТЗ изменилось во время формирования тест-кейсов. Повтори подготовку по новой версии.');
   const current=await client.query('SELECT id,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2 FOR UPDATE',[projectId,taskId]);
   if(current.rowCount&&current.rows[0].spec_hash===hash){
    const count=await client.query('SELECT count(*)::int AS count FROM qa_plan_cases WHERE plan_id=$1',[current.rows[0].id]);
