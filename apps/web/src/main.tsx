@@ -10,6 +10,8 @@ type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',posit
 type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
+type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
+type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string}};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
@@ -29,7 +31,7 @@ type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:s
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
-type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
+type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
@@ -325,7 +327,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [form,setForm]=useState({name:'',description:'',title:'',type:'task',parent_id:''});
  const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
  const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
- const [events,setEvents]=useState<{id:string,event:string,detail:string,created_at:string}[]>([]);
+ const [events,setEvents]=useState<{id:string;event:string;detail:string;created_at:string}[]>([]);
+ const [taskProcessEvents,setTaskProcessEvents]=useState<TaskProcessEvent[]>([]);
+ const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
  const [projectChatOpen,setProjectChatOpen]=useState(false);
@@ -341,9 +345,27 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  function timeline(taskId:string):ActivityItem[]{
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
-   ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:ev.event==='created'?'Задача создана':ev.event==='analyzed'?'Анализ обновлён':ev.event==='merged'?'PR слит':ev.event==='documentation_updated'?'Документация обновлена':'Изменение задачи',text:ev.detail,time:ev.created_at})),
+   ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:({
+    created:'Задача создана',analyzed:'Анализ завершён',stage_changed:'Переход этапа',spec_changed:'Изменение требований',
+    requirements_proposed:'Аналитик · требуется согласование',requirements_reviewed:'Аналитик · ТЗ проверено',requirements_approved:'Изменение ТЗ согласовано',
+    requirements_rejected:'Изменение ТЗ отклонено',tests_passed:'Тестирование пройдено',
+    tests_failed:'Замечания тестировщика',qa_tools_unavailable:'Тестировщик · проверки ограничены средой',
+    qa_waiver_approved:'Непроверенные сценарии согласованы',handoff_blocked:'Передача на следующий этап остановлена',
+    merged:'PR слит',documentation_updated:'Документация обновлена'
+   } as Record<string,string>)[ev.event]||'Событие задачи',text:ev.detail,time:ev.created_at})),
+   ...taskProcessEvents.map(ev=>({id:'process-'+ev.id,kind:'event' as const,title:(ev.stage==='testing'?'Тестировщик':ev.stage==='analysis'?'Аналитик':ev.stage==='development'?'Разработчик':'Процесс')+' · '+({
+    review_started:'Сверка требований',needs_approval:'Нужно решение',current:'ТЗ актуально',test_design_started:'Генерация тест-кейсов',
+    test_design_ready:'QA-план готов',test_design_failed:'Ошибка подготовки QA',started:'Работа запущена',
+    progress:'Выполнение',passed:'Проверки пройдены',failed:'Ошибка или дефект',blocked:'Не удалось проверить',
+    approved:'Переход к слиянию',awaiting_manual_qa_decision:'Требуется решение по тестам'
+   } as Record<string,string>)[ev.stage]||ev.stage,text:ev.detail,time:ev.created_at,failed:ev.level==='error'})),
    ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined})),
-   ...testRuns.filter(r=>r.task_id===taskId).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',text:r.report?.summary||r.message||'Тестировщик выполняет проверку',time:r.created_at,status:r.status}))
+   ...testRuns.filter(r=>r.task_id===taskId).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',
+    text:[r.report?.summary||r.message||'Тестировщик выполняет проверку',
+     ...(r.report?.checks||[]).map(c=>c.name+': '+c.result+(c.details?' — '+c.details:'')),
+     ...(r.report?.findings||[]).map(f=>'Дефект ('+f.severity+'): '+f.description+(f.steps?' · '+f.steps:'')),
+     ...(r.report?.caseResults||[]).slice(0,30).map(c=>c.case_id+': '+c.result+(c.evidence?' — '+c.evidence:''))
+    ].filter(Boolean).join('\n'),time:r.created_at,status:r.status}))
   ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
  }
  async function loadRequirements(projectId:string,taskId:string){
