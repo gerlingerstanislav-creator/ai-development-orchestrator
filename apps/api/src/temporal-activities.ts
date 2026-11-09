@@ -3,6 +3,7 @@ import {randomUUID,createDecipheriv} from 'node:crypto';
 import {ApplicationFailure} from '@temporalio/common';
 import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
+import {releaseTaskOrchestration} from './task-orchestration.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -112,6 +113,9 @@ export async function reconcileRequirements(args:{projectId:string;taskId:string
   await event(projectId,runId,'analysis','failed',message,'error');
   throw e;
  }
+}
+export async function finishTaskOrchestration(args:{projectId:string;taskId:string;ownerId:string}):Promise<void>{
+ await releaseTaskOrchestration(pool,args.projectId,args.taskId,args.ownerId);
 }
 export async function checkRequirementStatus(args:{projectId:string;taskId:string}):Promise<'current'|'pending'|'needs_approval'|'rejected'>{
  return requirementState(pool,args.projectId,args.taskId);
