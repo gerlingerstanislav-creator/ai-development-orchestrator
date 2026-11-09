@@ -1635,7 +1635,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <details className="manager-internal-log">
        <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
        <p>Здесь отображаются рабочие сообщения и технические события команды.</p>
-       {['testing','development'].includes(activeTask.stage)&&!managerState?.owner&&!activeAgentRuns.length&&!decisions.length&&!deferredQa.length&&
+       {['testing','development'].includes(activeTask.stage)&&!managerState?.owner&&!managerWorking&&!activeAgentRuns.length&&!decisions.length&&!deferredQa.length&&
         <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>Продолжить / восстановить работу</button>}
        {deferredQa.map(request=><button key={request.id} type="button" className="secondary" disabled={managerBusy}
         onClick={()=>void decideAsManager(request,'approve_without_visual')}>Пересмотреть решение по визуальным проверкам</button>)}
