@@ -1,6 +1,6 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
+import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 
@@ -385,6 +385,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [projectPendingId,setProjectPendingId]=useState<string|null>(null);
  const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
  const [projectImportProgress,setProjectImportProgress]=useState('');
+ const [analystFiles,setAnalystFiles]=useState<File[]>([]);
+ const [analystDocumentId,setAnalystDocumentId]=useState<string|null>(null);
+ const analystFileInput=useRef<HTMLInputElement>(null);
+ const chatScope=useRef('');
+ chatScope.current=(selected?.id||'')+':'+projectChatMode;
+
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
  const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
@@ -613,7 +619,21 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>{alive=false;window.clearInterval(timer);};
  },[selected?.id,activeTask?.id]);
  useEffect(()=>{setProjectMessages([]);setProjectInput('');setProjectPendingId(null);if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages?mode='+projectChatMode).then(setProjectMessages).catch(fail);}},[selected?.id,projectChatMode]);
- useEffect(()=>{setProjectChatOpen(false);setProjectChatMode('project');},[selected?.id]);
+ useEffect(()=>{
+  if(!selected?.id||!projectChatOpen||projectChatMode!=='documentation'||projectChatBusy)return;
+  const projectId=selected.id;
+  let active=true;
+  const refresh=async()=>{
+   try{
+    const messages=await api<AssistantMessage[]>('/projects/'+projectId+'/assistant/messages?mode=documentation');
+    if(active)setProjectMessages(previous=>JSON.stringify(previous)===JSON.stringify(messages)?previous:
+     [...messages,...previous.filter(message=>message.failed)]);
+   }catch{/* Keep the current dialogue if the connection is interrupted. */}
+  };
+  const timer=window.setInterval(()=>void refresh(),4000);
+  return()=>{active=false;window.clearInterval(timer);};
+ },[selected?.id,projectChatOpen,projectChatMode,projectChatBusy]);
+ useEffect(()=>{setProjectChatOpen(false);setProjectChatMode('project');setAnalystFiles([]);setAnalystDocumentId(null);},[selected?.id]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -914,22 +934,39 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>{alive=false;window.clearInterval(timer);};
  },[token,selected?.id,tasks.some(t=>t.stage==='testing')]);
  function openDocumentationChat(){
+  setAnalystDocumentId(selectedDocId);
   setProjectChatMode('documentation');
   setProjectChatOpen(true);
  }
- async function sendProjectMessage(e:React.FormEvent){e.preventDefault();if(!selected||!projectInput.trim()||projectChatBusy)return;
-  const projectId=selected.id,message=projectInput.trim(),mode=projectChatMode,optimisticId='pending-'+crypto.randomUUID();
-  setProjectMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
+ function attachAnalystFiles(files:FileList|null){
+  const next=[...analystFiles,...Array.from(files||[])];
+  if(next.length>5||next.some(file=>file.size===0||file.size>100000||! /\.(?:md|txt|csv|json|ya?ml)$/i.test(file.name))||next.reduce((size,file)=>size+file.size,0)>250000){
+   setError('Можно прикрепить до 5 непустых текстовых файлов (Markdown, TXT, CSV, JSON, YAML), до 100 КБ каждый и до 250 КБ суммарно.');
+   return;
+  }
+  setAnalystFiles(next);
+ }
+ async function sendProjectMessage(e:React.FormEvent){
+  e.preventDefault();
+  const files=projectChatMode==='documentation'?analystFiles:[];
+  if(!selected||(!projectInput.trim()&&!files.length)||projectChatBusy)return;
+  const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+crypto.randomUUID();
+  const message=projectInput.trim()||'Подготовь ТЗ по приложенным материалам.';
+  const scope=projectId+':'+mode;
+  setProjectMessages(old=>[...old,{id:optimisticId,role:'user',body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:new Date().toISOString()}]);
   setProjectInput('');setProjectPendingId(optimisticId);setProjectChatBusy(true);
   try{
-   let response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({message,mode})});
+   const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
+   let response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
+    message,mode,attachments,documentId:mode==='documentation'?analystDocumentId:null
+   })});
    if(response.import_job_id){
     const jobId=response.import_job_id;
-    setProjectImportProgress('Импорт запущен. Чтение исходных документов…');
+    setProjectImportProgress('Аналитик начал работу…');
     for(;;){
      await new Promise(resolve=>setTimeout(resolve,2500));
      const job=await api<ImportJob>('/projects/'+projectId+'/document-import/'+jobId);
-     setProjectImportProgress(job.message||'Импорт обрабатывается…');
+     setProjectImportProgress(job.message||'Аналитик готовит ответ…');
      if(job.status==='failed')throw new Error(job.message||'Не удалось импортировать документацию');
      if(job.status==='completed'){
       if(!job.result)throw new Error('Импорт завершился без результата');
@@ -937,9 +974,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      }
     }
    }
-   setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
-    {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
-   if(response.created_task_id||response.created_document_id)await loadProject(projectId);
+   if(chatScope.current===scope){
+    setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
+     {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
+    if(files.length)setAnalystFiles([]);
+   }
+   if(chatScope.current.startsWith(projectId+':')&&(response.created_task_id||response.created_document_id))await loadProject(projectId);
   }catch(e){
    setProjectMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
    fail(e);
@@ -1342,7 +1382,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
    <div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    <div className="docs-list-footer">
-    <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить проект с AI</button>
+    <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
    </div>
   </aside>
   <section className="panel docs-reading">
@@ -1495,11 +1535,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </main>
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
-   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Менеджер проекта · документация':'Менеджер проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
+   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Аналитик проекта':'Менеджер проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
-    {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Расскажи об идее проекта, требованиях или пришли ссылку на GitHub-каталог с Markdown. Я буду раскладывать подтверждённые детали по документам и уточнять недостающие.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
+    {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Опиши проект, прикрепи текстовые файлы или пришли ссылку на папку либо Markdown-файл в GitHub. Я составлю ТЗ и задам вопросы, если понадобится твоё решение.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
-      <span className="assistant-author">{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</span>
+      <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → Аналитику':'Аналитик → Вам'):(m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам')}</span>
       <div>{m.body}</div>
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
@@ -1508,9 +1548,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     </div>)}
     {projectChatBusy&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
    </div>
+   {projectChatMode==='documentation'&&(analystDocumentId||analystFiles.length>0)&&<div className="analyst-materials">
+    {analystDocumentId&&<span>Раздел: {docs.find(doc=>doc.id===analystDocumentId)?.title||'Выбранная страница'}
+     <button type="button" aria-label="Снять выбор раздела" onClick={()=>setAnalystDocumentId(null)} disabled={projectChatBusy}><X size={13}/></button></span>}
+    {analystFiles.map((file,index)=><span key={file.name+'-'+index}>{file.name}
+     <button type="button" aria-label={'Убрать '+file.name} disabled={projectChatBusy} onClick={()=>setAnalystFiles(current=>current.filter((_,i)=>i!==index))}><X size={13}/></button></span>)}
+   </div>}
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
-    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
-    <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={17}/></button>
+    {projectChatMode==='documentation'&&<>
+     <input hidden type="file" ref={analystFileInput} multiple accept=".md,.txt,.csv,.json,.yaml,.yml" onChange={e=>{attachAnalystFiles(e.currentTarget.files);e.currentTarget.value='';}}/>
+     <button className="secondary" type="button" aria-label="Прикрепить материалы" title="Прикрепить материалы" disabled={projectChatBusy} onClick={()=>analystFileInput.current?.click()}><Paperclip size={16}/></button>
+    </>}
+    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
+    <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||(!projectInput.trim()&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
   </section>}

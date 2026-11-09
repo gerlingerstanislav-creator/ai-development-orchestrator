@@ -144,3 +144,13 @@ export async function projectManagerReply(input:{projectId:string;taskId:string;
  }
  return 'responded';
 }
+
+const analyst=proxyActivities<Pick<typeof activities,'runProjectSpecification'>>({
+ startToCloseTimeout:'3 hours',heartbeatTimeout:'45 seconds',scheduleToCloseTimeout:'4 hours',
+ retry:{maximumAttempts:3,initialInterval:'3 seconds'}
+});
+
+export async function prepareProjectSpecification(jobId:string):Promise<void>{
+ try{await analyst.runProjectSpecification(jobId);}
+ catch{await steps.failProjectSpecification(jobId);}
+}
