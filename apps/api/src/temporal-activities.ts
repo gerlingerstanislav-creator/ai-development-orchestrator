@@ -295,7 +295,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   else if(checked.some(c=>c.result!=='passed')&&verdict==='passed')verdict='blocked';
   // A changed specification invalidates the entire run even if old cases failed.
   if(staleSpecification)verdict='blocked';
-  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version};
+  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version};
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
