@@ -177,7 +177,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     const existingDocs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 20',[id]);
     const getInstructions=async()=>{
      const instructions=await pool.query('SELECT body FROM process_instructions WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 8',[id,jobId]);
-     return instructions.rows.reverse().map((row:any)=>'- '+String(row.body).slice(0,2000)).join('\n');
+     return instructions.rows.reverse().map((row:any)=>'- '+String(row.body).slice(0,900)).join('\n').slice(-1800);
     };
     const rules=await rulesContext(id);
     // Summarise every source chunk separately: the Codex assistant endpoint has
