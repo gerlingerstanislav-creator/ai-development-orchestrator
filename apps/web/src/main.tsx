@@ -11,7 +11,7 @@ type RequirementReview={id:string;classification:string;status:string;summary:st
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
 type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
-type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string}};
+type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[]};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
@@ -296,6 +296,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [activeTask,setActiveTask]=useState<Task|null>(null);
  const [qaWaiver,setQaWaiver]=useState<QaWaiverInfo|null>(null);
  const [qaWaiverBusy,setQaWaiverBusy]=useState(false);
+ const [qaResultBusy,setQaResultBusy]=useState(false);
  const [qaWaiverReason,setQaWaiverReason]=useState('');
  const [qaWaiverAcknowledged,setQaWaiverAcknowledged]=useState(false);
  const [requirements,setRequirements]=useState<RequirementInfo|null>(null);
@@ -329,6 +330,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
  const [events,setEvents]=useState<{id:string;event:string;detail:string;created_at:string}[]>([]);
  const [taskProcessEvents,setTaskProcessEvents]=useState<TaskProcessEvent[]>([]);
+ const [taskTestRuns,setTaskTestRuns]=useState<TestRun[]>([]);
  const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
@@ -360,12 +362,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     approved:'Переход к слиянию',awaiting_manual_qa_decision:'Требуется решение по тестам'
    } as Record<string,string>)[ev.stage]||ev.stage,text:ev.detail,time:ev.created_at,failed:ev.level==='error'})),
    ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined})),
-   ...testRuns.filter(r=>r.task_id===taskId).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',
+   ...(activeTask?.id===taskId&&taskTestRuns.length?taskTestRuns:testRuns.filter(r=>r.task_id===taskId)).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',
     text:[r.report?.summary||r.message||'Тестировщик выполняет проверку',
      ...(r.report?.checks||[]).map(c=>c.name+': '+c.result+(c.details?' — '+c.details:'')),
      ...(r.report?.findings||[]).map(f=>'Дефект ('+f.severity+'): '+f.description+(f.steps?' · '+f.steps:'')),
      ...(r.report?.caseResults||[]).slice(0,30).map(c=>c.case_id+': '+c.result+(c.evidence?' — '+c.evidence:''))
-    ].filter(Boolean).join('\n'),time:r.created_at,status:r.status}))
+    ].filter(Boolean).join('\n'),time:r.completed_at||r.created_at,status:r.status,failed:r.status==='failed'}))
   ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
  }
  async function loadRequirements(projectId:string,taskId:string){
@@ -414,7 +416,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     api<TaskActivityResponse>('/projects/'+projectId+'/tasks/'+taskId+'/activity'),
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
-   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskOrchestration(activity.owner);setTaskMessages(ms);
+   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
  }
@@ -498,7 +500,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskOrchestration(null);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskOrchestration(null);
      void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskOrchestration(a.owner);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
@@ -516,7 +518,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const element=taskThreadRef.current;
   if(!element)return;
   if(element.scrollHeight-element.scrollTop-element.clientHeight<180||element.scrollTop===0)element.scrollTop=element.scrollHeight;
- },[taskMessages,taskChatBusy,events,taskProcessEvents,testRuns,aiRuns,activeTask?.id,taskFeedback]);
+ },[taskMessages,taskChatBusy,events,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback]);
  // One live timeline for analysis, development, QA-design, testing and approvals.
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id)return;
@@ -532,6 +534,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     if(!alive)return;
     setEvents(old=>JSON.stringify(old)===JSON.stringify(feed.events)?old:feed.events);
     setTaskProcessEvents(old=>JSON.stringify(old)===JSON.stringify(feed.processEvents)?old:feed.processEvents);
+    setTaskTestRuns(old=>JSON.stringify(old)===JSON.stringify(feed.tests||[])?old:feed.tests||[]);
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
    }catch{/* Network reconnection preserves the last known timeline. */}
@@ -734,7 +737,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   document.addEventListener('visibilitychange',onVisible);
   return()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
  },[token,selected?.id]);
- const newestTaskTest=activeTask?testRuns.find(r=>r.task_id===activeTask.id):null;
+ const newestTaskTest=activeTask?(taskTestRuns.find(r=>r.task_id===activeTask.id)||testRuns.find(r=>r.task_id===activeTask.id)):null;
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id){setQaWaiver(null);return;}
   const projectId=selected.id,taskId=activeTask.id;
@@ -744,6 +747,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }).catch(()=>{if(valid)setQaWaiver(null);});
   return()=>{valid=false;};
  },[selected?.id,activeTask?.id,newestTaskTest?.id,newestTaskTest?.status,newestTaskTest?.verdict]);
+ async function applyQaResult(){
+  if(!selected||!activeTask||qaResultBusy||taskOrchestration)return;
+  const taskId=activeTask.id,projectId=selected.id;
+  setQaResultBusy(true);
+  try{
+   const result=await api<{ok:boolean;stage:string;message:string}>('/projects/'+projectId+'/tasks/'+taskId+'/apply-qa-result',{method:'POST'});
+   setTaskFeedback(result.message);
+   await refreshTaskActivity(projectId,taskId);
+   await loadProject(projectId);
+  }catch(error){
+   setTaskFeedback(error instanceof Error?error.message:'Не удалось подтвердить результат тестирования');
+  }finally{setQaResultBusy(false);}
+ }
  async function approveQaWaiver(){
   if(!selected||!activeTask||!qaWaiver?.assessment.eligible||!qaWaiver.run_id||qaWaiverBusy)return;
   if(qaWaiverReason.trim().length<20||!qaWaiverAcknowledged){
@@ -1408,7 +1424,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      
      {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
      {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)||!!taskOrchestration} onClick={()=>void startTaskTesting()}>
-      {activeTestFor(activeTask.id)||taskOrchestration?'AI-цикл выполняется':'Запустить тестирование'}</button>}
+      {activeTestFor(activeTask.id)||taskOrchestration?'AI-цикл выполняется':newestTaskTest?'Повторить тестирование':'Запустить тестирование'}</button>}
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
@@ -1480,8 +1496,36 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
       {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
-     </div>
-     <div className="task-action-feed" aria-label="Требования и решения по тестированию">
+     <div className="task-thread-actions" aria-label="Требования и решения по тестированию">
+      {activeTask.stage==='testing'&&!taskOrchestration&&!activeTestFor(activeTask.id)&&
+       <div className={'task-qa-outcome '+(newestTaskTest?.status==='failed'?'failed':newestTaskTest?.verdict==='blocked'?'blocked':newestTaskTest?.verdict==='passed'?'passed':'idle')}>
+        {newestTaskTest?.status==='failed'?<>
+         <strong>Тестирование не завершилось: нет достоверного QA-отчёта</strong>
+         <p>{newestTaskTest.message||'AI-тестировщик завершился с ошибкой. Проверки не засчитаны.'}</p>
+         <p>Следующее действие: повторно запустить тестирование. Это не ошибка разработчика и не основание для слияния.</p>
+         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Повторить тестирование</button>
+        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='passed'?<>
+         <strong>QA-проверки пройдены, но задача осталась на тестировании</strong>
+         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
+         <p>Автоматический переход не был завершён. Можно безопасно перепроверить версию ТЗ и SHA PR, затем передать задачу на слияние.</p>
+         <button className="secondary" type="button" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка результата…':'Подтвердить QA и перейти к слиянию'}</button>
+        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='failed'?<>
+         <strong>Тестировщик выявил дефекты, но возврат разработчику не завершился</strong>
+         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
+         <p>Применение результата разрешено только при наличии подтверждённых ошибок в отчёте.</p>
+         <button className="secondary" type="button" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка результата…':'Передать замечания разработчику'}</button>
+        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'?<>
+         <strong>Часть проверок не выполнена</strong>
+         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
+         <p>Можно повторить тестирование. Слияние без конкретных сценариев доступно только после подтверждения причин их невыполнения и согласования риска.</p>
+         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Повторить тестирование</button>
+        </>:!newestTaskTest?<>
+         <strong>Нет сохранённого результата QA</strong>
+         <p>Для задачи ещё нет законченного тестового прогона. Запусти тестировщика, чтобы получить проверяемые результаты.</p>
+         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Запустить тестирование</button>
+        </>:null}
+       </div>}
+
      {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
       <div className={'task-requirements-review '+requirements.task.spec_review_status}>
        <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
@@ -1537,6 +1581,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>}
       </div>}
      </div>
+     </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
       <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
@@ -1550,8 +1595,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {i>0&&<button className="workflow-arrow" disabled={!canAdvance(activeTask,stages[i-1].stage,stage.stage)}
        title={canAdvance(activeTask,stages[i-1].stage,stage.stage)?'Перейти: '+stage.label:'Для этого перехода нужны выполненные условия предыдущего этапа'}
        onClick={()=>void advanceTask(activeTask,stages[i-1].stage,stage.stage)}><ArrowRight size={18}/></button>}
-     <div className={'workflow-step '+(stage.stage===activeTask.stage?'current':stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?'passed':'pending')}>
-      {stage.stage===activeTask.stage?(activeTask.stage==='done'?<CheckCircle2 size={16}/>:<LoaderCircle size={16}/>):stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?<CheckCircle2 size={16}/>:<Clock3 size={16}/>}
+     <div className={'workflow-step '+(stage.stage===activeTask.stage?'current'+((activeTask.stage==='testing'?!!taskOrchestration||!!activeTestFor(activeTask.id):agentWorking(activeTask.id))?' working':' idle'):stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?'passed':'pending')}>
+      {stage.stage===activeTask.stage?(activeTask.stage==='done'?<CheckCircle2 size={16}/>:((activeTask.stage==='testing'?!!taskOrchestration||!!activeTestFor(activeTask.id):agentWorking(activeTask.id))?<LoaderCircle size={16}/>:<Clock3 size={16}/>)):stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?<CheckCircle2 size={16}/>:<Clock3 size={16}/>}
       <span>{stage.label}</span>
      </div>
     </React.Fragment>)}
