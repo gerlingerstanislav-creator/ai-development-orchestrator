@@ -89,17 +89,27 @@ export async function managerSnapshot(pool:Pool,projectId:string,taskId:string){
 export type ManagerDeps={
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;
- startManagerWorkflow:(arg:{projectId:string;taskId:string;messageId:string})=>Promise<void>
+ startManagerWorkflow:(arg:{projectId:string;taskId:string;messageId:string})=>Promise<void>;
+ recoverTask:(arg:{projectId:string;taskId:string;auth:string;cookie:string})=>Promise<{ok:boolean;status:number;message:string;details?:unknown}>
 };
 const scope=z.object({id:z.string().uuid(),taskId:z.string().uuid()});
 export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDeps){
- const {pool,access,requireAdmin,uid,startManagerWorkflow}=deps;
+ const {pool,access,requireAdmin,uid,startManagerWorkflow,recoverTask}=deps;
  app.get('/api/projects/:id/tasks/:taskId/manager',async(req:any,reply)=>{
   const {id,taskId}=scope.parse(req.params);
   if(!await access(req,reply,id))return;
   const snapshot=await managerSnapshot(pool,id,taskId);
   if(!snapshot)return reply.code(404).send({error:'Задача не найдена'});
   return snapshot;
+ });
+ app.post('/api/projects/:id/tasks/:taskId/manager/continue',async(req:any,reply)=>{
+  const {id,taskId}=scope.parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const result=await recoverTask({projectId:id,taskId,auth:String(req.headers.authorization||''),cookie:String(req.headers.cookie||'')});
+  if(!result.ok)return reply.code(result.status).send({error:result.message,details:result.details});
+  await pool.query("INSERT INTO manager_messages(id,project_id,task_id,role,body) VALUES($1,$2,$3,'manager',$4)",
+   [randomUUID(),id,taskId,result.message.slice(0,3500)]);
+  return reply.code(result.status).send(result);
  });
  app.post('/api/projects/:id/tasks/:taskId/manager/messages',async(req:any,reply)=>{
   const {id,taskId}=scope.parse(req.params);
