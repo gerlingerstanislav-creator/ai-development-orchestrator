@@ -14,10 +14,12 @@ export async function initTaskCancellationSchema(pool:Pool){
 async function taskPreview(client:Pool|PoolClient,projectId:string,taskId:string){
  const t=await client.query("SELECT id,title,display_number,stage,git_branch,pr_url,pr_number FROM tasks WHERE project_id=$1 AND id=$2",[projectId,taskId]);
  if(!t.rowCount)return null;
- const [dependents,active,activeTest,docs,plans,cases,flows,versions]=await Promise.all([
+ const [dependents,active,activeTest,legacyRuns,activeReview,docs,plans,cases,flows,versions]=await Promise.all([
   client.query('SELECT display_number,title FROM tasks WHERE project_id=$1 AND depends_on_task_id=$2 LIMIT 15',[projectId,taskId]),
   client.query("SELECT workflow_id FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[projectId,taskId]),
   client.query("SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('running','queued') LIMIT 1",[projectId,taskId]),
+  client.query("SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('running','queued') LIMIT 1",[projectId,taskId]),
+  client.query("SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('running','queued') LIMIT 1",[projectId,taskId]),
   client.query("SELECT count(*)::int AS n FROM documents WHERE project_id=$1 AND created_by_task_id=$2",[projectId,taskId]),
   client.query("SELECT count(*)::int AS n FROM qa_test_plans WHERE project_id=$1 AND task_id=$2",[projectId,taskId]),
   client.query("SELECT count(*)::int AS n FROM qa_test_cases WHERE project_id=$1 AND source_task_id=$2",[projectId,taskId]),
@@ -28,7 +30,7 @@ async function taskPreview(client:Pool|PoolClient,projectId:string,taskId:string
  const blocked:string[]=[];
  if(['documentation','done'].includes(row.stage))blocked.push('PR уже слит: нельзя удалить внедрённую функциональность через отмену задачи');
  if(dependents.rowCount)blocked.push('На задачу опираются другие задачи: '+dependents.rows.map(x=>'#'+x.display_number+' '+x.title).join(', '));
- if(active.rowCount||activeTest.rowCount)blocked.push('Для задачи ещё активен агент или Temporal. Заверши процесс прежде чем удалять ветку');
+ if(active.rowCount||activeTest.rowCount||legacyRuns.rowCount||activeReview.rowCount)blocked.push('Для задачи остаётся активный AI/Temporal-процесс, включая старые запуски. Подтверди завершение процесса перед отменой, чтобы не удалить ветку работающего агента');
  if(versions.rows[0].n)blocked.push('Есть версии общей проектной документации с этой задачей; сначала разреши историю документации');
  const sharedChildren=await client.query("SELECT count(*)::int AS n FROM documents d WHERE d.project_id=$1 AND d.parent_id IN (SELECT id FROM documents WHERE project_id=$1 AND created_by_task_id=$2) AND d.created_by_task_id IS DISTINCT FROM $2",[projectId,taskId]);
  if(sharedChildren.rows[0].n)blocked.push('Документы задачи используются как родительские страницы для чужой документации');
