@@ -273,13 +273,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const all:KanbanGroupKey[]=['analytics','development','testing','merging','results','other'];
   try{
    // New layout starts fully expanded, while retaining subsequent user choices.
-   const saved=localStorage.getItem('ado-kanban-groups-expanded-v2');
+   const saved=localStorage.getItem('ado-kanban-groups-expanded-v3');
    if(!saved)return all;
    const value:unknown=JSON.parse(saved);
    return Array.isArray(value)?value.filter((id):id is KanbanGroupKey=>all.includes(id as KanbanGroupKey)):all;
   }catch{return all;}
  });
- useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded-v2',JSON.stringify(expandedGroups));},[expandedGroups]);
+ useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded-v3',JSON.stringify(expandedGroups));},[expandedGroups]);
  function toggleKanbanGroup(group:KanbanGroupKey){
   setExpandedGroups(old=>old.includes(group)?old.filter(x=>x!==group):[...old,group]);
  }
