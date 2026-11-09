@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {pendingAgentQuestions} from './task-agent-notes.js';
 
 type Deps={pool:Pool;uid:(req:any)=>string;access:(req:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(req:any,reply:any)=>Promise<boolean>;codexUrl:string;runnerKey:string};
 const uuid=z.string().uuid();
@@ -67,11 +68,13 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const pending=await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND stage='documentation' ORDER BY updated_at LIMIT 15",[id]);
   if(!pending.rowCount)return reply.code(409).send({error:'Нет слитых задач, ожидающих документации'});
+  for(const task of pending.rows)if(await pendingAgentQuestions(pool,id,task.id))return reply.code(409).send({error:'Документация ожидает ответы на вопросы агентов по задаче '+task.title});
   const doc=(await pool.query("SELECT id,title,body FROM documents WHERE project_id=$1 AND title='Реализованные возможности' LIMIT 1",[id])).rows[0];
   const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 60',[id]);
   const prompt=['Ты технический писатель. Обнови документацию только по уже слитым Pull Request.',
    'Ответь ТОЛЬКО JSON {"body":"полное Markdown-содержимое документа"}.',
    'Не удаляй прежние реализованные возможности. Не выдумывай факты, не включай секреты.',
+   'Рабочие комментарии и история обсуждений не являются утверждённой функциональностью. Не переписывай их в документацию как факт.',
    'Предыдущий документ:\n'+String(doc?.body||'# Реализованные возможности\n').slice(0,40000),
    'Правила проекта (учитывай, не изменяй):\n'+rules.rows.map(x=>x.body).join('\n').slice(0,7000),
    'Выполненные задачи:\n'+JSON.stringify(pending.rows).slice(0,22000)].join('\n\n');

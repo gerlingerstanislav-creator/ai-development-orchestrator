@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import { createHash,randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import {taskNotesContext} from './task-agent-notes.js';
 
 const generated=z.object({
  summary:z.string().trim().min(10).max(3000),
@@ -73,6 +74,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   'Задача: '+row.title+'\n'+String(row.description||'').slice(0,17000),
   'Реализованные изменения (используй для выбора проверок, но НЕ подгоняй ожидаемый результат под код): '+String(args.implementationEvidence||'').slice(0,13000),
   'Правила проекта: '+rulesText,
+  'Рабочие комментарии разработчика и аналитика, адресованные QA (не являются ТЗ): '+await taskNotesContext(pool,projectId,taskId,'testing'),
   'Существующая функциональная документация (сжатый контекст): '+JSON.stringify(docs.rows.map((d:any)=>({title:d.title,body:String(d.body).slice(0,2400)}))).slice(0,16000),
   'Существующий каталог тест-кейсов: '+JSON.stringify(existing.rows).slice(0,14000)
  ].join('\n\n');

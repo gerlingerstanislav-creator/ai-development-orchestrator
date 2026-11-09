@@ -4,6 +4,8 @@ import { registerKnowledgeRoutes } from './knowledge.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
 import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
+import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
+import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -502,6 +504,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(t.rows[0].stage!=='development'||t.rows[0].analysis_state!=='approved')return reply.code(409).send({error:'Подтверди завершение анализа и отправь задачу в разработку'});
+ if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'У задачи есть вопросы агентов без ответа. Ответь на них прежде чем запускать разработку.'});
  if(['pending','needs_approval'].includes(t.rows[0].spec_review_status))return reply.code(409).send({error:'Требования ещё проверяются аналитиком. Дождись завершения сверки.'});
  const relatedIds=(t.rows[0].related_task_ids||[]) as string[];
  const related=relatedIds.length?(await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[])',[id,relatedIds])).rows:[];
@@ -593,6 +596,7 @@ app.post('/api/projects/:id/tasks/:taskId/apply-qa-result',async(req:any,reply)=
   [taskId,id,uid(req)]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача или GitHub-подключение не найдены'});
  if(task.rows[0].stage!=='testing')return reply.code(409).send({error:'Задача уже вышла из этапа тестирования'});
+ if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Сначала ответь на вопросы агентов по задаче'});
  const [owner,active,latest]=await Promise.all([
   pool.query("SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND project_id=$2 AND state='active'",[taskId,id]),
   pool.query("SELECT 1 FROM ai_test_runs WHERE task_id=$1 AND project_id=$2 AND status IN ('running','queued')",[taskId,id]),
@@ -648,26 +652,60 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
  const task=await pool.query('SELECT stage,pr_url,git_branch,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+ if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Сначала ответь на вопросы агентов'});
  if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
  if(['pending','needs_approval','rejected'].includes(task.rows[0].spec_review_status))return reply.code(409).send({error:'Сначала заверши сверку требований с аналитиком. QA нельзя запускать по неутверждённой версии ТЗ.'});
- const existing=await pool.query("SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
- if(existing.rowCount)return reply.code(409).send({error:'QA-исполнитель уже проверяет эту задачу'});
- // Older workflows started before the orchestration-owner migration must be
- // checked in Temporal too: a QA design stage has no ai_test_runs row yet.
+ // A stale DB lock must not hide a finished QA run or prevent an explicit retry.
+ // Verify actual Temporal state before reconciling ownership. Never start a second
+ // worker when the first workflow (or Codex job) is still genuinely running.
  const temporalClient=await temporal();
- const legacy=await pool.query("SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=cycle_id ORDER BY created_at DESC LIMIT 12",[id,taskId]);
+ const owner=await pool.query("SELECT owner_id,workflow_id,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[id,taskId]);
+ if(owner.rowCount){
+  const row=owner.rows[0];
+  try{
+   const run=await temporalClient.workflow.getHandle(row.workflow_id).describe();
+   if(run.status.name==='RUNNING')return reply.code(409).send({error:'Автоматический процесс для задачи всё ещё выполняется. Проверь его в Центре процессов.'});
+   await releaseTaskOrchestration(pool,id,taskId,row.owner_id);
+  }catch(error){
+   const e=error as {code?:number;name?:string;message?:string};
+   const notFound=e.code===5||String(e.name||'').includes('NotFound')||String(e.message||'').includes('not found');
+   if(!notFound)return reply.code(503).send({error:'Не удалось проверить статус Temporal: '+String(e.message||error).slice(0,250)});
+   if(Date.now()-new Date(row.started_at).getTime()<120000)
+    return reply.code(409).send({error:'Процесс запускается. Повторный тестировщик не нужен.'});
+   await releaseTaskOrchestration(pool,id,taskId,row.owner_id);
+  }
+ }
+ const legacy=await pool.query("SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=cycle_id ORDER BY created_at DESC LIMIT 15",[id,taskId]);
  for(const old of legacy.rows){
   try{
    const workflow=await temporalClient.workflow.getHandle('task-cycle-'+old.id).describe();
-   if(workflow.status.name==='RUNNING')return reply.code(409).send({error:'Автоматический цикл уже выполняет аналитику или QA. Повторный запуск тестировщика запрещён.'});
+   if(workflow.status.name==='RUNNING')return reply.code(409).send({error:'Автоматический цикл ещё выполняется. Повторное тестирование пока недоступно.'});
   }catch(error){
-   // Non-existent historical workflows are not active. Network errors are not proof
-   // of inactivity, so only ignore a real NOT_FOUND response.
    const e=error as {code?:number;name?:string;message?:string};
    if(e.code!==5&&!String(e.name||'').includes('NotFound')&&!String(e.message||'').includes('not found'))
-    return reply.code(503).send({error:'Не удалось подтвердить отсутствие активного Temporal-процесса: '+String(e.message||error).slice(0,250)});
+    return reply.code(503).send({error:'Не удалось проверить исторический Temporal-процесс: '+String(e.message||error).slice(0,250)});
   }
+ }
+ const stale=await pool.query("SELECT id,status FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 8",[id,taskId]);
+ for(const test of stale.rows){
+  let remoteStatus='missing';
+  try{
+   const response=await fetch(codexUrl+'/jobs/'+test.id,{headers:{'X-Runner-Secret':runnerKey},signal:AbortSignal.timeout(12000)});
+   if(response.status===404)remoteStatus='missing';
+   else if(!response.ok)return reply.code(503).send({error:'QA-исполнитель недоступен: HTTP '+response.status});
+   else remoteStatus=String((await response.json() as any).status||'unknown');
+  }catch(error){return reply.code(503).send({error:'Не удалось достоверно проверить старый QA-запуск: '+String(error).slice(0,190)});}
+  if(['queued','running','unknown'].includes(remoteStatus))
+   return reply.code(409).send({error:'Предыдущий тестировщик ещё работает. Не запускай второго исполнителя.'});
+  if(remoteStatus==='completed'){
+   // Persist the actual previous QA report before starting a new attempt.
+   try{await (await import('./temporal-activities.js')).checkTesting({projectId:id,taskId,testId:test.id});}
+   catch(error){return reply.code(503).send({error:'Не удалось восстановить завершённый QA-отчёт: '+String(error).slice(0,220)});}
+   continue;
+  }
+  await pool.query("UPDATE ai_test_runs SET status='failed',message='Предыдущий QA-процесс завершён или потерян. Можно выполнить новый запуск.',completed_at=now() WHERE id=$1 AND status IN ('running','queued')",[test.id]);
+  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_retry_recovered','Предыдущий QA-процесс отсутствует или завершился с ошибкой. Запуск разблокирован.']);
  }
  const cycleId=randomUUID();
  if(!await acquireTaskOrchestration(pool,id,taskId,cycleId,'manual-test-'+cycleId,'testing'))
@@ -716,7 +754,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
      [runId,remote.status,remote.branch||null,remote.prUrl||null,String(remote.message||'').slice(0,2000)]);
     if(remote.status==='completed'&&remote.prUrl){
      const prMatch=/\/pull\/(\d+)$/.exec(remote.prUrl);
-     await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[current.task_id,remote.branch,remote.prUrl,prMatch?Number(prMatch[1]):null,id,remote.baseBranch||null]);
+     await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[current.task_id,remote.branch,remote.prUrl,prMatch?Number(prMatch[1]):null,id,remote.baseBranch||null]);
     }
     return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
    }
@@ -782,7 +820,7 @@ async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):
    :'Не удалось создать PR: GitHub HTTP '+created.response.status+' '+String(created.data.message||'').slice(0,180)),{statusCode:409});
   pr=created.data;
  }
- await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[taskId,branch,pr.html_url,pr.number,id,baseBranch]);
+ await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[taskId,branch,pr.html_url,pr.number,id,baseBranch]);
  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pr_created',$4)",[randomUUID(),taskId,actorId,'PR создан автоматически: '+pr.html_url]);
  await pool.query("UPDATE ai_task_runs SET pr_url=$2,status='completed',message=$3,completed_at=COALESCE(completed_at,now()) WHERE project_id=$1 AND task_id=$4 AND status='failed' AND branch=$5",
   [id,pr.html_url,'PR автоматически создан из готовых изменений без нового запроса к Codex',taskId,branch]);
@@ -816,6 +854,7 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  if(!info.rowCount)throw Object.assign(new Error('Задача или подключение GitHub не найдены'),{statusCode:404});
  const row=info.rows[0];
  if(row.stage!=='merge_queue'||!row.pr_number)throw Object.assign(new Error('Задача не находится в очереди слияния или не содержит PR'),{statusCode:409});
+ if(await pendingAgentQuestions(pool,projectId,taskId))throw Object.assign(new Error('Нельзя слить PR: у задачи остаются вопросы без ответа'),{statusCode:409});
  const token=decryptToken(row.secret_encrypted);
  if(row.depends_on_task_id){
   const parent=await pool.query('SELECT id,title,stage,pr_number,pr_base_branch FROM tasks WHERE project_id=$1 AND id=$2',[projectId,row.depends_on_task_id]);
@@ -962,7 +1001,7 @@ app.get('/api/background-processes',async(req:any)=>{
      [row.id,status,detail,remote.branch||null,remote.prUrl||null]).catch(()=>{});
     if(status==='completed'&&remote.prUrl){
      const match=/\/pull\/(\d+)$/.exec(remote.prUrl);
-     await pool.query("UPDATE tasks SET stage='merge_queue',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",
+     await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",
       [row.task_id,remote.branch||null,remote.prUrl,match?Number(match[1]):null,row.project_id,remote.baseBranch||null]).catch(()=>{});
     }
     if(remote.usage){
@@ -1200,7 +1239,7 @@ async function startRequirementsReview(projectId:string,taskId:string,version:nu
  await pool.query("INSERT INTO requirement_review_runs(id,project_id,task_id,spec_version,status,message) VALUES($1,$2,$3,$4,'queued','Ожидает проверки аналитиком')",[runId,projectId,taskId,version]);
  try{
   const client=await temporal();
-  await client.workflow.start('requirementsReview',{taskQueue:'agent-pipeline',workflowId:'requirements-'+taskId+'-v'+version,args:[{projectId,taskId,runId}]});
+  await client.workflow.start('requirementsReview',{taskQueue:'agent-pipeline',workflowId:'requirements-'+taskId+'-v'+version+'-'+runId,args:[{projectId,taskId,runId}]});
   return {started:true,runId,message:'AI-аналитик проверяет изменение требований'};
  }catch(e){
   await pool.query("UPDATE requirement_review_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,'Не удалось запустить Temporal: '+String(e).slice(0,500)]);
@@ -1239,6 +1278,9 @@ app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async
   const review=await client.query("SELECT * FROM task_requirement_reviews WHERE id=$1 AND task_id=$2 AND project_id=$3 FOR UPDATE",[reviewId,taskId,id]);
   if(!task.rowCount||!review.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Требования или предложение не найдены'});}
   const t=task.rows[0],v=review.rows[0];
+  if(v.classification==='uncertain'&&decision==='approve'){
+   await client.query('ROLLBACK');return reply.code(409).send({error:'Аналитик не смог проверить требования. Сначала ответь на вопросы и уточни ТЗ.'});
+  }
   if(v.status!=='needs_approval'||t.spec_version!==v.spec_version||t.spec_review_status!=='needs_approval'){
    await client.query('ROLLBACK');return reply.code(409).send({error:'Предложение уже рассмотрено или относится к старой версии ТЗ'});
   }
@@ -1302,13 +1344,14 @@ app.get('/api/projects/:id/tasks/:taskId/activity',async(req:any,reply)=>{
  if(!await access(req,reply,id))return;
  const task=await pool.query('SELECT id FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
- const [events,processes,ownership,tests]=await Promise.all([
+ const [events,processes,ownership,tests,notes]=await Promise.all([
   pool.query('SELECT id,event,detail,created_at FROM task_events WHERE task_id=$1 ORDER BY created_at DESC LIMIT 200',[taskId]),
   pool.query("SELECT p.id,p.process_kind,p.stage,p.detail,p.level,p.created_at FROM process_events p WHERE p.project_id=$1 AND p.process_id IN (SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2) ORDER BY p.created_at DESC,p.id DESC LIMIT 250",[id,taskId]),
   pool.query('SELECT owner_id,kind,workflow_id,state,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2',[id,taskId]),
-  pool.query('SELECT id,task_id,cycle_id,attempt,status,message,verdict,report,created_at,completed_at,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 30',[id,taskId])
+  pool.query('SELECT id,task_id,cycle_id,attempt,status,message,verdict,report,created_at,completed_at,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 30',[id,taskId]),
+  pool.query('SELECT id,author_stage,author_name,target_stage,kind,body,source_kind,status,answer,answered_at,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 200',[id,taskId])
  ]);
- return {events:events.rows,processEvents:processes.rows,owner:ownership.rows[0]?.state==='active'?ownership.rows[0]:null,tests:tests.rows};
+ return {events:events.rows,processEvents:processes.rows,owner:ownership.rows[0]?.state==='active'?ownership.rows[0]:null,tests:tests.rows,notes:notes.rows};
 });
 const docParent = z.string().uuid().nullable().optional();
 async function validDocParent(projectId:string, docId:string|null, parentId:string|null) {
@@ -1422,5 +1465,7 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
 registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
-async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview});
+registerTaskCancellationRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
+async function main(){await dbInit();await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});
