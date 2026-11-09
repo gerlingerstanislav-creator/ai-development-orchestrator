@@ -7,7 +7,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "check": "tsc --noEmit",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "worker": "node dist/temporal-worker.js"
   },
   "dependencies": {
     "@fastify/cors": "^10.1.0",
@@ -15,7 +16,11 @@
     "pg": "^8.13.3",
     "jose": "^6.0.0",
     "bcryptjs": "^2.4.3",
-    "zod": "^3.24.2"
+    "zod": "^3.24.2",
+    "@temporalio/client": "^1.24.0",
+    "@temporalio/worker": "^1.24.0",
+    "@temporalio/workflow": "^1.24.0",
+    "@temporalio/activity": "^1.24.0"
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
