@@ -51,8 +51,20 @@ export async function initDocumentationSystem(pool:Pool){
    existing_id:=NULL;
   END LOOP;
   SELECT id INTO research_id FROM documents WHERE project_id=p_project AND system_key='research';
-  UPDATE documents SET parent_id=research_id
-   WHERE project_id=p_project AND parent_id IS NULL AND system_key IS NULL;
+  -- Keep old IDs, content, descendants and import_source references.
+  -- Only classify clear titles; ambiguous legacy pages stay under Research.
+  UPDATE documents AS legacy
+   SET parent_id=COALESCE(
+    (SELECT system_root.id FROM documents AS system_root
+     WHERE system_root.project_id=p_project AND system_root.system_key=
+      CASE
+       WHEN legacy.title ~* '^(ТЗ([[:space:]:-]|$)|Техническое задание|Требован|Концепц|Критерии при)' THEN 'spec'
+       WHEN legacy.title ~* '(Архитектур|Технические решения|Реализованные возможности)' THEN 'architecture'
+       WHEN legacy.title ~* '(Запуск|Разв[её]рт|Установк|Эксплуатац|Мониторинг)' THEN 'operations'
+       WHEN legacy.title ~* '(Дизайн|Интерфейс|Макет|UI|UX)' THEN 'design'
+       ELSE 'research'
+      END LIMIT 1),research_id)
+   WHERE legacy.project_id=p_project AND legacy.parent_id IS NULL AND legacy.system_key IS NULL;
  END $seed$ LANGUAGE plpgsql;
 
  SELECT seed_document_roots(id) FROM projects;
