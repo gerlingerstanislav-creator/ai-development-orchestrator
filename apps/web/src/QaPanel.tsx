@@ -6,7 +6,7 @@ type Flow={id:string;title:string;description:string;preconditions:string;steps:
 type QaCase={id:string;title:string;area:string;description:string;preconditions:string;steps:TestStep[];priority:'critical'|'high'|'normal'|'low';category:'smoke'|'regression'|'functional';execution_mode:'automated'|'manual'|'hybrid';status:'active'|'needs_review'|'archived';flow_id:string|null;source_task_id?:string;task_number?:number};
 type Plan={id:string;task_id:string;task_title:string;task_number:number;summary:string;generated_at:string;cases:Array<{id:string;purpose:string}>};
 type Result={case_id:string;result:string;evidence:string;created_at:string;test_run_id:string;task_id:string};
-type QaData={flows:Flow[];cases:QaCase[];plans:Plan[];results:Result[]};
+type QaData={flows:Flow[];cases:QaCase[];plans:Plan[];results:Result[];manualResults:Array<{case_id:string;result:string;evidence:string;created_at:string;actor_id:string}>};
 type Request=<T=any>(path:string,options?:RequestInit)=>Promise<T>;
 const newCase=():Omit<QaCase,'id'|'source_task_id'|'task_number'>=>({
  title:'',area:'general',description:'',preconditions:'',steps:[{action:'',expected:''}],priority:'normal',category:'functional',execution_mode:'hybrid',status:'active',flow_id:null
@@ -59,7 +59,7 @@ export function QaPanel({projectId,api,onError}:{projectId:string;api:Request;on
   try{
    await api('/projects/'+projectId+'/qa/cases/'+selected.id+'/manual-result',{method:'POST',body:JSON.stringify({result:manualResult,evidence:manualEvidence})});
    setManualSuccess('Результат ручной проверки сохранён отдельно от AI-прогонов');
-   setManualEvidence('');
+   setManualEvidence('');await reload();
   }catch(e){onError(e);}finally{setBusy(false);}
  };
  return <div className="qa-page">
@@ -90,7 +90,7 @@ export function QaPanel({projectId,api,onError}:{projectId:string;api:Request;on
       <table className="qa-steps"><thead><tr><th>№</th><th>Действие</th><th>Ожидаемый результат</th></tr></thead><tbody>{selected.steps.map((s,i)=><tr key={i}><td>{i+1}</td><td>{s.action}</td><td>{s.expected}</td></tr>)}</tbody></table>
       {selected.flow_id&&<p className="muted">Сценарий: {data.flows.find(f=>f.id===selected.flow_id)?.title||'Не найден'}</p>}
       <div className="qa-related"><h4>Последние AI-проверки</h4>{data.results.filter(r=>r.case_id===selected.id).slice(0,5).map(r=><p key={r.test_run_id}><strong>{r.result}</strong> · {new Date(r.created_at).toLocaleString('ru-RU')} · {r.evidence||'Нет доказательства'}</p>)}{!data.results.some(r=>r.case_id===selected.id)&&<p className="muted">Проверок пока нет.</p>}</div>
-      <div className="qa-manual"><h4>Зафиксировать ручную проверку</h4><div className="qa-buttons"><select value={manualResult} onChange={e=>setManualResult(e.target.value as typeof manualResult)}><option value="passed">Пройден</option><option value="failed">Ошибка</option><option value="blocked">Заблокирован</option></select><input value={manualEvidence} onChange={e=>setManualEvidence(e.target.value)} placeholder="Окружение, версия, фактический результат" /><button className="secondary" disabled={busy||!manualEvidence.trim()} onClick={()=>void submitManualResult()}><CheckCircle2 size={15}/> Сохранить</button></div>{manualSuccess&&<small>{manualSuccess}</small>}</div>
+      <div className="qa-manual"><h4>История ручных проверок</h4>{data.manualResults.filter(r=>r.case_id===selected.id).slice(0,5).map((r,i)=><p key={i}><strong>{r.result}</strong> · {new Date(r.created_at).toLocaleString('ru-RU')} · {r.evidence}</p>)}{!data.manualResults.some(r=>r.case_id===selected.id)&&<p className="muted">Ручных проверок пока нет.</p>}<h4>Зафиксировать ручную проверку</h4><div className="qa-buttons"><select value={manualResult} onChange={e=>setManualResult(e.target.value as typeof manualResult)}><option value="passed">Пройден</option><option value="failed">Ошибка</option><option value="blocked">Заблокирован</option></select><input value={manualEvidence} onChange={e=>setManualEvidence(e.target.value)} placeholder="Окружение, версия, фактический результат" /><button className="secondary" disabled={busy||!manualEvidence.trim()} onClick={()=>void submitManualResult()}><CheckCircle2 size={15}/> Сохранить</button></div>{manualSuccess&&<small>{manualSuccess}</small>}</div>
      </>:<p className="muted">Выбери тест-кейс слева или создай новый.</p>}
     </section>
    </div>
