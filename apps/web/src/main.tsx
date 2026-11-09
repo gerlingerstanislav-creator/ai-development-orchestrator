@@ -596,6 +596,26 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  },[route,selected?.id,loadedProjectId,tasks,docs,activeTask?.id,selectedDocId,editingDoc?.id]);
 
  useEffect(()=>{if(selected)void loadProject(selected.id);},[selected?.id]);
+ useEffect(()=>{
+  if(!token||!selected?.id||!['docs','tasks','processes'].includes(section))return;
+  const id=selected.id;let alive=true;
+  const refresh=async()=>{
+   if(document.hidden)return;
+   try{
+    const [documents,questions,proposals]=await Promise.all([
+     api<Doc[]>('/projects/'+id+'/docs'),
+     api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),
+     api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')
+    ]);
+    if(!alive)return;
+    setDocs(documents);setDocQuestions(questions);setDocProposals(proposals);
+   }catch(e){if(alive&&section==='docs')fail(e);}
+  };
+  void refresh();
+  const timer=window.setInterval(refresh,8000);
+  return()=>{alive=false;window.clearInterval(timer);};
+ },[token,selected?.id,section]);
+
  useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy]);
  useLayoutEffect(()=>{
   const element=taskThreadRef.current;
