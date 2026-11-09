@@ -33,7 +33,7 @@ const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'results',title:'Итоги',ids:['documentation','done']}
 ];
 
-type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string};
+type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
 type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';enabled:boolean};
@@ -48,6 +48,8 @@ type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:str
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
+type DocumentationQuestion={id:string;topic_key:string;question:string;status:'open'|'answered';answer:string|null;document_id:string;document_title:string;created_at:string};
+type DocumentationProposal={id:string;job_id:string;topic_key:string;document_id:string;title:string;proposed_body:string;status:string;document_title:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
@@ -388,6 +390,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [projectPendingId,setProjectPendingId]=useState<string|null>(null);
  const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
  const [projectImportProgress,setProjectImportProgress]=useState('');
+ const [docQuestions,setDocQuestions]=useState<DocumentationQuestion[]>([]);
+ const [docProposals,setDocProposals]=useState<DocumentationProposal[]>([]);
+ const [questionAnswers,setQuestionAnswers]=useState<Record<string,string>>({});
  const [analystFiles,setAnalystFiles]=useState<File[]>([]);
  const [analystDocumentId,setAnalystDocumentId]=useState<string|null>(null);
  const analystFileInput=useRef<HTMLInputElement>(null);
@@ -523,8 +528,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function loadProjects(){try{setProjects(await api('/projects'));setProjectsLoaded(true);}catch(e){fail(e);}}
  async function loadProject(id:string){
   try{
-   const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions')]);
-   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);
+   const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
+   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
@@ -685,9 +690,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!selected||docBusy)return;
   setDocBusy(true);
   try{
-   const added=await api<{id:string}>('/projects/'+selected.id+'/docs',{method:'POST',body:JSON.stringify({title:'Новая страница',body:'',parent_id:parentId})});
-   const doc:Doc={id:added.id,title:'Новая страница',body:'',parent_id:parentId,updated_at:new Date().toISOString(),document_kind:'technical',implementation_status:'unverified',implementation_evidence:''};
-   if(parentId)setCollapsedDocs(items=>items.filter(x=>x!==parentId));
+   const resolvedParent=parentId||docs.find(d=>d.system_key==='research')?.id||null;
+   if(!resolvedParent)throw Error('Системные разделы ещё не созданы');
+   const added=await api<{id:string}>('/projects/'+selected.id+'/docs',{method:'POST',body:JSON.stringify({title:'Новая страница',body:'',parent_id:resolvedParent})});
+   const doc:Doc={id:added.id,title:'Новая страница',body:'',parent_id:resolvedParent,updated_at:new Date().toISOString(),document_kind:'technical',implementation_status:'unverified',implementation_evidence:''};
+   setCollapsedDocs(items=>items.filter(x=>x!==resolvedParent));
    setDocs(old=>[...old,doc]);
    navigate(projectUrl(selected.id,'docs')+'/'+doc.id);
    setEditingDoc({...doc});
@@ -705,6 +712,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){fail(e);}finally{setDocBusy(false);}
  }
  async function deleteDoc(doc:Doc){
+  if(doc.system_key){setError('Системный раздел удалить нельзя');return;}
   if(!selected||docBusy)return;
   const children=docs.filter(d=>d.parent_id===doc.id);
   if(children.length){setError('У страницы «'+doc.title+'» есть вложенные документы. Сначала перемести или удали их.');return;}
@@ -1132,7 +1140,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
  function logout(){void fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}).catch(()=>{});sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setProjectsLoaded(false);setLoadedProjectId(null);setCodex(null);navigate('/projects',true);}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
-  return docs.filter(d=>d.parent_id===parentId).map(d=>{
+  return docs.filter(d=>d.parent_id===parentId).sort((a,b)=>parentId===null?(['spec','architecture','operations','design','research'].indexOf(a.system_key||'')-['spec','architecture','operations','design','research'].indexOf(b.system_key||'')):a.title.localeCompare(b.title,'ru')).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
    return <div key={d.id}>
     <div className="doc-node" style={{paddingLeft:8+Math.min(depth,8)*18}}>
@@ -1193,11 +1201,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>;
  }
  async function restartImport(process:ProjectProcess){
-  if(!selected||!process.sourceUrl||processActionBusy)return;
+  if(!selected||processActionBusy)return;
   setProcessActionBusy(true);
   try{
-   const message=process.requestText?.trim()||('Импортируй техническую документацию в текущий проект из '+process.sourceUrl+'. Прочитай все Markdown-файлы, сохрани требования, не дублируй существующие документы и не утверждай, что функциональность реализована.');
-   await api('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'documentation'})});
+   await api('/projects/'+selected.id+'/document-import/'+process.id+'/resume',{method:'POST'});
    const res=await api<{processes:ProjectProcess[]}>('/projects/'+selected.id+'/processes');
    setProjectProcesses(res.processes);setSelectedProcessId(res.processes[0]?.id||null);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
@@ -1385,9 +1392,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {process.result.prUrl&&<a href={process.result.prUrl} target="_blank" rel="noreferrer">Открыть PR</a>}
      </div>}
      {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
-      {process.hasDraft?<button className="secondary" disabled={processActionBusy} onClick={()=>void retryProcessSave(process)}>Повторить сохранение без повторного анализа</button>:
-       <button className="secondary" disabled={processActionBusy||!process.sourceUrl} onClick={()=>void restartImport(process)}>{(process.progress?.completed??0)>0?'Продолжить импорт':'Повторить импорт из источника'}</button>}
-      <small>{process.hasDraft?'AI-черновик сохранён — повторится только SQL-запись.':'Нет готового итогового черновика. При повторе система сверит файлы и переиспользует сохранённые конспекты уже обработанных фрагментов.'}</small>
+      <button className="secondary" disabled={processActionBusy} onClick={()=>void restartImport(process)}>Возобновить тот же импорт</button>
+      <small>Готовые страницы сохранены; возобновление использует тот же процесс и пропускает завершённые темы.</small>
      </div>}
      {process.kind==='document_import'&&process.status==='running'&&<div className="process-instruction-box">
       <strong>Уточнить задание для AI</strong>
@@ -1404,7 +1410,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>}
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
-   <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
+   <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
    <div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    <div className="docs-list-footer">
     <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
@@ -1415,7 +1421,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     const doc=docs.find(d=>d.id===selectedDocId)!;
     return <>
      <header className="docs-reading-header">
-      <div>{editingDoc?.id===doc.id?
+      <div>{editingDoc?.id===doc.id&&!doc.system_key?
        <input className="docs-title-input" aria-label="Название документа" value={editingDoc.title} onChange={e=>setEditingDoc({...editingDoc,title:e.target.value})}/>:
        <h2>{doc.title}</h2>}
        <div className="doc-status-labels"><span>{docKindLabel(doc.document_kind)}</span><span>{implementationLabel(doc.implementation_status)}</span></div>
@@ -1428,15 +1434,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <button className="primary" type="button" disabled={docBusy||!editingDoc.title.trim()} onClick={()=>void saveDoc()}>Сохранить</button>
        </>:<>
         <button className="secondary docs-icon-button" type="button" title="Редактировать документ" aria-label="Редактировать документ" onClick={()=>setEditingDoc({...doc})}><Pencil size={17}/></button>
-        <button className="secondary docs-icon-button docs-delete" type="button" disabled={docBusy} title="Удалить документ" aria-label="Удалить документ" onClick={()=>void deleteDoc(doc)}><Trash2 size={17}/></button>
+        {!doc.system_key&&<button className="secondary docs-icon-button docs-delete" type="button" disabled={docBusy} title="Удалить документ" aria-label="Удалить документ" onClick={()=>void deleteDoc(doc)}><Trash2 size={17}/></button>}
        </>}
       </div>
      </header>
      {editingDoc?.id===doc.id? <div className="docs-editing">
-      <label>Расположение<select value={editingDoc.parent_id||''} onChange={e=>setEditingDoc({...editingDoc,parent_id:e.target.value||null})}>
-       <option value="">Корень документации</option>
-       {docs.filter(d=>d.id!==doc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
-      </select></label>
+      {!doc.system_key&&<label>Расположение<select value={editingDoc.parent_id||''} onChange={e=>setEditingDoc({...editingDoc,parent_id:e.target.value||null})}>
+              {docs.filter(d=>d.id!==doc.id).map(d=><option key={d.id} value={d.id}>{d.title}</option>)}
+      </select></label>}
       <div className="doc-metadata-editor">
        <label>Тип документа<select value={editingDoc.document_kind} onChange={e=>setEditingDoc({...editingDoc,document_kind:e.target.value as Doc['document_kind']})}>
         <option value="technical">Техническая документация</option><option value="functional">Описание функциональности</option>
