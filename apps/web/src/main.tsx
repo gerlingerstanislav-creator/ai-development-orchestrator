@@ -28,7 +28,7 @@ type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checked
 type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:string;requests:number};
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
-type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
+type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
 type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
@@ -1425,6 +1425,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         Проверено: <b>{qaWaiver.assessment.passed} из {qaWaiver.assessment.total}</b>. 
         Не проверено: <b>{qaWaiver.assessment.unverified.length}</b>.
        </div>
+       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities"><summary>Доступные инструменты QA-контейнера</summary><pre>{qaWaiver.assessment.capabilities}</pre></details>}
        {qaWaiver.assessment.unverified.length>0&&<div className="qa-waiver-cases">
         {qaWaiver.assessment.unverified.map(item=><div key={item.id} className="qa-waiver-case">
          <b>{item.title}</b><span>{item.evidence}</span>
