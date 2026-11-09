@@ -905,19 +905,58 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    fail(e);
   }finally{setProjectChatBusy(false);setProjectPendingId(null);setProjectImportProgress('');}
  }
- async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
-  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim(),optimisticId='pending-'+crypto.randomUUID();
-  setTaskMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
-  setTaskInput('');setTaskPendingId(optimisticId);setTaskChatBusy(true);
+ async function sendTaskMessage(e:React.FormEvent){
+  e.preventDefault();
+  if(!selected||!activeTask||!taskInput.trim()||managerSending)return;
+  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim();
+  const optimisticId='pending-'+crypto.randomUUID();
+  const sentAt=new Date().toISOString();
+  setManagerState(old=>old?{...old,messages:[...old.messages,{id:optimisticId,role:'user',body:message,status:'queued',created_at:sentAt}]}:old);
+  setTaskInput('');setManagerFeedback('');setManagerSending(true);
   try{
-   const response=await api<AssistantResponse>('/projects/'+projectId+'/tasks/'+taskId+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
-   setTaskMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
-    {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_at:new Date().toISOString()}]);
+   const response=await api<{id:string;status:string}>('/projects/'+projectId+'/tasks/'+taskId+'/manager/messages',{
+    method:'POST',body:JSON.stringify({message})
+   });
+   setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,id:response.id}:m)}:old);
+  }catch(error){
+   setManagerFeedback(error instanceof Error?error.message:'Сообщение не принято');
+   setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,status:'failed'}:m)}:old);
+  }finally{setManagerSending(false);}
+ }
+ async function decideAsManager(request:ManagerRequest,choice:string){
+  if(!selected||!activeTask||managerBusy)return;
+  if(choice==='answer'&&managerAnswer.trim().length<3){setManagerFeedback('Ответь на вопрос Менеджера проекта');return;}
+  const projectId=selected.id,taskId=activeTask.id;
+  setManagerBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+projectId+'/tasks/'+taskId+'/manager/requests/'+request.id+'/decision',{
+    method:'POST',body:JSON.stringify({choice,answer:choice==='answer'?managerAnswer.trim():''})
+   });
+   setManagerAnswer('');
    await refreshTaskActivity(projectId,taskId);
-  }catch(e){
-   setTaskMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
-   fail(e);
-  }finally{setTaskChatBusy(false);setTaskPendingId(null);}
+   await loadRequirements(projectId,taskId);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Менеджер проекта не смог выполнить решение');}
+  finally{setManagerBusy(false);}
+ }
+ async function resumeAsManager(){
+  if(!selected||!activeTask||managerBusy)return;
+  const projectId=selected.id,taskId=activeTask.id;
+  setManagerBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+projectId+'/tasks/'+taskId+'/manager/continue',{method:'POST',body:'{}'});
+   await refreshTaskActivity(projectId,taskId);
+   await loadProject(projectId);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось продолжить задачу');}
+  finally{setManagerBusy(false);}
+ }
+ async function retryManagerMessage(messageId:string){
+  if(!selected||!activeTask||managerBusy)return;
+  setManagerBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/manager/messages/'+messageId+'/retry',{method:'POST',body:'{}'});
+   await refreshTaskActivity(selected.id,activeTask.id);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось повторить запрос');}
+  finally{setManagerBusy(false);}
  }
  async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
   const taskId=activeTask.id;
