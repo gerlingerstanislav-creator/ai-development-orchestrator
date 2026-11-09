@@ -1271,6 +1271,7 @@ app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async
  const {id,taskId,reviewId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid(),reviewId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
  const {decision}=parse(z.object({decision:z.enum(['approve','reject'])}),req.body);
+ if(decision==='approve'&&await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Нельзя согласовать изменение требований, пока остаются вопросы агентов без ответа'});
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
