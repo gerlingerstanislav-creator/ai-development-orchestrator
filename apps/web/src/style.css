@@ -635,3 +635,41 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .workflow-stage-dialog footer{margin-top:14px}
 .workflow-transition-description{display:flex;align-items:center;gap:7px;border:1px solid #ead8c3;background:#fffaf2;padding:9px;border-radius:8px;font-size:11px;color:#946e42;margin:8px 0}
 @media(max-width:700px){.workflow-settings-panel{padding:10px 8px}.workflow-stage-dialog{padding:15px;max-height:90vh}.workflow-key{display:none}}
+
+/* Refined workflow transitions: light SVG paths, tooltips on hover/focus only. */
+.workflow-diagram-connector{width:28px;flex:0 0 28px;display:flex;align-items:center;justify-content:center;position:relative;color:#8d9fda;outline:none}
+.workflow-diagram-connector svg{display:block;position:static;margin:0;background:none;flex:none}
+.workflow-diagram-connector:hover,.workflow-diagram-connector:focus-visible{color:#576bd1}
+.workflow-diagram-connector::after{content:attr(data-tooltip);position:absolute;bottom:calc(100% + 8px);left:50%;transform:translateX(-50%) translateY(4px);background:#29354c;color:#fff;border-radius:6px;padding:6px 9px;font-size:10px;white-space:nowrap;box-shadow:0 5px 15px #14254424;opacity:0;visibility:hidden;pointer-events:none;transition:opacity .14s,transform .14s;z-index:3}
+.workflow-diagram-connector:hover::after,.workflow-diagram-connector:focus-visible::after{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
+.workflow-diagram-scroll{padding-top:32px;overflow-x:auto;overflow-y:hidden}
+.workflow-feedback{height:65px;position:relative;color:#c58b59}
+.workflow-feedback-link{position:absolute;top:0;height:59px;outline:none;color:inherit}
+.workflow-feedback-link:hover,.workflow-feedback-link:focus-visible{color:#ad703e}
+.workflow-feedback-path{display:block;width:100%;height:30px;position:absolute;inset:0}
+.workflow-feedback-tooltip{position:absolute;top:32px;left:50%;transform:translateX(-50%) translateY(4px);opacity:0;visibility:hidden;pointer-events:none;white-space:nowrap;display:flex;align-items:center;gap:6px;padding:5px 9px;background:#fff9f1;border:1px solid #edcfab;border-radius:6px;font-size:10px;color:#9e6c3e;box-shadow:0 4px 13px #472b1020;transition:opacity .14s,transform .14s}
+.workflow-feedback-link:hover .workflow-feedback-tooltip,.workflow-feedback-link:focus-visible .workflow-feedback-tooltip{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0)}
+/* Fixed header must never be covered by the editor. */
+.workflow-stage-overlay{top:45px;bottom:0;z-index:25;padding:12px 16px;align-items:center}
+.workflow-stage-dialog{width:min(580px,96vw);max-height:calc(100dvh - 69px);overflow-y:auto;padding:17px 20px;border-radius:13px}
+.workflow-stage-dialog .modal-heading{margin-bottom:7px}
+.workflow-stage-dialog .modal-heading h2{font-size:17px}
+.workflow-modal-subtitle{font-size:11px;margin:0 0 13px}
+.workflow-detail-field{border:1px solid #e4e8f0;border-radius:8px;padding:10px 12px;margin-bottom:9px;background:#fff}
+.workflow-field-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px}
+.workflow-field-heading strong{font-size:12px;color:#45536b}
+.workflow-field-pencil{border:0;background:transparent;color:#8290a6;display:grid;place-items:center;width:27px;height:27px;border-radius:6px;padding:4px;flex:0 0 auto}
+.workflow-field-pencil:hover,.workflow-field-pencil:focus-visible{background:#eff2ff;color:#5666d7;outline:2px solid transparent}
+.workflow-field-value{font-size:12px;line-height:1.55;color:#314056;white-space:pre-wrap;overflow-wrap:anywhere}
+.workflow-instructions-readonly{max-height:min(230px,29vh);overflow-y:auto;scrollbar-width:thin}
+.workflow-detail-field input,.workflow-detail-field select{font-size:12px;min-height:34px}
+.workflow-detail-field textarea{min-height:150px;max-height:300px;font-size:12px;line-height:1.5;margin:0}
+.workflow-agent-notice{display:block;font-size:10px;line-height:1.4;margin:8px 0}
+.workflow-stage-dialog footer{margin-top:13px}
+.workflow-stage-dialog .workflow-transition-description{margin:8px 0;font-size:11px}
+@media(max-width:700px){
+ .workflow-stage-overlay{top:43px;padding:8px}
+ .workflow-stage-dialog{max-height:calc(100dvh - 59px);padding:13px}
+ .workflow-instructions-readonly{max-height:170px}
+ .workflow-feedback-tooltip{max-width:90vw;white-space:normal;min-width:230px}
+}

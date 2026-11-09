@@ -209,6 +209,7 @@ function App(){
   const [projects,setProjects]=useState<Project[]>([]);const [selected,setSelected]=useState<Project|null>(null);
  const [section,setSection]=useState<ProjectSection>('tasks');
  const [workflowModal,setWorkflowModal]=useState<Stage|null>(null);
+ const [workflowEditing,setWorkflowEditing]=useState<'agent'|'mode'|'instructions'|null>(null);
  const [workflowSaving,setWorkflowSaving]=useState(false);
  const [accountSettings,setAccountSettings]=useState(false);
  const [projectMenuOpen,setProjectMenuOpen]=useState(false);
@@ -1084,8 +1085,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <div className="workflow-diagram-scroll">
    <div className="workflow-diagram" role="group" aria-label="Последовательность этапов проекта">
     {stages.map((stage,i)=><React.Fragment key={stage.stage}>
-      {i>0&&<div className="workflow-diagram-connector" aria-hidden="true"><span/><ChevronRight size={16}/></div>}
-      <button type="button" className={'workflow-stage-card workflow-stage-'+stage.stage} onClick={()=>setWorkflowModal({...stage})}
+      {i>0&&<div className="workflow-diagram-connector" tabIndex={0}
+       aria-label={'Переход: '+stages[i-1].label+' → '+stage.label}
+       data-tooltip={stages[i-1].label+' → '+stage.label}>
+       <svg viewBox="0 0 28 14" width="28" height="14" aria-hidden="true">
+        <path d="M 1 7 H 25 M 20 2 L 25 7 L 20 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+       </svg>
+      </div>}
+      <button type="button" className={'workflow-stage-card workflow-stage-'+stage.stage} onClick={()=>{setWorkflowModal({...stage});setWorkflowEditing(null);}}
        title={'Настройки этапа «'+stage.label+'»'}>
        <span className="workflow-stage-label">{stage.label}</span>
        <span className="workflow-stage-agent">{stage.agent_name||'Исполнитель не указан'}</span>
@@ -1095,17 +1102,25 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </React.Fragment>)}
    </div>
    {stages.some(stage=>stage.stage==='testing')&&stages.some(stage=>stage.stage==='development')&&
-    <div className="workflow-feedback" aria-label="Возврат на исправление при дефектах">
-     <svg viewBox={`0 0 ${stages.length*148+(stages.length-1)*26} 48`} preserveAspectRatio="none" aria-hidden="true" className="workflow-feedback-path">
-      {(()=>{
-       const development=stages.findIndex(stage=>stage.stage==='development');
-       const testing=stages.findIndex(stage=>stage.stage==='testing');
-       const x1=development*174+74,x2=testing*174+74;
-       return <><path d={`M ${x2} 3 V 13 Q ${x2} 25 ${x2-12} 25 H ${x1+12} Q ${x1} 25 ${x1} 13 V 3`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-       <path d={`M ${x1-7} 13 L ${x1} 3 L ${x1+7} 13`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round"/></>;
-      })()}
-     </svg>
-     <span><RotateCcw size={13}/> Тестирование → Разработка: ошибки, возврат с замечаниями, повторная проверка</span>
+    <div className="workflow-feedback" style={{width:stages.length*148+(stages.length-1)*28}}>
+     {(()=>{
+      const development=stages.findIndex(stage=>stage.stage==='development');
+      const testing=stages.findIndex(stage=>stage.stage==='testing');
+      const x1=development*176+74,x2=testing*176+74;
+      const width=x2-x1+20;
+      return <div className="workflow-feedback-link" tabIndex={0} role="img"
+       aria-label="Возврат из тестирования в разработку при ошибках с замечаниями и повторной проверкой"
+       style={{left:x1-10,width}}>
+       <svg className="workflow-feedback-path" viewBox={`0 0 ${width} 30`} preserveAspectRatio="none" aria-hidden="true">
+        <path d={`M ${width-10} 1 V 10 Q ${width-10} 23 ${width-23} 23 H 23 Q 10 23 10 10 V 1`}
+         fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+        <path d="M 5 8 L 10 1 L 15 8" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+       </svg>
+       <div className="workflow-feedback-tooltip" role="tooltip">
+        <RotateCcw size={13}/> Тестирование → Разработка: найденные ошибки, замечания и повторная проверка
+       </div>
+      </div>;
+     })()}
     </div>}
   </div>
   <p className="muted workflow-note">Схема отображает основные этапы и предусмотренный возврат на доработку. Редактирование имени агента и инструкций не изменяет самостоятельно правила переходов Temporal.</p>
@@ -1189,28 +1204,46 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {projectChatOpen&&projectChatMode==='project'?<X size={22}/>:<MessageCircle size={22}/>}
   </button>
  </>}
- {workflowModal&&selected&&<div className="overlay" onMouseDown={()=>setWorkflowModal(null)}>
+ {workflowModal&&selected&&<div className="overlay workflow-stage-overlay" onMouseDown={()=>{if(!workflowSaving)setWorkflowModal(null);}}>
   <div className="dialog workflow-stage-dialog" role="dialog" aria-modal="true" aria-label={'Настройки этапа '+workflowModal.label} onMouseDown={e=>e.stopPropagation()}>
    <div className="modal-heading"><h2>{workflowModal.label}</h2><button className="task-close" type="button" onClick={()=>setWorkflowModal(null)} aria-label="Закрыть"><X size={19}/></button></div>
-   <p className="muted">Этап <code>{workflowModal.stage}</code>. Порядок в процессе: {workflowModal.position+1}.</p>
-   <label>Исполнитель / имя агента
-    <input value={workflowModal.agent_name} maxLength={100} onChange={e=>setWorkflowModal({...workflowModal,agent_name:e.target.value})} placeholder="Например: AI-тестировщик"/>
-   </label>
-   <label>Режим выполнения
-    <select value={workflowModal.mode} onChange={e=>setWorkflowModal({...workflowModal,mode:e.target.value as Stage['mode']})}>
+   <p className="muted workflow-modal-subtitle">Этап <code>{workflowModal.stage}</code> · Порядок в процессе: {workflowModal.position+1}</p>
+   <div className="workflow-detail-field">
+    <div className="workflow-field-heading"><strong>Исполнитель / имя агента</strong>
+     <button type="button" className="workflow-field-pencil" onClick={()=>setWorkflowEditing(workflowEditing==='agent'?null:'agent')}
+      aria-label="Редактировать имя агента" title="Редактировать имя агента"><Pencil size={15}/></button>
+    </div>
+    {workflowEditing==='agent'?<input autoFocus value={workflowModal.agent_name} maxLength={100}
+      onChange={e=>setWorkflowModal({...workflowModal,agent_name:e.target.value})} placeholder="Например: AI-тестировщик"/>:
+      <div className="workflow-field-value">{workflowModal.agent_name||'Не назначен'}</div>}
+   </div>
+   <div className="workflow-detail-field">
+    <div className="workflow-field-heading"><strong>Режим выполнения</strong>
+     <button type="button" className="workflow-field-pencil" onClick={()=>setWorkflowEditing(workflowEditing==='mode'?null:'mode')}
+      aria-label="Редактировать режим выполнения" title="Редактировать режим"><Pencil size={15}/></button>
+    </div>
+    {workflowEditing==='mode'?<select autoFocus value={workflowModal.mode} onChange={e=>setWorkflowModal({...workflowModal,mode:e.target.value as Stage['mode']})}>
      <option value="manual">Ручной</option><option value="approval">С подтверждением</option><option value="automatic">Автоматический</option>
-    </select>
-   </label>
-   <label>Инструкции агента
-    <textarea rows={12} maxLength={12000} value={workflowModal.agent_instructions} onChange={e=>setWorkflowModal({...workflowModal,agent_instructions:e.target.value})}
-     placeholder="Опиши цели, критерии качества, обязательные проверки и правила этапа…"/>
-   </label>
-   <small className="muted">Инструкции применяются к соответствующим AI-агентам. Системные ограничения и безопасность имеют приоритет.</small>
-   {workflowModal.stage==='testing'&&<p className="workflow-transition-description"><RotateCcw size={14}/> При обнаружении ошибок задача возвращается в разработку с отчётом тестировщика. После исправлений проверка повторяется.</p>}
-   {workflowModal.stage==='development'&&<p className="workflow-transition-description">При успешном завершении разработки задача передаётся на тестирование.</p>}
-   <footer><button className="secondary" type="button" onClick={()=>setWorkflowModal(null)}>Отмена</button><button className="primary" type="button" disabled={workflowSaving||!workflowModal.agent_name.trim()} onClick={()=>void saveWorkflowStage()}>{workflowSaving?'Сохранение…':'Сохранить этап'}</button></footer>
+    </select>:<div className="workflow-field-value">{workflowModal.mode==='automatic'?'Автоматический':workflowModal.mode==='approval'?'С подтверждением':'Ручной'}</div>}
+   </div>
+   <div className="workflow-detail-field">
+    <div className="workflow-field-heading"><strong>Инструкции агента</strong>
+     <button type="button" className="workflow-field-pencil" onClick={()=>setWorkflowEditing(workflowEditing==='instructions'?null:'instructions')}
+      aria-label="Редактировать инструкции агента" title="Редактировать инструкции"><Pencil size={15}/></button>
+    </div>
+    {workflowEditing==='instructions'?<textarea autoFocus rows={9} maxLength={12000} value={workflowModal.agent_instructions}
+     onChange={e=>setWorkflowModal({...workflowModal,agent_instructions:e.target.value})}
+     placeholder="Цели, критерии качества, обязательные проверки и правила этапа…"/>:
+     <div className="workflow-field-value workflow-instructions-readonly">{workflowModal.agent_instructions||'Инструкции пока не указаны'}</div>}
+   </div>
+   <small className="muted workflow-agent-notice">Инструкции используются соответствующим AI-агентом. Системные ограничения имеют приоритет.</small>
+   {workflowModal.stage==='testing'&&<p className="workflow-transition-description"><RotateCcw size={14}/> Если обнаружены ошибки, задача вернётся в разработку с замечаниями. Затем тесты выполнятся повторно.</p>}
+   {workflowModal.stage==='development'&&<p className="workflow-transition-description">После успешной разработки задача передаётся на тестирование.</p>}
+   <footer><button className="secondary" type="button" onClick={()=>setWorkflowModal(null)}>Закрыть</button>
+    <button className="primary" type="button" disabled={workflowSaving||!workflowModal.agent_name.trim()} onClick={()=>void saveWorkflowStage()}>{workflowSaving?'Сохранение…':'Сохранить'}</button></footer>
   </div>
  </div>}
+
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
  {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
  {activeTask&&<div className="overlay" onMouseDown={()=>{if(!editingField&&selected)navigate(projectUrl(selected.id,'tasks'));}}>
