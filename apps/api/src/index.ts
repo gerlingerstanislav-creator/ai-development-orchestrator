@@ -1414,14 +1414,14 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  const [imports,developments,tests,merges,analyses]=await Promise.all([
-  pool.query("SELECT id,status,message,source_url,request_text,source_file_count,analyzed_chunks,total_chunks,saved_documents,created_at,updated_at,result,draft_result IS NOT NULL AS has_draft FROM document_import_jobs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT j.id,j.status,j.message,j.source_url,j.request_text,j.source_file_count,j.analyzed_chunks,j.total_chunks,j.saved_documents,j.created_at,j.updated_at,j.result,j.draft_result IS NOT NULL AS has_draft,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id) AS topic_total,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id AND tp.status IN ('complete','conflict')) AS topic_completed FROM document_import_jobs j WHERE j.project_id=$1 ORDER BY j.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT id,status,message,created_at,finished_at,results FROM merge_process_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.completed_at,r.spec_version,t.display_number,t.title AS task_title FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
  const processes:any[]=[
-  ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:(r.source_url?'Анализ материалов · '+r.source_url.split('/').slice(-1)[0]:'Подготовка ТЗ'),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,requestText:r.request_text,progress:{completed:r.analyzed_chunks,total:r.total_chunks},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
+  ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:(r.source_url?'Анализ материалов · '+r.source_url.split('/').slice(-1)[0]:'Подготовка ТЗ'),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,requestText:r.request_text,progress:{completed:r.analyzed_chunks,total:r.total_chunks},topicProgress:{completed:r.topic_completed,total:r.topic_total},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
   ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
  ];
  for(const row of tests.rows){
