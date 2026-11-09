@@ -353,7 +353,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     qa_waiver_approved:'Непроверенные сценарии согласованы',handoff_blocked:'Передача на следующий этап остановлена',
     merged:'PR слит',documentation_updated:'Документация обновлена'
    } as Record<string,string>)[ev.event]||'Событие задачи',text:ev.detail,time:ev.created_at})),
-   ...taskProcessEvents.map(ev=>({id:'process-'+ev.id,kind:'event' as const,title:(ev.stage==='testing'?'Тестировщик':ev.stage==='analysis'?'Аналитик':ev.stage==='development'?'Разработчик':'Процесс')+' · '+({
+   ...taskProcessEvents.map(ev=>({id:'process-'+ev.id,kind:'event' as const,title:(ev.process_kind==='testing'?'Тестировщик':ev.process_kind==='analysis'?'Аналитик':ev.process_kind==='development'?'Разработчик':'Процесс')+' · '+({
     review_started:'Сверка требований',needs_approval:'Нужно решение',current:'ТЗ актуально',test_design_started:'Генерация тест-кейсов',
     test_design_ready:'QA-план готов',test_design_failed:'Ошибка подготовки QA',started:'Работа запущена',
     progress:'Выполнение',passed:'Проверки пройдены',failed:'Ошибка или дефект',blocked:'Не удалось проверить',
