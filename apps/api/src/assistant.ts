@@ -334,6 +334,52 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   return job.rows[0];
  });
 
+
+ app.post('/api/projects/:id/document-import/:jobId/resume',async(req:any,reply)=>{
+  const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const job=(await pool.query('SELECT status,analyst_input FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND actor_id=$3',[jobId,id,uid(req)])).rows[0];
+  if(!job)return reply.code(404).send({error:'Импорт не найден'});
+  if(job.status!=='failed'||!job.analyst_input)return reply.code(409).send({error:'Возобновить можно только прерванный импорт аналитика'});
+  const resumed=await pool.query("UPDATE document_import_jobs SET status='running',message='Возобновление с сохранённой темы',updated_at=now() WHERE id=$1 AND status='failed' AND NOT EXISTS(SELECT 1 FROM document_import_jobs WHERE project_id=$2 AND status='running' AND analyst_input IS NOT NULL) RETURNING id",[jobId,id]);
+  if(!resumed.rowCount)return reply.code(409).send({error:'Аналитик уже выполняет другой импорт'});
+  await processEvent(id,jobId,'resumed','Возобновление незавершённого импорта по контрольным точкам');
+  try{await startDocumentationWorkflow(jobId);}
+  catch(e){
+   await pool.query("UPDATE document_import_jobs SET status='failed',message='Не удалось возобновить через Temporal' WHERE id=$1",[jobId]);
+   throw e;
+  }
+  return reply.code(202).send({import_job_id:jobId,message:'Импорт возобновлён'});
+ });
+ app.get('/api/projects/:id/documentation/questions',async(req:any,reply)=>{
+  const {id}=z.object({id:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  return (await pool.query("SELECT q.id,q.topic_key,q.question,q.status,q.answer,q.document_id,d.title AS document_title,q.created_at FROM documentation_questions q JOIN documents d ON d.id=q.document_id WHERE q.project_id=$1 AND q.status IN ('open','answered') ORDER BY q.created_at,q.id",[id])).rows;
+ });
+ app.post('/api/projects/:id/documentation/questions/:questionId/answer',async(req:any,reply)=>{
+  const {id,questionId}=z.object({id:z.string().uuid(),questionId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {answer}=z.object({answer:z.string().trim().min(3).max(4000)}).parse(req.body);
+  const jobId=randomUUID(),client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const q=await client.query("SELECT document_id,question FROM documentation_questions WHERE id=$1 AND project_id=$2 AND status='open' FOR UPDATE",[questionId,id]);
+   if(!q.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже обработан'});}
+   const row=q.rows[0];
+   const inserted=await client.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,request_text,source_key,analyst_input) VALUES($1,$2,$3,'running','Обновление ТЗ по ответу владельца',$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id",
+    [jobId,id,uid(req),'Ответ владельца продукта на вопрос: '+row.question+'\n\nОтвет: '+answer,'po-answer:'+questionId,JSON.stringify({location:null,attachments:[],mode:'documentation',documentId:row.document_id,questionId})]);
+   if(!inserted.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Аналитик уже выполняет другой процесс'});}
+   await client.query("UPDATE documentation_questions SET status='answered',answer=$2,answered_at=now() WHERE id=$1",[questionId,answer]);
+   await client.query('COMMIT');
+  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  try{await startDocumentationWorkflow(jobId);}
+  catch(e){
+   await pool.query("UPDATE document_import_jobs SET status='failed',message='Не удалось запустить обновление ТЗ' WHERE id=$1",[jobId]);
+   throw e;
+  }
+  return reply.code(202).send({import_job_id:jobId});
+ });
+
  app.post('/api/projects/:id/document-import/:jobId/retry-save',async(req:any,reply)=>{
   const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
