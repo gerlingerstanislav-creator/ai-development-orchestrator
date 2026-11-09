@@ -873,12 +873,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
  if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
  function renderKanbanCard(t:Task,showStage=false){
-  const stage=stages.find(s=>s.stage===t.stage);
   return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
     draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
     <span className="task-card-top"><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
-    <span className="task-name-line"><strong>{t.title}</strong><span className="task-card-state"><span className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stage?.label||t.stage}</span>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span></span>
+    <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     <p>{t.description||'Без описания'}</p>
     {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
   </a>;
