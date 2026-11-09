@@ -31,7 +31,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
   let status: 'current'|'pending'|'needs_approval'|'rejected';
   try{status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId,mode:'handoff'});}
   catch(error){
-   await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Сверка ТЗ не завершена: '+String(error),stage:'requirements'});
+   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Сверка ТЗ не завершена: '+String(error),stage:'requirements'});
    return 'requirements_review_failed';
   }
   while(status==='pending'||status==='needs_approval'){
@@ -46,7 +46,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
   }
   try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId});}
   catch(error){
-   await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось актуализировать тестовую документацию: '+String(error),stage:'qa_preparation'});
+   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Не удалось актуализировать тестовую документацию: '+String(error),stage:'qa_preparation'});
    return 'qa_plan_failed';
   }
   const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt});
@@ -81,7 +81,7 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
  if(status==='rejected')return 'requirements_rejected';
  try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});}
  catch(error){
-  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось подготовить QA-документацию: '+String(error),stage:'qa_preparation'});
+  await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,message:'Не удалось подготовить QA-документацию: '+String(error),stage:'qa_preparation'});
   return 'qa_plan_failed';
  }
  const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0});
