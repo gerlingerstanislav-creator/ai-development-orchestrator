@@ -18,6 +18,7 @@ export const documentRootTitle=(key:string)=>DOCUMENT_ROOTS.find(x=>x.key===key)
  */
 export async function initDocumentationSystem(pool:Pool){
  await pool.query(String.raw\`
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_commit text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS system_key text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS import_synced_hash text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_refs jsonb NOT NULL DEFAULT '[]'::jsonb;
