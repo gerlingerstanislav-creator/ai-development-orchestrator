@@ -1483,14 +1483,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
     </div>
     <div className="task-modal-actions">
-     {activeTask.stage==='analysis'&&<button className="primary" disabled={taskChatBusy||!aiSettings.enabled||!gitLink||activeTask.analysis_state!=='ready_for_development'} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>}
-     {activeTask.stage==='analysis'&&<button className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>}
-     
-     {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
-     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)||!!taskOrchestration} onClick={()=>void startTaskTesting()}>
-      {activeTestFor(activeTask.id)||taskOrchestration?'AI-цикл выполняется':newestTaskTest?'Повторить тестирование':'Запустить тестирование'}</button>}
-     {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
-     {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
      <button className="task-close" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу"><X size={20}/></button>
     </div>
@@ -1560,91 +1552,110 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>)}
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
       {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
-     <div className="task-thread-actions" aria-label="Требования и решения по тестированию">
-      {activeTask.stage==='testing'&&!taskOrchestration&&!activeTestFor(activeTask.id)&&
-       <div className={'task-qa-outcome '+(newestTaskTest?.status==='failed'?'failed':newestTaskTest?.verdict==='blocked'?'blocked':newestTaskTest?.verdict==='passed'?'passed':'idle')}>
-        {newestTaskTest?.status==='failed'?<>
-         <strong>Тестирование не завершилось: нет достоверного QA-отчёта</strong>
-         <p>{newestTaskTest.message||'AI-тестировщик завершился с ошибкой. Проверки не засчитаны.'}</p>
-         <p>Следующее действие: повторно запустить тестирование. Это не ошибка разработчика и не основание для слияния.</p>
-         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Повторить тестирование</button>
-        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='passed'?<>
-         <strong>QA-проверки пройдены, но задача осталась на тестировании</strong>
-         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
-         <p>Автоматический переход не был завершён. Можно безопасно перепроверить версию ТЗ и SHA PR, затем передать задачу на слияние.</p>
-         <button className="secondary" type="button" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка результата…':'Подтвердить QA и перейти к слиянию'}</button>
-        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='failed'?<>
-         <strong>Тестировщик выявил дефекты, но возврат разработчику не завершился</strong>
-         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
-         <p>Применение результата разрешено только при наличии подтверждённых ошибок в отчёте.</p>
-         <button className="secondary" type="button" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка результата…':'Передать замечания разработчику'}</button>
-        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'?<>
-         <strong>Часть проверок не выполнена</strong>
-         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
-         <p>Можно повторить тестирование. Слияние без конкретных сценариев доступно только после подтверждения причин их невыполнения и согласования риска.</p>
-         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Повторить тестирование</button>
-        </>:!newestTaskTest?<>
-         <strong>Нет сохранённого результата QA</strong>
-         <p>Для задачи ещё нет законченного тестового прогона. Запусти тестировщика, чтобы получить проверяемые результаты.</p>
-         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Запустить тестирование</button>
-        </>:null}
-       </div>}
-
-     {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
-      <div className={'task-requirements-review '+requirements.task.spec_review_status}>
-       <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
-       <p>{requirements.task.spec_review_note||'Актуальная версия требований ожидает проверки.'}</p>
-       {requirements.task.spec_review_status==='pending'&&<button className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить проверку аналитиком</button>}
-       {requirements.task.spec_review_status==='needs_approval'&&(()=>{
-        const review=requirements.reviews.find(item=>item.status==='needs_approval'&&item.spec_version===requirements.task.spec_version);
-        if(!review)return null;
-        return <div className="requirement-proposal">
-         <strong>Предлагаемое ТЗ</strong><div className="task-readonly">{review.proposed_description}</div>
-         {!!review.questions?.length&&<div className="muted">{review.questions.map((q,i)=><p key={i}>{q}</p>)}</div>}
-         <div className="requirements-actions">
-          <button className="primary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'approve')}>Согласовать изменение</button>
-          <button className="secondary" disabled={requirementsBusy} onClick={()=>void decideRequirements(review.id,'reject')}>Отклонить и вернуть разработчику</button>
-         </div>
-        </div>;
-       })()}
-      </div>}
-     {requirements&&<details className="task-requirements-history">
-      <summary>История требований · версия {requirements.task.spec_version}</summary>
-      {requirements.versions.map(v=><div key={v.version}><strong>v{v.version}</strong> · {v.origin} · {new Date(v.created_at).toLocaleString('ru-RU')}{v.reason&&<p>{v.reason}</p>}</div>)}
-     </details>}
-     {!!activeTask.test_feedback&&<div className="task-test-feedback">
-      <strong>{newestTaskTest?.verdict==='blocked'?'Ограничения проверки':'Замечания AI-тестировщика'}</strong>
-      <pre>{activeTask.test_feedback}</pre>
-      <small>{newestTaskTest?.verdict==='blocked'?'Непроверенные сценарии нельзя считать успешно пройденными.':'Воспроизводимые дефекты возвращаются разработчику.'}</small>
-     </div>}
-     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&
-      <div className="qa-waiver-panel">
-       <strong>Не все сценарии удалось проверить</strong>
-       <p>{qaWaiver.assessment.summary||'Тестировщик указал ограничения инструментов и среды исполнения.'}</p>
-       <div className="qa-waiver-counts">
-        Проверено: <b>{qaWaiver.assessment.passed} из {qaWaiver.assessment.total}</b>. 
-        Не проверено: <b>{qaWaiver.assessment.unverified.length}</b>.
-       </div>
-       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities"><summary>Доступные инструменты QA-контейнера</summary><pre>{qaWaiver.assessment.capabilities}</pre></details>}
-       {qaWaiver.assessment.unverified.length>0&&<div className="qa-waiver-cases">
-        {qaWaiver.assessment.unverified.map(item=><div key={item.id} className="qa-waiver-case">
-         <b>{item.title}</b><span>{item.evidence}</span>
-        </div>)}
-       </div>}
-       {qaWaiver.assessment.eligible?<>
-        <p className="muted">Подтверждённых дефектов и упавших автоматических тестов нет. Можно явно разрешить слияние PR без перечисленных сценариев. Это не отменяет проверок GitHub и не означает, что сценарии пройдены.</p>
-        <textarea rows={3} placeholder="Почему допустимо слияние без этих проверок?" value={qaWaiverReason} onChange={e=>setQaWaiverReason(e.target.value)}/>
-        <label className="qa-waiver-confirm"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Я понимаю, что перечисленные сценарии не проверялись, и принимаю риск.</label>
-        <button className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20} onClick={()=>void approveQaWaiver()}>
-         {qaWaiverBusy?'Согласование…':'Разрешить слияние с непроверенными сценариями'}
-        </button>
-       </>:<div className="qa-waiver-blockers">
-        <strong>Слияние без тестов пока недопустимо</strong>
-        {qaWaiver.assessment.blockers.map((reason,i)=><p key={i}>{reason}</p>)}
-        <p className="muted">Можно исправить окружение или уточнить проверку и запустить QA повторно.</p>
-       </div>}
-      </div>}
      </div>
+     <div className="task-command-strip" aria-label="Доступные действия по задаче">
+      <div className="task-command-main">
+       <div className="task-command-state">
+        {taskOrchestration?'AI выполняет работу':
+         openAgentQuestions.length?'Ожидается ответ на '+openAgentQuestions.length+' вопрос(а)':
+         requirements?.task.spec_review_status==='needs_approval'?'Нужно решение по требованиям':
+         requirements?.task.spec_review_status==='pending'?'Аналитик проверяет требования':
+         activeTask.stage==='testing'?(newestTaskTest?.status==='failed'?'QA завершился с ошибкой — результат не засчитан':
+          newestTaskTest?.verdict==='passed'?'Тесты выполнены — требуется подтвердить переход':
+          newestTaskTest?.verdict==='failed'?'Обнаружены дефекты — требуется возврат разработчику':
+          newestTaskTest?.verdict==='blocked'?'Есть непроверенные сценарии':
+          activeTestFor(activeTask.id)?'Тестирование выполняется':'Ожидается тестирование'):
+         'Этап: '+(stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage)}
+       </div>
+       <div className="task-command-buttons">
+        {openAgentQuestions.length>0&&<button type="button" className="secondary" onClick={()=>{setAnswerNoteId(openAgentQuestions[0].id);setAnswerText('');}}>
+         Ответить на вопрос{openAgentQuestions.length>1?' ('+openAgentQuestions.length+')':''}
+        </button>}
+        {activeTask.stage==='backlog'&&<button type="button" className="primary" onClick={()=>void moveTask(activeTask,'analysis')}>Отправить на анализ</button>}
+        {activeTask.stage==='analysis'&&<>
+         <button type="button" className="primary" disabled={taskChatBusy||!aiSettings.enabled||!gitLink||activeTask.analysis_state!=='ready_for_development'||requirements?.task.spec_review_status!=='current'||openAgentQuestions.length>0||(activeTask.clarification_questions||[]).length>0} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>
+         <button type="button" className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>
+        </>}
+        {activeTask.stage==='development'&&<button type="button" className="primary" disabled={aiBusy||!!taskOrchestration||openAgentQuestions.length>0||['pending','needs_approval'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void runAiTask()}>Запустить разработку</button>}
+        {activeTask.stage==='testing'&&<>
+         {!taskOrchestration&&!activeTestFor(activeTask.id)&&<>
+          {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='passed'&&
+           <button type="button" className="primary" disabled={qaResultBusy||openAgentQuestions.length>0} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Подтвердить QA → Слияние'}</button>}
+          {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='failed'&&
+           <button type="button" className="primary" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Вернуть разработчику'}</button>}
+          <button type="button" className="secondary" disabled={aiBusy||openAgentQuestions.length>0||['pending','needs_approval','rejected'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void startTaskTesting()}>
+           {aiBusy?'Запуск…':newestTaskTest?'Повторить тестирование':'Начать тестирование'}
+          </button>
+         </>}
+        </>}
+        {activeTask.stage==='merge_queue'&&<button type="button" className="primary" disabled={mergeBusy||openAgentQuestions.length>0} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
+        {activeTask.stage==='documentation'&&<button type="button" className="primary" disabled={knowledgeBusy||openAgentQuestions.length>0} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
+        {requirements?.task.spec_review_status==='pending'&&<button type="button" className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить сверку аналитика</button>}
+        {requirements?.task.spec_review_status==='needs_approval'&&requirements.reviews.find(r=>r.status==='needs_approval'&&r.spec_version===requirements.task.spec_version)&&
+         <details className="task-action-expand"><summary>Согласовать требования</summary>
+          {(()=>{
+           const r=requirements.reviews.find(r=>r.status==='needs_approval'&&r.spec_version===requirements.task.spec_version)!;
+           return <div className="task-action-expand-body">
+            <strong>Предложение аналитика</strong><p>{r.summary}</p>
+            <div className="task-action-spec">{r.proposed_description}</div>
+            {r.questions?.length>0&&r.questions.map((q,i)=><p key={i}>Вопрос: {q}</p>)}
+            <div className="task-action-buttons">
+             <button className="primary" type="button" disabled={requirementsBusy||r.classification==='uncertain'||openAgentQuestions.length>0} onClick={()=>void decideRequirements(r.id,'approve')}>Согласовать</button>
+             <button className="secondary" type="button" disabled={requirementsBusy} onClick={()=>void decideRequirements(r.id,'reject')}>Отклонить → Разработка</button>
+            </div>
+           </div>;
+          })()}
+         </details>}
+        {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&qaWaiver.assessment.eligible&&
+         <details className="task-action-expand"><summary>Согласовать пропуск проверок</summary>
+          <div className="task-action-expand-body">
+           <p>Проверено {qaWaiver.assessment.passed} из {qaWaiver.assessment.total}; не выполнено {qaWaiver.assessment.unverified.length}.</p>
+           {qaWaiver.assessment.unverified.map(c=><p key={c.id}><b>{c.title}</b>: {c.evidence}</p>)}
+           <textarea rows={2} value={qaWaiverReason} placeholder="Обоснование риска — не менее 20 символов" onChange={e=>setQaWaiverReason(e.target.value)}/>
+           <label className="task-accept-risk"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Согласен на слияние без этих проверок</label>
+           <button type="button" className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20||openAgentQuestions.length>0} onClick={()=>void approveQaWaiver()}>Разрешить слияние</button>
+          </div>
+         </details>}
+        <details className="task-action-expand"><summary>Комментарий</summary>
+         <div className="task-action-expand-body">
+          <label>Кому<select value={noteTarget} onChange={e=>setNoteTarget(e.target.value)}>
+           <option value="all">Всем участникам</option><option value="analysis">Аналитику</option>
+           <option value="development">Разработчику</option><option value="testing">Тестировщику</option>
+           <option value="documentation">Документатору</option>
+          </select></label>
+          <textarea rows={2} value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} placeholder="Нюанс реализации, наблюдение или рекомендация"/>
+          <button type="button" className="secondary" disabled={noteBusy||noteDraft.trim().length<3} onClick={()=>void sendAgentNote()}>Оставить комментарий</button>
+         </div>
+        </details>
+        {!['documentation','done'].includes(activeTask.stage)&&<button type="button" className="task-command-cancel" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
+       </div>
+      </div>
+      {answerNoteId&&taskAgentNotes.some(n=>n.id===answerNoteId&&n.status==='open')&&
+       <div className="task-command-expansion">
+        <strong>Ответ для {taskAgentNotes.find(n=>n.id===answerNoteId)?.author_name}</strong>
+        <p>{taskAgentNotes.find(n=>n.id===answerNoteId)?.body}</p>
+        <textarea rows={2} value={answerText} onChange={e=>setAnswerText(e.target.value)} placeholder="Ответь на конкретный вопрос, чтобы продолжить процесс"/>
+        <div className="task-action-buttons">
+         <button className="primary" type="button" disabled={noteBusy||answerText.trim().length<3} onClick={()=>void answerAgentQuestion()}>Сохранить ответ</button>
+         <button className="secondary" type="button" onClick={()=>setAnswerNoteId(null)}>Закрыть</button>
+        </div>
+       </div>}
+      {cancelPreview&&
+       <div className="task-command-expansion task-cancel-confirm">
+        <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить созданные артефакты?</strong>
+        <p>Закрыть PR, удалить ветку UUID, {cancelPreview.stats.qa_plans} QA-планов, до {cancelPreview.stats.qa_cases} тест-кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} принадлежащих задаче документов. Общие документы сохраняются.</p>
+        <p>{cancelPreview.github_note}</p>
+        {cancelPreview.blocked.length>0?<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>:<>
+         <label>Подтверждение: {cancelPreview.confirmation}
+          <input value={cancelPhrase} onChange={e=>setCancelPhrase(e.target.value)} placeholder={cancelPreview.confirmation}/>
+         </label>
+        </>}
+        {cancelError&&<p className="task-action-error">{cancelError}</p>}
+        <div className="task-action-buttons">
+         <button type="button" className="secondary" onClick={()=>{setCancelPreview(null);setCancelError('');}}>Не отменять</button>
+         <button type="button" className="task-action-danger" disabled={cancelBusy||cancelPreview.blocked.length>0||cancelPhrase.trim()!==cancelPreview.confirmation} onClick={()=>void confirmTaskCancellation()}>{cancelBusy?'Удаление…':'Подтвердить отмену и очистку'}</button>
+        </div>
+       </div>}
      </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
       <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
