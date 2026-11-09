@@ -34,6 +34,15 @@ const workflowDefaults = [
   ['documentation','Документация','manual'],
   ['done','Готово','manual']
 ] as const;
+const workflowAgentDefaults:Record<string,{name:string;instructions:string}>={
+ backlog:{name:'Оператор',instructions:'Регистрируй новые запросы и сохраняй их контекст до анализа.'},
+ analysis:{name:'AI-аналитик',instructions:'Уточняй требования, фиксируй критерии приёмки и открытые вопросы. Не придумывай недостающие факты.'},
+ development:{name:'AI-разработчик',instructions:'Реализуй утверждённые требования, соблюдай правила проекта, исправляй дефекты тестирования. Не меняй секреты.'},
+ testing:{name:'AI-тестировщик',instructions:'Независимо проверяй код и доступные тесты, документируй дефекты с шагами воспроизведения. Не утверждай, что непроверенное работает.'},
+ merge_queue:{name:'Интегратор GitHub',instructions:'Проверяй состояние PR и доступные проверки перед слиянием. Не обходи защиту веток.'},
+ documentation:{name:'AI-технический писатель',instructions:'Документируй только подтверждённую реализацию. Отличай требования от реализованной функциональности.'},
+ done:{name:'Система',instructions:'Фиксируй завершение только после тестирования, слияния и обновления документации.'}
+};
 // Preserve the original administrator account when upgrading legacy local installs.
 // A dotted reserved domain also passes conventional email validation.
 function configuredAdminEmail(){
@@ -992,7 +1001,7 @@ app.post('/api/projects',async(req,reply)=>{
  try{await client.query('BEGIN');
  await client.query('INSERT INTO projects(id,name,description,owner_id) VALUES($1,$2,$3,$4)',[id,name,description,uid(req)]);
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
- for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];await client.query('INSERT INTO workflow_stages VALUES($1,$2,$3,$4,$5)',[id,stage,label,mode,i]);}
+ for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent.name,agent.instructions]);}
  await client.query('COMMIT');return reply.code(201).send({id,name,description});}
  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 });
