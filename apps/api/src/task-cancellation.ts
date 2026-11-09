@@ -30,6 +30,8 @@ async function taskPreview(client:Pool|PoolClient,projectId:string,taskId:string
  if(dependents.rowCount)blocked.push('На задачу опираются другие задачи: '+dependents.rows.map(x=>'#'+x.display_number+' '+x.title).join(', '));
  if(active.rowCount||activeTest.rowCount)blocked.push('Для задачи ещё активен агент или Temporal. Заверши процесс прежде чем удалять ветку');
  if(versions.rows[0].n)blocked.push('Есть версии общей проектной документации с этой задачей; сначала разреши историю документации');
+ const sharedChildren=await client.query("SELECT count(*)::int AS n FROM documents d WHERE d.project_id=$1 AND d.parent_id IN (SELECT id FROM documents WHERE project_id=$1 AND created_by_task_id=$2) AND d.created_by_task_id IS DISTINCT FROM $2",[projectId,taskId]);
+ if(sharedChildren.rows[0].n)blocked.push('Документы задачи используются как родительские страницы для чужой документации');
  return {task:row,blocked,stats:{documents:docs.rows[0].n,qa_plans:plans.rows[0].n,qa_cases:cases.rows[0].n,qa_flows:flows.rows[0].n},confirmation:'ОТМЕНИТЬ #'+row.display_number};
 }
 async function github(token:string,repository:string,path:string,method:'GET'|'PATCH'|'DELETE'='GET',body?:unknown){
@@ -95,12 +97,12 @@ export function registerTaskCancellationRoutes(app:FastifyInstance,deps:Dependen
    if((task.git_branch||task.pr_number)&&!link.rowCount){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Сначала подключи GitHub-токен владельца для безопасной очистки ветки и PR'});
    }
-   if(link.rowCount)await closeGitHubArtifacts(link.rows[0].repository,decryptToken(link.rows[0].secret_encrypted),task);
+   if((task.git_branch||task.pr_number)&&link.rowCount)await closeGitHubArtifacts(link.rows[0].repository,decryptToken(link.rows[0].secret_encrypted),task);
    const processIds=await client.query("SELECT id FROM ai_task_runs WHERE task_id=$1 UNION SELECT id FROM ai_test_runs WHERE task_id=$1 UNION SELECT id FROM requirement_review_runs WHERE task_id=$1",[taskId]);
    if(processIds.rowCount)await client.query('DELETE FROM process_events WHERE project_id=$1 AND process_id=ANY($2::uuid[])',[id,processIds.rows.map(x=>x.id)]);
    // The QA plan may reuse shared regression cases; delete only those no longer used.
    await client.query('DELETE FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[id,taskId]);
-   const deletedCases=await client.query('DELETE FROM qa_test_cases c WHERE c.project_id=$1 AND c.source_task_id=$2 AND NOT EXISTS (SELECT 1 FROM qa_plan_cases pc WHERE pc.case_id=c.id) RETURNING id',[id,taskId]);
+   const deletedCases=await client.query('DELETE FROM qa_test_cases c WHERE c.project_id=$1 AND c.source_task_id=$2 AND NOT EXISTS (SELECT 1 FROM qa_plan_cases pc WHERE pc.case_id=c.id) AND NOT EXISTS (SELECT 1 FROM qa_manual_results mr WHERE mr.case_id=c.id) AND NOT EXISTS (SELECT 1 FROM qa_case_results cr JOIN ai_test_runs tr ON tr.id=cr.test_run_id WHERE cr.case_id=c.id AND tr.task_id IS DISTINCT FROM $2) RETURNING id',[id,taskId]);
    const deletedFlows=await client.query('DELETE FROM qa_user_flows f WHERE f.project_id=$1 AND f.source_task_id=$2 AND NOT EXISTS (SELECT 1 FROM qa_test_cases c WHERE c.flow_id=f.id) RETURNING id',[id,taskId]);
    const deletedDocs=await client.query('DELETE FROM documents WHERE project_id=$1 AND created_by_task_id=$2 RETURNING id',[id,taskId]);
    await client.query('DELETE FROM assistant_messages WHERE project_id=$1 AND task_id=$2',[id,taskId]);
