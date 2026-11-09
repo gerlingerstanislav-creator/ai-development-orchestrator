@@ -204,7 +204,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     // Keep prompts well below the limit even after JSON serialization.
     type SourceDigest={path:string;notes:string};
     const chunks:Array<{path:string;part:number;total:number;content:string}>=[];
-    const CHUNK_SIZE=10500;
+    const CHUNK_SIZE=8500;
     for(const file of files){
      const count=Math.ceil(file.body.length/CHUNK_SIZE)||1;
      for(let i=0;i<count;i++)chunks.push({
@@ -213,9 +213,23 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      });
     }
     const digests:SourceDigest[]=[];
+    await pool.query('UPDATE document_import_jobs SET total_chunks=$2 WHERE id=$1',[jobId,chunks.length]);
     let partNumber=0;
     for(const chunk of chunks){
      partNumber++;
+     const contentSha=createHash('sha256').update(chunk.content).digest('hex');
+     const previous=await pool.query(
+      `SELECT c.notes FROM document_import_checkpoints c JOIN document_import_jobs j ON j.id=c.job_id
+       WHERE j.project_id=$1 AND j.actor_id=$2 AND j.source_key=$3 AND c.chunk_index=$4
+        AND c.file_path=$5 AND c.content_sha=$6
+       ORDER BY c.created_at DESC LIMIT 1`,
+      [id,actorId,sourceKey,partNumber,chunk.path,contentSha]);
+     if(previous.rowCount){
+      digests.push({path:chunk.path,notes:String(previous.rows[0].notes)});
+      await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2 WHERE id=$1',[jobId,partNumber]);
+      await updateProgress('checkpoint_reused','Восстановлен ранее обработанный фрагмент '+partNumber+' из '+chunks.length);
+      continue;
+     }
      const instruction=[
       'Ты аналитик импортируемых Markdown-документов. Внимательно извлеки факты и требования из ЭТОГО фрагмента, а не пытайся сразу создать итоговую документацию.',
       'Верни ТОЛЬКО JSON: {"notes":"подробные, но компактные Markdown-заметки с фактами, требованиями, ограничениями, решениями, гипотезами, противоречиями и именами сущностей"}',
@@ -227,11 +241,18 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
      ].join('\n\n');
      await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2,total_chunks=$3 WHERE id=$1',[jobId,partNumber-1,chunks.length]);
      await updateProgress('analyzing','Анализ файлов: фрагмент '+partNumber+' из '+chunks.length);
-     const result=await completion(instruction,config);
+     const result=await completion(instruction,config,{maxAttempts:3,
+      onRetry:async(attempt,maxAttempts,reason)=>updateProgress('retrying',
+       'Фрагмент '+partNumber+'/'+chunks.length+': повтор '+(attempt+1)+'/'+maxAttempts+' после ошибки Codex: '+reason.slice(0,220))
+     });
      await storeTokenUsage(id,null,config.model,result.usage);
      const parsed=z.object({notes:z.string().trim().min(20).max(12000)}).parse(jsonObject(result.text));
+     await pool.query(
+      'INSERT INTO document_import_checkpoints(job_id,chunk_index,file_path,content_sha,notes) VALUES($1,$2,$3,$4,$5) ON CONFLICT(job_id,chunk_index) DO UPDATE SET notes=EXCLUDED.notes,content_sha=EXCLUDED.content_sha',
+      [jobId,partNumber,chunk.path,contentSha,parsed.notes]);
      digests.push({path:chunk.path,notes:parsed.notes});
      await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2,total_chunks=$3 WHERE id=$1',[jobId,partNumber,chunks.length]);
+     await updateProgress('checkpoint_saved','Завершён анализ и сохранён фрагмент '+partNumber+' из '+chunks.length);
     }
     // For larger repositories, recursively condense notes by bounded groups.
     // This protects the final synthesis prompt from exceeding the runner limit.
@@ -252,7 +273,9 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
        'Верни ТОЛЬКО JSON: {"notes":"структурированный конспект Markdown"}',
        batch.join('\n\n')
       ].join('\n\n');
-      const result=await completion(prompt,config);
+      const result=await completion(prompt,config,{maxAttempts:3,
+       onRetry:async(attempt,maxAttempts,reason)=>updateProgress('retrying','Объединение конспектов: повтор '+(attempt+1)+'/'+maxAttempts+' · '+reason.slice(0,220))
+      });
       await storeTokenUsage(id,null,config.model,result.usage);
       const parsed=z.object({notes:z.string().trim().min(20).max(10000)}).parse(jsonObject(result.text));
       next.push(parsed.notes);
@@ -291,7 +314,9 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
     ].join('\n\n');
     if(prompt.length>22000)throw Error('Конспекты не поместились в допустимый запрос Codex');
     await updateProgress('generating','Формирование итоговой структуры документации');
-    const result=await completion(prompt,config);
+    const result=await completion(prompt,config,{maxAttempts:3,
+     onRetry:async(attempt,maxAttempts,reason)=>updateProgress('retrying','Формирование документации: повтор '+(attempt+1)+'/'+maxAttempts+' · '+reason.slice(0,220))
+    });
     await storeTokenUsage(id,null,config.model,result.usage);
     const structure=z.object({
      collection_title:z.string().trim().min(3).max(180),
