@@ -4,6 +4,7 @@ import {ApplicationFailure} from '@temporalio/common';
 import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
+import {recordTaskAgentNote,taskNotesContext} from './task-agent-notes.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -102,7 +103,11 @@ export async function reconcileRequirements(args:{projectId:string;taskId:string
  await event(projectId,runId,'analysis','review_started',mode==='handoff'?'Сверка реализации с утверждённым ТЗ перед тестированием':'Анализ изменения требований');
  try{
   const evidence=await prEvidence(projectId,taskId);
-  const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review'));
+  const notes=await taskNotesContext(pool,projectId,taskId,'analysis');
+  const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary+'\n\nРабочие комментарии коллег (не утверждённые требования): '+notes},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review'));
+  const latest=await pool.query('SELECT summary,questions FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
+  const noteBody=String(latest.rows[0]?.summary||'').trim();
+  if(noteBody)await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'analysis',authorName:'AI-аналитик',targetStage:result==='needs_approval'?'all':'testing',kind:result==='needs_approval'?'question':'handoff',body:noteBody,sourceKey:'analyst:'+runId+':'+result,sourceRunId:runId});
   const message=result==='current'?'Требования актуальны':result==='needs_approval'?'Обнаружено изменение поведения — требуется решение пользователя':result==='rejected'?'Изменение требований отклонено':'Требования изменились во время анализа';
   await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1",[runId,message]);
   await event(projectId,runId,'analysis',result,message,result==='needs_approval'?'warning':'info');
@@ -161,6 +166,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
    return data.message;
   });
   await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,'QA-документация подготовлена: '+count+' проверок',projectId]);
+  await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'testing',authorName:'AI-тестировщик',targetStage:'all',kind:'observation',body:'Подготовлен план тестирования по актуальному ТЗ: '+count+' проверок. Фактические результаты будут записаны после выполнения, это не подтверждение прохождения тестов.',sourceKey:'test-plan:'+runId,sourceRunId:runId});
   await event(projectId,runId,'testing','test_design_ready','QA-документация подготовлена: '+count+' проверок');
   return count;
  }catch(e){
@@ -182,7 +188,7 @@ export async function startDevelopment(args:TaskRef){
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
   model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,projectRules:rules,relatedTasks:[],agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions};
+  title:task.title,description,projectRules:rules,relatedTasks:[],handoffContext:await taskNotesContext(pool,projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions};
  await dispatch(job);
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -223,6 +229,7 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
     [randomUUID(),projectId,taskId,runId,run.rows[0].model,Number(u.input_tokens)||0,Number(u.cached_input_tokens)||0,Number(u.output_tokens)||0]);
   }
   if(status==='completed'){
+   if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'development',authorName:'AI-разработчик',targetStage:'all',kind:'handoff',body:String(remote.handoffNote),sourceKey:'developer:'+runId,sourceRunId:runId});
    const match=/\/pull\/(\d+)$/.exec(String(remote.prUrl));
    await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
     [taskId,remote.branch||taskId,remote.prUrl,match?Number(match[1]):null,remote.baseBranch||null,projectId]);
@@ -252,7 +259,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,projectRules:rules,testPlan,agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions});
+  title:task.title,description:task.description,projectRules:rules,testPlan,handoffContext:await taskNotesContext(pool,projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
@@ -311,6 +318,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
     [testId,status,message,verdict,JSON.stringify(report)]);
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId:row.rows[0].task_id,authorStage:'testing',authorName:'AI-тестировщик',targetStage:verdict==='failed'?'development':'all',kind:verdict==='failed'?'risk':'handoff',body:String(remote.handoffNote),sourceKey:'tester:'+testId,sourceRunId:testId});
   await event(projectId,testId,'testing',verdict,JSON.stringify(report).slice(0,2200),verdict==='passed'?'info':verdict==='failed'?'error':'warning');
   return {status,message,verdict};
  }
