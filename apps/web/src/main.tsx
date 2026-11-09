@@ -194,10 +194,12 @@ function App(){
   const [projects,setProjects]=useState<Project[]>([]);const [selected,setSelected]=useState<Project|null>(null);
  const [section,setSection]=useState<'overview'|'tasks'|'docs'|'rules'|'settings'>('tasks');
  const [accountSettings,setAccountSettings]=useState(false);
+ const [projectMenuOpen,setProjectMenuOpen]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
  const [tokenUsage,setTokenUsage]=useState<TokenUsageResponse|null>(null);
  const [rateLimitsBusy,setRateLimitsBusy]=useState(false);
  const [rateLimitsError,setRateLimitsError]=useState('');
+ const [rateLimitsLoading,setRateLimitsLoading]=useState(false);
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [docs,setDocs]=useState<Doc[]>([]);
  const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
@@ -430,13 +432,37 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function refreshTokenUsage(){
   try{setTokenUsage(await api<TokenUsageResponse>('/ai/token-usage'));}catch(e){fail(e);}
  }
- async function refreshRateLimits(){
-  setRateLimitsBusy(true);setRateLimitsError('');
-  try{const data=await api<CodexRateLimits>('/codex/rate-limits');setRateLimits(data);}
-  catch(e){setRateLimits(null);setRateLimitsError('');fail(e);}
-  finally{setRateLimitsBusy(false);}
+ async function refreshRateLimits(silent=false){
+  if(!silent)setRateLimitsBusy(true);
+  setRateLimitsLoading(true);
+  try{const data=await api<CodexRateLimits>('/codex/rate-limits');setRateLimits(data);setRateLimitsError('');}
+  catch(e){setRateLimitsError('Данные лимитов временно недоступны');if(!silent)fail(e);}
+  finally{setRateLimitsBusy(false);setRateLimitsLoading(false);}
  }
- useEffect(()=>{if(token&&accountSettings){void refreshRateLimits();void refreshTokenUsage();}},[token,accountSettings]);
+ useEffect(()=>{
+  if(!token)return;
+  void refreshRateLimits(true);
+  const interval=window.setInterval(()=>{if(!document.hidden)void refreshRateLimits(true);},90000);
+  const onVisible=()=>{if(!document.hidden)void refreshRateLimits(true);};
+  document.addEventListener('visibilitychange',onVisible);
+  return()=>{window.clearInterval(interval);document.removeEventListener('visibilitychange',onVisible);};
+ },[token]);
+ const limitWindows=rateLimits?.windows.flatMap(w=>[w.primary,w.secondary].filter((v):v is CodexRateWindow=>v!==null&&v!==undefined))||[];
+ const shortWindow=limitWindows.find(w=>w.windowDurationMins===300)||limitWindows.find(w=>w.windowDurationMins!==null&&w.windowDurationMins>=240&&w.windowDurationMins<=360)||null;
+ const weekWindow=limitWindows.find(w=>w.windowDurationMins===10080)||limitWindows.find(w=>w.windowDurationMins!==null&&w.windowDurationMins>=9000&&w.windowDurationMins<=11000)||null;
+ const remaining=(window:CodexRateWindow|null)=>window?Math.max(0,Math.min(100,100-window.usedPercent)):null;
+ const colorForRemaining=(percent:number)=>{const hue=Math.max(0,Math.min(120,percent*1.2));return 'hsl('+hue.toFixed(0)+' 66% 43%)';};
+ const quotaBar=(window:CodexRateWindow|null,label:string,large:boolean)=>(
+  <div className={'quota-line '+(large?'expanded':'')} key={label}>
+   {large&&<div className="quota-label"><span>{label}</span><strong>{window?Math.round(remaining(window)! )+'% доступно':'Нет данных'}</strong></div>}
+   <div className="quota-track" role="progressbar" aria-label={label+' — доступный лимит'} aria-valuemin={0} aria-valuemax={100} aria-valuenow={remaining(window)??undefined}>
+    {window?<div className="quota-fill" style={{width:(remaining(window)??0)+'%',backgroundColor:colorForRemaining(remaining(window)??0)}}/>:<div className="quota-unknown"/>}
+   </div>
+   {large&&<small>{window?.resetsAt?'Сброс: '+new Date(window.resetsAt*1000).toLocaleString('ru-RU'):'Срок обновления неизвестен'}</small>}
+  </div>
+ );
+
+ useEffect(()=>{if(token&&accountSettings){void refreshTokenUsage();}},[token,accountSettings]);
  async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const response=await api<AiRun&{recovered?:boolean}>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
@@ -598,17 +624,38 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
-  <div className="sidebar-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
-  <a href="/projects" className={'nav '+(!selected&&!accountSettings?'active':'')} onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>
-  {selected&&<><div className="sidebar-label">{selected.name.toUpperCase()}</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['rules','Правила',FileText],['settings','Настройки',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
-  </>}
-  <div className="sidebar-label">АККАУНТ</div>
-  <a href="/account/settings" className={'nav '+(accountSettings?'active':'')} onClick={e=>followLink(e,'/account/settings')}><Settings2 size={18}/> Настройки аккаунта</a>
-
-  <div className="sidebar-bottom"><span className="avatar">AD</span><span>Администратор</span><button onClick={logout} title="Выйти">Выйти</button></div>
+  <div className="sidebar-projects">
+   <button type="button" className="project-selector" aria-expanded={projectMenuOpen} aria-label="Выбрать проект" onClick={()=>setProjectMenuOpen(open=>!open)}>
+    <span className="project-selector-title">{selected?.name||'Выбрать проект'}</span><ChevronDown size={17} className={projectMenuOpen?'rotate':''}/>
+   </button>
+   {projectMenuOpen&&<div className="project-menu">
+    <a href="/projects" onClick={e=>{setProjectMenuOpen(false);followLink(e,'/projects');}}><LayoutGrid size={15}/> Все проекты</a>
+    {projects.map(p=><a key={p.id} href={projectUrl(p.id)} className={selected?.id===p.id?'selected':''} onClick={e=>{setProjectMenuOpen(false);followLink(e,projectUrl(p.id));}}><span className="project-menu-name">{p.name}</span>{selected?.id===p.id&&<CheckCircle2 size={15}/>}</a>)}
+    <button type="button" onClick={()=>{setProjectMenuOpen(false);setForm(current=>({...current,name:'',description:''}));setShowProject(true);}}><Plus size={15}/> Новый проект</button>
+   </div>}
+  </div>
+  <div className="sidebar-nav">
+  {selected?<><div className="sidebar-label">ПРОЕКТ</div>
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
+  </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
+  </div>
+  <div className="sidebar-bottom">
+   <span className="avatar">AD</span><span className="account-name">Администратор</span>
+   <a href="/account/settings" className={'account-settings-button '+(accountSettings?'active':'')} onClick={e=>followLink(e,'/account/settings')} title="Настройки аккаунта" aria-label="Настройки аккаунта"><Settings2 size={18}/></a>
+   <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
+  </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<span className="top-right">● {selected?(aiSettings.enabled?"AI: ручной запуск":"AI выключен"):"Ручной режим"}</span></header>
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
+   <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
+    <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
+    <div className="quota-popover" role="tooltip">
+     <strong>Лимиты Codex</strong>
+     {quotaBar(shortWindow,'5-часовой лимит',true)}
+     {quotaBar(weekWindow,'Недельный лимит',true)}
+     <small className="quota-updated">{rateLimits?.checkedAt?'Обновлено: '+new Date(rateLimits.checkedAt).toLocaleTimeString('ru-RU'):'Данные не загружены'}{rateLimitsLoading?' · обновление…':''}{rateLimitsError?' · '+rateLimitsError:''}</small>
+    </div>
+   </div>
+  </div></header>
  
  {accountSettings?<div className="page compact-project-page">
  <section className="panel codex-panel">
