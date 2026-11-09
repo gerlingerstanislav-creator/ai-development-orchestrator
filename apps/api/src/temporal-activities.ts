@@ -513,7 +513,8 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string}
      [note.id,text,name]);
     resolved++;
    }else{
-    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL WHERE id=$1 AND status='processing'",[note.id]);
+    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=$2,target_stage=CASE WHEN $2 THEN 'all' ELSE target_stage END WHERE id=$1 AND status='processing'",
+     [note.id,answer.status==='needs_customer']);
    }
   }catch(e){
    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL WHERE id=$1 AND status='processing'",[note.id]);
