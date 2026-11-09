@@ -146,10 +146,6 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .assistant-hint{display:flex;align-items:center;gap:8px}
 .task-metadata{display:flex;gap:15px;flex-wrap:wrap;border-top:1px solid #e7eaf1;padding:15px 0;color:#77849a;font-size:11px}
 .task-metadata strong{color:#36445a}
-.task-questions{padding:13px 14px;border-radius:9px;background:#f6f8fd;border:1px solid #e6eaf1;margin-bottom:14px}
-.task-questions ol{margin:10px 0 0;padding-left:20px}
-.task-questions li{margin:7px 0}
-.task-questions p{margin:9px 0 0}
 .task-git-ref{display:flex;gap:12px;align-items:baseline;margin:10px 0;overflow-wrap:anywhere}
 .task-git-ref>span{width:55px;color:#8590a2;font-size:11px}
 .task-feedback{border:1px solid #f1c7bd;background:#fff6f4;border-radius:8px;padding:9px;color:#ac4b3d}
@@ -204,7 +200,6 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .tasks-page .task-card{padding:16px}
 .tasks-page .merge-report{margin-bottom:var(--card-gap)}
 .task-dialog-wide .task-details{padding:var(--page-gutter)}
-.task-dialog-wide .task-questions{margin:18px 0}
 .task-dialog-wide .task-metadata{margin-top:20px}
 .task-dialog-wide .task-git-ref{margin:16px 0}
 .project-chat .assistant-thread,.task-conversation .assistant-thread{gap:14px}

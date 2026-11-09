@@ -52,7 +52,7 @@ type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
-type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
+type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string};
 type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
@@ -401,6 +401,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [managerSending,setManagerSending]=useState(false);
  const managerMessages=managerState?.messages;
  const decisions=managerState?.requests.filter(request=>request.status==='open')||[];
+ const awaitingAnalysisAnswer=decisions.some(request=>request.kind==='analysis_clarifications');
+ const readyForDevelopment=activeTask?.stage==='analysis'&&activeTask.analysis_state==='ready_for_development'
+  &&(!activeTask.spec_review_status||activeTask.spec_review_status==='current')&&!decisions.length;
  const deferredQa=managerState?.requests.filter(request=>request.status==='waiting'&&request.kind==='qa_visual')||[];
  const activeAgentRuns=taskAgentRuns.filter(run=>run.status==='running'||run.status==='queued');
  const managerWorking=managerSending||managerMessages?.some(message=>message.role==='user'&&(message.status==='queued'||message.status==='processing'));
@@ -495,7 +498,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  function canAdvance(task:Task,from:string,to:string){
   if(task.stage!==from)return false;
   if(from==='backlog'&&to==='analysis')return true;
-  if(from==='analysis'&&to==='development')return task.analysis_state==='ready_for_development'&&!taskChatBusy&&!!gitLink&&aiSettings.enabled;
+  if(from==='analysis'&&to==='development')return readyForDevelopment&&!taskChatBusy&&!managerWorking&&!!gitLink&&aiSettings.enabled;
   if(from==='development'&&to==='merge_queue')return !aiBusy&&!aiRuns.some(r=>r.task_id===task.id&&['running','queued'].includes(r.status));
   if(from==='merge_queue'&&to==='documentation')return !mergeBusy;
   if(from==='documentation'&&to==='done')return !knowledgeBusy;
@@ -507,7 +510,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage:'analysis'})});
     await refreshTaskActivity(selected.id,task.id);
    }catch(e){fail(e);}
-  }else if(from==='analysis')await approveDevelopment();
+  }else if(from==='analysis')await approveDevelopment(task);
   else if(from==='development')await runAiTask();
   else if(from==='merge_queue')await mergeTask(task);
   else if(from==='documentation')await updateDocumentation();
@@ -612,12 +615,21 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
     setManagerState(old=>JSON.stringify(old)===JSON.stringify(manager)?old:manager);
+    const current=manager.task;
+    if(current.id===taskId&&current.analysis_state!==undefined){
+     const workflow={stage:current.stage,analysis_state:current.analysis_state,
+      clarification_questions:current.clarification_questions,spec_review_status:current.spec_review_status};
+     setActiveTask(old=>old?.id===taskId?{...old,...workflow,
+      ...(!editingField&&current.spec_version!==undefined&&old.spec_version!==current.spec_version
+       ?{title:current.title,description:current.description??old.description,spec_version:current.spec_version}:{})}:old);
+     setTasks(old=>old.map(task=>task.id===taskId?{...task,...workflow}:task));
+    }
    }catch{/* Network reconnection preserves the last known timeline. */}
   };
   void refresh();
   const timer=window.setInterval(()=>void refresh(),4000);
   return()=>{alive=false;window.clearInterval(timer);};
- },[selected?.id,activeTask?.id]);
+ },[selected?.id,activeTask?.id,editingField]);
  useEffect(()=>{setProjectMessages([]);setProjectInput('');setProjectPendingId(null);if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages?mode='+projectChatMode).then(setProjectMessages).catch(fail);}},[selected?.id,projectChatMode]);
  useEffect(()=>{
   if(!selected?.id||!projectChatOpen||projectChatMode!=='documentation'||projectChatBusy)return;
@@ -646,7 +658,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setTasks(old=>old.map(t=>t.id===taskId?{...t,[field]:value}:t));
   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Ошибка автосохранения');fail(e);}finally{setSavingField(false);}
  }
- async function moveTask(task:Task,stage:string){if(!selected||stage===task.stage)return;try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage})});await loadProject(selected.id);}catch(e){fail(e);}}
+ async function moveTask(task:Task,stage:string){
+  if(!selected||stage===task.stage)return;
+  if(task.stage==='analysis'&&stage==='development'){await approveDevelopment(task);return;}
+  try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage})});await loadProject(selected.id);}
+  catch(e){fail(e);}
+ }
  async function saveWorkflowStage(){
   if(!selected||!workflowModal)return;
   setWorkflowSaving(true);
@@ -1061,18 +1078,20 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setEvents(log);
   }catch(e){fail(e);}
  }
- async function approveDevelopment(){if(!selected||!activeTask)return;setTaskChatBusy(true);
+ async function approveDevelopment(task:Task){
+  if(!selected||taskChatBusy)return;
+  const projectId=selected.id;
+  setTaskChatBusy(true);setManagerFeedback('');
   try{
-   await api('/projects/'+selected.id+'/tasks/'+activeTask.id,{method:'PATCH',body:JSON.stringify({title:activeTask.title,description:activeTask.description})});
-   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/approve-development',{method:'POST'});
-   const updated={...activeTask,stage:'development',analysis_state:'approved'};
-   setActiveTask(updated);setTasks(old=>old.map(t=>t.id===updated.id?updated:t));
-   try{
-    const run=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
-    setAiRuns(old=>[run,...old]);
-    setAiMessage('Разработка запущена автоматически после подтверждения анализа.');
-   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Разработка не началась');fail(e);}
-  }catch(e){fail(e);}finally{setTaskChatBusy(false);}
+   const run=await api<AiRun&{recovered?:boolean}>('/projects/'+projectId+'/tasks/'+task.id+'/approve-development',{method:'POST'});
+   if(!run.recovered)setAiRuns(old=>[run,...old.filter(previous=>previous.id!==run.id)]);
+   setAiMessage(run.message||'Разработка принята в очередь.');
+   if(activeTask?.id===task.id)await refreshTaskActivity(projectId,task.id);
+   else await loadProject(projectId);
+  }catch(e){
+   if(activeTask?.id===task.id)setManagerFeedback(e instanceof Error?e.message:'Не удалось начать разработку');
+   else fail(e);
+  }finally{setTaskChatBusy(false);}
  }
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
   setMergeBusy(true);try{
@@ -1655,11 +1674,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
 
       <span>Модель: <strong>{aiSettings.model}</strong></span>
      </div>
-     {activeTask.stage==='analysis'&&<div className="task-questions">
-      <strong>{activeTask.analysis_state==='needs_clarification'?'Нужно уточнить требования':activeTask.analysis_state==='ready_for_development'?'Анализ завершён':'Требуется анализ'}</strong>
-      {!!activeTask.clarification_questions?.length&&<ol>{activeTask.clarification_questions.map((q,i)=><li key={i}>{q}</li>)}</ol>}
-      {activeTask.analysis_state==='ready_for_development'&&<p className="muted">Блокирующих вопросов нет. Можно отправлять в разработку.</p>}
-     </div>}
      <div className="task-dependency">
       <label>Зависит от задачи
        <select value={activeTask.depends_on_task_id||''} disabled={!!activeTask.git_branch||['merge_queue','documentation','done'].includes(activeTask.stage)}
@@ -1720,8 +1734,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        {run.status==='queued'?'В очереди · '+agentRunLabels[run.kind].name:agentRunLabels[run.kind].active}</li>)}
       {managerWorking&&<li><LoaderCircle size={14} aria-hidden="true"/>Менеджер обрабатывает сообщение</li>}
      </ul>}
-     {decisions.length>0&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
+     {(decisions.some(request=>request.kind!=='analysis_clarifications')||readyForDevelopment)&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
       <div className="manager-action-row">
+       {readyForDevelopment&&<>
+        <button className="primary" type="button" disabled={taskChatBusy||managerWorking||!gitLink||!aiSettings.enabled}
+         onClick={()=>void approveDevelopment(activeTask)}>{taskChatBusy?'Запуск…':'В разработку'}</button>
+        {!gitLink&&<small>Подключи GitHub-репозиторий в настройках проекта.</small>}
+        {gitLink&&!aiSettings.enabled&&<small>Включи AI в настройках проекта.</small>}
+       </>}
        {decisions.map(request=><React.Fragment key={request.id}>
         {request.kind==='qa_visual'&&<>
          <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить без визуальных проверок</button>
@@ -1731,11 +1751,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
          <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_requirements')}>Согласовать изменение ТЗ</button>
          <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'reject_requirements')}>Отклонить изменение</button>
         </>}
-        {(request.kind==='question'||request.kind==='analysis_clarifications')&&<details className="manager-answer-popover">
+        {request.kind==='question'&&<details className="manager-answer-popover">
          <summary>Ответить менеджеру</summary>
          <div className="manager-answer-body">
           <strong>Менеджер проекта спрашивает</strong>
-          <p>{request.kind==='analysis_clarifications'?(request.payload?.questions||[]).join('\n'):String(request.payload?.question||'')}</p>
+          <p>{String(request.payload?.question||'')}</p>
           <textarea value={managerAnswer} rows={3} onChange={e=>setManagerAnswer(e.target.value)} placeholder="Ваш ответ менеджеру проекта"/>
           <button className="primary" type="button" disabled={managerBusy||managerAnswer.trim().length<3} onClick={()=>void decideAsManager(request,'answer')}>Отправить ответ</button>
          </div>
@@ -1747,7 +1767,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
       <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
-       placeholder="Напишите Менеджеру проекта… (Shift+Enter — новая строка)" aria-label="Сообщение Менеджеру проекта"/>
+       placeholder={awaitingAnalysisAnswer?'Ответьте на вопросы аналитика…':'Напишите Менеджеру проекта… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" />
       <button className="primary" type="submit" disabled={managerSending||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
      </form>
     </aside>

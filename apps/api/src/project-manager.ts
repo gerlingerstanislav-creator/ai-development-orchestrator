@@ -25,7 +25,7 @@ export function managerRequestText(kind:string,payload:any):string{
  if(kind==='requirements')return 'Аналитик обнаружил существенное отличие реализации от утверждённого ТЗ: '+String(payload.summary||'').slice(0,1300)+
   '\nПредложение по требованиям: '+String(payload.proposed_description||'').slice(0,1700)+
   '\nНужно твоё решение: согласовать изменение поведения или отклонить его и вернуть исправления разработчику.';
- if(kind==='analysis_clarifications')return 'Аналитик собрал уточнения по постановке задачи:\n'+(payload.questions||[]).map((q:string,i:number)=>(i+1)+'. '+q).join('\n').slice(0,2600)+'\nОтветь мне одним сообщением, я передам ответы аналитику и продолжу работу команды.';
+ if(kind==='analysis_clarifications')return 'Аналитик собрал уточнения по постановке задачи:\n'+(payload.questions||[]).map((q:string,i:number)=>(i+1)+'. '+q).join('\n').slice(0,2600)+'\nОтветь прямо в чате. Аналитик сверит ответы с ТЗ.';
  if(kind==='question')return 'Команде не удалось разрешить вопрос самостоятельно: '+String(payload.question||'').slice(0,2000)+
   '\nОтветь мне, и я передам ответ ответственному агенту.';
  return 'Необходимо решение по задаче.';
@@ -35,6 +35,10 @@ export type ManagerRequest={id:string;kind:string;source_id:string;payload:any;s
 export function isPrEvidenceRequest(text:string):boolean{
  return /(?:\b(?:diff|patch|PR|pull request)\b|репозитор|исходн.{0,15}код|файл)/i.test(text)
   && /(?:нуж|не вид|пришл|предостав|доступ|провер|отсутств|получ|прочита|\bneed|\baccess|\bprovide)/i.test(text);
+}
+
+export function isDevelopmentCommand(text:string):boolean{
+ return /^(?:пожалуйста,?\s+)?(?:(?:отдай|отправь|передай|переведи)\s+(?:задачу\s+)?в\s+разработку|(?:запусти|начни)\s+разработку)(?:,?\s+пожалуйста)?[.!?]*$/iu.test(text.trim());
 }
 
 /** Deterministic gate projection: the manager does not hallucinate required approvals. */
@@ -85,7 +89,7 @@ export async function managerSnapshot(pool:Pool,projectId:string,taskId:string){
  const [messages,requests,task,owner,tests,notes]=await Promise.all([
   pool.query("SELECT * FROM (SELECT id,role,body,status,reply_to,created_at FROM manager_messages WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 300) recent ORDER BY created_at,id",[projectId,taskId]),
   pool.query("SELECT id,kind,source_id,payload,status,created_at,decision FROM manager_requests WHERE project_id=$1 AND task_id=$2 AND status IN ('open','waiting') ORDER BY created_at,id",[projectId,taskId]),
-  pool.query('SELECT id,title,description,stage,spec_version,spec_review_status,pr_url,pr_number,test_feedback FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
+  pool.query('SELECT id,title,description,stage,analysis_state,clarification_questions,spec_version,spec_review_status,pr_url,pr_number,test_feedback FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT workflow_id,kind,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[projectId,taskId]),
   pool.query("SELECT id,status,verdict,report,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1",[projectId,taskId]),
   pool.query("SELECT id,author_name,author_stage,target_stage,body,kind,status,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 80",[projectId,taskId])
@@ -110,18 +114,55 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
   const expected=Buffer.from(deps.workerSecret);
   if(!expected.length||supplied.length!==expected.length||!timingSafeEqual(supplied,expected))
    return reply.code(403).send({error:'Недоступно'});
-  const body=z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),messageId:z.string().uuid()}).safeParse(req.body);
+  const body=z.object({projectId:z.string().uuid(),taskId:z.string().uuid(),messageId:z.string().uuid(),analysisActions:z.boolean().default(false)}).safeParse(req.body);
   if(!body.success)return reply.code(400).send({error:'Некорректное обращение'});
-  const {projectId,taskId,messageId}=body.data;
+  const {projectId,taskId,messageId,analysisActions}=body.data;
   const actor=(await pool.query(
-   "SELECT m.actor_id,u.email FROM manager_messages m JOIN users u ON u.id=m.actor_id WHERE m.id=$1 AND m.project_id=$2 AND m.task_id=$3 AND m.role='user' AND m.status IN ('queued','processing')",
+   "SELECT m.actor_id,u.email,m.body,m.created_at FROM manager_messages m JOIN users u ON u.id=m.actor_id WHERE m.id=$1 AND m.project_id=$2 AND m.task_id=$3 AND m.role='user' AND m.status IN ('queued','processing')",
    [messageId,projectId,taskId])).rows[0];
   if(!actor)return reply.code(404).send({error:'Активное обращение менеджеру не найдено'});
   const caller={userId:actor.actor_id};
   if(!await access(caller,reply,projectId)||!await requireAdmin(caller,reply))return;
   const snapshot=await managerSnapshot(pool,projectId,taskId);
   if(!snapshot)return reply.code(404).send({error:'Задача не найдена'});
-  if(!['development','testing'].includes(snapshot.task.stage))return {message:''};
+  const startRequested=analysisActions&&isDevelopmentCommand(String(actor.body||''));
+  if(analysisActions&&(snapshot.task.stage==='analysis'||startRequested)){
+   const handled=(message:string)=>({message,handled:true});
+   const auth=await deps.workerAuthorization(actor.actor_id,actor.email);
+   const taskPath='/api/projects/'+projectId+'/tasks/'+taskId;
+   const call=(path:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url:taskPath+path,headers:{authorization:auth},payload});
+   if(startRequested&&snapshot.task.stage!=='analysis'&&snapshot.task.stage!=='development')
+    return handled('Команда запуска относится к этапу анализа или разработки. Текущий этап задачи уже изменился.');
+   if(startRequested&&snapshot.owner)return handled('Работа по задаче уже запущена. Статус виден в Центре процессов.');
+   const clarification=snapshot.requests.find(request=>request.kind==='analysis_clarifications'&&request.status==='open');
+   let analysisResult='';
+   if(clarification){
+    let answer=String(actor.body||'');
+    if(startRequested){
+     // Older clients sent answers to the manager as ordinary chat messages.
+     // Recover the latest answer from the same person and question round.
+     if(snapshot.messages.some(m=>m.role==='user'&&m.reply_to==null&&(m.status==='processing'||m.status==='queued')&&m.id!==messageId&&m.created_at<actor.created_at&&!isDevelopmentCommand(m.body)))
+      return handled('Аналитик ещё проверяет предыдущий ответ. После завершения в чате появится кнопка «В разработку».');
+     const previous=await pool.query("SELECT body FROM manager_messages WHERE project_id=$1 AND task_id=$2 AND actor_id=$3 AND role='user' AND status='completed' AND created_at>=$4 AND created_at<$5 ORDER BY created_at DESC,id DESC LIMIT 8",
+      [projectId,taskId,actor.actor_id,clarification.created_at,actor.created_at]);
+     answer=String(previous.rows.find(row=>!isDevelopmentCommand(row.body))?.body||'');
+     if(!answer)return handled('Аналитик ждёт ответа на открытые вопросы. Ответь прямо в чате задачи.');
+    }
+    const refined=await call('/assistant',{message:answer,mode:'clarification'});
+    const result=refined.json();
+    if(refined.statusCode>=400)return handled(String(result.error||'Аналитик не смог обработать уточнение.'));
+    if(result.relevant===false)
+     return startRequested?handled('В предыдущем сообщении аналитик не нашёл ответа на открытые вопросы. Ответь прямо в чате задачи.'):{message:''};
+    analysisResult=String(result.message||'Аналитик обработал уточнение.');
+    await syncManagerInbox(pool,projectId,taskId);
+    if(!startRequested||result.questions?.length)return handled(analysisResult);
+   }else if(!startRequested)return {message:''};
+   const started=await call('/approve-development',{});
+   const result=started.json();
+   if(started.statusCode>=400)return handled([analysisResult,String(result.error||'Не удалось запустить разработку.')].filter(Boolean).join('\n\n'));
+   return handled([analysisResult,result.recovered?result.message:'Задача передана в разработку. Запуск принят в очередь Temporal.'].filter(Boolean).join('\n\n'));
+  }
+  if(analysisActions||!['development','testing'].includes(snapshot.task.stage))return {message:''};
   if(snapshot.requests.length)return {message:''};
   if(snapshot.owner)return {message:'По задаче уже работает автоматический процесс.'};
   if(snapshot.task.stage==='testing'&&snapshot.latestTest?.status==='completed'&&snapshot.latestTest.verdict==='blocked')

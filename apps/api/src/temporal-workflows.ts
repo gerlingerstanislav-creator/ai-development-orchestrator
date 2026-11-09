@@ -135,6 +135,16 @@ export async function requirementsReview(input:{projectId:string;taskId:string;r
 /** Each user turn is a durable Temporal workflow. Failure leaves a retryable
  *  persisted message, not an invisible discarded request. */
 export async function projectManagerReply(input:{projectId:string;taskId:string;messageId:string}):Promise<string>{
+ if(patched('manager-handles-analysis-turn')){
+  const result=await steps.handleManagerTurn(input);
+  let continuation=result.message;
+  if(!result.handled){
+   await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
+   continuation=continuation||await steps.continueManagedTask(input);
+  }
+  await steps.completeManagerMessage({...input,continuation,handled:result.handled});
+  return 'responded';
+ }
  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
  if(patched('manager-continues-task')){
   const continuation=await steps.continueManagedTask(input);

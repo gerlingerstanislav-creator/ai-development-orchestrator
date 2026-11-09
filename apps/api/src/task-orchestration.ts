@@ -9,7 +9,7 @@ export async function initTaskOrchestrationSchema(pool:Pool){
  await pool.query("CREATE TABLE IF NOT EXISTS task_orchestration_owners (task_id uuid PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,owner_id uuid NOT NULL,workflow_id text NOT NULL,kind text NOT NULL,state text NOT NULL DEFAULT 'active',started_at timestamptz NOT NULL DEFAULT now(),finished_at timestamptz)");
  await pool.query("CREATE INDEX IF NOT EXISTS idx_task_orchestration_owner_project ON task_orchestration_owners(project_id,state)");
 }
-export async function acquireTaskOrchestration(pool:Pool,projectId:string,taskId:string,ownerId:string,workflowId:string,kind:'development'|'testing'):Promise<boolean>{
+export async function acquireTaskOrchestration(pool:Pick<Pool,'query'>,projectId:string,taskId:string,ownerId:string,workflowId:string,kind:'development'|'testing'):Promise<boolean>{
  const result=await pool.query(
   "INSERT INTO task_orchestration_owners(task_id,project_id,owner_id,workflow_id,kind,state) VALUES($1,$2,$3,$4,$5,'active') ON CONFLICT(task_id) DO UPDATE SET project_id=EXCLUDED.project_id,owner_id=EXCLUDED.owner_id,workflow_id=EXCLUDED.workflow_id,kind=EXCLUDED.kind,state='active',started_at=now(),finished_at=NULL WHERE task_orchestration_owners.state='finished' RETURNING owner_id",
   [taskId,projectId,ownerId,workflowId,kind]);
