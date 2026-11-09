@@ -29,6 +29,10 @@ export async function recordTaskAgentNote(pool:Pool,note:AgentNoteInput){
  return (result.rowCount||0)>0;
 }
 
+export async function pendingAgentQuestions(pool:Pool,projectId:string,taskId:string):Promise<number>{
+ const r=await pool.query("SELECT count(*)::int AS count FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open'",[projectId,taskId]);
+ return r.rows[0].count;
+}
 /** Return bounded, addressed task comments as untrusted advisory context. */
 export async function taskNotesContext(pool:Pool,projectId:string,taskId:string,targetStage:string,limit=18){
  const results=await pool.query(
@@ -41,7 +45,7 @@ export async function taskNotesContext(pool:Pool,projectId:string,taskId:string,
 
 export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
- requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string
+ requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;startRequirementsReview?:(projectId:string,taskId:string,version:number)=>Promise<unknown>
 }){
  app.post('/api/projects/:id/tasks/:taskId/agent-notes',async(req:any,reply)=>{
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
@@ -71,7 +75,16 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
    if(!result.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже закрыт или не относится к задаче'});}
    await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
     [randomUUID(),taskId,deps.uid(req),'Ответ на вопрос агента: '+answer.slice(0,1600)]);
+   const task=await client.query('SELECT stage,spec_version FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
+   if(task.rowCount){
+    if(task.rows[0].stage==='analysis')await client.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE id=$1",[taskId]);
+    else if(!['backlog','documentation','done'].includes(task.rows[0].stage))
+     await client.query("UPDATE tasks SET spec_review_status='pending',spec_review_note='Участник ответил на вопрос агента; аналитик должен сверить ответ с ТЗ',updated_at=now() WHERE id=$1",[taskId]);
+   }
    await client.query('COMMIT');
+   if(task.rowCount&&!['backlog','analysis','documentation','done'].includes(task.rows[0].stage)){
+    await deps.startRequirementsReview?.(id,taskId,task.rows[0].spec_version);
+   }
    return {ok:true};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  });
