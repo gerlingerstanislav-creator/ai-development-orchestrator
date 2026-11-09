@@ -9,6 +9,12 @@ export type CycleInput={projectId:string;taskId:string;runId:string;maxFixes:num
 
 // Workflow history is durable. Secrets and Codex jobs live only in Activities.
 export async function developmentTestingCycle(input:CycleInput):Promise<string>{
+ try{
+  await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.runId});
+ }catch(e){
+  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось подготовить QA-документацию: '+String(e),stage:'qa_preparation'});
+  return 'qa_plan_failed';
+ }
  let runId=input.runId;
  for(let attempt=0;attempt<=input.maxFixes;attempt++){
   await steps.startDevelopment({projectId:input.projectId,taskId:input.taskId,runId,attempt});
@@ -46,6 +52,12 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 }
 
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
+ try{
+  await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});
+ }catch(e){
+  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Не удалось подготовить QA-документацию: '+String(e),stage:'qa_preparation'});
+  return 'qa_plan_failed';
+ }
  const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0});
  let testing;
  while(true){
