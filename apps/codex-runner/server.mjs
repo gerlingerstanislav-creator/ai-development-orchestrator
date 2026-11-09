@@ -373,19 +373,68 @@ async function runTestJob(job,state){
    'Текущий git commit: '+state.testedCommit
   ].join('\n\n');
   state.message='Codex выполняет независимую проверку кода и доступных тестов';
-  const result=await command('codex',['exec','-m',job.model,
-   '-c','model_reasoning_effort="'+job.reasoning+'"','--json','--ephemeral','--skip-git-repo-check',
-   '--sandbox','danger-full-access',prompt],
-   {cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000});
-  const parsed=codexJsonResult(result.stdout);
+  const reportSchema={
+   type:'object',additionalProperties:false,
+   required:['verdict','summary','findings','checks','caseResults'],
+   properties:{
+    verdict:{type:'string',enum:['passed','failed','blocked']},
+    summary:{type:'string'},
+    findings:{type:'array',items:{type:'object',additionalProperties:false,required:['severity','description','steps','expected','actual'],properties:{
+     severity:{type:'string',enum:['critical','major','minor']},description:{type:'string'},steps:{type:'string'},expected:{type:'string'},actual:{type:'string'}}}},
+    checks:{type:'array',items:{type:'object',additionalProperties:false,required:['name','result','details'],properties:{
+     name:{type:'string'},result:{type:'string',enum:['passed','failed','not_run']},details:{type:'string'}}}},
+    caseResults:{type:'array',items:{type:'object',additionalProperties:false,required:['case_id','result','reason','evidence'],properties:{
+     case_id:{type:'string'},result:{type:'string',enum:['passed','failed','blocked','not_run']},
+     reason:{type:'string',enum:['executed','tool_unavailable','environment_unavailable','manual_only','unknown']},evidence:{type:'string'}}}}
+   }
+  };
+  const schemaPath=join(workdir,'qa-report.schema.json');
+  await writeFile(schemaPath,JSON.stringify(reportSchema),{mode:0o600});
+  const verifyReport=message=>{
+   const fenced=message.match(/```(?:json)?\s*([\s\S]*?)```/i);
+   const source=fenced?.[1]||message;
+   const first=source.indexOf('{'),last=source.lastIndexOf('}');
+   if(first<0||last<=first)throw Error('AI-тестировщик не вернул JSON');
+   let data;
+   try{data=JSON.parse(source.slice(first,last+1));}catch{throw Error('AI-тестировщик вернул некорректный JSON');}
+   if(!['passed','failed','blocked'].includes(data.verdict)||typeof data.summary!=='string'||!Array.isArray(data.findings)||!Array.isArray(data.checks)||!Array.isArray(data.caseResults))
+    throw Error('AI-тестировщик вернул недопустимую структуру отчёта');
+   const required=(job.testPlan?.cases||[]).map(c=>c.id);
+   if(data.caseResults.some(c=>!c||typeof c.case_id!=='string'||!['passed','failed','blocked','not_run'].includes(c.result)||typeof c.evidence!=='string'||typeof c.reason!=='string'))
+    throw Error('Некорректные результаты отдельных тест-кейсов');
+   if(required.some(id=>!data.caseResults.some(c=>c.case_id===id)))
+    throw Error('В отчёте отсутствуют результаты части тест-кейсов');
+   return data;
+  };
+  const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
+   '--json','--ephemeral','--skip-git-repo-check','--sandbox','danger-full-access',
+   '--output-schema',schemaPath];
+  const firstRun=await command('codex',[...args,prompt],{
+   cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000
+  });
+  let parsed=codexJsonResult(firstRun.stdout);
   state.usage=parsed.usage;
-  const text=parsed.message||'';
-  const start=text.indexOf('{'),end=text.lastIndexOf('}');
-  if(start<0||end<=start)throw Error('AI-тестировщик не вернул структурированный результат');
   let report;
-  try{report=JSON.parse(text.slice(start,end+1));}catch{throw Error('AI-тестировщик вернул некорректный JSON');}
-  if(!['passed','failed','blocked'].includes(report.verdict)||typeof report.summary!=='string'||!Array.isArray(report.findings)||!Array.isArray(report.checks)||!Array.isArray(report.caseResults))
-   throw Error('Недопустимый формат отчёта AI-тестировщика');
+  try{report=verifyReport(parsed.message||'');}
+  catch(error){
+   state.message='AI-тестировщик завершил проверки, но отчёт некорректен. Повторное форматирование отчёта';
+   // The second attempt must not invent successful checks. It only reformats
+   // the prior agent's actual evidence into the strict machine-readable schema.
+   const correction=[
+    'Сформируй валидный JSON-отчёт по указанной схеме. Ранее тестировщик вернул некорректный формат.',
+    'Не утверждай о выполнении тестов, для которых нет реальных доказательств в предыдущем ответе.',
+    'Неподтверждённые кейсы отмечай blocked/not_run, reason=unknown; не выдавай отсутствие данных за tool_unavailable.',
+    'Причина переформатирования: '+String(error.message||error),
+    'Case IDs: '+JSON.stringify((job.testPlan?.cases||[]).map(c=>c.id)),
+    'Предыдущий ответ тестировщика: '+String(parsed.message||'').slice(0,45000)
+   ].join('\n\n');
+   const second=await command('codex',[...args,correction],{
+    cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000
+   });
+   const corrected=codexJsonResult(second.stdout);
+   state.usage=addUsage(state.usage,corrected.usage);
+   report=verifyReport(corrected.message||'');
+  }
   state.verdict=report.verdict;
   state.summary=report.summary.slice(0,3500);
   state.findings=report.findings.slice(0,20);
