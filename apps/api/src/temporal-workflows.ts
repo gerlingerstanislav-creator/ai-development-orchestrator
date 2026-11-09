@@ -44,3 +44,23 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
  }
  return 'manual_intervention';
 }
+
+export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
+ const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0});
+ let testing;
+ while(true){
+  testing=await steps.checkTesting({projectId:input.projectId,taskId:input.taskId,testId});
+  if(testing.status==='completed'||testing.status==='failed')break;
+  await sleep('8 seconds');
+ }
+ if(testing.status==='failed'||testing.verdict==='blocked'){
+  await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:testing.message,stage:'testing'});
+  return 'testing_needs_attention';
+ }
+ if(testing.verdict==='passed'){
+  await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId});
+  return 'ready_to_merge';
+ }
+ await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,testId,attempt:0,allowFix:false});
+ return 'manual_intervention';
+}
