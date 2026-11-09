@@ -764,7 +764,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Мои проекты</h1><p>Создавайте проекты и управляйте разработкой в одном месте.</p></div><button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button></div>
  <div className="project-grid">{projects.map(p=><a key={p.id} href={projectUrl(p.id)} className="project-card" onClick={e=>followLink(e,projectUrl(p.id))}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></a>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div></div>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
-  {section==='docs'&&<div className="toolbar docs-chat-toolbar"><button className="primary" onClick={openDocumentationChat}><MessageCircle size={17}/> Обсудить проект с AI</button><span className="muted">AI помогает структурировать материалы, создавать страницы и импортировать Markdown из GitHub.</span></div>}
  {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
  {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>{setProjectInput(old=>old.trim()?old:'Создай задачу: ');setProjectChatOpen(true);}}><FileText size={17}/></button></div></div>
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board board-groups">
@@ -784,8 +783,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
    <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
-   <div className="doc-tree">{renderDocTree(null)}</div>
-   {!docs.length&&<p className="muted">Создай первую страницу документации.</p>}
+   <div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
+   <div className="docs-list-footer">
+    <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить проект с AI</button>
+   </div>
   </aside>
   <section className="panel docs-reading">
    {selectedDocId&&docs.some(d=>d.id===selectedDocId)?(()=>{

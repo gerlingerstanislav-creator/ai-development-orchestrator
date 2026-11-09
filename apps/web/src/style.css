@@ -432,3 +432,54 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
  .tasks-page .kanban-group.is-expanded{width:max-content}
  .tasks-page .kanban-group.is-expanded .kanban-group-stages>.lane{min-width:200px}
 }
+
+/* Unified dense page rhythm: all sections start close to the fixed header
+   and keep small, consistent gutters around panels and between blocks. */
+:root{--page-gutter:7px;--section-gap:7px;--card-gap:7px}
+.page,.compact-project-page,.tasks-page{max-width:none;width:100%;margin:0;padding:var(--page-gutter);padding-bottom:var(--page-gutter)}
+.page-heading{margin-bottom:var(--section-gap);gap:9px}
+.toolbar,.tasks-page .toolbar,.compact-project-page .toolbar{margin-bottom:var(--section-gap);gap:7px}
+.project-grid,.settings-grid,.stats,.compact-project-page .docs{gap:var(--section-gap)}
+.compact-project-page>.panel,.compact-project-page>.settings-grid,.overview .panel{margin-bottom:var(--section-gap)}
+.compact-project-page>.settings-grid{margin-top:var(--section-gap);gap:var(--section-gap)}
+.compact-project-page .overview .panel{margin-bottom:var(--section-gap)}
+.compact-project-page .overview .stats{gap:var(--section-gap)}
+.compact-project-page .panel>h3,.compact-project-page .panel>.row-line{margin-bottom:10px}
+.compact-project-page .panel>p.muted{margin-bottom:10px}
+.compact-project-page .panel>.settings-grid{gap:var(--section-gap);margin-bottom:10px}
+.panel{padding:14px}
+.compact-project-page .panel{padding:14px}
+.project-card,.stat{padding:15px}
+.tasks-page .board.board-groups{gap:4px;padding-bottom:5px}
+.tasks-page .kanban-group{padding:4px}
+.tasks-page .lane{padding:7px 6px}
+.tasks-page .cards{gap:7px}
+.tasks-page .task-card{padding:10px}
+.tasks-page .merge-report{margin-bottom:var(--section-gap)}
+/* The documentation sidebar and reading pane use all available space. */
+.compact-project-page:has(>.docs){padding:var(--page-gutter)}
+.compact-project-page .docs{grid-template-columns:minmax(220px,280px) minmax(0,1fr);align-items:stretch;gap:var(--section-gap)}
+.compact-project-page .docs .panel{height:calc(100vh - 45px - 2*var(--page-gutter));min-height:0}
+.docs .docs-list{position:sticky;top:calc(45px + var(--page-gutter));display:flex;flex-direction:column;overflow:hidden;padding:12px 9px;max-height:calc(100vh - 45px - 2*var(--page-gutter))}
+.docs .docs-list-heading{flex:0 0 auto}
+.docs .doc-tree{flex:1 1 auto;min-height:0;max-height:none;overflow:auto}
+.docs-tree-empty{padding:8px}
+.docs-list-footer{flex:0 0 auto;margin-top:auto;padding:10px 4px 2px;border-top:1px solid #e8ebf1}
+.docs-list-footer .docs-discuss-button{width:100%;justify-content:center;white-space:normal;min-height:36px}
+.docs-reading{min-height:0;max-height:none;overflow:hidden}
+.docs-content{max-height:none;flex:1;min-height:0;overflow:auto;padding:18px 20px 24px}
+.docs-editing{flex:1;min-height:0;max-height:none;overflow:auto;padding:16px}
+.docs-empty{flex:1;min-height:0}
+@media(max-width:800px){
+ .compact-project-page .docs{grid-template-columns:1fr}
+ .compact-project-page .docs .panel{height:auto;min-height:0}
+ .docs .docs-list{position:static;max-height:320px;min-height:210px}
+ .docs .doc-tree{min-height:60px}
+ .docs .docs-list-footer{margin-top:8px}
+ .docs-reading{min-height:320px}
+ .docs-content{max-height:calc(100vh - 170px)}
+}
+@media(max-width:700px){
+ :root{--page-gutter:6px;--section-gap:6px;--card-gap:6px}
+ .page,.compact-project-page,.tasks-page{padding:var(--page-gutter)}
+}
