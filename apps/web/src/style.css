@@ -483,3 +483,25 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
  :root{--page-gutter:6px;--section-gap:6px;--card-gap:6px}
  .page,.compact-project-page,.tasks-page{padding:var(--page-gutter)}
 }
+
+/* Compact global background job monitor next to Codex quota bars. */
+.top-right{gap:6px}
+.background-process-control{position:relative;flex:0 0 auto}
+.background-process-count{display:grid;place-items:center;min-width:27px;height:27px;padding:0 7px;border:1px solid #e2e6ef;background:#f7f8fc;border-radius:7px;color:#506078;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;cursor:pointer}
+.background-process-count:hover,.background-process-count.is-open{background:#e9edfb;color:#5060ca;border-color:#cbd4ec}
+.background-process-count:focus-visible{outline:2px solid #7381d7;outline-offset:2px}
+.background-process-popover{position:absolute;right:0;top:calc(100% + 9px);width:min(348px,calc(100vw - 24px));z-index:35;border:1px solid #e0e5ef;border-radius:11px;background:white;box-shadow:0 16px 46px #1f31562c;padding:9px;white-space:normal;color:#334258}
+.background-process-heading{display:flex;align-items:center;justify-content:space-between;padding:6px 7px 10px;border-bottom:1px solid #edf0f5;font-size:12px}
+.background-process-heading span{color:#7a8799;font-variant-numeric:tabular-nums}
+.background-process-empty{margin:0;padding:19px 10px;text-align:center;font-size:12px;color:#8b96a8}
+.background-process-list{max-height:min(400px,60vh);overflow-y:auto;display:flex;flex-direction:column;gap:3px;padding-top:6px}
+.background-process-item{display:flex;flex-direction:column;gap:4px;padding:10px 8px;border-radius:8px;text-decoration:none;color:#3b465b}
+.background-process-item:hover{background:#f3f5fb}
+.background-process-item-title{display:flex;align-items:center;gap:7px;min-width:0}
+.background-process-item-title strong{font-size:12px;overflow-wrap:anywhere}
+.background-process-pulse{width:7px;height:7px;flex:0 0 7px;background:#6f91dd;border-radius:50%;animation:process-pulse 1.5s ease-in-out infinite}
+@keyframes process-pulse{0%,100%{opacity:.42}50%{opacity:1}}
+.background-process-project{font-size:11px;color:#8490a3}
+.background-process-detail{font-size:11px;color:#63718a;line-height:1.45;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.background-process-warning{display:block;border-top:1px solid #edf0f5;padding:8px;color:#ad5361;white-space:normal}
+@media(prefers-reduced-motion:reduce){.background-process-pulse{animation:none}}
