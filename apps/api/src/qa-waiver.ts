@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {z} from 'zod';
+import {pendingAgentQuestions} from './task-agent-notes.js';
 
 const unavailableReasons=new Set(['tool_unavailable','environment_unavailable','manual_only']);
 type TestCase={id:string;title:string;priority?:string;purpose?:string};
@@ -81,6 +82,7 @@ export function registerQaWaiverRoutes(app:FastifyInstance,{pool,access,requireA
   if(!connection.rowCount)return reply.code(404).send({error:'Задача или GitHub-подключение не найдены'});
   const task=connection.rows[0];
   if(task.stage!=='testing')return reply.code(409).send({error:'Решение доступно только на этапе тестирования'});
+  if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Сначала ответь на вопросы агентов, затем согласуй исключения по тестам'});
   const latest=await latestQaWaiver(pool,id,taskId);
   if(latest.run_id!==body.test_run_id||!latest.assessment.eligible)
    return reply.code(409).send({error:'В QA-отчёте есть дефекты или отсутствуют подтверждения недоступности тестов',details:latest.assessment.blockers});
