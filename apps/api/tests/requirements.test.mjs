@@ -7,6 +7,7 @@ import {initQaWaiverSchema} from '../dist/qa-waiver.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from '../dist/task-orchestration.js';
 import {initTaskAgentNotesSchema,recordTaskAgentNote,taskNotesContext,pendingAgentQuestions,resolveAgentQuestionsForReview} from '../dist/task-agent-notes.js';
 import {initTaskCancellationSchema,needsGitHubCleanup} from '../dist/task-cancellation.js';
+import {initProjectManagerSchema} from '../dist/project-manager.js';
 
 test('spec revisions, analyst reconciliation and human-approval gate persist in PostgreSQL',async()=>{
  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
@@ -32,6 +33,17 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await initTaskOrchestrationSchema(pool);
   await initTaskAgentNotesSchema(pool);
   await initTaskAgentNotesSchema(pool);
+  await initProjectManagerSchema(pool);
+  await initProjectManagerSchema(pool); // Idempotent migration on existing projects
+  const managerMessageId=randomUUID(),managerRequestId=randomUUID();
+  await pool.query("INSERT INTO manager_messages(id,project_id,task_id,actor_id,role,body,status) VALUES($1,$2,$3,$4,'user','Проверить окружность','queued')",[managerMessageId,projectId,taskId,userId]);
+  assert.equal((await pool.query('SELECT status FROM manager_messages WHERE id=$1',[managerMessageId])).rows[0].status,'queued','User input is persisted before model invocation');
+  await pool.query("UPDATE manager_messages SET status='completed' WHERE id=$1",[managerMessageId]);
+  await pool.query("INSERT INTO manager_requests(id,project_id,task_id,source_key,kind,source_id) VALUES($1,$2,$3,'qa:test:original','qa_visual',$4)",[managerRequestId,projectId,taskId,randomUUID()]);
+  const duplicate=await pool.query("INSERT INTO manager_requests(id,project_id,task_id,source_key,kind,source_id) VALUES($1,$2,$3,'qa:test:original','qa_visual',$4) ON CONFLICT(task_id,source_key) DO NOTHING RETURNING id",[randomUUID(),projectId,taskId,randomUUID()]);
+  assert.equal(duplicate.rowCount,0,'Replayed workflow cannot send duplicate risk request');
+  assert.equal((await pool.query('SELECT count(*)::int AS total FROM manager_requests WHERE task_id=$1',[taskId])).rows[0].total,1);
+
   await initTaskCancellationSchema(pool);
   await initTaskCancellationSchema(pool);
   assert.equal(needsGitHubCleanup({git_branch:null,pr_number:null},true),true,'A failed runner may have pushed its UUID branch before saving task.git_branch');

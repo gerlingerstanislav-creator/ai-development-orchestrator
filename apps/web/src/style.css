@@ -955,3 +955,36 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .task-command-expansion .task-action-danger{border:1px solid #a4aab8;background:white;color:#384252;border-radius:7px;padding:7px 9px;cursor:pointer}
 .task-command-expansion .task-action-danger:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:850px){.task-command-main{align-items:flex-start;flex-direction:column;gap:7px}.task-command-state{flex:0 0 auto;width:100%}.task-command-buttons{justify-content:flex-start;width:100%}.task-action-expand-body{left:0;right:auto}}
+
+
+/* Manager is the only customer-facing role. Specialists' notes are read-only. */
+.task-modal-actions .task-stage-label{display:inline-flex;align-items:center;border:1px solid #dfe4ec;background:#f8fafc;color:#435066;border-radius:7px;padding:5px 9px;font-size:11px;font-weight:650;white-space:nowrap}
+.task-modal-overlay .manager-conversation{background:white}
+.task-modal-overlay .manager-thread{background:white;min-height:0;gap:10px;overflow-y:auto}
+.manager-thread .manager-message{display:flex;flex-direction:column;gap:5px;border:1px solid #e3e6eb;border-radius:9px;padding:10px 12px;max-width:90%;box-sizing:border-box;color:#293646;font-size:12px;line-height:1.5}
+.manager-thread .manager-message.from-manager{align-self:flex-start;background:white}
+.manager-thread .manager-message.from-user{align-self:flex-end;background:#f0f2f5;border-color:#e5e7eb}
+.manager-message-heading{display:flex;align-items:baseline;justify-content:space-between;gap:9px;font-size:11px;color:#344052}
+.manager-message-heading small{font-size:10px;color:#8a93a0;white-space:nowrap}
+.manager-message-body{white-space:pre-wrap;overflow-wrap:anywhere}
+.manager-message-pending{font-size:10px;color:#747f8e}
+.manager-message-error{color:#b42318;font-size:11px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.manager-internal-log{align-self:stretch;border:1px solid #e8ebf1;border-radius:7px;padding:9px 11px;font-size:11px;color:#536175;background:white}
+.manager-internal-log>summary{cursor:pointer;font-size:11px;font-weight:600}
+.manager-internal-log>p{margin:10px 0;color:#677283}
+.manager-internal-entry{border-top:1px solid #e8ebf1;padding:8px 2px;display:flex;flex-direction:column;gap:3px;white-space:pre-wrap;overflow-wrap:anywhere}
+.manager-internal-entry small{color:#8a96a6;font-size:10px}
+.task-modal-overlay .manager-conversation .manager-actions{border-top:1px solid #e2e6ec;background:white;padding:7px 10px;flex:0 0 auto;position:relative}
+.manager-action-row{display:flex;align-items:center;gap:6px;overflow-x:auto;overflow-y:visible;white-space:nowrap;scrollbar-width:thin;min-height:30px}
+.manager-action-row button,.manager-action-row>small,.manager-answer-popover>summary{font-size:11px;white-space:nowrap;flex-shrink:0;min-height:29px;padding:6px 9px;border-radius:6px}
+.manager-action-row>small{display:flex;align-items:center;color:#788294}
+.manager-action-error{font-size:11px;color:#b42318;margin:5px 0 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.manager-answer-popover{position:relative;flex-shrink:0}
+.manager-answer-popover>summary{list-style:none;cursor:pointer;border:1px solid #dfe4ed;background:white;color:#435066}
+.manager-answer-popover>summary::-webkit-details-marker{display:none}
+.manager-answer-body{position:absolute;right:0;bottom:calc(100% + 7px);width:min(380px,70vw);white-space:normal;background:white;border:1px solid #d9e0e9;border-radius:9px;box-shadow:0 8px 24px #17243a20;padding:12px;z-index:40;display:flex;flex-direction:column;gap:10px;font-size:12px}
+.manager-answer-body p{white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.manager-answer-body textarea{resize:vertical;width:100%;box-sizing:border-box;min-height:60px}
+.manager-answer-body button{align-self:flex-start}
+.task-modal-overlay .manager-conversation .assistant-composer{background:white}
+@media(max-width:850px){.task-modal-overlay .manager-thread .manager-message{max-width:96%}.task-modal-overlay .manager-actions{padding:6px}.manager-answer-body{left:0;right:auto;width:min(330px,90vw)}}

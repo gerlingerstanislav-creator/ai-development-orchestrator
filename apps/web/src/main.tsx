@@ -42,6 +42,9 @@ type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;crea
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
+type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed';reply_to?:string|null;created_at:string};
+type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
+type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string};
 type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
@@ -356,6 +359,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
  const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
+ const [managerState,setManagerState]=useState<ManagerSnapshot|null>(null);
+ const [managerBusy,setManagerBusy]=useState(false);
+ const [managerAnswer,setManagerAnswer]=useState('');
+ const [managerFeedback,setManagerFeedback]=useState('');
+ const [managerSending,setManagerSending]=useState(false);
  function timeline(taskId:string):ActivityItem[]{
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
@@ -434,6 +442,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
    setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
+   setManagerState(await api<ManagerSnapshot>('/projects/'+projectId+'/tasks/'+taskId+'/manager'));
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
  }
@@ -517,7 +526,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentNotes([]);setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
      void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
@@ -535,7 +544,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const element=taskThreadRef.current;
   if(!element)return;
   if(element.scrollHeight-element.scrollTop-element.clientHeight<180||element.scrollTop===0)element.scrollTop=element.scrollHeight;
- },[taskMessages,taskChatBusy,events,taskAgentNotes,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback]);
+ },[taskMessages,taskChatBusy,events,taskAgentNotes,taskProcessEvents,taskTestRuns,testRuns,aiRuns,activeTask?.id,taskFeedback,managerState?.messages.length,managerState?.requests.length]);
  // One live timeline for analysis, development, QA-design, testing and approvals.
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id)return;
@@ -544,9 +553,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const refresh=async()=>{
    if(document.hidden)return;
    try{
-    const [feed,messages]=await Promise.all([
+    const [feed,messages,manager]=await Promise.all([
      api<TaskActivityResponse>('/projects/'+id+'/tasks/'+taskId+'/activity'),
-     api<AssistantMessage[]>('/projects/'+id+'/tasks/'+taskId+'/assistant/messages')
+     api<AssistantMessage[]>('/projects/'+id+'/tasks/'+taskId+'/assistant/messages'),
+     api<ManagerSnapshot>('/projects/'+id+'/tasks/'+taskId+'/manager')
     ]);
     if(!alive)return;
     setEvents(old=>JSON.stringify(old)===JSON.stringify(feed.events)?old:feed.events);
@@ -555,6 +565,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setTaskAgentNotes(old=>JSON.stringify(old)===JSON.stringify(feed.notes||[])?old:feed.notes||[]);
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
+    setManagerState(old=>JSON.stringify(old)===JSON.stringify(manager)?old:manager);
    }catch{/* Network reconnection preserves the last known timeline. */}
   };
   void refresh();
@@ -795,7 +806,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setCancelBusy(true);setCancelError('');
   try{
    const preview=await api<CancelPreview>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel-preview');
-   setCancelPreview(preview);setCancelPhrase('');
+   setCancelPreview(preview);
   }catch(e){setCancelError(e instanceof Error?e.message:'Не удалось получить условия отмены');}
   finally{setCancelBusy(false);}
  }
@@ -803,7 +814,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!selected||!activeTask||!cancelPreview||cancelBusy)return;
   setCancelBusy(true);setCancelError('');
   try{
-   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel',{method:'POST',body:JSON.stringify({confirmation:cancelPhrase.trim()})});
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/cancel',{method:'POST',body:JSON.stringify({confirm:true})});
    setCancelPreview(null);setActiveTask(null);
    const id=selected.id;
    navigate(projectUrl(id,'tasks'));
@@ -894,19 +905,58 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    fail(e);
   }finally{setProjectChatBusy(false);setProjectPendingId(null);setProjectImportProgress('');}
  }
- async function sendTaskMessage(e:React.FormEvent){e.preventDefault();if(!selected||!activeTask||!taskInput.trim()||taskChatBusy)return;
-  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim(),optimisticId='pending-'+crypto.randomUUID();
-  setTaskMessages(old=>[...old,{id:optimisticId,role:'user',body:message,pending:true,created_at:new Date().toISOString()}]);
-  setTaskInput('');setTaskPendingId(optimisticId);setTaskChatBusy(true);
+ async function sendTaskMessage(e:React.FormEvent){
+  e.preventDefault();
+  if(!selected||!activeTask||!taskInput.trim()||managerSending)return;
+  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim();
+  const optimisticId='pending-'+crypto.randomUUID();
+  const sentAt=new Date().toISOString();
+  setManagerState(old=>old?{...old,messages:[...old.messages,{id:optimisticId,role:'user',body:message,status:'queued',created_at:sentAt}]}:old);
+  setTaskInput('');setManagerFeedback('');setManagerSending(true);
   try{
-   const response=await api<AssistantResponse>('/projects/'+projectId+'/tasks/'+taskId+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'chat'})});
-   setTaskMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
-    {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_at:new Date().toISOString()}]);
+   const response=await api<{id:string;status:string}>('/projects/'+projectId+'/tasks/'+taskId+'/manager/messages',{
+    method:'POST',body:JSON.stringify({message})
+   });
+   setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,id:response.id}:m)}:old);
+  }catch(error){
+   setManagerFeedback(error instanceof Error?error.message:'Сообщение не принято');
+   setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,status:'failed'}:m)}:old);
+  }finally{setManagerSending(false);}
+ }
+ async function decideAsManager(request:ManagerRequest,choice:string){
+  if(!selected||!activeTask||managerBusy)return;
+  if(choice==='answer'&&managerAnswer.trim().length<3){setManagerFeedback('Ответь на вопрос Менеджера проекта');return;}
+  const projectId=selected.id,taskId=activeTask.id;
+  setManagerBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+projectId+'/tasks/'+taskId+'/manager/requests/'+request.id+'/decision',{
+    method:'POST',body:JSON.stringify({choice,answer:choice==='answer'?managerAnswer.trim():''})
+   });
+   setManagerAnswer('');
    await refreshTaskActivity(projectId,taskId);
-  }catch(e){
-   setTaskMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
-   fail(e);
-  }finally{setTaskChatBusy(false);setTaskPendingId(null);}
+   await loadRequirements(projectId,taskId);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Менеджер проекта не смог выполнить решение');}
+  finally{setManagerBusy(false);}
+ }
+ async function resumeAsManager(){
+  if(!selected||!activeTask||managerBusy)return;
+  const projectId=selected.id,taskId=activeTask.id;
+  setManagerBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+projectId+'/tasks/'+taskId+'/manager/continue',{method:'POST',body:'{}'});
+   await refreshTaskActivity(projectId,taskId);
+   await loadProject(projectId);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось продолжить задачу');}
+  finally{setManagerBusy(false);}
+ }
+ async function retryManagerMessage(messageId:string){
+  if(!selected||!activeTask||managerBusy)return;
+  setManagerBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/manager/messages/'+messageId+'/retry',{method:'POST',body:'{}'});
+   await refreshTaskActivity(selected.id,activeTask.id);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось повторить запрос');}
+  finally{setManagerBusy(false);}
  }
  async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
   const taskId=activeTask.id;
@@ -1405,11 +1455,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </main>
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
-   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'AI-аналитик проекта':'AI-помощник проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
+   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Менеджер проекта · документация':'Менеджер проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
     {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Расскажи об идее проекта, требованиях или пришли ссылку на GitHub-каталог с Markdown. Я буду раскладывать подтверждённые детали по документам и уточнять недостающие.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
-      <span className="assistant-author">{m.role==='user'?'Вы':'AI'}</span>
+      <span className="assistant-author">{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</span>
       <div>{m.body}</div>
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
@@ -1419,12 +1469,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {projectChatBusy&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
    </div>
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
-    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label="Сообщение AI-помощнику" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
+    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
     <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!projectInput.trim()||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
   </section>}
-  <button className="chat-fab" onClick={()=>{if(projectChatMode==='documentation'){setProjectChatMode('project');setProjectChatOpen(true);}else setProjectChatOpen(open=>!open);}} title={projectChatOpen&&projectChatMode==='project'?'Закрыть чат':'Открыть AI-чат'} aria-label={projectChatOpen?'Закрыть чат':'Открыть AI-чат'}>
+  <button className="chat-fab" onClick={()=>{if(projectChatMode==='documentation'){setProjectChatMode('project');setProjectChatOpen(true);}else setProjectChatOpen(open=>!open);}} title={projectChatOpen&&projectChatMode==='project'?'Закрыть чат':'Открыть чат Менеджера проекта'} aria-label={projectChatOpen?'Закрыть чат':'Открыть чат Менеджера проекта'}>
    {projectChatOpen&&projectChatMode==='project'?<X size={22}/>:<MessageCircle size={22}/>}
   </button>
  </>}
@@ -1473,7 +1523,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <div className="dialog task-dialog task-dialog-wide" role="dialog" aria-modal="true" aria-label={'Задача #'+activeTask.display_number+': '+activeTask.title} onMouseDown={e=>e.stopPropagation()}>
    <div className="task-modal-top">
     <div className="task-modal-heading">
-     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number} · {stages.find(s=>s.stage===activeTask.stage)?.label||activeTask.stage}</span>
+     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
      <div className="task-editable task-title-editable">
       {editingField==='title'?
        <input autoFocus value={activeTask.title} onChange={e=>setActiveTask({...activeTask,title:e.target.value})}
@@ -1483,6 +1533,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
     </div>
     <div className="task-modal-actions">
+     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
      {savingField&&<span className="muted">Сохранение…</span>}
      <button className="task-close" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу"><X size={20}/></button>
     </div>
@@ -1499,7 +1550,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
      <div className="task-metadata">
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
-      <span>Этап: <strong>{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</strong></span>
+
       <span>Модель: <strong>{aiSettings.model}</strong></span>
      </div>
      {activeTask.stage==='analysis'&&<div className="task-questions">
@@ -1523,148 +1574,85 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
-    <aside className="task-conversation">
-     <header><MessageCircle size={17}/><strong>Переписка и ход работы</strong><small>{taskChatBusy?'AI отвечает…':agentWorking(activeTask.id)?'Выполняется':'История сохранена'}</small></header>
-     <div ref={taskThreadRef} className="assistant-thread" role="log" aria-live="polite">
-      {timeline(activeTask.id).length===0&&<p className="assistant-hint">Здесь будут вопросы, ответы AI, действия и ход разработки.</p>}
-      {timeline(activeTask.id).map(item=><div key={item.id} className={'assistant-bubble '+(item.kind==='user'?'mine':item.kind==='event'?'activity-event':item.kind==='run'?'activity-run':'bot')}>
-       <span className="assistant-author">{item.kind==='user'?'Вы':item.kind==='assistant'?'AI':item.kind==='run'?item.title:item.title} · {new Date(item.time).toLocaleString('ru-RU')}</span>
-       <div>{item.text}</div>
-       {item.id==='msg-'+taskPendingId&&taskChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
-       {item.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
-       {item.link&&<a href={item.link} target="_blank" rel="noreferrer">Открыть Pull Request</a>}
-      </div>)}
-      {aiRuns.filter(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status)).map(r=><div className="task-execution-live" key={'live-'+r.id}>
-   <LoaderCircle size={16}/>
-   <div><strong>{r.status==='queued'?'Ожидает свободного AI-исполнителя':'Разработка выполняется'}</strong>
-    <p>{r.message||'Ожидание ответа Codex'}</p>
-    <small>{r.status==='queued'?'В очереди: ': 'Выполняется: '}{Math.max(0,Math.floor((elapsedNow-new Date(r.started_at||r.created_at||Date.now()).getTime())/60000))} мин.</small>
-   </div>
-  </div>)}
-      {testRuns.filter(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status)).map(r=>
-       <div className="task-execution-live task-testing-live" key={'qa-live-'+r.id}>
-        <span className="agent-equalizer" role="status" aria-label="AI-тестировщик работает"><i/><i/><i/></span>
-        <div><strong>{r.status==='queued'?'Тестирование ожидает запуска':'AI-тестировщик выполняет проверку'}</strong>
-         <p>{r.message||'Подготовка проверок'}</p>
-         <small>Цикл проверки: {r.attempt+1} · {Math.max(0,Math.floor((elapsedNow-new Date(r.created_at).getTime())/60000))} мин.</small>
-
-        </div>
+    <aside className="task-conversation manager-conversation">
+     <header><MessageCircle size={17}/><strong>Менеджер проекта</strong>
+      <small>{managerState?.owner?'Команда работает':managerState?.requests?.some(r=>r.status==='open')?'Ожидает вашего решения':'Контролирует процесс'}</small>
+     </header>
+     <div ref={taskThreadRef} className="assistant-thread manager-thread" role="log" aria-live="polite">
+      {!managerState?.messages.length&&<p className="assistant-hint">Менеджер проекта координирует аналитика, разработчика и тестировщика. Все вопросы и решения для вас поступают только от него.</p>}
+      <details className="manager-internal-log">
+       <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
+       <p>Аналитик, разработчик и тестировщик общаются между собой. К вам обращается только Менеджер проекта.</p>
+       {timeline(activeTask.id).slice(-90).map(item=><div className="manager-internal-entry" key={item.id}>
+        <strong>{item.title|| (item.kind==='user'?'Историческое сообщение пользователя':item.kind==='assistant'?'Предыдущий AI-помощник':'Этап работы')}</strong>
+        <small>{new Date(item.time).toLocaleString('ru-RU')}</small>
+        <div>{item.text}</div>
        </div>)}
-    {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
-      {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
+      </details>
+      {managerState?.messages.map(m=><div className={'manager-message '+(m.role==='user'?'from-user':'from-manager')} key={m.id}>
+       <div className="manager-message-heading">
+        <strong>{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</strong>
+        <small>{new Date(m.created_at).toLocaleString('ru-RU')}</small>
+       </div>
+       <div className="manager-message-body">{m.body}</div>
+       {m.status==='queued'||m.status==='processing'?<small className="manager-message-pending">Менеджер обрабатывает сообщение…</small>:null}
+       {m.role==='user'&&m.status==='failed'&&<div className="manager-message-error">
+        Не удалось обработать запрос. Сообщение сохранено.
+        <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void retryManagerMessage(m.id)}>Повторить</button>
+       </div>}
+      </div>)}
+
      </div>
-     <div className="task-command-strip" aria-label="Доступные действия по задаче">
-      <div className="task-command-main">
-       <div className="task-command-state">
-        {taskOrchestration?'AI выполняет работу':
-         openAgentQuestions.length?'Ожидается ответ на '+openAgentQuestions.length+' вопрос(а)':
-         requirements?.task.spec_review_status==='needs_approval'?'Нужно решение по требованиям':
-         requirements?.task.spec_review_status==='pending'?'Аналитик проверяет требования':
-         activeTask.stage==='testing'?(newestTaskTest?.status==='failed'?'QA завершился с ошибкой — результат не засчитан':
-          newestTaskTest?.verdict==='passed'?'Тесты выполнены — требуется подтвердить переход':
-          newestTaskTest?.verdict==='failed'?'Обнаружены дефекты — требуется возврат разработчику':
-          newestTaskTest?.verdict==='blocked'?'Есть непроверенные сценарии':
-          activeTestFor(activeTask.id)?'Тестирование выполняется':'Ожидается тестирование'):
-         'Этап: '+(stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage)}
-       </div>
-       <div className="task-command-buttons">
-        {openAgentQuestions.length>0&&<button type="button" className="secondary" onClick={()=>{setAnswerNoteId(openAgentQuestions[0].id);setAnswerText('');}}>
-         Ответить на вопрос{openAgentQuestions.length>1?' ('+openAgentQuestions.length+')':''}
-        </button>}
-        {activeTask.stage==='backlog'&&<button type="button" className="primary" onClick={()=>void moveTask(activeTask,'analysis')}>Отправить на анализ</button>}
-        {activeTask.stage==='analysis'&&<>
-         <button type="button" className="primary" disabled={taskChatBusy||!aiSettings.enabled||!gitLink||activeTask.analysis_state!=='ready_for_development'||requirements?.task.spec_review_status!=='current'||openAgentQuestions.length>0||(activeTask.clarification_questions||[]).length>0} onClick={()=>void approveDevelopment()}>Отправить в разработку</button>
-         <button type="button" className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>
+     <div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
+      <div className="manager-action-row">
+       {managerState?.requests?.filter(x=>x.status==='open').map(request=><React.Fragment key={request.id}>
+        {request.kind==='qa_visual'&&<>
+         <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить без визуальных проверок</button>
+         <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'wait_for_tools')}>Ждать инструменты</button>
         </>}
-        {activeTask.stage==='development'&&<button type="button" className="primary" disabled={aiBusy||!!taskOrchestration||openAgentQuestions.length>0||['pending','needs_approval'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void runAiTask()}>Запустить разработку</button>}
-        {activeTask.stage==='testing'&&<>
-         {!taskOrchestration&&!activeTestFor(activeTask.id)&&<>
-          {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='passed'&&
-           <button type="button" className="primary" disabled={qaResultBusy||openAgentQuestions.length>0} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Подтвердить QA → Слияние'}</button>}
-          {newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='failed'&&
-           <button type="button" className="primary" disabled={qaResultBusy||openAgentQuestions.length>0} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка…':'Вернуть разработчику'}</button>}
-         </>}
-         {activeTestFor(activeTask.id)&&
-          <button type="button" className="secondary" onClick={()=>{setSelectedProcessId(activeTestFor(activeTask.id)!.id);navigate(projectUrl(selected!.id,'processes')+'?process='+activeTestFor(activeTask.id)!.id);}}>Посмотреть процесс</button>}
-         <button type="button" className="secondary" disabled={aiBusy||openAgentQuestions.length>0||['pending','needs_approval','rejected'].includes(requirements?.task.spec_review_status||'')} onClick={()=>void startTaskTesting()}>
-          {aiBusy?'Проверка статуса…':taskOrchestration||activeTestFor(activeTask.id)?'Проверить / восстановить QA':newestTaskTest?'Повторить тестирование':'Начать тестирование'}
-         </button>
+        {request.kind==='requirements'&&<>
+         <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_requirements')}>Согласовать изменение ТЗ</button>
+         <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'reject_requirements')}>Отклонить изменение</button>
         </>}
-        {activeTask.stage==='merge_queue'&&<button type="button" className="primary" disabled={mergeBusy||openAgentQuestions.length>0} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
-        {activeTask.stage==='documentation'&&<button type="button" className="primary" disabled={knowledgeBusy||openAgentQuestions.length>0} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
-        {requirements?.task.spec_review_status==='pending'&&<button type="button" className="secondary" disabled={requirementsBusy} onClick={()=>void retryRequirements()}>Повторить сверку аналитика</button>}
-        {requirements?.task.spec_review_status==='needs_approval'&&requirements.reviews.find(r=>r.status==='needs_approval'&&r.spec_version===requirements.task.spec_version)&&
-         <details className="task-action-expand"><summary>Согласовать требования</summary>
-          {(()=>{
-           const r=requirements.reviews.find(r=>r.status==='needs_approval'&&r.spec_version===requirements.task.spec_version)!;
-           return <div className="task-action-expand-body">
-            <strong>Предложение аналитика</strong><p>{r.summary}</p>
-            <div className="task-action-spec">{r.proposed_description}</div>
-            {r.questions?.length>0&&r.questions.map((q,i)=><p key={i}>Вопрос: {q}</p>)}
-            <div className="task-action-buttons">
-             <button className="primary" type="button" disabled={requirementsBusy||r.classification==='uncertain'||openAgentQuestions.length>0} onClick={()=>void decideRequirements(r.id,'approve')}>Согласовать</button>
-             <button className="secondary" type="button" disabled={requirementsBusy} onClick={()=>void decideRequirements(r.id,'reject')}>Отклонить → Разработка</button>
-            </div>
-           </div>;
-          })()}
-         </details>}
-        {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver?.run_id===newestTaskTest.id&&qaWaiver.assessment.eligible&&
-         <details className="task-action-expand"><summary>Согласовать пропуск проверок</summary>
-          <div className="task-action-expand-body">
-           <p>Проверено {qaWaiver.assessment.passed} из {qaWaiver.assessment.total}; не выполнено {qaWaiver.assessment.unverified.length}.</p>
-           {qaWaiver.assessment.unverified.map(c=><p key={c.id}><b>{c.title}</b>: {c.evidence}</p>)}
-           <textarea rows={2} value={qaWaiverReason} placeholder="Обоснование риска — не менее 20 символов" onChange={e=>setQaWaiverReason(e.target.value)}/>
-           <label className="task-accept-risk"><input type="checkbox" checked={qaWaiverAcknowledged} onChange={e=>setQaWaiverAcknowledged(e.target.checked)}/> Согласен на слияние без этих проверок</label>
-           <button type="button" className="secondary" disabled={qaWaiverBusy||!qaWaiverAcknowledged||qaWaiverReason.trim().length<20||openAgentQuestions.length>0} onClick={()=>void approveQaWaiver()}>Разрешить слияние</button>
-          </div>
-         </details>}
-        <details className="task-action-expand"><summary>Комментарий</summary>
-         <div className="task-action-expand-body">
-          <label>Кому<select value={noteTarget} onChange={e=>setNoteTarget(e.target.value)}>
-           <option value="all">Всем участникам</option><option value="analysis">Аналитику</option>
-           <option value="development">Разработчику</option><option value="testing">Тестировщику</option>
-           <option value="documentation">Документатору</option>
-          </select></label>
-          <textarea rows={2} value={noteDraft} onChange={e=>setNoteDraft(e.target.value)} placeholder="Нюанс реализации, наблюдение или рекомендация"/>
-          <button type="button" className="secondary" disabled={noteBusy||noteDraft.trim().length<3} onClick={()=>void sendAgentNote()}>Оставить комментарий</button>
+        {request.kind==='question'&&<details className="manager-answer-popover">
+         <summary>Ответить менеджеру</summary>
+         <div className="manager-answer-body">
+          <strong>Менеджер проекта спрашивает</strong>
+          <p>{String(request.payload?.question||'')}</p>
+          <textarea value={managerAnswer} rows={3} onChange={e=>setManagerAnswer(e.target.value)} placeholder="Ваш ответ менеджеру проекта"/>
+          <button className="primary" type="button" disabled={managerBusy||managerAnswer.trim().length<3} onClick={()=>void decideAsManager(request,'answer')}>Отправить ответ</button>
          </div>
-        </details>
-        {!['documentation','done'].includes(activeTask.stage)&&<button type="button" className="task-command-cancel" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
-       </div>
+        </details>}
+       </React.Fragment>)}
+       {managerState?.requests?.filter(x=>x.status==='waiting'&&x.kind==='qa_visual').map(request=><React.Fragment key={request.id}>
+        <small>Визуальные тесты отложены</small>
+        <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Передумал: разрешить слияние с риском</button>
+       </React.Fragment>)}
+       {['testing','development'].includes(activeTask.stage)&&
+        <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>
+         {managerBusy?'Проверка процесса…':'Продолжить / восстановить работу'}
+        </button>}
+       {!['documentation','done'].includes(activeTask.stage)&&
+        <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
       </div>
-      {answerNoteId&&taskAgentNotes.some(n=>n.id===answerNoteId&&n.status==='open')&&
-       <div className="task-command-expansion">
-        <strong>Ответ для {taskAgentNotes.find(n=>n.id===answerNoteId)?.author_name}</strong>
-        <p>{taskAgentNotes.find(n=>n.id===answerNoteId)?.body}</p>
-        <textarea rows={2} value={answerText} onChange={e=>setAnswerText(e.target.value)} placeholder="Ответь на конкретный вопрос, чтобы продолжить процесс"/>
-        <div className="task-action-buttons">
-         <button className="primary" type="button" disabled={noteBusy||answerText.trim().length<3} onClick={()=>void answerAgentQuestion()}>Сохранить ответ</button>
-         <button className="secondary" type="button" onClick={()=>setAnswerNoteId(null)}>Закрыть</button>
-        </div>
-       </div>}
-      {cancelPreview&&
-       <div className="task-command-expansion task-cancel-confirm">
-        <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить созданные артефакты?</strong>
-        <p>Закрыть PR, удалить ветку UUID, {cancelPreview.stats.qa_plans} QA-планов, до {cancelPreview.stats.qa_cases} тест-кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} принадлежащих задаче документов. Общие документы сохраняются.</p>
-        <p>{cancelPreview.github_note}</p>
-        {cancelPreview.warnings?.map((warning,i)=><p key={i} className="muted">{warning}</p>)}
-        {cancelPreview.blocked.length>0?<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>:<>
-         <label>Подтверждение: {cancelPreview.confirmation}
-          <input value={cancelPhrase} onChange={e=>setCancelPhrase(e.target.value)} placeholder={cancelPreview.confirmation}/>
-         </label>
-        </>}
-        {cancelError&&<p className="task-action-error">{cancelError}</p>}
-        <div className="task-action-buttons">
-         <button type="button" className="secondary" onClick={()=>{setCancelPreview(null);setCancelError('');}}>Не отменять</button>
-         <button type="button" className="task-action-danger" disabled={cancelBusy||cancelPreview.blocked.length>0||cancelPhrase.trim()!==cancelPreview.confirmation} onClick={()=>void confirmTaskCancellation()}>{cancelBusy?'Удаление…':'Подтвердить отмену и очистку'}</button>
-        </div>
-       </div>}
+      {cancelPreview&&<div className="task-command-expansion task-cancel-confirm">
+       <strong>Отменить задачу #{cancelPreview.task.display_number} и очистить её артефакты?</strong>
+       <p>GitHub PR будет закрыт (история PR сохранится), UUID-ветка удалена. Удаляются {cancelPreview.stats.qa_plans} планов, до {cancelPreview.stats.qa_cases} кейсов, до {cancelPreview.stats.qa_flows} сценариев и {cancelPreview.stats.documents} собственных документов. Общие данные останутся.</p>
+       {cancelPreview.warnings?.map((warning,i)=><p key={i}>{warning}</p>)}
+       {cancelPreview.blocked.length>0&&<p className="task-action-error">{cancelPreview.blocked.join('; ')}</p>}
+       {cancelError&&<p className="task-action-error">{cancelError}</p>}
+       <div className="task-action-buttons">
+        <button type="button" className="secondary" onClick={()=>{setCancelPreview(null);setCancelError('');}}>Не отменять</button>
+        <button type="button" className="task-action-danger" disabled={cancelBusy||cancelPreview.blocked.length>0} onClick={()=>void confirmTaskCancellation()}>{cancelBusy?'Очистка…':'Да, отменить и очистить'}</button>
+       </div>
+      </div>}
+      {managerFeedback&&<p className="manager-action-error">{managerFeedback}</p>}
      </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
-      <textarea rows={3} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
+      <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
-       placeholder="Задай вопрос или ответь на все уточнения… (Shift+Enter — новая строка)" aria-label="Сообщение в чат задачи"/>
-      <button className="primary" type="submit" disabled={taskChatBusy||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
+       placeholder="Напишите Менеджеру проекта… (Shift+Enter — новая строка)" aria-label="Сообщение Менеджеру проекта"/>
+      <button className="primary" type="submit" disabled={managerSending||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
      </form>
     </aside>
    </div>

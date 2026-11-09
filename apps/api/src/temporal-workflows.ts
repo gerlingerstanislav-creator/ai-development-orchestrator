@@ -27,6 +27,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:development.message,stage:'development'});
    return 'development_failed';
   }
+  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
   // Analyst is an ongoing owner of the specification, not a one-time Kanban executor.
   // Reconcile the actual PR before QA is allowed to author the final test plan.
   let status: 'current'|'pending'|'needs_approval'|'rejected';
@@ -81,6 +82,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
  try {
+ await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
  let status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
  while(status==='pending'||status==='needs_approval'){
   await sleep('20 seconds');
@@ -127,4 +129,13 @@ export async function requirementsReview(input:{projectId:string;taskId:string;r
   await steps.noteReviewFailure({projectId:input.projectId,taskId:input.taskId,runId:input.runId,message:String(error)});
   return 'failed';
  }
+}
+
+
+/** Each user turn is a durable Temporal workflow. Failure leaves a retryable
+ *  persisted message, not an invisible discarded request. */
+export async function projectManagerReply(input:{projectId:string;taskId:string;messageId:string}):Promise<string>{
+ await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
+ await steps.completeManagerMessage(input);
+ return 'responded';
 }

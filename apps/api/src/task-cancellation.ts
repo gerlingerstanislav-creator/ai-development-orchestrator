@@ -89,7 +89,7 @@ export function registerTaskCancellationRoutes(app:FastifyInstance,deps:Dependen
  app.post('/api/projects/:id/tasks/:taskId/cancel',async(req:any,reply)=>{
   const {id,taskId}=params.parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const body=z.object({confirmation:z.string().min(1).max(100)}).parse(req.body);
+  z.object({confirm:z.literal(true)}).parse(req.body);
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -97,9 +97,6 @@ export function registerTaskCancellationRoutes(app:FastifyInstance,deps:Dependen
    if(!row.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Задача уже удалена или не найдена'});}
    const preview=await taskPreview(client,id,taskId);
    if(!preview||preview.blocked.length){await client.query('ROLLBACK');return reply.code(409).send({error:'Нельзя отменить задачу',blockers:preview?.blocked});}
-   if(body.confirmation!==preview.confirmation){
-    await client.query('ROLLBACK');return reply.code(400).send({error:'Введи точное подтверждение: '+preview.confirmation});
-   }
    const task=row.rows[0];
    const link=await client.query("SELECT g.repository,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id AND c.owner_id=$2 WHERE g.project_id=$1",[id,uid(req)]);
    if(preview.github_cleanup_required&&!link.rowCount){
