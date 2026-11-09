@@ -409,12 +409,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function refreshTaskActivity(projectId:string,taskId:string){
   try{
-   const [ts,ev,ms]=await Promise.all([
+   const [ts,activity,ms]=await Promise.all([
     api<Task[]>('/projects/'+projectId+'/tasks'),
-    api<typeof events>('/projects/'+projectId+'/tasks/'+taskId+'/events'),
+    api<TaskActivityResponse>('/projects/'+projectId+'/tasks/'+taskId+'/activity'),
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
-   setTasks(ts);setEvents(ev);setTaskMessages(ms);
+   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskOrchestration(activity.owner);setTaskMessages(ms);
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
  }
@@ -498,8 +498,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);
-     void api<Array<{id:string;event:string;detail:string;created_at:string}>>('/projects/'+selected.id+'/tasks/'+task.id+'/events').then(setEvents).catch(fail);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskOrchestration(null);
+     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskOrchestration(a.owner);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
   }else if(activeTask){setActiveTask(null);}
@@ -515,8 +515,31 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{
   const element=taskThreadRef.current;
   if(!element)return;
-  element.scrollTop=element.scrollHeight;
- },[taskMessages,taskChatBusy,events,aiRuns,activeTask?.id,taskFeedback]);
+  if(element.scrollHeight-element.scrollTop-element.clientHeight<180||element.scrollTop===0)element.scrollTop=element.scrollHeight;
+ },[taskMessages,taskChatBusy,events,taskProcessEvents,testRuns,aiRuns,activeTask?.id,taskFeedback]);
+ // One live timeline for analysis, development, QA-design, testing and approvals.
+ useEffect(()=>{
+  if(!selected?.id||!activeTask?.id)return;
+  const id=selected.id,taskId=activeTask.id;
+  let alive=true;
+  const refresh=async()=>{
+   if(document.hidden)return;
+   try{
+    const [feed,messages]=await Promise.all([
+     api<TaskActivityResponse>('/projects/'+id+'/tasks/'+taskId+'/activity'),
+     api<AssistantMessage[]>('/projects/'+id+'/tasks/'+taskId+'/assistant/messages')
+    ]);
+    if(!alive)return;
+    setEvents(old=>JSON.stringify(old)===JSON.stringify(feed.events)?old:feed.events);
+    setTaskProcessEvents(old=>JSON.stringify(old)===JSON.stringify(feed.processEvents)?old:feed.processEvents);
+    setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
+    setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
+   }catch{/* Network reconnection preserves the last known timeline. */}
+  };
+  void refresh();
+  const timer=window.setInterval(()=>void refresh(),4000);
+  return()=>{alive=false;window.clearInterval(timer);};
+ },[selected?.id,activeTask?.id]);
  useEffect(()=>{setProjectMessages([]);setProjectInput('');setProjectPendingId(null);if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages?mode='+projectChatMode).then(setProjectMessages).catch(fail);}},[selected?.id,projectChatMode]);
  useEffect(()=>{setProjectChatOpen(false);setProjectChatMode('project');},[selected?.id]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
@@ -740,7 +763,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(error){fail(error);}finally{setQaWaiverBusy(false);}
  }
  const activeTestFor=(taskId:string)=>testRuns.find(r=>r.task_id===taskId&&['running','queued'].includes(r.status));
- const agentWorking=(taskId:string)=>aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
+ const agentWorking=(taskId:string)=>backgroundProcesses.some(p=>p.taskId===taskId&&['queued','running'].includes(p.status))||
+  (activeTask?.id===taskId&&!!taskOrchestration)||aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
   testRuns.some(r=>r.task_id===taskId&&r.status==='running')||
   projectProcesses.some(p=>p.kind==='analysis'&&p.taskId===taskId&&['queued','running'].includes(p.status));
  // A Temporal test can complete after the development run has finished.
@@ -1383,8 +1407,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.stage==='analysis'&&<button className="secondary" disabled={taskChatBusy||!aiSettings.enabled} onClick={()=>void executeTask()}>Повторить анализ</button>}
      
      {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
-     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)} onClick={()=>void startTaskTesting()}>
-      {activeTestFor(activeTask.id)?'Тестирование выполняется':'Запустить тестирование'}</button>}
+     {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)||!!taskOrchestration} onClick={()=>void startTaskTesting()}>
+      {activeTestFor(activeTask.id)||taskOrchestration?'AI-цикл выполняется':'Запустить тестирование'}</button>}
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
