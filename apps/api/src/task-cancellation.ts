@@ -53,7 +53,7 @@ async function github(token:string,repository:string,path:string,method:'GET'|'P
  return {status:response.status,value:response.status===404?null:await response.json().catch(()=>null) as any};
 }
 /** Both GitHub cleanup and SQL deletion are idempotent. A failing GitHub request leaves DB state untouched. */
-async function closeGitHubArtifacts(repository:string,token:string,task:any){
+export async function closeGitHubArtifacts(repository:string,token:string,task:any){
  const branch=task.git_branch||task.id;
  if(branch!==task.id)throw new Error('Ветка не совпадает с UUID задачи. Автоматическое удаление чужой ветки запрещено');
  const rep=await github(token,repository,'');
