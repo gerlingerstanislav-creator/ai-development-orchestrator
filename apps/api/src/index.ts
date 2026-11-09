@@ -1179,6 +1179,10 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
    await client.query('ROLLBACK');return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
   }
   const title=data.title??t.title,description=data.description??t.description;
+  if(['documentation','done'].includes(t.stage)&&description!==t.description){
+   await client.query('ROLLBACK');
+   return reply.code(409).send({error:'PR уже слит. Чтобы изменить завершённую функциональность, создай новую связанную задачу; нельзя переписывать утверждённое ТЗ уже внедрённой версии.'});
+  }
   changed=title!==t.title||description!==t.description;
   version=changed?await saveSpecRevision(client,t,{title,description,origin:'user',actorId:uid(req),reason:'Пользователь изменил требования задачи'}):t.spec_version;
   const stage=data.stage&&data.stage!==t.stage?data.stage:changed&&t.stage==='merge_queue'?'testing':t.stage;
