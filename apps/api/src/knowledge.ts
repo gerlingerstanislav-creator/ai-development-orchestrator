@@ -98,7 +98,9 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
    if(locks.rowCount!==ids.length)throw new Error('Задачи изменились во время обновления. Повтори.');
    let documentId=doc?.id as string|undefined;
    if(documentId)await client.query('UPDATE documents SET body=$1,updated_at=now() WHERE id=$2 AND project_id=$3',[body,documentId,id]);
-   else{documentId=randomUUID();await client.query("INSERT INTO documents(id,project_id,title,body) VALUES($1,$2,'Реализованные возможности',$3)",[documentId,id,body]);}
+   else{const parent=(await client.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='architecture'",[id])).rows[0];
+     if(!parent)throw Error('Не найден системный раздел архитектуры');
+     documentId=randomUUID();await client.query("INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,'Реализованные возможности',$3,$4)",[documentId,id,body,parent.id]);}
    await client.query('INSERT INTO document_versions(id,document_id,task_ids,body) VALUES($1,$2,$3,$4)',[randomUUID(),documentId,JSON.stringify(ids),body]);
    await client.query("UPDATE tasks SET stage='done',documentation_updated_at=now(),updated_at=now() WHERE project_id=$1 AND id=ANY($2::uuid[])",[id,ids]);
    for(const taskId of ids)await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'documentation_updated','Документация обновлена после слияния')",[randomUUID(),taskId,uid(req)]);
