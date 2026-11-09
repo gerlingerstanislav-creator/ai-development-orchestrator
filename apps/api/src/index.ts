@@ -464,7 +464,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(t.rows[0].stage!=='development'||t.rows[0].analysis_state!=='approved')return reply.code(409).send({error:'Подтверди завершение анализа и отправь задачу в разработку'});
  const relatedIds=(t.rows[0].related_task_ids||[]) as string[];
@@ -490,6 +490,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(active.rowCount)return reply.code(409).send({error:'Эта задача уже выполняется или находится в очереди'});
  // Finish Git work from a previously successful Codex run before consuming any new tokens.
  // This also recovers from GitHub 403 after the user fixes token permissions.
+ if(!t.rows[0].test_feedback){
  try{
   const finished=await finishExistingTaskBranch(id,taskId,uid(req));
   if(finished)return reply.send({status:'completed',recovered:true,pr_url:finished.pr_url,branch:finished.branch,task_id:taskId,
@@ -498,6 +499,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
   const err=e as Error&{statusCode?:number};
   return reply.code(err.statusCode||503).send({error:err.message});
  }
+ } // When QA found defects, Codex must revise the existing PR instead of treating it as finished.
  const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
   const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
  const branch=parentBranch||(git.rows[0].target_branch||git.rows[0].default_branch);
