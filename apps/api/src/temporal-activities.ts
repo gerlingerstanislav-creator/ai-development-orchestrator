@@ -4,7 +4,7 @@ import {ApplicationFailure} from '@temporalio/common';
 import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
-import {recordTaskAgentNote,taskNotesContext} from './task-agent-notes.js';
+import {recordTaskAgentNote,taskNotesContext,pendingAgentQuestions} from './task-agent-notes.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -106,8 +106,9 @@ export async function reconcileRequirements(args:{projectId:string;taskId:string
   const notes=await taskNotesContext(pool,projectId,taskId,'analysis');
   const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary+'\n\nРабочие комментарии коллег (не утверждённые требования): '+notes},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review'));
   const latest=await pool.query('SELECT summary,questions FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
-  const noteBody=String(latest.rows[0]?.summary||'').trim();
-  if(noteBody)await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'analysis',authorName:'AI-аналитик',targetStage:result==='needs_approval'?'all':'testing',kind:result==='needs_approval'?'question':'handoff',body:noteBody,sourceKey:'analyst:'+runId+':'+result,sourceRunId:runId});
+  const hasQuestions=Array.isArray(latest.rows[0]?.questions)&&latest.rows[0].questions.length>0;
+  const noteBody=(hasQuestions?latest.rows[0].questions.join('\n')+'\n':'')+String(latest.rows[0]?.summary||'').trim();
+  if(noteBody)await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'analysis',authorName:'AI-аналитик',targetStage:result==='needs_approval'?'all':'testing',kind:result==='needs_approval'&&hasQuestions?'question':'handoff',body:noteBody,sourceKey:'analyst:'+runId+':'+result,sourceRunId:runId});
   const message=result==='current'?'Требования актуальны':result==='needs_approval'?'Обнаружено изменение поведения — требуется решение пользователя':result==='rejected'?'Изменение требований отклонено':'Требования изменились во время анализа';
   await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1",[runId,message]);
   await event(projectId,runId,'analysis',result,message,result==='needs_approval'?'warning':'info');
@@ -151,6 +152,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
  await pool.query("UPDATE requirement_review_runs SET status='running',message='QA-агент формирует тест-кейсы',completed_at=NULL WHERE id=$1 AND project_id=$2",[runId,projectId]);
  await event(projectId,runId,'testing','test_design_started','AI-тестировщик формирует тесты по актуализированному ТЗ перед проверкой PR');
  try{
+  if(await pendingAgentQuestions(pool,projectId,taskId))throw new Error('Нельзя готовить тестирование: вопросы участников процесса остались без ответа');
   const evidence=await prEvidence(projectId,taskId);
   const current=await pool.query("SELECT spec_reviewed_commit,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2",[taskId,projectId]);
   if(current.rows[0]?.spec_review_status!=='current'||!evidence.commitSha||current.rows[0].spec_reviewed_commit!==evidence.commitSha)
@@ -179,6 +181,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
 export async function startDevelopment(args:TaskRef){
  const {projectId,taskId,runId,attempt=0}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
+ if(await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы агентов, на которые ещё не ответили');
  const record=await pool.query('SELECT status FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,projectId]);
  if(!record.rowCount)throw ApplicationFailure.nonRetryable('Запуск разработки отсутствует');
  if(['completed','failed'].includes(record.rows[0].status))return;
@@ -241,6 +244,7 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
 export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
+ if(await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
  if(task.spec_review_status!=='current'||task.spec_reviewed_version!==task.spec_version)throw ApplicationFailure.nonRetryable('ТЗ изменилось: требуется повторная сверка аналитиком');
  const testPlan=await readQaPlan(pool,projectId,taskId);
  if(!testPlan?.cases.length||testPlan.spec_version!==task.spec_version)throw ApplicationFailure.nonRetryable('QA-план устарел относительно актуальной версии ТЗ');
@@ -342,6 +346,7 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
  await event(projectId,testId,'testing','awaiting_manual_qa_decision','Проверки ограничены средой. Согласование исключений доступно только при подтверждённой недоступности инструментов.','warning');
 }
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string}){
+ if(await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
  const verified=await pool.query("SELECT 1 FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed' AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL AND t.spec_review_status='current' AND t.spec_reviewed_version=t.spec_version AND r.qa_spec_version=t.spec_version",[testId,projectId,taskId]);
  if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного тестирования коммита PR');
