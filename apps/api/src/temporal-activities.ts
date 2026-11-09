@@ -1,6 +1,7 @@
 import pg from 'pg';
 import {randomUUID,createDecipheriv} from 'node:crypto';
 import {ApplicationFailure} from '@temporalio/common';
+import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -53,6 +54,31 @@ async function dispatch(job:any){
  catch(e){if((e as any).statusCode!==409)throw e;}
 }
 
+export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:string}):Promise<number>{
+ const {projectId,taskId,runId}=args;
+ const settings=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
+ const ai=settings.rows[0];
+ if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI отключён для проекта');
+ await event(projectId,runId,'testing','test_design_started','AI-тестировщик создаёт QA-документацию до разработки');
+ try{
+  const count=await prepareQaDocumentation(pool,args,async(prompt)=>{
+   const response=await fetch(codexUrl+'/assistant',{method:'POST',
+    headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
+    body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
+    signal:AbortSignal.timeout(105000)});
+   const data=await response.json().catch(()=>({})) as any;
+   if(!response.ok)throw new Error(String(data.error||'Не удалось получить QA-план от Codex'));
+   if(typeof data.message!=='string')throw new Error('Codex не вернул QA-документацию');
+   return data.message;
+  });
+  await event(projectId,runId,'testing','test_design_ready','QA-документация подготовлена: '+count+' проверок');
+  return count;
+ }catch(e){
+  await event(projectId,runId,'testing','test_design_failed',String(e).slice(0,1900),'error');
+  throw e;
+ }
+}
+
 export async function startDevelopment(args:TaskRef){
  const {projectId,taskId,runId,attempt=0}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
@@ -61,7 +87,12 @@ export async function startDevelopment(args:TaskRef){
  if(['completed','failed'].includes(record.rows[0].status))return;
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
  const feedback=String(task.test_feedback||'').slice(0,10000);
- const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ТЕСТИРОВАНИЯ:\n'+feedback:'');
+ const plan=await readQaPlan(pool,projectId,taskId);
+ if(!plan?.cases.length)throw ApplicationFailure.nonRetryable('Отсутствует QA-план: разработка не может начаться без подготовки тестов');
+ const description=String(task.description||'').slice(0,14000)+
+  '\n\nКРИТЕРИИ ПРОВЕРКИ QA (созданы независимым тестировщиком ДО разработки):\n'+
+  JSON.stringify({summary:plan.summary,cases:plan.cases.filter(c=>c.purpose==='targeted')}).slice(0,11000)+
+  (feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ТЕСТИРОВАНИЯ:\n'+feedback:'');
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
   model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
   title:task.title,description,projectRules:rules,relatedTasks:[],agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions};
@@ -116,6 +147,8 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
 export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
+ const testPlan=await readQaPlan(pool,projectId,taskId);
+ if(!testPlan?.cases.length)throw ApplicationFailure.nonRetryable('Нет подготовленных тест-кейсов');
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const testId=existing.rowCount?existing.rows[0].id:randomUUID();
  if(!existing.rowCount){
@@ -128,7 +161,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,projectRules:rules,agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions});
+  title:task.title,description:task.description,projectRules:rules,testPlan,agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
@@ -153,10 +186,35 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  }
  const status=String(remote.status||'running'),message=String(remote.message||'').slice(0,2500);
  if(status==='completed'||status==='failed'){
-  const verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
-  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],commit:remote.testedCommit||null};
-  await pool.query('UPDATE ai_test_runs SET status=$2,message=$3,verdict=$4,report=$5,completed_at=now() WHERE id=$1',
-   [testId,status,message,verdict,JSON.stringify(report)]);
+  const plan=await readQaPlan(pool,projectId,row.rows[0].task_id);
+  const expected=plan?.cases||[];
+  const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
+  const providedMap=new Map<string,{result:string;evidence:string}>();
+  for(const item of provided){
+   if(typeof item?.case_id==='string'&&typeof item?.result==='string'&&['passed','failed','blocked','not_run'].includes(item.result)){
+    providedMap.set(item.case_id,{result:item.result,evidence:String(item.evidence||'').slice(0,3000)});
+   }
+  }
+  const checked=expected.map(c=>{
+   const candidate=providedMap.get(c.id);
+   return {case_id:c.id,result:candidate?.result||'not_run',evidence:candidate?.evidence||'Нет подтверждённого результата'};
+  });
+  let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
+  if(!expected.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
+  if(checked.some(c=>c.result==='failed'))verdict='failed';
+  else if(checked.some(c=>c.result!=='passed')&&verdict==='passed')verdict='blocked';
+  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,commit:remote.testedCommit||null};
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   for(const check of checked){
+    await client.query('INSERT INTO qa_case_results(id,project_id,test_run_id,case_id,result,evidence) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(test_run_id,case_id) DO UPDATE SET result=EXCLUDED.result,evidence=EXCLUDED.evidence',
+     [randomUUID(),projectId,testId,check.case_id,check.result,check.evidence]);
+   }
+   await client.query('UPDATE ai_test_runs SET status=$2,message=$3,verdict=$4,report=$5,completed_at=now() WHERE id=$1',
+    [testId,status,message,verdict,JSON.stringify(report)]);
+   await client.query('COMMIT');
+  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   await event(projectId,testId,'testing',verdict,JSON.stringify(report).slice(0,2200),verdict==='passed'?'info':verdict==='failed'?'error':'warning');
   return {status,message,verdict};
  }
@@ -165,6 +223,8 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
 }
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string}){
  const {projectId,taskId,testId}=args;
+ const verified=await pool.query("SELECT 1 FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status='completed' AND verdict='passed' AND report->>'commit' IS NOT NULL",[testId,projectId,taskId]);
+ if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного тестирования коммита PR');
  await pool.query("UPDATE tasks SET stage='merge_queue',test_feedback='',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",
   [taskId,projectId]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',
