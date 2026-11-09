@@ -656,23 +656,54 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
  if(['pending','needs_approval','rejected'].includes(task.rows[0].spec_review_status))return reply.code(409).send({error:'Сначала заверши сверку требований с аналитиком. QA нельзя запускать по неутверждённой версии ТЗ.'});
- const existing=await pool.query("SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
- if(existing.rowCount)return reply.code(409).send({error:'QA-исполнитель уже проверяет эту задачу'});
- // Older workflows started before the orchestration-owner migration must be
- // checked in Temporal too: a QA design stage has no ai_test_runs row yet.
+ // A stale DB lock must not hide a finished QA run or prevent an explicit retry.
+ // Verify actual Temporal state before reconciling ownership. Never start a second
+ // worker when the first workflow (or Codex job) is still genuinely running.
  const temporalClient=await temporal();
- const legacy=await pool.query("SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=cycle_id ORDER BY created_at DESC LIMIT 12",[id,taskId]);
+ const owner=await pool.query("SELECT owner_id,workflow_id,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[id,taskId]);
+ if(owner.rowCount){
+  const row=owner.rows[0];
+  try{
+   const run=await temporalClient.workflow.getHandle(row.workflow_id).describe();
+   if(run.status.name==='RUNNING')return reply.code(409).send({error:'Автоматический процесс для задачи всё ещё выполняется. Проверь его в Центре процессов.'});
+   await releaseTaskOrchestration(pool,id,taskId,row.owner_id);
+  }catch(error){
+   const e=error as {code?:number;name?:string;message?:string};
+   const notFound=e.code===5||String(e.name||'').includes('NotFound')||String(e.message||'').includes('not found');
+   if(!notFound)return reply.code(503).send({error:'Не удалось проверить статус Temporal: '+String(e.message||error).slice(0,250)});
+   if(Date.now()-new Date(row.started_at).getTime()<120000)
+    return reply.code(409).send({error:'Процесс запускается. Повторный тестировщик не нужен.'});
+   await releaseTaskOrchestration(pool,id,taskId,row.owner_id);
+  }
+ }
+ const legacy=await pool.query("SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=cycle_id ORDER BY created_at DESC LIMIT 15",[id,taskId]);
  for(const old of legacy.rows){
   try{
    const workflow=await temporalClient.workflow.getHandle('task-cycle-'+old.id).describe();
-   if(workflow.status.name==='RUNNING')return reply.code(409).send({error:'Автоматический цикл уже выполняет аналитику или QA. Повторный запуск тестировщика запрещён.'});
+   if(workflow.status.name==='RUNNING')return reply.code(409).send({error:'Автоматический цикл ещё выполняется. Повторное тестирование пока недоступно.'});
   }catch(error){
-   // Non-existent historical workflows are not active. Network errors are not proof
-   // of inactivity, so only ignore a real NOT_FOUND response.
    const e=error as {code?:number;name?:string;message?:string};
    if(e.code!==5&&!String(e.name||'').includes('NotFound')&&!String(e.message||'').includes('not found'))
-    return reply.code(503).send({error:'Не удалось подтвердить отсутствие активного Temporal-процесса: '+String(e.message||error).slice(0,250)});
+    return reply.code(503).send({error:'Не удалось проверить исторический Temporal-процесс: '+String(e.message||error).slice(0,250)});
   }
+ }
+ const stale=await pool.query("SELECT id,status FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 8",[id,taskId]);
+ for(const test of stale.rows){
+  let remoteStatus='missing';
+  try{
+   const response=await fetch(codexUrl+'/jobs/'+test.id,{headers:{'X-Runner-Secret':runnerKey},signal:AbortSignal.timeout(12000)});
+   if(response.status===404)remoteStatus='missing';
+   else if(!response.ok)return reply.code(503).send({error:'QA-исполнитель недоступен: HTTP '+response.status});
+   else remoteStatus=String((await response.json() as any).status||'unknown');
+  }catch(error){return reply.code(503).send({error:'Не удалось достоверно проверить старый QA-запуск: '+String(error).slice(0,190)});}
+  if(['queued','running','unknown'].includes(remoteStatus))
+   return reply.code(409).send({error:'Предыдущий тестировщик ещё работает. Не запускай второго исполнителя.'});
+  if(remoteStatus==='completed'){
+   // Preserve the completed runner result rather than mislabeling it as failed.
+   return reply.code(409).send({error:'Предыдущий QA завершился в исполнителе, но отчёт ещё не перенесён в задачу. Восстанови результат из процесса перед повтором.'});
+  }
+  await pool.query("UPDATE ai_test_runs SET status='failed',message='Предыдущий QA-процесс завершён или потерян. Можно выполнить новый запуск.',completed_at=now() WHERE id=$1 AND status IN ('running','queued')",[test.id]);
+  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_retry_recovered','Предыдущий QA-процесс отсутствует или завершился с ошибкой. Запуск разблокирован.']);
  }
  const cycleId=randomUUID();
  if(!await acquireTaskOrchestration(pool,id,taskId,cycleId,'manual-test-'+cycleId,'testing'))
