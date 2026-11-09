@@ -296,6 +296,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [activeTask,setActiveTask]=useState<Task|null>(null);
  const [qaWaiver,setQaWaiver]=useState<QaWaiverInfo|null>(null);
  const [qaWaiverBusy,setQaWaiverBusy]=useState(false);
+ const [qaResultBusy,setQaResultBusy]=useState(false);
  const [qaWaiverReason,setQaWaiverReason]=useState('');
  const [qaWaiverAcknowledged,setQaWaiverAcknowledged]=useState(false);
  const [requirements,setRequirements]=useState<RequirementInfo|null>(null);
@@ -736,7 +737,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   document.addEventListener('visibilitychange',onVisible);
   return()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
  },[token,selected?.id]);
- const newestTaskTest=activeTask?(taskTestRuns[0]||testRuns.find(r=>r.task_id===activeTask.id)):null;
+ const newestTaskTest=activeTask?(taskTestRuns.find(r=>r.task_id===activeTask.id)||testRuns.find(r=>r.task_id===activeTask.id)):null;
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id){setQaWaiver(null);return;}
   const projectId=selected.id,taskId=activeTask.id;
@@ -746,6 +747,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }).catch(()=>{if(valid)setQaWaiver(null);});
   return()=>{valid=false;};
  },[selected?.id,activeTask?.id,newestTaskTest?.id,newestTaskTest?.status,newestTaskTest?.verdict]);
+ async function applyQaResult(){
+  if(!selected||!activeTask||qaResultBusy||taskOrchestration)return;
+  const taskId=activeTask.id,projectId=selected.id;
+  setQaResultBusy(true);
+  try{
+   const result=await api<{ok:boolean;stage:string;message:string}>('/projects/'+projectId+'/tasks/'+taskId+'/apply-qa-result',{method:'POST'});
+   setTaskFeedback(result.message);
+   await refreshTaskActivity(projectId,taskId);
+   await loadProject(projectId);
+  }catch(error){
+   setTaskFeedback(error instanceof Error?error.message:'Не удалось подтвердить результат тестирования');
+  }finally{setQaResultBusy(false);}
+ }
  async function approveQaWaiver(){
   if(!selected||!activeTask||!qaWaiver?.assessment.eligible||!qaWaiver.run_id||qaWaiverBusy)return;
   if(qaWaiverReason.trim().length<20||!qaWaiverAcknowledged){
@@ -1410,7 +1424,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      
      {activeTask.stage==='development'&&<button className="primary" disabled={aiBusy||aiRuns.some(r=>r.task_id===activeTask.id&&['running','queued'].includes(r.status))} onClick={()=>void runAiTask()}>Запустить разработку</button>}
      {activeTask.stage==='testing'&&<button className="primary" disabled={aiBusy||!!activeTestFor(activeTask.id)||!!taskOrchestration} onClick={()=>void startTaskTesting()}>
-      {activeTestFor(activeTask.id)||taskOrchestration?'AI-цикл выполняется':'Запустить тестирование'}</button>}
+      {activeTestFor(activeTask.id)||taskOrchestration?'AI-цикл выполняется':newestTaskTest?'Повторить тестирование':'Запустить тестирование'}</button>}
      {activeTask.stage==='merge_queue'&&<button className="primary" disabled={mergeBusy} onClick={()=>void mergeTask(activeTask)}>Слить PR</button>}
      {activeTask.stage==='documentation'&&<button className="primary" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
      {savingField&&<span className="muted">Сохранение…</span>}
@@ -1483,6 +1497,35 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {taskChatBusy&&<p className="assistant-hint"><LoaderCircle size={15}/> Codex отвечает…</p>}
       {taskFeedback&&<p className="task-feedback">{taskFeedback}</p>}
      <div className="task-thread-actions" aria-label="Требования и решения по тестированию">
+      {activeTask.stage==='testing'&&!taskOrchestration&&!activeTestFor(activeTask.id)&&
+       <div className={'task-qa-outcome '+(newestTaskTest?.status==='failed'?'failed':newestTaskTest?.verdict==='blocked'?'blocked':newestTaskTest?.verdict==='passed'?'passed':'idle')}>
+        {newestTaskTest?.status==='failed'?<>
+         <strong>Тестирование не завершилось: нет достоверного QA-отчёта</strong>
+         <p>{newestTaskTest.message||'AI-тестировщик завершился с ошибкой. Проверки не засчитаны.'}</p>
+         <p>Следующее действие: повторно запустить тестирование. Это не ошибка разработчика и не основание для слияния.</p>
+         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Повторить тестирование</button>
+        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='passed'?<>
+         <strong>QA-проверки пройдены, но задача осталась на тестировании</strong>
+         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
+         <p>Автоматический переход не был завершён. Можно безопасно перепроверить версию ТЗ и SHA PR, затем передать задачу на слияние.</p>
+         <button className="secondary" type="button" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка результата…':'Подтвердить QA и перейти к слиянию'}</button>
+        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='failed'?<>
+         <strong>Тестировщик выявил дефекты, но возврат разработчику не завершился</strong>
+         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
+         <p>Применение результата разрешено только при наличии подтверждённых ошибок в отчёте.</p>
+         <button className="secondary" type="button" disabled={qaResultBusy} onClick={()=>void applyQaResult()}>{qaResultBusy?'Проверка результата…':'Передать замечания разработчику'}</button>
+        </>:newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'?<>
+         <strong>Часть проверок не выполнена</strong>
+         <p>{newestTaskTest.report?.summary||newestTaskTest.message}</p>
+         <p>Можно повторить тестирование. Слияние без конкретных сценариев доступно только после подтверждения причин их невыполнения и согласования риска.</p>
+         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Повторить тестирование</button>
+        </>:!newestTaskTest?<>
+         <strong>Нет сохранённого результата QA</strong>
+         <p>Для задачи ещё нет законченного тестового прогона. Запусти тестировщика, чтобы получить проверяемые результаты.</p>
+         <button className="secondary" type="button" disabled={aiBusy} onClick={()=>void startTaskTesting()}>Запустить тестирование</button>
+        </>:null}
+       </div>}
+
      {(requirements?.task.spec_review_status==='pending'||requirements?.task.spec_review_status==='needs_approval'||requirements?.task.spec_review_status==='rejected')&&
       <div className={'task-requirements-review '+requirements.task.spec_review_status}>
        <strong>{requirements.task.spec_review_status==='pending'?'Аналитик проверяет актуальность ТЗ':requirements.task.spec_review_status==='needs_approval'?'Требуется согласовать изменение требований':'Изменение требований отклонено'}</strong>
