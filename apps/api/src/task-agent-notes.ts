@@ -10,7 +10,8 @@ export async function initTaskAgentNotesSchema(pool:Pool){
   "CREATE INDEX IF NOT EXISTS idx_task_agent_notes_scope ON task_agent_notes(project_id,task_id,created_at DESC)",
   "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'resolved'",
   "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS answer text",
-  "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS answered_at timestamptz"
+  "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS answered_at timestamptz",
+  "ALTER TABLE task_agent_notes ADD COLUMN IF NOT EXISTS answered_by uuid REFERENCES users(id) ON DELETE SET NULL"
  ].join(';\n')+';');
 }
 export type AgentNoteInput={
@@ -87,7 +88,7 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
   const client=await deps.pool.connect();
   try{
    await client.query('BEGIN');
-   const result=await client.query("UPDATE task_agent_notes SET status='answered',answer=$4,answered_at=now(),actor_id=$5 WHERE project_id=$1 AND task_id=$2 AND id=$3 AND kind='question' AND status='open' RETURNING id",
+   const result=await client.query("UPDATE task_agent_notes SET status='answered',answer=$4,answered_at=now(),answered_by=$5 WHERE project_id=$1 AND task_id=$2 AND id=$3 AND kind='question' AND status='open' RETURNING id",
     [id,taskId,noteId,answer,deps.uid(req)]);
    if(!result.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже закрыт или не относится к задаче'});}
    await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
