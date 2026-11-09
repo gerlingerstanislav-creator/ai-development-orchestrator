@@ -248,7 +248,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  }
  const record=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const id=record.rows[0].id;
- if(['completed','failed'].includes(record.rows[0].status))return id;
+ if(['running','completed','failed'].includes(record.rows[0].status))return id; // Activity retry must not enqueue the same Codex test twice.
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
