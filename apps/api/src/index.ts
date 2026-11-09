@@ -24,6 +24,12 @@ const workflowDefaults = [
   ['documentation','Документация','manual'],
   ['done','Готово','manual']
 ] as const;
+// Preserve the original administrator account when upgrading legacy local installs.
+// A dotted reserved domain also passes conventional email validation.
+function configuredAdminEmail(){
+ const email=(process.env.ADMIN_EMAIL||'').trim().toLowerCase();
+ return email==='admin@localhost'?'admin@localhost.test':email;
+}
 async function dbInit() {
  await pool.query(`
  CREATE TABLE IF NOT EXISTS users (id uuid primary key, email text unique not null, password_hash text not null);
@@ -98,10 +104,14 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_ai_task_runs_project_created ON ai_task_runs(project_id,created_at DESC);
  ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
- const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
- const password = process.env.ADMIN_PASSWORD;
+ const email=configuredAdminEmail();
+ const password=process.env.ADMIN_PASSWORD;
  if (!email || !password || password.length < 12) throw Error('Set ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters)');
- const existing = await pool.query('SELECT id FROM users WHERE email=$1',[email]);
+ if(email==='admin@localhost.test'){
+  // In-place migration keeps user ID, password hash, memberships and all owned data.
+  await pool.query("UPDATE users SET email=$1 WHERE email='admin@localhost' AND NOT EXISTS (SELECT 1 FROM users WHERE email=$1)",[email]);
+ }
+ const existing=await pool.query('SELECT id FROM users WHERE email=$1',[email]);
  if (!existing.rowCount) await pool.query('INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)',[randomUUID(),email,await hash(password,12)]);
 }
 function parse<T extends z.ZodTypeAny>(schema:T,input:unknown):z.infer<T> { return schema.parse(input); }
@@ -130,7 +140,7 @@ async function accessToken(userId:string,email:string){
  return new SignJWT({email}).setProtectedHeader({alg:'HS256'}).setSubject(userId).setIssuedAt().setExpirationTime('12h').sign(jwtKey);
 }
 app.post('/api/login',async(req,reply)=>{
- const {email,password}=parse(z.object({email:z.string().trim().min(3).max(254).regex(/^[^\\s@]+@[^\\s@]+$/),password:z.string()}),req.body);
+ const {email,password}=parse(z.object({email:z.string().trim().min(3).max(254).regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/),password:z.string()}),req.body);
  const u=await pool.query('SELECT * FROM users WHERE email=$1',[email.toLowerCase()]);
  if(!u.rowCount || !(await compare(password,u.rows[0].password_hash))) return reply.code(401).send({error:'Неверный логин или пароль'});
  const user=u.rows[0];
@@ -174,7 +184,7 @@ app.get('/api/health',async()=>({ok:true}));
 app.addHook('preHandler',async(req,reply)=>{
  if(!req.url.startsWith('/api/codex/'))return;
  const email=(await pool.query('SELECT email FROM users WHERE id=$1',[(req as any).userId])).rows[0]?.email;
- if(!email || email!==process.env.ADMIN_EMAIL?.trim().toLowerCase())return reply.code(403).send({error:'Только администратор может подключать Codex'});
+ if(!email || email!==configuredAdminEmail())return reply.code(403).send({error:'Только администратор может подключать Codex'});
 });
 // Local-only Codex runner. The service is not exposed on a host port.
 // Requests reach it only after the ordinary application session check.
@@ -321,7 +331,7 @@ async function agentCall(path:string,method:'GET'|'POST'='GET',body?:unknown){
 }
 async function requireAdmin(req:any,reply:any){
  const u=await pool.query('SELECT email FROM users WHERE id=$1',[uid(req)]);
- if(u.rows[0]?.email!==process.env.ADMIN_EMAIL?.trim().toLowerCase()){
+ if(u.rows[0]?.email!==configuredAdminEmail()){
   reply.code(403).send({error:'На первом этапе запуск AI разрешён только администратору'});
   return false;
  }
