@@ -77,16 +77,26 @@ export function registerTaskAgentNotesRoutes(app:FastifyInstance,deps:{
    await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
     [randomUUID(),taskId,deps.uid(req),'Ответ на вопрос агента: '+answer.slice(0,1600)]);
    const task=await client.query('SELECT stage,spec_version FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
-   if(task.rowCount){
-    if(task.rows[0].stage==='analysis')await client.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE id=$1",[taskId]);
-    else if(!['backlog','documentation','done'].includes(task.rows[0].stage))
-     await client.query("UPDATE tasks SET spec_review_status='pending',spec_review_note='Участник ответил на вопрос агента; аналитик должен сверить ответ с ТЗ',updated_at=now() WHERE id=$1",[taskId]);
+   const remaining=await client.query("SELECT count(*)::int AS total FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open'",[id,taskId]);
+   const unanswered=Number(remaining.rows[0].total);
+   // Review the combined answers only after the last blocking question is answered.
+   // A previous needs_approval row for the same version+SHA would otherwise be
+   // returned from reconcileTaskRequirements without consulting the new answer.
+   if(task.rowCount&&unanswered===0){
+    await client.query("UPDATE task_requirement_reviews SET status='superseded',resolved_at=now() WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status IN ('needs_approval','rejected')",
+     [id,taskId,task.rows[0].spec_version]);
+    if(task.rows[0].stage==='analysis'){
+     await client.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE id=$1",[taskId]);
+    }else if(!['backlog','documentation','done'].includes(task.rows[0].stage)){
+     await client.query("UPDATE tasks SET spec_review_status='pending',spec_review_note='Получены ответы на вопросы; аналитик повторно сверяет ТЗ',updated_at=now() WHERE id=$1",[taskId]);
+    }
    }
    await client.query('COMMIT');
-   if(task.rowCount&&!['backlog','analysis','documentation','done'].includes(task.rows[0].stage)){
-    await deps.startRequirementsReview?.(id,taskId,task.rows[0].spec_version);
+   let review:unknown=null;
+   if(task.rowCount&&unanswered===0&&!['backlog','analysis','documentation','done'].includes(task.rows[0].stage)){
+    review=await deps.startRequirementsReview?.(id,taskId,task.rows[0].spec_version);
    }
-   return {ok:true};
+   return {ok:true,pending_questions:unanswered,requirements_review:review};
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  });
 
