@@ -26,7 +26,7 @@ type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
-type ProjectProcess={id:string;kind:'document_import'|'development'|'merge';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;sourceFileCount?:number|null;savedDocuments?:number;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[]}|null;taskId?:string};
+type ProjectProcess={id:string;kind:'document_import'|'development'|'merge';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[]}|null;taskId?:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
@@ -774,6 +774,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <button className="secondary group-action" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
   </div>;
  }
+ async function restartImport(process:ProjectProcess){
+  if(!selected||!process.sourceUrl||processActionBusy)return;
+  setProcessActionBusy(true);
+  try{
+   const message='Импортируй документацию в текущий проект из '+process.sourceUrl+'. Прочитай все Markdown-файлы, сохрани требования и не дублируй существующие документы.';
+   await api('/projects/'+selected.id+'/assistant',{method:'POST',body:JSON.stringify({message,mode:'documentation'})});
+   const res=await api<{processes:ProjectProcess[]}>('/projects/'+selected.id+'/processes');
+   setProjectProcesses(res.processes);setSelectedProcessId(res.processes[0]?.id||null);
+  }catch(e){fail(e);}finally{setProcessActionBusy(false);}
+ }
  async function sendProcessInstruction(process:ProjectProcess){
   if(!selected||!processInstruction.trim()||processActionBusy)return;
   setProcessActionBusy(true);
@@ -944,14 +954,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <div className="process-detail-header"><h3>{process.title}</h3><span className={'process-status '+process.status}>{processStatus(process.status)}</span></div>
      <p className="muted">{process.detail}</p>
      {process.kind==='document_import'&&<div className="process-metrics"><span>Файлов: {process.sourceFileCount??'—'}</span><span>Фрагментов: {process.progress?.completed??0} / {process.progress?.total??'—'}</span><span>Сохранено страниц: {process.savedDocuments??0}</span></div>}
+     {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
      {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
      {process.result&&<div className="process-result"><strong>Результат</strong><p>{process.result.message||'Операция завершена'}</p>
       {process.result.created_document_id&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'docs')+'/'+process.result!.created_document_id)}>Открыть документацию</button>}
       {process.result.prUrl&&<a href={process.result.prUrl} target="_blank" rel="noreferrer">Открыть PR</a>}
      </div>}
      {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
-      <button className="secondary" disabled={processActionBusy} onClick={()=>void retryProcessSave(process)}>Повторить сохранение готового результата</button>
-      <small>Если результат генерации ещё не сохранён, будет предложен повторный импорт.</small>
+      {process.hasDraft?<button className="secondary" disabled={processActionBusy} onClick={()=>void retryProcessSave(process)}>Повторить сохранение без повторного анализа</button>:
+       <button className="secondary" disabled={processActionBusy||!process.sourceUrl} onClick={()=>void restartImport(process)}>Повторить импорт из источника</button>}
+      <small>{process.hasDraft?'AI-черновик сохранён — повторится только SQL-запись.':'Нет сохранённого AI-черновика. Источник придётся прочитать заново.'}</small>
      </div>}
      {process.kind==='document_import'&&process.status==='running'&&<div className="process-instruction-box">
       <strong>Уточнить задание для AI</strong>
