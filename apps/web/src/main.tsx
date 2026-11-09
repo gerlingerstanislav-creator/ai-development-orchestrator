@@ -2,6 +2,7 @@ import React,{useEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
+import {QaPanel} from './QaPanel.js';
 
 type Project={id:string,name:string,description:string};
 type Task={test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
@@ -152,7 +153,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
 }
-type ProjectSection='overview'|'tasks'|'docs'|'processes'|'rules'|'settings';
+type ProjectSection='overview'|'tasks'|'docs'|'qa'|'processes'|'rules'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function parseAppRoute(pathname:string):AppRoute{
@@ -162,7 +163,7 @@ function parseAppRoute(pathname:string):AppRoute{
  if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
   const projectId=parts[1];
   if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
-  if(parts.length===3&&['overview','tasks','docs','processes','rules','settings'].includes(parts[2]))
+  if(parts.length===3&&['overview','tasks','docs','qa','processes','rules','settings'].includes(parts[2]))
    return {kind:'project',projectId,section:parts[2] as ProjectSection};
   if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
    return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
@@ -866,7 +867,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <div className="sidebar-nav">
   {selected?<><div className="sidebar-label">ПРОЕКТ</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['processes','Процессы',Clock3],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
   </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
   </div>
   <div className="sidebar-bottom">
@@ -875,7 +876,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
   </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='processes'?'Процессы':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
     <div className="quota-popover" role="tooltip">
@@ -1077,6 +1078,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    })():<div className="docs-empty"><BookOpen size={30}/><h3>Документация проекта</h3><p>Выбери страницу слева, чтобы прочитать её содержимое.</p></div>}
   </section>
  </div>}
+ {section==='qa'&&<QaPanel projectId={selected.id} api={api} onError={fail}/>}
  {section==='settings'&&<section className="panel workflow-settings-panel">
   <div className="row-line">
    <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы настроить исполнителя, режим работы и инструкции.</p></div>
@@ -1243,7 +1245,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <button className="primary" type="button" disabled={workflowSaving||!workflowModal.agent_name.trim()} onClick={()=>void saveWorkflowStage()}>{workflowSaving?'Сохранение…':'Сохранить'}</button></footer>
   </div>
  </div>}
-
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
  {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
  {activeTask&&<div className="overlay task-modal-overlay" onMouseDown={()=>{if(!editingField&&selected)navigate(projectUrl(selected.id,'tasks'));}}>
@@ -1282,6 +1283,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <button className="pencil" title="Изменить описание" onClick={()=>setEditingField('description')}><Pencil size={15}/></button></>}
      </div>
      <div className="task-metadata">
+      {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
       <span>Этап: <strong>{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</strong></span>
       <span>Модель: <strong>{aiSettings.model}</strong></span>
      </div>

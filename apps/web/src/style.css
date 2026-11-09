@@ -636,6 +636,46 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .workflow-transition-description{display:flex;align-items:center;gap:7px;border:1px solid #ead8c3;background:#fffaf2;padding:9px;border-radius:8px;font-size:11px;color:#946e42;margin:8px 0}
 @media(max-width:700px){.workflow-settings-panel{padding:10px 8px}.workflow-stage-dialog{padding:15px;max-height:90vh}.workflow-key{display:none}}
 
+
+/* QA catalog: compact layout consistent with the project workspace */
+.qa-page{display:flex;flex-direction:column;gap:14px;min-width:0}
+.qa-heading{align-items:flex-start;gap:14px;flex-wrap:wrap}
+.qa-heading h2{margin:0 0 5px}
+.qa-heading .muted{margin:0;max-width:760px}
+.qa-buttons{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.qa-summary{display:flex;flex-wrap:wrap;gap:10px}
+.qa-summary>span{padding:8px 12px;background:var(--surface,#fff);border:1px solid var(--border,#ddd);border-radius:9px;font-size:13px}
+.qa-layout{display:grid;grid-template-columns:minmax(250px,320px) minmax(0,1fr);gap:14px;min-width:0}
+.qa-sidebar,.qa-details{min-width:0}
+.qa-sidebar h3,.qa-details h3,.qa-bottom h3{margin:0 0 10px}
+.qa-sidebar .search{width:100%;box-sizing:border-box;margin-bottom:9px}
+.qa-case-list{display:flex;flex-direction:column;gap:5px;max-height:560px;overflow-y:auto}
+.qa-case-item{border:1px solid transparent;border-radius:8px;padding:9px;text-align:left;background:transparent;display:flex;flex-direction:column;align-items:flex-start;gap:5px;color:inherit;cursor:pointer}
+.qa-case-item:hover,.qa-case-item.chosen{background:rgba(110,130,160,.09);border-color:rgba(110,130,160,.22)}
+.qa-case-item small{opacity:.75}
+.qa-warning{color:#d97706;opacity:1!important}
+.qa-tags{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0 14px}
+.qa-tags span{padding:3px 8px;background:rgba(110,130,160,.11);border-radius:5px;font-size:12px}
+.qa-steps{width:100%;border-collapse:collapse;font-size:13px}
+.qa-steps th,.qa-steps td{border-bottom:1px solid var(--border,#ddd);padding:8px 10px;text-align:left;vertical-align:top}
+.qa-steps th:first-child,.qa-steps td:first-child{width:34px}
+.qa-related,.qa-manual{border-top:1px solid var(--border,#ddd);margin-top:16px;padding-top:12px}
+.qa-manual .qa-buttons input{flex:1;min-width:140px}
+.qa-related p{font-size:13px}
+.qa-bottom{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.qa-flow,.qa-plan{border-top:1px solid var(--border,#ddd);padding:10px 0}
+.qa-flow-toggle{background:transparent;border:0;text-align:left;padding:0;display:flex;gap:8px;align-items:center;justify-content:space-between;width:100%;cursor:pointer;color:inherit}
+.qa-flow-toggle small{opacity:.7}
+.qa-plan p,.qa-flow p,.qa-flow li{font-size:13px}
+.qa-editor{width:min(880px,calc(100vw - 30px));max-height:90vh;overflow-y:auto}
+.qa-edit-row{display:flex;gap:10px}
+.qa-edit-row>label{flex:1;min-width:0}
+.qa-edit-step{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;margin:6px 0}
+.qa-edit-step input{width:100%;min-width:0}
+.qa-editor-steps{margin:10px 0}
+.qa-editor-steps h4{margin:0 0 7px}
+@media(max-width:900px){.qa-layout,.qa-bottom{grid-template-columns:1fr}.qa-case-list{max-height:250px}.qa-edit-row{flex-wrap:wrap}.qa-edit-step{grid-template-columns:1fr}.qa-edit-step button{justify-self:end}}
+
 /* Refined workflow transitions: light SVG paths, tooltips on hover/focus only. */
 .workflow-diagram-connector{width:28px;flex:0 0 28px;display:flex;align-items:center;justify-content:center;position:relative;color:#8d9fda;outline:none}
 .workflow-diagram-connector svg{display:block;position:static;margin:0;background:none;flex:none}
