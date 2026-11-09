@@ -60,7 +60,7 @@ test('a durable manager turn continues idle development and respects open decisi
  const pool={query:async sql=>{
   if(sql.startsWith('SELECT m.actor_id'))return {rows:[{actor_id:actorId,email:'admin@example.org'}]};
   if(sql.startsWith('SELECT id,stage,spec_review_status'))return {rows:[{stage:'development'}]};
-  if(sql.startsWith('SELECT id,title,description,stage'))return {rows:[{stage:'development'}]};
+  if(sql.startsWith('SELECT id,title,description,stage'))return {rowCount:1,rows:[{stage:'development'}]};
   if(sql.startsWith('SELECT id,kind,source_id'))return {rows:requests};
   if(sql.startsWith('SELECT workflow_id,kind'))return {rows:active};
   return {rows:[]};
