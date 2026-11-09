@@ -684,11 +684,11 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
  app.post('/api/projects/:id/tasks/:taskId/assistant',async(req:any,reply)=>{
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {message,mode}=messageSchema.extend({mode:z.enum(['chat','analyze']).default('chat')}).parse(req.body);
-  const result=await pool.query('SELECT title,description,stage,analysis_state,clarification_questions,depends_on_task_id,dependency_source,git_branch FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
+  const {message,mode}=messageSchema.extend({mode:z.enum(['chat','analyze','clarification']).default('chat')}).parse(req.body);
+  const result=await pool.query('SELECT title,description,stage,analysis_state,spec_version,clarification_questions,depends_on_task_id,dependency_source,git_branch FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
   if(!result.rowCount)return reply.code(404).send({error:'Задача не найдена'});
   const task=result.rows[0];
-  if(mode==='analyze'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
+  if(mode!=='chat'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
   const config=await configuration(id);
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
@@ -697,12 +697,12 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const rules=await rulesContext(id);
   const analystInstructions=await stageAgentContext(id,'analysis');
   const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id]);
-  const context=['Инструкции аналитика: '+analystInstructions,'Утверждённые правила проекта:\n'+rules,'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,6500),'Название: '+task.title,'Описание:\n'+task.description.slice(0,9000),
-   'Открытые вопросы: '+JSON.stringify(task.clarification_questions),
+  const context=['Инструкции аналитика: '+analystInstructions.slice(0,1200),'Утверждённые правила проекта:\n'+rules.slice(0,1000),'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,1500),'Название: '+task.title,'Описание:\n'+(task.stage==='analysis'?task.description:task.description.slice(0,5500)),
+   'Открытые вопросы: '+JSON.stringify(task.clarification_questions).slice(0,2800),
    'Текущая кодовая зависимость: '+String(task.depends_on_task_id||'нет'),
-   'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,9000),
-   'История:\n'+await history(id,taskId),
-   'Рабочие комментарии участников задачи (это не утверждённые требования): '+await taskNotesContext(pool,id,taskId,task.stage==='analysis'?'analysis':task.stage),
+   'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,1000),
+   'История:\n'+(await history(id,taskId)).slice(-1200),
+   'Рабочие комментарии участников задачи (это не утверждённые требования): '+(await taskNotesContext(pool,id,taskId,task.stage==='analysis'?'analysis':task.stage)).slice(0,900),
    'Сообщение пользователя:\n'+message].join('\n\n');
   const refining=task.stage==='analysis';
   const prompt=refining?[
@@ -710,11 +710,13 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"],"depends_on_task_id":"UUID прямой кодовой зависимости либо null","suggested_rules":["только универсальные полезные правила для будущих задач"]}.',
    'Не путай информационную связь с зависимостью по коду. Выбирай depends_on_task_id только при явной необходимости использовать незавершённые изменения другой задачи.',
    'Проанализируй сразу ВСЕ возможные блокирующие вопросы, возвращай их единым списком questions. Не дроби уточнения на серию последовательных вопросов. Не спрашивай известные настройки проекта.',
+   mode==='clarification'?'Обработай последнее сообщение как потенциальное уточнение. Если в нём нет ответа, уточнения или новых требований (например, это вопрос о ходе работы), верни только {"relevant":false}. Для содержательного ответа верни полное ТЗ и список только оставшихся блокирующих вопросов.':'',
    'Если нет блокирующих вопросов, верни пустой массив questions. Не придумывай ответы. Не объединяй карточки без разрешения.',
    context
   ].join('\n\n'):[
    'Ты инженерный AI-помощник внутри задачи. Ответь на русском по существу. Не утверждай, что менял код.',context
   ].join('\n\n');
+  if(prompt.length>24000)return reply.code(409).send({error:'Аналитик не может обработать весь объём ТЗ и ответа за один запрос. Сократи уточнение.'});
   const runId=refining?randomUUID():null;
   if(runId)await recordAgentActivity(pool,id,[taskId],runId,'analysis','running','Аналитик уточняет требования');
   let outcome='Анализ прервался без результата.';
@@ -726,13 +728,19 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    let summary:string|null=null,answer=raw;
    let questions:string[]=[];
    if(refining){
+    const parsed=jsonObject(raw);
+    if(mode==='clarification'&&parsed.relevant===false){
+     outcome='В сообщении не было новых требований для сверки.';
+     completed=true;
+     return {relevant:false};
+    }
     const analyzed=z.object({
-     summary:z.string().trim().min(10).max(10000),details:z.string().trim().min(3).max(16000),
+     summary:z.string().trim().min(10).max(20000),details:z.string().trim().min(3).max(16000),
      questions:z.array(z.string().min(3).max(600)).max(20).default([]),
      related_ids:z.array(z.string().uuid()).max(10).default([]),
      depends_on_task_id:z.string().uuid().nullable().default(null),
      suggested_rules:z.array(z.string().trim().min(5).max(800)).max(5).default([])
-    }).parse(jsonObject(raw));
+    }).parse(parsed);
     summary=analyzed.summary;questions=analyzed.questions;
     answer=analyzed.details+(questions.length?'\n\nОстались вопросы:\n'+questions.map((q,i)=>(i+1)+'. '+q).join('\n'):'\n\nБлокирующих вопросов нет. Можно отправлять задачу в разработку.');
     const related=analyzed.related_ids.filter(x=>other.rows.some(o=>o.id===x));
@@ -741,6 +749,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      await client.query('BEGIN');
      const current=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
      if(!current.rowCount||current.rows[0].stage!=='analysis')throw Error('Этап задачи изменился во время анализа');
+     if(current.rows[0].spec_version!==task.spec_version||JSON.stringify(current.rows[0].clarification_questions)!==JSON.stringify(task.clarification_questions))
+      throw Object.assign(Error('Требования уже уточняются. Проверь новые вопросы в чате.'),{statusCode:409});
      await saveSpecRevision(client,current.rows[0],{title:current.rows[0].title,description:summary!,origin:'analyst',actorId:uid(req),reason:'Уточнение ТЗ системным аналитиком',reviewStatus:'current'});
      await client.query("UPDATE tasks SET clarification_questions=$1,related_task_ids=$2,analysis_state=$3,spec_review_status='current',spec_reviewed_version=spec_version,updated_at=now() WHERE id=$4 AND project_id=$5",
       [JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
@@ -776,13 +786,10 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
  app.post('/api/projects/:id/tasks/:taskId/approve-development',async(req:any,reply)=>{
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const task=await pool.query('SELECT stage,analysis_state,clarification_questions,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
-  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
-  if(task.rows[0].stage!=='analysis'||task.rows[0].analysis_state!=='ready_for_development'||task.rows[0].spec_review_status!=='current'||(task.rows[0].clarification_questions||[]).length||await pendingAgentQuestions(pool,id,taskId))
-   return reply.code(409).send({error:'Сначала ответь на блокирующие вопросы AI-аналитика'});
-  await pool.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE id=$1 AND project_id=$2",[taskId,id]);
-  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Анализ → Разработка')",[randomUUID(),taskId,uid(req)]);
-  return {ok:true};
+  const response=await app.inject({method:'POST',url:'/api/projects/'+id+'/tasks/'+taskId+'/run-ai',
+   headers:{authorization:String(req.headers.authorization||''),cookie:String(req.headers.cookie||'')},
+   payload:{approveAnalysis:true}});
+  return reply.code(response.statusCode).send(response.json());
  });
 
  }

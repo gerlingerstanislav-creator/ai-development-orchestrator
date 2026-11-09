@@ -33,7 +33,7 @@ export async function recordTaskAgentNote(pool:Pool,note:AgentNoteInput){
  return (result.rowCount||0)>0;
 }
 
-export async function pendingAgentQuestions(pool:Pool,projectId:string,taskId:string):Promise<number>{
+export async function pendingAgentQuestions(pool:Pick<Pool,'query'>,projectId:string,taskId:string):Promise<number>{
  const r=await pool.query("SELECT count(*)::int AS count FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND (target_stage='all' OR requires_customer)",[projectId,taskId]);
  return r.rows[0].count;
 }
