@@ -71,6 +71,23 @@ async function dbInit() {
   created_at timestamptz not null default now(), updated_at timestamptz not null default now()
  );
  CREATE INDEX IF NOT EXISTS idx_document_import_jobs_project ON document_import_jobs(project_id,created_at DESC);
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_url text;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS request_text text;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_file_count int;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS analyzed_chunks int not null default 0;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS total_chunks int;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS saved_documents int not null default 0;
+ CREATE TABLE IF NOT EXISTS process_events (
+  id uuid primary key, project_id uuid not null references projects(id) on delete cascade,
+  process_id uuid not null, process_kind text not null, level text not null default 'info',
+  stage text not null, detail text not null default '',
+  created_at timestamptz not null default now()
+ );
+ CREATE INDEX IF NOT EXISTS idx_process_events_history ON process_events(project_id,process_id,created_at);
+ ALTER TABLE documents ADD COLUMN IF NOT EXISTS document_kind text not null default 'technical';
+ ALTER TABLE documents ADD COLUMN IF NOT EXISTS implementation_status text not null default 'unverified';
+ ALTER TABLE documents ADD COLUMN IF NOT EXISTS implementation_evidence text not null default '';
+
  UPDATE document_import_jobs SET status='failed',message='Импорт прерван перезапуском сервера. Повтори импорт.' WHERE status='running';
 
  CREATE TABLE IF NOT EXISTS project_rules (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, body text not null, origin text not null default 'manual', source_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
@@ -915,26 +932,51 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
  }
  return true;
 }
+// Project-scoped process center. The global counter uses this same data model.
+app.get('/api/projects/:id/processes',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const [imports,developments]=await Promise.all([
+  pool.query("SELECT id,status,message,source_url,source_file_count,analyzed_chunks,total_chunks,saved_documents,created_at,updated_at,result FROM document_import_jobs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
+ ]);
+ const processes:any[]=[
+  ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:'Импорт документации'+(r.source_url?' · '+r.source_url.split('/').slice(-1)[0]:''),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,progress:{completed:r.analyzed_chunks,total:r.total_chunks},result:r.result,savedDocuments:r.saved_documents,sourceFileCount:r.source_file_count})),
+  ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
+ ];
+ for(const batch of mergeBatches.values()){
+  if(batch.projectId!==id)continue;
+  processes.push({id:batch.id,kind:'merge',title:'Слияние готовых PR',status:batch.status,detail:batch.message,createdAt:batch.createdAt,updatedAt:batch.finishedAt||null,result:{results:batch.results}});
+ }
+ processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
+ return {processes,checkedAt:new Date().toISOString()};
+});
+app.get('/api/projects/:id/processes/:processId/events',async(req:any,reply)=>{
+ const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const rows=await pool.query("SELECT id,process_kind,level,stage,detail,created_at FROM process_events WHERE project_id=$1 AND process_id=$2 ORDER BY created_at ASC LIMIT 500",[id,processId]);
+ return rows.rows;
+});
 app.get('/api/projects/:id/docs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
  return (await pool.query('SELECT * FROM documents WHERE project_id=$1 ORDER BY title ASC, id ASC',[id])).rows;
 });
 app.post('/api/projects/:id/docs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
- const {title,body,parent_id}=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:docParent}),req.body);
+ const {title,body,parent_id,document_kind,implementation_status,implementation_evidence}=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:docParent,document_kind:z.enum(['technical','functional']).default('technical'),implementation_status:z.enum(['unverified','planned','partial','implemented']).default('unverified'),implementation_evidence:z.string().max(2000).default('')}),req.body);
  if(!await validDocParent(id,null,parent_id??null))return reply.code(400).send({error:'Родительская страница не найдена в проекте'});
  const docId=randomUUID();
- await pool.query('INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,$3,$4,$5)',[docId,id,title,body,parent_id??null]);
+ await pool.query('INSERT INTO documents(id,project_id,title,body,parent_id,document_kind,implementation_status,implementation_evidence) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[docId,id,title,body,parent_id??null,document_kind,implementation_status,implementation_evidence]);
  return reply.code(201).send({id:docId});
 });
 app.patch('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
  const {id,docId}=parse(z.object({id:z.string().uuid(),docId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
- const data=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000),parent_id:docParent}),req.body);
+ const data=parse(z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000),parent_id:docParent,document_kind:z.enum(['technical','functional']).optional(),implementation_status:z.enum(['unverified','planned','partial','implemented']).optional(),implementation_evidence:z.string().max(2000).optional()}),req.body);
  const old=await pool.query('SELECT parent_id FROM documents WHERE id=$1 AND project_id=$2',[docId,id]);
  if(!old.rowCount)return reply.code(404).send({error:'Документ не найден'});
  const parentId=data.parent_id===undefined?old.rows[0].parent_id:data.parent_id;
  if(!await validDocParent(id,docId,parentId))return reply.code(400).send({error:'Нельзя переместить страницу в себя, своего потомка или другой проект'});
- await pool.query('UPDATE documents SET title=$1,body=$2,parent_id=$3,updated_at=now() WHERE id=$4 AND project_id=$5',[data.title,data.body,parentId,docId,id]);
+ await pool.query('UPDATE documents SET title=$1,body=$2,parent_id=$3,document_kind=COALESCE($6,document_kind),implementation_status=COALESCE($7,implementation_status),implementation_evidence=COALESCE($8,implementation_evidence),updated_at=now() WHERE id=$4 AND project_id=$5',[data.title,data.body,parentId,docId,id,data.document_kind||null,data.implementation_status||null,data.implementation_evidence??null]);
  return {ok:true};
 });
 app.delete('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
