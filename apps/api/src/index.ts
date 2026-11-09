@@ -755,6 +755,11 @@ app.get('/api/background-processes',async(req:any)=>{
    detail='Связь с исполнителем временно недоступна · '+detail;
   }
   if(status!=='queued'&&status!=='running')continue;
+  if(status!==row.status||detail!==row.message){
+   await pool.query('UPDATE ai_task_runs SET status=$2,message=$3 WHERE id=$1',[row.id,status,detail]).catch(()=>{});
+   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development',$4,$5)",
+    [randomUUID(),row.project_id,row.id,status,detail]).catch(()=>{});
+  }
   processes.push({id:'development:'+row.id,kind:'development',projectId:row.project_id,projectName:row.project_name,
    taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
    detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
