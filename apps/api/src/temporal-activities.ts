@@ -279,10 +279,12 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   });
   let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
   const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
-  if(!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version)verdict='blocked';
+  const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version;
   if(!expected.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
   if(checked.some(c=>c.result==='failed'))verdict='failed';
   else if(checked.some(c=>c.result!=='passed')&&verdict==='passed')verdict='blocked';
+  // A changed specification invalidates the entire run even if old cases failed.
+  if(staleSpecification)verdict='blocked';
   const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version};
   const client=await pool.connect();
   try{
@@ -335,6 +337,15 @@ export async function rejectTestedTask(args:{projectId:string;taskId:string;cycl
   [id,projectId,taskId,initial.rows[0].triggered_by,settings.rows[0].model,cycleId,attempt+1]);
  const saved=await pool.query('SELECT id FROM ai_task_runs WHERE cycle_id=$1 AND cycle_attempt=$2',[cycleId,attempt+1]);
  return saved.rows[0].id;
+}
+/** A failed analyst or QA preparation must not force fresh development of already finished code. */
+export async function noteHandoffFailure(args:{projectId:string;taskId:string;runId:string;message:string;stage:string}){
+ const message=args.message.slice(0,2200);
+ await pool.query("UPDATE tasks SET test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",
+ [args.taskId,args.projectId,message]);
+ await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',
+  [randomUUID(),args.taskId,'handoff_blocked',(args.stage+': '+message).slice(0,2200)]);
+ await event(args.projectId,args.runId,'analysis',args.stage,message,'error');
 }
 export async function noteCycleFailure(args:{projectId:string;taskId:string;message:string;stage:string}){
  await pool.query("UPDATE tasks SET stage='development',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage IN ('development','testing')",
