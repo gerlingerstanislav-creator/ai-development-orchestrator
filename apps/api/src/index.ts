@@ -1237,6 +1237,19 @@ app.get('/api/projects/:id/tasks/:taskId/events',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
  const r=await pool.query('SELECT e.* FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE t.id=$1 AND t.project_id=$2 ORDER BY e.created_at DESC',[taskId,id]);return r.rows;
 });
+// Unified task feed: task actions and Temporal process steps visible before tests begin.
+app.get('/api/projects/:id/tasks/:taskId/activity',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const task=await pool.query('SELECT id FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+ const [events,processes,ownership]=await Promise.all([
+  pool.query('SELECT id,event,detail,created_at FROM task_events WHERE task_id=$1 ORDER BY created_at DESC LIMIT 200',[taskId]),
+  pool.query("SELECT p.id,p.process_kind,p.stage,p.detail,p.level,p.created_at FROM process_events p WHERE p.project_id=$1 AND p.process_id IN (SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2) ORDER BY p.created_at DESC,p.id DESC LIMIT 250",[id,taskId]),
+  pool.query('SELECT owner_id,kind,workflow_id,state,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2',[id,taskId])
+ ]);
+ return {events:events.rows,processEvents:processes.rows,owner:ownership.rows[0]?.state==='active'?ownership.rows[0]:null};
+});
 const docParent = z.string().uuid().nullable().optional();
 async function validDocParent(projectId:string, docId:string|null, parentId:string|null) {
  if(!parentId)return true;
