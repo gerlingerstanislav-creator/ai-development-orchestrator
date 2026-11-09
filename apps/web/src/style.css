@@ -403,3 +403,32 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
  .quota-widget{width:77px}
  .quota-compact{width:64px}
 }
+
+/* Workflow stage groups: collapsed = a single group column, expanded = adjacent lanes. */
+.tasks-page .board.board-groups{display:flex;flex-flow:row nowrap;gap:6px;align-items:stretch;overflow-x:auto;overflow-y:auto;grid-template-columns:none;grid-auto-flow:initial;max-width:100%;padding-bottom:12px}
+.tasks-page .kanban-group{display:flex;flex-direction:column;flex:0 0 auto;min-width:0;width:232px;max-width:none;border:1px solid #e2e7f1;background:#f4f6fa;border-radius:13px;padding:5px;transition:width .18s ease}
+.tasks-page .kanban-group.is-expanded{width:max-content}
+.tasks-page .kanban-group-heading{display:flex;align-items:center;gap:8px;width:100%;min-height:37px;padding:8px 10px;margin:0 0 5px;text-align:left;border:1px solid #e4e8f0;background:#e9edf5;border-radius:9px;color:#32425c;font-size:12px;font-weight:650}
+.tasks-page .kanban-group-heading:hover{background:#e3e9f6;border-color:#d2dcef}
+.tasks-page .kanban-group-heading:focus-visible{outline:2px solid #7180d8;outline-offset:2px}
+.tasks-page .kanban-group-heading strong{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;min-width:0;flex:1}
+.tasks-page .group-mark{width:4px;height:18px;flex:0 0 4px;border-radius:8px;background:#8a9bd0}
+.tasks-page .kanban-group:nth-child(1) .group-mark{background:#b18be2}
+.tasks-page .kanban-group:nth-child(2) .group-mark{background:#7f9fe6}
+.tasks-page .kanban-group:nth-child(3) .group-mark{background:#75bba8}
+.tasks-page .group-stage-count{font-size:10px;color:#8290a5;white-space:nowrap}
+.tasks-page .group-task-count{display:grid;place-items:center;min-width:23px;height:21px;padding:0 5px;background:#dce3ee;border-radius:6px;color:#66788d;font-size:11px}
+.tasks-page .group-chevron{flex:0 0 auto;color:#74839b;transform:rotate(-90deg);transition:transform .2s ease}
+.tasks-page .group-chevron.expanded{transform:rotate(0)}
+.tasks-page .kanban-group-stages{display:flex;flex:1;flex-flow:column nowrap;gap:5px;min-height:0}
+.tasks-page .kanban-group.is-expanded .kanban-group-stages{flex-direction:row}
+.tasks-page .kanban-group-stages>.lane{flex:1 1 0;min-width:0;border-color:#e4e8ef;min-height:0;padding:9px 7px;border-radius:9px;background:#f0f2f7}
+.tasks-page .kanban-group.is-collapsed .kanban-group-stages>.lane{flex:0 0 auto}
+.tasks-page .kanban-group.is-expanded .kanban-group-stages>.lane{min-width:210px;width:214px;flex:0 0 214px;min-height:max(450px,calc(100vh - 175px))}
+.tasks-page .kanban-group.is-collapsed .kanban-group-stages>.lane>.cards{gap:7px}
+.tasks-page .kanban-group.is-collapsed .kanban-group-stages>.lane .lane-empty{padding:14px 6px}
+@media(max-width:700px){
+ .tasks-page .kanban-group{width:215px}
+ .tasks-page .kanban-group.is-expanded{width:max-content}
+ .tasks-page .kanban-group.is-expanded .kanban-group-stages>.lane{min-width:200px}
+}
