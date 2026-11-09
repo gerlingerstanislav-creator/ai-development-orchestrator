@@ -6,6 +6,14 @@ import './style.css';
 type Project={id:string,name:string,description:string};
 type Task={id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number};
+type KanbanGroupKey='analytics'|'development'|'results'|'other';
+type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
+const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
+ {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
+ {key:'development',title:'Разработка',ids:['development','merge_queue']},
+ {key:'results',title:'Итоги',ids:['documentation','done']}
+];
+
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string};
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
@@ -212,6 +220,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [targetBranch,setTargetBranch]=useState('');const [mergeBusy,setMergeBusy]=useState(false);const [mergeReport,setMergeReport]=useState('');
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
+ const [expandedGroups,setExpandedGroups]=useState<KanbanGroupKey[]>(()=>{
+  try{
+   const saved=localStorage.getItem('ado-kanban-groups-expanded');
+   return saved?JSON.parse(saved).filter((id:unknown)=>['analytics','development','results','other'].includes(String(id))):[];
+  }catch{return [];}
+ });
+ useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded',JSON.stringify(expandedGroups));},[expandedGroups]);
+ function toggleKanbanGroup(group:KanbanGroupKey){
+  setExpandedGroups(old=>old.includes(group)?old.filter(x=>x!==group):[...old,group]);
+ }
+
  const [activeTask,setActiveTask]=useState<Task|null>(null);
  const [elapsedNow,setElapsedNow]=useState(Date.now());
  const [editingField,setEditingField]=useState<'title'|'description'|null>(null);
@@ -620,6 +639,34 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>;
   });
  }
+ const kanbanGroups:KanbanGroup[]=stageGroupDefinitions.map(def=>({
+  key:def.key,title:def.title,
+  stages:stages.filter(stage=>def.ids.includes(stage.stage))
+ })).filter(group=>group.stages.length>0);
+ const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
+ if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
+ function renderKanbanLane(s:Stage,compact:boolean){
+  const stageTasks=filtered.filter(t=>t.stage===s.stage);
+  return <div className={'lane '+(compact?'lane-in-group':'')} key={s.stage}
+   onDragOver={e=>e.preventDefault()}
+   onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}>
+   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
+    {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
+    {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
+   </div>
+   <div className="cards">{stageTasks.map(t=><a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
+    draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
+    onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
+    <span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span>
+    <span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span>
+    <span className="task-name-line"><strong>{t.title}</strong>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
+    <p>{t.description||'Без описания'}</p>
+    {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
+    {t.stage==='merge_queue'&&<small className="task-warning">PR ожидает слияния</small>}
+    <span className="task-footer"><span>Задача</span><span>↗</span></span>
+   </a>)}{stageTasks.length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div>
+  </div>;
+ }
  const filtered=tasks.filter(t=>t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,'')));
  if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
@@ -709,9 +756,20 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   {section==='docs'&&<div className="toolbar docs-chat-toolbar"><button className="primary" onClick={openDocumentationChat}><MessageCircle size={17}/> Обсудить проект с AI</button><span className="muted">AI помогает структурировать материалы, создавать страницы и импортировать Markdown из GitHub.</span></div>}
  {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
  {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>{setProjectInput(old=>old.trim()?old:'Создай задачу: ');setProjectChatOpen(true);}}><FileText size={17}/></button></div></div>
- {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board">{stages.map(s=><div className="lane" key={s.stage} onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}><div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{filtered.filter(t=>t.stage===s.stage).length}</span>
-   {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
-   {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}</div><div className="cards">{filtered.filter(t=>t.stage===s.stage).map(t=><a className="task-card" href={projectUrl(selected.id,'tasks')+'/'+t.id} draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id)} key={t.id}><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span><span className="task-name-line"><strong>{t.title}</strong>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><p>{t.description||'Без описания'}</p>{t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}{t.stage==='merge_queue'&&<small className="task-warning">PR ожидает слияния</small>}<span className="task-footer"><span>Задача</span><span>↗</span></span></a>)}{filtered.filter(t=>t.stage===s.stage).length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div></div>)}</div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
+ {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board board-groups">
+ {kanbanGroups.map(group=>{
+  const expanded=expandedGroups.includes(group.key);
+  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===t.stage)).length;
+  return <section key={group.key} className={'kanban-group '+(expanded?'is-expanded':'is-collapsed')} style={{['--kanban-stage-count' as string]:group.stages.length} as React.CSSProperties}>
+   <button className="kanban-group-heading" type="button" aria-expanded={expanded} onClick={()=>toggleKanbanGroup(group.key)}
+    title={expanded?'Свернуть этапы':'Развернуть этапы'}><span className="group-mark"/>
+    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.length} эт.</span><span className="group-task-count">{count}</span>
+    <ChevronDown size={16} className={'group-chevron '+(expanded?'expanded':'')}/>
+   </button>
+   <div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage,!expanded))}</div>
+  </section>;
+ })}
+ </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{aiRuns.some(r=>r.task_id===t.id&&r.status==='running')&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a></td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
    <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить корневую страницу" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
