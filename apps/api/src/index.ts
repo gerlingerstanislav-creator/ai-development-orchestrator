@@ -79,6 +79,17 @@ async function dbInit() {
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS saved_documents int not null default 0;
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS draft_result jsonb;
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_key text;
+ CREATE TABLE IF NOT EXISTS document_import_checkpoints (
+  job_id uuid not null references document_import_jobs(id) on delete cascade,
+  chunk_index int not null,
+  file_path text not null,
+  content_sha text not null,
+  notes text not null,
+  created_at timestamptz not null default now(),
+  primary key(job_id,chunk_index)
+ );
+ CREATE INDEX IF NOT EXISTS idx_document_import_checkpoints_source ON document_import_checkpoints(content_sha);
+
  CREATE TABLE IF NOT EXISTS process_events (
   id uuid primary key, project_id uuid not null references projects(id) on delete cascade,
   process_id uuid not null, process_kind text not null, level text not null default 'info',
