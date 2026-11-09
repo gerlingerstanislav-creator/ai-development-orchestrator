@@ -86,6 +86,13 @@ async function dbInit() {
   created_at timestamptz not null default now()
  );
  CREATE INDEX IF NOT EXISTS idx_process_events_history ON process_events(project_id,process_id,created_at);
+ CREATE TABLE IF NOT EXISTS process_instructions (
+  id uuid primary key,project_id uuid not null references projects(id) on delete cascade,
+  process_id uuid not null,actor_id uuid not null references users(id),
+  body text not null,created_at timestamptz not null default now()
+ );
+ CREATE INDEX IF NOT EXISTS idx_process_instructions ON process_instructions(project_id,process_id,created_at);
+
  CREATE TABLE IF NOT EXISTS merge_process_runs (
   id uuid primary key,project_id uuid not null references projects(id) on delete cascade,
   actor_id uuid not null references users(id),status text not null default 'running',
@@ -968,6 +975,19 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  }
  processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
  return {processes,checkedAt:new Date().toISOString()};
+});
+app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,reply)=>{
+ const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {message}=parse(z.object({message:z.string().trim().min(3).max(2000)}),req.body);
+ const job=await pool.query("SELECT status FROM document_import_jobs WHERE project_id=$1 AND id=$2 AND actor_id=$3",[id,processId,uid(req)]);
+ if(!job.rowCount)return reply.code(404).send({error:'Процесс импорта не найден'});
+ if(job.rows[0].status!=='running')return reply.code(409).send({error:'Уточнения можно отправлять, пока импорт выполняется'});
+ await pool.query('INSERT INTO process_instructions(id,project_id,process_id,actor_id,body) VALUES($1,$2,$3,$4,$5)',
+  [randomUUID(),id,processId,uid(req),message]);
+ await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','user_instruction',$4)",
+  [randomUUID(),id,processId,message]);
+ return {ok:true,message:'Уточнение принято и будет учтено на следующем этапе анализа или формирования документации.'};
 });
 app.get('/api/projects/:id/processes/:processId/events',async(req:any,reply)=>{
  const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
