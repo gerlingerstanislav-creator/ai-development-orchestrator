@@ -5,6 +5,8 @@ import {randomUUID} from 'node:crypto';
 import {initRequirementsSchema,saveSpecRevision,reconcileTaskRequirements} from '../dist/requirements.js';
 import {initQaWaiverSchema} from '../dist/qa-waiver.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from '../dist/task-orchestration.js';
+import {initTaskAgentNotesSchema,recordTaskAgentNote,taskNotesContext,pendingAgentQuestions} from '../dist/task-agent-notes.js';
+import {initTaskCancellationSchema} from '../dist/task-cancellation.js';
 
 test('spec revisions, analyst reconciliation and human-approval gate persist in PostgreSQL',async()=>{
  const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
@@ -17,6 +19,7 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await pool.query("CREATE TABLE task_events (id uuid PRIMARY KEY,task_id uuid NOT NULL REFERENCES tasks(id),event text NOT NULL,detail text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now())");
   await pool.query("CREATE TABLE project_rules (project_id uuid NOT NULL,body text NOT NULL,created_at timestamptz DEFAULT now())");
   await pool.query('CREATE TABLE qa_test_plans (id uuid PRIMARY KEY)');
+  await pool.query("CREATE TABLE documents (id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text NOT NULL,body text NOT NULL DEFAULT '')");
   await pool.query('CREATE TABLE ai_test_runs (id uuid PRIMARY KEY)');
   await pool.query('INSERT INTO users(id) VALUES($1)',[userId]);
   await pool.query('INSERT INTO projects(id) VALUES($1)',[projectId]);
@@ -27,6 +30,25 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await initQaWaiverSchema(pool); // Startup migrations must be idempotent.
   await initTaskOrchestrationSchema(pool);
   await initTaskOrchestrationSchema(pool);
+  await initTaskAgentNotesSchema(pool);
+  await initTaskAgentNotesSchema(pool);
+  await initTaskCancellationSchema(pool);
+  await initTaskCancellationSchema(pool);
+  const noteRun=randomUUID();
+  const note={projectId,taskId,authorStage:'development',authorName:'AI-разработчик',
+   targetStage:'testing',body:'Проверяй на мобильной ширине 360px: иначе стрелки перекрывают край карточки',
+   kind:'handoff',sourceKey:'dev:'+noteRun,sourceRunId:noteRun};
+  assert.equal(await recordTaskAgentNote(pool,note),true);
+  assert.equal(await recordTaskAgentNote(pool,note),false,'Retried Temporal activity must not duplicate comment');
+  assert.match(await taskNotesContext(pool,projectId,taskId,'testing'),/360px/);
+  assert.equal(await taskNotesContext(pool,projectId,taskId,'analysis'),'[]','Notes addressed only to QA must not leak to analyst');
+  await recordTaskAgentNote(pool,{...note,sourceKey:'question:'+noteRun,kind:'question',targetStage:'all',body:'Нужна ли стрелка между последней и первой фигурой?'});
+  assert.equal(await pendingAgentQuestions(pool,projectId,taskId),1);
+  await pool.query("UPDATE task_agent_notes SET status='answered',answer='Да, окружность замкнута' WHERE project_id=$1 AND task_id=$2 AND kind='question'",[projectId,taskId]);
+  assert.equal(await pendingAgentQuestions(pool,projectId,taskId),0);
+  assert.match(await taskNotesContext(pool,projectId,taskId,'development'),/окружность замкнута/);
+  const cols=await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name='documents' AND column_name='created_by_task_id'");
+  assert.equal(cols.rowCount,1,'Cancellation documents have explicit task provenance');
   const owner1=randomUUID(),owner2=randomUUID();
   assert.equal(await acquireTaskOrchestration(pool,projectId,taskId,owner1,'task-cycle-'+owner1,'development'),true);
   assert.equal(await acquireTaskOrchestration(pool,projectId,taskId,owner2,'manual-test-'+owner2,'testing'),false,'Second workflow cannot start during analyst or QA preparation');
