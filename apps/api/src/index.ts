@@ -1001,9 +1001,11 @@ app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,rep
  const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
  const {message}=parse(z.object({message:z.string().trim().min(3).max(2000)}),req.body);
- const job=await pool.query("SELECT status FROM document_import_jobs WHERE project_id=$1 AND id=$2 AND actor_id=$3",[id,processId,uid(req)]);
+ const job=await pool.query("SELECT status,message FROM document_import_jobs WHERE project_id=$1 AND id=$2 AND actor_id=$3",[id,processId,uid(req)]);
  if(!job.rowCount)return reply.code(404).send({error:'Процесс импорта не найден'});
  if(job.rows[0].status!=='running')return reply.code(409).send({error:'Уточнения можно отправлять, пока импорт выполняется'});
+ if(/Формирование итоговой структуры|Сохранение документов/.test(String(job.rows[0].message)))
+  return reply.code(409).send({error:'Агент уже формирует или сохраняет итоговый результат. Уточнение на этой стадии не успеет примениться.'});
  await pool.query('INSERT INTO process_instructions(id,project_id,process_id,actor_id,body) VALUES($1,$2,$3,$4,$5)',
   [randomUUID(),id,processId,uid(req),message]);
  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','user_instruction',$4)",
