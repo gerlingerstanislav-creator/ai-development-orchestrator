@@ -115,7 +115,7 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
 }
 export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
- const {task,repo,ai,token,rules}=await jobSettings(projectId,taskId);
+ const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const testId=existing.rowCount?existing.rows[0].id:randomUUID();
  if(!existing.rowCount){
