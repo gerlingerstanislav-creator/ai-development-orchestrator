@@ -699,8 +699,10 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
   if(['queued','running','unknown'].includes(remoteStatus))
    return reply.code(409).send({error:'Предыдущий тестировщик ещё работает. Не запускай второго исполнителя.'});
   if(remoteStatus==='completed'){
-   // Preserve the completed runner result rather than mislabeling it as failed.
-   return reply.code(409).send({error:'Предыдущий QA завершился в исполнителе, но отчёт ещё не перенесён в задачу. Восстанови результат из процесса перед повтором.'});
+   // Persist the actual previous QA report before starting a new attempt.
+   try{await (await import('./temporal-activities.js')).checkTesting({projectId:id,taskId,testId:test.id});}
+   catch(error){return reply.code(503).send({error:'Не удалось восстановить завершённый QA-отчёт: '+String(error).slice(0,220)});}
+   continue;
   }
   await pool.query("UPDATE ai_test_runs SET status='failed',message='Предыдущий QA-процесс завершён или потерян. Можно выполнить новый запуск.',completed_at=now() WHERE id=$1 AND status IN ('running','queued')",[test.id]);
   await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_retry_recovered','Предыдущий QA-процесс отсутствует или завершился с ошибкой. Запуск разблокирован.']);
