@@ -1474,7 +1474,7 @@ registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview});
 registerTaskCancellationRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
- recoverTask:async({projectId,taskId,auth,cookie,userId})=>{
+ recoverTask:async({projectId,taskId,auth,cookie})=>{
   const taskResult=await pool.query("SELECT t.id,t.stage,t.pr_number,t.git_branch,t.pr_url,t.spec_review_status,t.spec_version,t.test_feedback,g.repository,c.secret_encrypted FROM tasks t LEFT JOIN project_git_repositories g ON g.project_id=t.project_id LEFT JOIN connections c ON c.id=g.connection_id WHERE t.id=$1 AND t.project_id=$2",
    [taskId,projectId]);
   if(!taskResult.rowCount)return {ok:false,status:404,message:'Задача не найдена'};
