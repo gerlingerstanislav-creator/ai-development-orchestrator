@@ -97,6 +97,138 @@ function splitBatches(items:ClassifiedFragment[]):ClassifiedFragment[][]{
  if(batch.length)result.push(batch);
  return result;
 }
+
+/**
+ * A pathological single topic across many unrelated files produces one huge,
+ * unreviewable page and eventually hits the draft-size limit. Correct the map
+ * using a project-specific topic catalog plus bounded multi-fragment assignment.
+ * Commit remapping atomically; a resumed import reuses the already-saved pages.
+ */
+async function diversifyCollapsedTopics(args:TopicImportArgs,classified:ClassifiedFragment[],sourceName:string,location?:{owner:string;repository:string;commit:string}){
+ const active=classified.filter(f=>f.topics.length>0);
+ const keys=new Set(active.flatMap(f=>f.topics.map(t=>t.key)));
+ const paths=[...new Set(active.map(f=>f.path))];
+ if(keys.size!==1||active.length<18||paths.length<3)return;
+ const oldKey=[...keys][0];
+ const {pool,job,complete,progress,recordUsage}=args;
+ const persisted=(await pool.query(
+  "SELECT cursor,page_id,draft_body,title FROM document_import_topics WHERE job_id=$1 AND topic_key=$2",
+  [job.id,oldKey])).rows[0];
+ const originalBatches=splitBatches(active);
+ const cursor=Number(persisted?.cursor||0);
+ if(cursor>originalBatches.length)throw Error('Контрольная точка темы превышает число исходных частей');
+ const frozen=new Set(originalBatches.slice(0,cursor).flatMap(batch=>batch.map(f=>f.index)));
+ const pending=active.filter(f=>!frozen.has(f.index));
+ if(pending.length<2)return;
+ await progress('remapping','Уточнение тем: '+active.length+' фрагментов ошибочно сгруппированы в один раздел. Сохранённые части не будут переписаны.');
+ const outline=paths.map(path=>{
+  const headings=active.filter(f=>f.path===path).map(f=>f.heading);
+  return path+': '+[...new Set(headings)].slice(0,65).join(' | ');
+ }).join('\n').slice(0,15000);
+ const catalogSchema=z.object({topics:z.array(z.object({
+  key:z.string().min(2).max(100),title:z.string().trim().min(2).max(180)
+ })).min(3).max(20)});
+ let catalog:TopicRef[]=[];
+ const planPrompt=[
+  'Ты системный аналитик. Первичное распределение материалов ошибочно свело разнородную документацию к одной теме «'+oldKey+'».',
+  'На основе структуры и названий разделов предложи 4–12 РАЗНЫХ предметных тем для документации проекта.',
+  'Темы должны быть достаточно конкретными, чтобы не получился один огромный документ. При этом не дели одну функцию исключительно по именам файлов.',
+  'Верни только JSON {"topics":[{"key":"stable-feature-key","title":"Название темы"}]}.',
+  'Проект: '+sourceName,'Структура оригинальных файлов:\n'+outline
+ ].join('\n\n');
+ const planResponse=await complete(planPrompt);
+ await recordUsage(planResponse.usage);
+ try{
+  const plan=catalogSchema.parse(jsonObject(planResponse.text));
+  catalog=plan.topics.map(t=>({key:safeTopicKey(t.key),title:t.title}))
+   .filter((t,i,a)=>t.key!==oldKey&&a.findIndex(x=>x.key===t.key)===i);
+ }catch{
+  await progress('remapping','Аналитик не вернул корректную тематическую схему; используем структуру исходных документов.');
+ }
+ const sourceTopic=(path:string):TopicRef=>{
+  const file=args.files.find(f=>f.path===path);
+  const h1=file?.body.match(/^#\s+([^\n]+)/m)?.[1]?.trim();
+  const basename=path.split('/').pop()!.replace(/\.(md|txt)$/i,'').replace(/[_-]+/g,' ');
+  return {key:'source-'+sha(path).slice(0,16),title:h1&&h1.length>=5&&h1.length<=130?h1:basename};
+ };
+ const assignments=new Map<number,TopicRef>();
+ const allowed=new Map(catalog.map(t=>[t.key,t]));
+ if(catalog.length>=2){
+  const assignmentSchema=z.object({assignments:z.array(z.object({
+   index:z.number().int().positive(),key:z.string().min(1)
+  }))});
+  for(let from=0;from<pending.length;from+=16){
+   const batch=pending.slice(from,from+16);
+   const input=batch.map(f=>({index:f.index,path:f.path,heading:f.heading,notes:f.notes.slice(0,650)}));
+   const prompt=[
+    'Распредели каждый фрагмент документации по ОДНОЙ наиболее подходящей предметной теме из предложенного каталога.',
+    'Используй только ключи тем из каталога. Верни каждый index ровно один раз.',
+    'Верни JSON {"assignments":[{"index":1,"key":"stable-feature-key"}]}.',
+    'Каталог: '+JSON.stringify(catalog),
+    'Фрагменты:\n'+JSON.stringify(input)
+   ].join('\n\n');
+   const response=await complete(prompt);
+   await recordUsage(response.usage);
+   try{
+    const parsed=assignmentSchema.parse(jsonObject(response.text));
+    const valid=new Map<number,TopicRef>();
+    for(const row of parsed.assignments){
+     const topic=allowed.get(safeTopicKey(row.key));
+     if(topic&&batch.some(f=>f.index===row.index))valid.set(row.index,topic);
+    }
+    for(const fragment of batch)assignments.set(fragment.index,valid.get(fragment.index)||sourceTopic(fragment.path));
+   }catch{
+    for(const fragment of batch)assignments.set(fragment.index,sourceTopic(fragment.path));
+   }
+  }
+ }
+ // The agent may again assign everything to a broad "project" bucket.
+ // Use stable per-source partitions rather than shipping a 100 KB page.
+ const counts=new Map<string,number>();
+ for(const topic of assignments.values())counts.set(topic.key,(counts.get(topic.key)||0)+1);
+ if(counts.size<2||(pending.length>=35&&Math.max(...counts.values())/pending.length>0.85)){
+  assignments.clear();
+  for(const fragment of pending)assignments.set(fragment.index,sourceTopic(fragment.path));
+ }
+ if(new Set([...assignments.values()].map(t=>t.key)).size<2)return;
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  // All new assignments appear together; on crash a retry cannot see a half-remapped map.
+  for(const fragment of pending){
+   const topic=assignments.get(fragment.index)!;
+   await client.query('UPDATE document_import_fragments SET topics=$3 WHERE job_id=$1 AND fragment_index=$2',
+    [job.id,fragment.index,JSON.stringify([topic])]);
+  }
+  if(cursor>0){
+   if(!persisted?.page_id)throw Error('Сохранённая часть темы не имеет связанной страницы');
+   const originalItems=active.filter(f=>frozen.has(f.index));
+   const refs=refsFor(originalItems,location);
+   const page=(await client.query('SELECT id,title,body,import_synced_hash FROM documents WHERE id=$1 AND project_id=$2 FOR UPDATE',
+    [persisted.page_id,job.project_id])).rows[0];
+   if(!page)throw Error('Не удалось найти сохранённую страницу темы');
+   const revised='# '+persisted.title+'\n\n'+persisted.draft_body+renderSources(refs);
+   const conflict=!page.import_synced_hash||fingerprint(page.title,page.body)!==page.import_synced_hash;
+   if(conflict){
+    await client.query(
+     "INSERT INTO document_import_proposals(id,project_id,job_id,topic_key,document_id,title,proposed_body,base_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(job_id,topic_key) DO UPDATE SET proposed_body=EXCLUDED.proposed_body,base_hash=EXCLUDED.base_hash,status='open',decided_at=NULL",
+     [randomUUID(),job.project_id,job.id,oldKey,page.id,page.title,revised,fingerprint(page.title,page.body)]);
+   }else{
+    await client.query('UPDATE documents SET body=$2,source_refs=$3,import_synced_hash=$4,updated_at=now() WHERE id=$1',
+     [page.id,revised,JSON.stringify(refs),fingerprint(page.title,revised)]);
+   }
+   await client.query("UPDATE document_import_topics SET status=$3,source_refs=$4,review_suggestion=$5,updated_at=now() WHERE job_id=$1 AND topic_key=$2",
+    [job.id,oldKey,conflict?'conflict':'complete',JSON.stringify(refs),conflict?'Ручные изменения: подготовлена версия источников для согласования':null]);
+  }else{
+   await client.query('DELETE FROM document_import_topics WHERE job_id=$1 AND topic_key=$2 AND cursor=0 AND page_id IS NULL',
+    [job.id,oldKey]);
+  }
+  await client.query('COMMIT');
+ }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+ for(const fragment of pending)fragment.topics=[assignments.get(fragment.index)!];
+ await progress('remapped','Большая тема разделена на '+new Set([...assignments.values()].map(t=>t.key)).size+' предметных разделов. Уже сохранённые части и вопросы сохранены.');
+}
+
 export type TopicImportArgs={
  pool:Pool;job:any;files:SourceFile[];sourceName:string;
  location?:{owner:string;repository:string;commit:string};
@@ -170,6 +302,7 @@ export async function importByTopics(args:TopicImportArgs){
   classified.push({...fragment,notes:digest.notes,topics,exclusion:digest.exclusion_reason||null});
   await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2 WHERE id=$1',[jobId,fragment.index]);
  }
+ await diversifyCollapsedTopics(args,classified,sourceName,location);
  const groups=new Map<string,ClassifiedFragment[]>();
  for(const fragment of classified){
   for(const topic of fragment.topics){
