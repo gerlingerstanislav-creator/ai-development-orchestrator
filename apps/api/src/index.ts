@@ -1488,6 +1488,26 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
    return {ok:false,status:409,message:'Разработка не была завершена. Необходимо запустить разработчика через менеджера проекта.'};
   }
   if(task.stage==='testing'){
+   // Legacy analyst questions about files/PR must never be escalated to the
+   // customer or silently block QA if GitHub already supplies that evidence.
+   const unresolved=await pool.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' AND author_stage='analysis' LIMIT 30",[projectId,taskId]);
+   const requests=unresolved.rows.filter(n=>
+    /(?:diff|patch|pull request|\\bPR\\b|репозитор|исходн.{0,15}код|файл)/i.test(n.body)
+    &&/(?:нуж|не вид|пришл|предостав|доступ|провер|отсутств)/i.test(n.body));
+   if(requests.length){
+    if(!task.pr_number||!task.repository||!task.secret_encrypted)
+     return {ok:false,status:409,message:'Нельзя получить PR через подключённый GitHub. Проверь GitHub-подключение проекта.'};
+    const response=await fetch('https://api.github.com/repos/'+task.repository+'/pulls/'+task.pr_number,{
+     headers:{Authorization:'Bearer '+decryptToken(task.secret_encrypted),Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+     signal:AbortSignal.timeout(15000)
+    });
+    if(!response.ok)return {ok:false,status:503,message:'Не удалось подтвердить PR в GitHub: '+response.status};
+    const pr=await response.json() as any;
+    if(pr.state!=='open'||pr.head?.ref!==task.git_branch)
+     return {ok:false,status:409,message:'Текущий PR недействителен для ветки задачи. QA нельзя продолжить.'};
+    await pool.query("UPDATE task_agent_notes SET status='answered',answer='Менеджер проекта получил PR непосредственно из GitHub; проверку поведения выполняет QA, вопрос не требует ответа заказчика.',answer_author='Менеджер проекта',answered_at=now() WHERE project_id=$1 AND task_id=$2 AND status='open' AND id=ANY($3::uuid[])",
+     [projectId,taskId,requests.map(n=>n.id)]);
+   }
    const latest=await pool.query("SELECT id,status,verdict FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1",[projectId,taskId]);
    const decisions=await pool.query("SELECT id FROM manager_requests WHERE project_id=$1 AND task_id=$2 AND kind='qa_visual' AND status='open' LIMIT 1",[projectId,taskId]);
    if(decisions.rowCount&&latest.rows[0]?.status==='completed'&&latest.rows[0]?.verdict==='blocked')
