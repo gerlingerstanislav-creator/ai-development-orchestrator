@@ -5,7 +5,7 @@ import './style.css';
 import {QaPanel} from './QaPanel.js';
 
 type Project={id:string,name:string,description:string};
-type Task={spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
 type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
@@ -23,7 +23,10 @@ const agentRunLabels={
 };
 type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[]};
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
-type KanbanGroup={key:KanbanGroupKey;title:string;stages:Stage[]};
+type KanbanLane=Pick<Stage,'stage'|'label'>;
+type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
+const productOwnerLane:KanbanLane={stage:'product_owner_questions',label:'Вопросы к ПО'};
+const boardLaneFor=(task:Task)=>task.awaits_product_owner?productOwnerLane.stage:task.stage;
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
  {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
@@ -935,12 +938,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   (activeTask?.id===taskId&&!!taskOrchestration)||aiRuns.some(r=>r.task_id===taskId&&r.status==='running')||
   testRuns.some(r=>r.task_id===taskId&&r.status==='running')||
   projectProcesses.some(p=>p.kind==='analysis'&&p.taskId===taskId&&['queued','running'].includes(p.status));
- // A Temporal test can complete after the development run has finished.
- // Refresh board state independently of the former development-run poller.
+ // The board also follows questions opened or resolved while the task chat is closed.
  useEffect(()=>{
-  if(!token||!selected?.id||!tasks.some(t=>t.stage==='testing'))return;
+  if(!token||!selected?.id||loadedProjectId!==selected.id||section!=='tasks')return;
   let alive=true;
   const timer=window.setInterval(async()=>{
+   if(document.hidden)return;
    try{
     const current=await api<Task[]>('/projects/'+selected.id+'/tasks');
     if(!alive)return;
@@ -949,7 +952,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    }catch{/* Keep prior state during transient network failures. */}
   },7000);
   return()=>{alive=false;window.clearInterval(timer);};
- },[token,selected?.id,tasks.some(t=>t.stage==='testing')]);
+ },[token,selected?.id,loadedProjectId,section]);
  function openDocumentationChat(){
   setAnalystDocumentId(selectedDocId);
   setProjectChatMode('documentation');
@@ -1143,38 +1146,41 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const kanbanGroups:KanbanGroup[]=stageGroupDefinitions.map(def=>({
   key:def.key,title:def.title,
-  stages:stages.filter(stage=>def.ids.includes(stage.stage))
+  stages:[...(def.key==='analytics'?[productOwnerLane]:[]),...stages.filter(stage=>def.ids.includes(stage.stage))]
  })).filter(group=>group.stages.length>0);
  const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
  if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
  function renderKanbanCard(t:Task,showStage=false){
   return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
-    draggable onDragStart={e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
+    draggable={!t.awaits_product_owner} onDragStart={t.awaits_product_owner?undefined:e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
     <span className="task-card-top"><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
     <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     <p>{t.description||'Без описания'}</p>
-    {t.analysis_state==='needs_clarification'&&<small className="task-warning">Требуются ответы</small>}
+    {t.awaits_product_owner&&<small className="task-warning">
+     Ждёт ответа · {stages.find(stage=>stage.stage===t.stage)?.label||t.stage}
+    </small>}
   </a>;
  }
- function renderKanbanLane(s:Stage){
-  const stageTasks=filtered.filter(t=>t.stage===s.stage);
+ function renderKanbanLane(s:KanbanLane){
+  const isQuestions=s.stage===productOwnerLane.stage;
+  const stageTasks=filtered.filter(t=>boardLaneFor(t)===s.stage);
   return <div className="lane" key={s.stage}
-   onDragOver={e=>e.preventDefault()}
-   onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task)void moveTask(task,s.stage);}setDrag(null);}}>
+   onDragOver={isQuestions?undefined:e=>e.preventDefault()}
+   onDrop={isQuestions?undefined:e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
    <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
     {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
     {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
    </div>
-   <div className="cards">{stageTasks.map(t=>renderKanbanCard(t))}{stageTasks.length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}</div>
+   <div className="cards">{stageTasks.map(t=>renderKanbanCard(t))}{stageTasks.length===0&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}</div>
   </div>;
  }
  function renderCollapsedGroup(group:KanbanGroup){
-  const groupTasks=filtered.filter(t=>group.stages.some(stage=>stage.stage===t.stage));
+  const groupTasks=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t)));
   // One list, not nested stage columns. Keep stage identity on each card.
   const ordered=groupTasks.slice().sort((a,b)=>{
-   const ai=group.stages.findIndex(stage=>stage.stage===a.stage);
-   const bi=group.stages.findIndex(stage=>stage.stage===b.stage);
+   const ai=group.stages.findIndex(stage=>stage.stage===boardLaneFor(a));
+   const bi=group.stages.findIndex(stage=>stage.stage===boardLaneFor(b));
    return ai-bi || new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
   });
   return <div className="kanban-group-combined">
@@ -1334,11 +1340,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board board-groups">
  {kanbanGroups.map(group=>{
   const expanded=expandedGroups.includes(group.key);
-  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===t.stage)).length;
+  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t))).length;
   return <section key={group.key} className={'kanban-group '+(expanded?'is-expanded':'is-collapsed')} style={{['--kanban-stage-count' as string]:group.stages.length} as React.CSSProperties}>
    <button className="kanban-group-heading" type="button" aria-expanded={expanded} onClick={()=>toggleKanbanGroup(group.key)}
     title={expanded?'Свернуть этапы':'Развернуть этапы'}><span className="group-mark"/>
-    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.length} эт.</span><span className="group-task-count">{count}</span>
+    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.filter(stage=>stage.stage!==productOwnerLane.stage).length} эт.</span><span className="group-task-count">{count}</span>
     <ChevronDown size={16} className={'group-chevron '+(expanded?'expanded':'')}/>
    </button>
    {expanded?<div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage))}</div>:renderCollapsedGroup(group)}

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {checkedWithActualCapabilities,isVisualAcceptanceCase} from '../dist/qa-evidence.js';
-import {isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes} from '../dist/project-manager.js';
+import {isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes,tasksWithCustomerQuestions} from '../dist/project-manager.js';
 
 test('browserless QA cannot certify a visual circle layout by reading CSS',()=>{
  const planned=[{id:'circle',title:'Фигуры расположены по окружности и стрелки видны',
@@ -94,6 +94,7 @@ test('answers in task chat update analysis and an explicit start can recover an 
  const actorId='00000000-0000-4000-8000-000000000004';
  const answer='Внутренний круг внутри всей группы фигур.';
  let text=answer,questions=['Где должен быть внутренний круг?'],starts=0,analysisCalls=0,reviewed=false,allowLaunch=true;
+ let remaining=[];
  const pool={query:async(sql,params)=>{
   if(sql.startsWith('SELECT m.actor_id'))return {rows:[{actor_id:actorId,email:'admin@example.org',body:text,created_at:new Date('2026-11-09T20:00:00Z')}]};
   if(sql.startsWith('SELECT id,stage,spec_review_status'))return {rows:[{stage:'analysis',clarification_questions:questions}]};
@@ -112,7 +113,7 @@ test('answers in task chat update analysis and an explicit start can recover an 
   if(req.body.message==='Какой статус задачи?')return {relevant:false};
   assert.equal(req.body.message,answer);
   reviewed=true;
-  questions=[];
+  questions=remaining;
   return {message:'ТЗ уточнено.',questions};
  });
  app.post('/api/projects/:projectId/tasks/:taskId/approve-development',async(req,reply)=>{
@@ -129,11 +130,11 @@ test('answers in task chat update analysis and an explicit start can recover an 
  text='Какой статус задачи?';
  assert.deepEqual((await turn()).json(),{message:''});
  text=answer;
+ remaining=['Какого цвета должен быть круг?'];
  assert.deepEqual((await turn()).json(),{message:'ТЗ уточнено.',handled:true});
- assert.equal(starts,0,'An answer alone does not approve development');
+ assert.equal(starts,0,'A partial answer leaves the task waiting');
 
- questions=['Где должен быть внутренний круг?'];reviewed=false;
- text='Отдай задачу в разработку';
+ remaining=[];
  const result=(await turn()).json();
  assert.match(result.message,/ТЗ уточнено.*запуск принят/si);
  assert.equal(result.handled,true);
@@ -141,6 +142,28 @@ test('answers in task chat update analysis and an explicit start can recover an 
  assert.equal(starts,1);
 
  allowLaunch=false;
+ text='Отдай задачу в разработку';
  assert.deepEqual((await turn()).json(),{message:'Нет подключения GitHub',handled:true});
  assert.equal(analysisCalls,3,'Launch on a ready task does not call the analyst again');
+
+ questions=['Где должен быть внутренний круг?'];reviewed=false;allowLaunch=true;
+ assert.match((await turn()).json().message,/ТЗ уточнено.*запуск принят/si);
+ assert.equal(analysisCalls,4,'The explicit command can still recover an earlier answer');
+});
+
+
+test('owner questions project onto the board without changing task stages',async()=>{
+ const defaults={open_notes:[],material_review:false,blocked_qa:null};
+ const rows=[
+  {...defaults,id:'new',stage:'analysis',clarification_questions:['Какого цвета должен быть круг?']},
+  {...defaults,id:'internal',stage:'development',open_notes:['Аналитику нужен полный diff PR по ветке задачи']},
+  {...defaults,id:'later',stage:'testing',open_notes:['Нужно ли оставлять стрелки?']},
+  {...defaults,id:'resolved',stage:'analysis',clarification_questions:[]},
+  {...defaults,id:'review',stage:'merge_queue',spec_review_status:'needs_approval',material_review:true}
+ ];
+ const tasks=await tasksWithCustomerQuestions({query:async()=>({rows})},'project');
+ assert.deepEqual(tasks.map(task=>[task.id,task.stage,task.awaits_product_owner]),[
+  ['new','analysis',true],['internal','development',false],['later','testing',true],
+  ['resolved','analysis',false],['review','merge_queue',true]
+ ]);
 });

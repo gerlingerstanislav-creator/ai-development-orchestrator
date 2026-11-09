@@ -666,7 +666,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     if(!exists.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
    }
    await store(id,taskId,null,'assistant',analysisNote);
-   answer='Создана задача в колонке «Анализ»: '+data.title+'\n\n'+(data.questions.length?'Вопросы находятся в чате задачи.':'ТЗ готово к подтверждению.')+
+   answer='Создана задача в колонке '+(data.questions.length?'«Вопросы к ПО»':'«Анализ»')+': '+data.title+'\n\n'+(data.questions.length?'Вопросы находятся в чате задачи.':'ТЗ готово к подтверждению.')+
       (related.length?'\nОбнаружены связанные задачи: '+related.length:'');
   }
   await store(id,null,uid(req),'user',message,null,null,mode);
