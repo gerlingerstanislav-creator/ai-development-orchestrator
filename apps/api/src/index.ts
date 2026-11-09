@@ -532,6 +532,25 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  }
  return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:ai.model,created_at:new Date().toISOString()});
 });
+app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const task=await pool.query('SELECT stage,pr_url,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
+ if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
+  return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
+ const active=await pool.query("SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
+ if(active.rowCount)return reply.code(409).send({error:'Проверка этой задачи уже запущена'});
+ const cycleId=randomUUID();
+ try{
+  const client=await temporal();
+  await client.workflow.start('manualTesting',{
+   taskQueue:'agent-pipeline',workflowId:'manual-test-'+cycleId,
+   args:[{projectId:id,taskId,cycleId}]
+  });
+ }catch(error){return reply.code(503).send({error:'Temporal недоступен: '+(error as Error).message});}
+ return reply.code(202).send({cycle_id:cycleId,status:'queued',message:'AI-тестирование запущено через Temporal'});
+});
 app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
