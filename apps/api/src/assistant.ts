@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { randomUUID,createHash } from 'node:crypto';
 import { z } from 'zod';
 import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,wantsDocumentSynthesis} from './github-document-import.js';
+import {pendingAgentQuestions,taskNotesContext} from './task-agent-notes.js';
 import {saveSpecRevision} from './requirements.js';
 
 type Dependencies={
@@ -594,7 +595,9 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
    'Открытые вопросы: '+JSON.stringify(task.clarification_questions),
    'Текущая кодовая зависимость: '+String(task.depends_on_task_id||'нет'),
    'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,9000),
-   'История:\n'+await history(id,taskId),'Сообщение пользователя:\n'+message].join('\n\n');
+   'История:\n'+await history(id,taskId),
+   'Рабочие комментарии участников задачи (это не утверждённые требования): '+await taskNotesContext(pool,id,taskId,task.stage==='analysis'?'analysis':task.stage),
+   'Сообщение пользователя:\n'+message].join('\n\n');
   const refining=task.stage==='analysis';
   const prompt=refining?[
    'Ты системный аналитик. Ответ пользователя может уточнять открытые вопросы или содержать дополнительное требование. Обнови ТЗ, не теряя ранее согласованные требования.',
@@ -658,7 +661,7 @@ export function registerAssistantRoutes(app:FastifyInstance,deps:Dependencies){
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const task=await pool.query('SELECT stage,analysis_state,clarification_questions,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
   if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
-  if(task.rows[0].stage!=='analysis'||task.rows[0].analysis_state!=='ready_for_development'||task.rows[0].spec_review_status!=='current'||(task.rows[0].clarification_questions||[]).length)
+  if(task.rows[0].stage!=='analysis'||task.rows[0].analysis_state!=='ready_for_development'||task.rows[0].spec_review_status!=='current'||(task.rows[0].clarification_questions||[]).length||await pendingAgentQuestions(pool,id,taskId))
    return reply.code(409).send({error:'Сначала ответь на блокирующие вопросы AI-аналитика'});
   await pool.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE id=$1 AND project_id=$2",[taskId,id]);
   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Анализ → Разработка')",[randomUUID(),taskId,uid(req)]);
