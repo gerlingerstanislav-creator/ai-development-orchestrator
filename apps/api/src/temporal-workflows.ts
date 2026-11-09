@@ -128,3 +128,11 @@ export async function requirementsReview(input:{projectId:string;taskId:string;r
   return 'failed';
  }
 }
+
+
+/** Each user turn is a durable Temporal workflow. Failure leaves a retryable
+ *  persisted message, not an invisible discarded request. */
+export async function projectManagerReply(input:{projectId:string;taskId:string;messageId:string}):Promise<string>{
+ await steps.completeManagerMessage(input);
+ return 'responded';
+}
