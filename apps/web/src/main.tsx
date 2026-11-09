@@ -1645,7 +1645,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <button type="button" className="secondary" onClick={()=>{setCancelPreview(null);setCancelError('');}}>Не отменять</button>
         <button type="button" className="task-action-danger" disabled={cancelBusy||cancelPreview.blocked.length>0} onClick={()=>void confirmTaskCancellation()}>{cancelBusy?'Очистка…':'Да, отменить и очистить'}</button>
        </div>
-      </div>
+      </div>}
       {managerFeedback&&<p className="manager-action-error">{managerFeedback}</p>}
      </div>
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
