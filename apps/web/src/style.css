@@ -822,3 +822,20 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .task-process-link{display:inline-flex;align-items:center;align-self:flex-start;margin:5px 0 0;padding:0;color:#5b68cd;font-size:11px;border:0;background:transparent;text-decoration:underline;cursor:pointer}
 .task-process-link:hover{color:#3e4cb0}
 .process-list-item .agent-equalizer i{background:#c99a5e}
+
+
+/* Compact Kanban task card: type and short ID together; stage follows title. */
+.tasks-page .task-card{display:flex;flex-direction:column;align-items:stretch;gap:7px;padding:11px 12px}
+.tasks-page .task-card-top{display:flex;align-items:center;justify-content:flex-start;gap:7px;min-height:22px}
+.tasks-page .task-card-top .task-type{margin:0;flex:0 0 auto}
+.tasks-page .task-card-top .task-id-label{display:inline;font-size:11px;line-height:1.25;white-space:nowrap;color:#7d8aa3}
+.tasks-page .task-card .task-name-line{display:flex;align-items:center;justify-content:space-between;gap:7px;min-width:0;margin:0}
+.tasks-page .task-card .task-name-line>strong{font-size:13px;line-height:1.35;overflow-wrap:anywhere;min-width:0;flex:1 1 auto;margin:0}
+.tasks-page .task-card-state{display:inline-flex;align-items:center;justify-content:flex-end;gap:5px;flex:0 1 auto;min-width:0;margin-left:auto}
+.tasks-page .task-card-state .task-card-stage{max-width:100%;min-width:0;display:inline-flex;align-items:center;gap:5px;font-size:10px;line-height:1.3;color:#64748b;white-space:nowrap;font-weight:650}
+.tasks-page .task-card-state .stage-dot{flex:0 0 7px;width:7px;height:7px}
+.tasks-page .task-card-state .agent-equalizer{flex:0 0 16px}
+.tasks-page .task-card>p{margin:0;font-size:11px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tasks-page .task-card .task-warning{margin:0}
+.tasks-page .task-card .task-footer{display:none}
+@media(max-width:750px){.tasks-page .task-card .task-name-line{flex-wrap:wrap}.tasks-page .task-card-state{margin-left:0}}
