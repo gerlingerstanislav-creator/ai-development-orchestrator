@@ -43,7 +43,8 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
   CREATE TEMP TABLE document_import_fragments(job_id uuid,fragment_index int,file_path text,heading text,content_sha text,notes text,topics jsonb,exclusion_reason text,PRIMARY KEY(job_id,fragment_index));
   CREATE TEMP TABLE document_import_topics(job_id uuid,topic_key text,title text,status text DEFAULT 'pending',cursor int DEFAULT 0,page_id uuid,draft_body text DEFAULT '',source_refs jsonb DEFAULT '[]'::jsonb,review_suggestion text,updated_at timestamptz DEFAULT now(),PRIMARY KEY(job_id,topic_key));
   CREATE TEMP TABLE document_import_proposals(id uuid,project_id uuid,job_id uuid,topic_key text,document_id uuid,title text,proposed_body text,base_hash text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),decided_at timestamptz,UNIQUE(job_id,topic_key));
-  CREATE TEMP TABLE documentation_questions(id uuid,project_id uuid,job_id uuid,topic_key text,question_key text,document_id uuid,question text,answer text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),answered_at timestamptz,UNIQUE(project_id,document_id,question_key));
+  CREATE TEMP TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,description text,type text,stage text,position int,document_id uuid,question_key text,question_topic text,question_status text,question_job_id uuid,created_at timestamptz DEFAULT now());
+  CREATE UNIQUE INDEX ON tasks(project_id,document_id,question_key) WHERE type='question';
   CREATE TEMP TABLE assistant_messages(id uuid,project_id uuid,task_id uuid,actor_id uuid,role text,body text,created_document_id uuid,channel text,created_at timestamptz);
  `.replaceAll('\\`','`'));
  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
@@ -108,7 +109,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  assert.ok(paths.some(x=>x.endsWith('USER_STORIES.md')));
  assert.ok(paths.some(x=>x.endsWith('OPERATIONS_AND_BARISTA_UX.md')));
  assert.ok(preorder.source_refs.every(x=>x.url?.includes('/blob/'+fixture.source_commit+'/')),'Every GitHub citation is SHA-pinned');
- const questions=(await db.query('SELECT document_id FROM documentation_questions WHERE project_id=$1',[projectId])).rows;
+ const questions=(await db.query('SELECT document_id FROM tasks WHERE type='question' AND project_id=$1',[projectId])).rows;
  assert.ok(questions.some(x=>x.document_id===preorder.id));
  assert.equal((await db.query("SELECT count(*)::int n FROM document_import_topics WHERE job_id=$1 AND status NOT IN ('complete','conflict')",[job.id])).rows[0].n,0);
  assert.ok(events.some(x=>x.stage==='topic_saved'));
@@ -213,7 +214,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  const collapsedDocs=(await db.query("SELECT id,title,import_source FROM documents WHERE project_id=$1 AND import_source LIKE $2",
   [collapsedProject,'topic:'+collapsedSourceKey+':%'])).rows;
  assert.ok(collapsedDocs.length>=6,'The recovery must create multiple topic-specific pages');
- assert.equal((await db.query('SELECT count(*)::int n FROM documentation_questions WHERE project_id=$1',[collapsedProject])).rows[0].n,
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type='question' AND project_id=$1',[collapsedProject])).rows[0].n,
   largeQuestions.length*(collapsedDocs.length-1),'Nine distinct questions per new topic must survive, without duplicates from successive batches');
  assert.ok(collapsedEvents.some(event=>event.stage==='remapped'));
  assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[collapsedJobId])).rows[0].status,'completed');
@@ -291,7 +292,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  assert.match(replaySaved.body,/Три части уже проверены и сохранены/);
  assert.match(replaySaved.body,/Требование из первого JSON/);
  assert.match(replaySaved.body,/Требование из дополнительного JSON/);
- assert.equal((await db.query('SELECT count(*)::int n FROM documentation_questions WHERE project_id=$1',[replayProject])).rows[0].n,7);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type='question' AND project_id=$1',[replayProject])).rows[0].n,7);
  assert.ok(replayEvents.some(event=>event.stage==='format_retry'));
  const replayCalls=generated+repairedJson;
  await importByTopics(replayArgs);
