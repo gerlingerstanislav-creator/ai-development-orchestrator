@@ -54,7 +54,7 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    [intentId,id,uid(req),inventory.digest,inventory.pages,inventory.imports]);
   return {intent_id:intentId,project_name:project.name,pages:inventory.pages,imports:inventory.imports,
    roots_preserved:inventory.roots,confirmation_phrase:CONFIRM,
-   warning:'Будут безвозвратно удалены пользовательские и импортированные страницы, вопросы документации, история версий и прежние записи импорта. Системные корни и пустая структура ТЗ будут созданы заново. Задачи, план разработки и проектные правила не удаляются.'};
+   warning:'Будут безвозвратно удалены пользовательские и импортированные страницы, вопросы документации, история версий и прежние записи импорта. Пять системных корневых разделов останутся пустыми; всю вложенную структуру затем создают агенты. Задачи, план разработки и проектные правила не удаляются.'};
  });
  app.post('/api/projects/:id/documentation/reset/confirm',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
@@ -93,24 +93,13 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    }
    await client.query("UPDATE documents SET body='',knowledge_summary='',knowledge_tags=ARRAY[]::text[],updated_at=clock_timestamp() WHERE project_id=$1 AND system_key IS NOT NULL",[id]);
    await client.query('DELETE FROM document_import_jobs WHERE project_id=$1',[id]);
-   // Restore only the eight canonical empty headings, not any of the old generated pages.
-   await client.query(String.raw`
-    INSERT INTO documents(id,project_id,parent_id,title,body,knowledge_key,knowledge_status)
-    SELECT gen_random_uuid(),$1,root.id,section.title,'',section.key,'approved'
-    FROM documents root
-    CROSS JOIN (VALUES
-     ('overview','01. Общие сведения'),('goals','02. Назначение и цели'),
-     ('scope','03. Границы и состав системы'),('functional','04. Функциональные требования'),
-     ('nonfunctional','05. Нефункциональные требования'),('integrations','06. Данные и интеграции'),
-     ('constraints','07. Ограничения и допущения'),('acceptance','08. Критерии приёмки')
-    ) AS section(key,title)
-    WHERE root.project_id=$1 AND root.system_key='spec'
-   `,[id]);
+   // The system owns only the stable top-level roots. Subsections belong to agents.
+   // Never recreate an opinionated technical-spec template during a full reset.
    await client.query('UPDATE documentation_reset_intents SET consumed_at=now() WHERE id=$1',[intent_id]);
    await client.query('INSERT INTO documentation_reset_audit(id,project_id,actor_id,deleted_pages,deleted_imports) VALUES($1,$2,$3,$4,$5)',
     [randomUUID(),id,uid(req),deletedPages,imports.length]);
    await client.query('COMMIT');
-   return {ok:true,deleted_pages:deletedPages,deleted_imports:imports.length,remaining_system_roots:5,empty_spec_sections:8};
+   return {ok:true,deleted_pages:deletedPages,deleted_imports:imports.length,remaining_system_roots:5,empty_spec_sections:0};
   }catch(error){await client.query('ROLLBACK').catch(()=>{});
    if((error as any)?.code==='40001')return reply.code(409).send({error:'Во время очистки документы изменились. Повтори предварительный просмотр.'});
    throw error;}
