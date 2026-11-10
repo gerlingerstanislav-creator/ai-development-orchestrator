@@ -1141,3 +1141,17 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
  .iteration-workspace{padding:10px}
  .task-planning-fields{grid-template-columns:1fr}
 }
+
+/* Project manager: persistent discussion threads and scroll controls. */
+.pm-topic-bar,.pm-new-topic{display:flex;align-items:center;gap:6px;padding:6px 10px 0}
+.pm-topic-bar select,.pm-new-topic input{min-width:0;flex:1;padding:7px;font-size:12px}
+.pm-topic-bar .secondary,.pm-new-topic .secondary{flex:0 0 auto;padding:7px 9px;font-size:11px}
+.pm-thread-wrap{position:relative;display:flex;flex-direction:column;min-height:0;flex:1}
+.pm-thread-wrap .assistant-thread{flex:1;min-height:0}
+.pm-scroll-bottom{position:absolute;right:17px;bottom:12px;width:30px;height:30px;display:grid;place-items:center;border:1px solid #dce0e9;border-radius:50%;background:white;color:#5968df;box-shadow:0 2px 9px #26305120}
+.pm-reply-preview{display:flex;align-items:center;justify-content:space-between;padding:7px 12px;color:#69758a;font-size:11px;border-top:1px solid #e8eaf0;gap:8px}
+.pm-reply-preview span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-reply-preview button{background:transparent;border:0;color:#69758a}
+.pm-reply-button{display:block;font-size:11px;margin-top:5px;padding:2px 0}
+.pm-quoted-message{padding:6px 8px;border-left:2px solid #8895e5;background:#f5f6ff;border-radius:4px;font-size:11px;margin-bottom:5px;overflow-wrap:anywhere}
+.pm-message-topic{display:block;color:#828c9f;font-size:10px;margin-bottom:5px}
