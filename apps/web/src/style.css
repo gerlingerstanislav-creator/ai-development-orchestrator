@@ -1052,3 +1052,27 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .knowledge-audit-snapshot{padding:8px 0;border-bottom:1px solid var(--border,rgba(150,150,150,.2))}
 .knowledge-audit-snapshot>small{display:block;margin:3px 0}
 .knowledge-audit-snapshot a{word-break:break-word}
+
+/* Two role-specific chat launchers: both remain visible at the lower right. */
+.chat-agent-launchers{position:fixed;right:20px;bottom:20px;z-index:13;display:flex;align-items:center;gap:7px}
+.chat-agent-button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;width:54px;height:54px;border:1px solid #dce3ee;border-radius:15px;background:#fff;color:#495b75;font-size:11px;font-weight:700;box-shadow:0 8px 28px #152a4b26;cursor:pointer}
+.chat-agent-button:hover,.chat-agent-button.active{background:#5868df;border-color:#5868df;color:#fff}
+.chat-agent-button svg{width:18px;height:18px}
+.project-chat{bottom:84px;z-index:13}
+.project-chat-heading .ba-handoff-trigger{border:1px solid #e1e5ef;border-radius:7px;padding:6px 8px;font-size:11px;color:#43516d;background:#f8f9fc}
+.ba-handoff-form{display:grid;gap:7px;padding:11px 14px;background:#f8f9fc;border-bottom:1px solid #e1e5ef}
+.ba-handoff-form strong{font-size:12px}
+.ba-handoff-form .muted{font-size:11px;margin:0}
+.ba-handoff-form textarea{resize:vertical;min-height:75px;max-height:180px}
+.ba-handoff-form input,.ba-handoff-form textarea{width:100%;box-sizing:border-box;padding:7px 9px;font-size:12px;border:1px solid #dbe1eb;border-radius:6px}
+.ba-handoff-form .docs-actions{display:flex;justify-content:flex-end;gap:6px}
+.ba-handoff-notice{font-size:11px;color:#31734b;padding:8px 13px;margin:0}
+.docs-reset-action{display:flex;justify-content:center;align-items:center;gap:6px;width:100%;margin-top:7px;font-size:12px}
+.documentation-reset-overlay{z-index:160}
+.documentation-reset-dialog{width:min(500px,calc(100vw - 28px));max-height:85vh;overflow-y:auto;display:grid;gap:10px;padding:18px}
+.documentation-reset-dialog h2{font-size:17px;margin:0}
+.documentation-reset-dialog p{font-size:12px;margin:0;line-height:1.55}
+.documentation-reset-dialog label{display:grid;gap:5px;font-size:12px}
+.documentation-reset-dialog input{width:100%;box-sizing:border-box;padding:9px;border-radius:7px;border:1px solid #d8dfe8}
+.documentation-reset-dialog .docs-actions{display:flex;justify-content:flex-end;gap:7px}
+@media(max-width:650px){.chat-agent-launchers{bottom:12px;right:12px}.chat-agent-button{width:49px;height:49px}.project-chat{bottom:72px;right:10px;height:min(560px,calc(100vh - 100px))}}
