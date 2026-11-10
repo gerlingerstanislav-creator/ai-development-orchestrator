@@ -3,6 +3,10 @@ import {createRoot} from 'react-dom/client';
 import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
+import {KnowledgeInstructions} from './KnowledgeInstructions.js';
+import {KnowledgeTraceability} from './KnowledgeTraceability.js';
+import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
+import {KnowledgeAudit} from './KnowledgeAudit.js';
 
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
@@ -845,8 +849,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function updateDocumentation(){if(!selected||knowledgeBusy)return;
   setKnowledgeBusy(true);setDocumentationNotice('');
   try{
-   const r=await api<{updated_tasks:number}>('/projects/'+selected.id+'/documentation/update',{method:'POST'});
-   setDocumentationNotice('Документация обновлена по '+r.updated_tasks+' задачам. Задачи переведены в «Готово».');
+   const r=await api<{updated_tasks:number;awaiting_review?:number;proposals?:number}>('/projects/'+selected.id+'/documentation/update',{method:'POST'});
+   setDocumentationNotice('Завершено задач: '+r.updated_tasks+'. '+(r.awaiting_review?'Ожидает согласования тематической документации: '+r.awaiting_review+'.':'')+(r.proposals?' Предложений на проверку: '+r.proposals+'.':''));
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
  }
@@ -1555,6 +1559,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <textarea rows={3} value={processInstruction} onChange={e=>setProcessInstruction(e.target.value)} placeholder="Добавить требование или уточнить решение…"/>
       <button className="secondary" disabled={processActionBusy||!processInstruction.trim()} onClick={()=>void sendProcessInstruction(process)}>Отправить уточнение</button>
      </div>}
+     {selected&&process.taskId&&<KnowledgeAudit projectId={selected.id} taskId={process.taskId} processId={process.id} request={api}/>}
      <h4>Журнал событий</h4>
      {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{processEvents.map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
       <p className="muted">Для этого процесса подробный журнал пока отсутствует или загружается.</p>}
@@ -1568,7 +1573,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);setProjectChatMode('documentation');setProjectInput('Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');setProjectChatOpen(true);}}><LayoutGrid size={17}/></button>
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
-   <div className="docs-list-footer">
+   {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}\n   <div className="docs-list-footer">
     <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
     <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
    </div>
@@ -1587,6 +1592,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <label>Теги через запятую<input defaultValue={knowledgeMeta.tags.join(', ')} onBlur={e=>setKnowledgeMeta({...knowledgeMeta,tags:e.target.value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,30)})}/></label>
        <button className="secondary" disabled={docBusy} onClick={()=>void saveKnowledgeMetadata()}>Сохранить метаданные</button>
       </div>
+      {selected&&<KnowledgeTraceability projectId={selected.id} documentId={doc.id} tasks={tasks} request={api}/>}
       <h4>Связанные документы</h4>
       {knowledgeRelated.map(link=><div className="knowledge-link" key={link.id}>
        <span>{link.relation}: </span><a href={selected?projectUrl(selected.id,'docs')+'/'+link.related_document_id:'#'} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+link.related_document_id)}>{link.title}</a>
@@ -1624,6 +1630,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </>}
       </div>
      </header>
+     {selected&&<KnowledgeUpdateProposals projectId={selected.id} documentId={doc.id} request={api} onApplied={async()=>{await loadProject(selected.id);}}/>}
      {docProposals.filter(proposal=>proposal.document_id===doc.id).map(proposal=><div className="docs-proposal" key={proposal.id}>
        <strong>Аналитик предложил изменение, сохранена ручная версия</strong>
        <p>Тема: {proposal.title}. Перед применением проверь обновлённый Markdown.</p>

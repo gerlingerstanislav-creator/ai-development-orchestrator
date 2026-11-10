@@ -2,6 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
+import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 
 const uuid=z.string().uuid();
 /** Extend the current document tree in place. Never replace existing pages or IDs. */
@@ -152,7 +153,7 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
  app.get('/api/projects/:id/knowledge/context-reads',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id))return;
   const {task_id}=z.object({task_id:uuid}).parse(req.query);
-  const r=await pool.query('SELECT document_id,document_version,agent_stage,created_at FROM knowledge_context_reads WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 200',[id,task_id]);return {results:r.rows};
+  const r=await pool.query('SELECT document_id,document_version,agent_stage,process_id,created_at FROM knowledge_context_reads WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 200',[id,task_id]);return {results:r.rows};
  });
  app.delete('/api/projects/:id/knowledge/links/:linkId',async(req:any,reply)=>{
   const {id,linkId}=z.object({id:uuid,linkId:uuid}).parse(req.params);
@@ -172,27 +173,18 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
   if(!await access(req,reply,id))return;
   const r=await pool.query('SELECT body,updated_at FROM documents WHERE project_id=$1 AND id=$2',[id,documentId]);
   if(!r.rowCount)return reply.code(404).send({error:'Документ не найден'});
-  const lines=String(r.rows[0].body).split(/\r?\n/);
-  const headings:{index:number;level:number;title:string}[]=[];
-  lines.forEach((line,index)=>{const match=/^(#{1,6})\s+(.+)$/.exec(line);if(match)headings.push({index,level:match[1].length,title:match[2]});});
-  return {sections:headings.map((h,i)=>({id:String(h.index),title:h.title,level:h.level,excerpt:lines.slice(h.index,Math.min(lines.length,headings[i+1]?.index??lines.length)).join('\n').slice(0,240)})),version:r.rows[0].updated_at};
+  const sections=markdownSections(documentId,String(r.rows[0].body));
+  return {sections:sections.map(s=>({id:s.section_id,title:s.title,level:s.level,excerpt:sectionBody(r.rows[0].body,s).slice(0,240)})),version:r.rows[0].updated_at};
  });
  app.get('/api/projects/:id/knowledge/documents/:documentId/sections/:sectionId',async(req:any,reply)=>{
-  const {id,documentId,sectionId}=z.object({id:uuid,documentId:uuid,sectionId:z.coerce.number().int().min(0)}).parse(req.params);
+  const {id,documentId,sectionId}=z.object({id:uuid,documentId:uuid,sectionId:z.string().min(1).max(40)}).parse(req.params);
   if(!await access(req,reply,id))return;
   const r=await pool.query('SELECT body,updated_at FROM documents WHERE project_id=$1 AND id=$2',[id,documentId]);
   if(!r.rowCount)return reply.code(404).send({error:'Документ не найден'});
-  const lines=String(r.rows[0].body).split(/\r?\n/);
-  const heading=/^(#{1,6})\s+(.+)$/.exec(lines[sectionId]||'');
-  if(!heading)return reply.code(404).send({error:'Раздел не найден'});
-  let end=lines.length;
-  for(let i=sectionId+1;i<lines.length;i++){
-   const next=/^(#{1,6})\s+/.exec(lines[i]);
-   if(next&&next[1].length<=heading[1].length){end=i;break;}
-  }
-  return {document_id:documentId,section_id:String(sectionId),title:heading[2],body:lines.slice(sectionId,end).join('\n'),version:r.rows[0].updated_at};
+  const section=markdownSections(documentId,String(r.rows[0].body)).find(s=>s.section_id===sectionId||String(s.line)===sectionId);
+  if(!section)return reply.code(404).send({error:'Раздел не найден'});
+  return {document_id:documentId,section_id:section.section_id,title:section.title,body:sectionBody(String(r.rows[0].body),section),version:r.rows[0].updated_at};
  });
-
  app.get('/api/projects/:id/knowledge/spec/export',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
   if(!await access(req,reply,id))return;
@@ -236,7 +228,7 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
  app.get('/api/projects/:id/knowledge/context-snapshots',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id))return;
   const {task_id}=z.object({task_id:uuid}).parse(req.query);
-  const rows=await pool.query('SELECT id,task_id,agent_stage,agent_session_id,sources,instructions,created_at FROM knowledge_context_snapshots WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 100',[id,task_id]);
+  const rows=await pool.query('SELECT id,task_id,agent_stage,agent_session_id,process_id,sources,instructions,created_at FROM knowledge_context_snapshots WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 100',[id,task_id]);
   return {snapshots:rows.rows};
  });
 

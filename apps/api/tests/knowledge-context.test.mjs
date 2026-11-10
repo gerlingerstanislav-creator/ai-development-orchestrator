@@ -49,9 +49,13 @@ test('Knowledge Context migration is idempotent and retrieval is project scoped'
  assert.ok(search.json().results.some(row=>row.id===docId));
  const sections=await app.inject({url:'/api/projects/'+p+'/knowledge/documents/'+docId+'/sections'});
  assert.equal(sections.statusCode,200,sections.body);
- assert.equal(sections.json().sections[0].id,'0');
- const one=await app.inject({url:'/api/projects/'+p+'/knowledge/documents/'+docId+'/sections/0'});
+ const stableId=sections.json().sections[0].id;
+ assert.match(stableId,/^[0-9a-f-]{36}$/);
+ const one=await app.inject({url:'/api/projects/'+p+'/knowledge/documents/'+docId+'/sections/'+stableId});
  assert.match(one.json().body,/тестирования/);
+ await db.query('UPDATE documents SET body=$2 WHERE id=$1',[docId,'Вступление перед разделом\n\n## Обратный переход\nИз тестирования в разработку']);
+ const refreshed=await app.inject({url:'/api/projects/'+p+'/knowledge/documents/'+docId+'/sections'});
+ assert.equal(refreshed.json().sections[0].id,stableId,'Раздел сохраняет ID после сдвига строк');
  const otherRoot=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[foreign])).rows[0];
  const bad=await app.inject({method:'POST',url:'/api/projects/'+p+'/knowledge/links',payload:{
   source_document_id:docId,target_document_id:otherRoot.id,relation:'related_to'
