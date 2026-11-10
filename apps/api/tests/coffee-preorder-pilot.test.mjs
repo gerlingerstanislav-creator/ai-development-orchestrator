@@ -49,6 +49,9 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
  const projectId=randomUUID(),actorId=randomUUID(),rootId=randomUUID();
  await db.query("INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",[rootId,projectId]);
+ for(const [key,title] of [['architecture','Архитектура и технические решения'],['operations','Запуск и эксплуатация'],['design','Дизайн и интерфейсы'],['research','Исходные материалы и исследования']]){
+  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),projectId,title,key]);
+ }
  const sourceKey='github-ai:gerlingerstanislav-creator/ideas@main:coffee-preorder-43-0.3';
  const makeJob=async()=>{const id=randomUUID();await db.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_key,request_text) VALUES($1,$2,$3,'running','start',$4,'Подготовь ТЗ по темам')",[id,projectId,actorId,sourceKey]);return {id,project_id:projectId,actor_id:actorId,request_text:'Подготовь ТЗ по темам',source_key:sourceKey};};
  const job=await makeJob();
@@ -82,6 +85,17 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  const result=await importByTopics(makeArgs(job));
  assert.equal(result.generated_documents,6,'Six distinct cross-file topics from the nine real source files');
  assert.equal(result.commit,fixture.source_commit);
+
+ const originals=(await db.query("SELECT id,title,body,parent_id,source_refs FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%' ORDER BY title",[projectId])).rows;
+ assert.equal(originals.length,9,'Every original Markdown file must be accessible, including excluded fragments');
+ const archiveGroup=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND import_source LIKE 'source-group:%'",[projectId])).rows[0];
+ assert.ok(archiveGroup,'Originals are grouped rather than cluttering the root');
+ assert.ok(originals.every(doc=>doc.parent_id===archiveGroup.id));
+ const rawReadme=originals.find(doc=>doc.title.endsWith('README.md'));
+ assert.ok(rawReadme);
+ assert.ok(rawReadme.body.includes(fixture.files.find(file=>file.path.endsWith('README.md')).body),'Original source content is retained verbatim');
+ assert.ok(originals.every(doc=>doc.source_refs[0]?.url?.includes('/blob/'+fixture.source_commit+'/')));
+
  const resumedCalls=analystCalls-callsBeforeResume;
  assert.ok(resumedCalls<fragments.length,'Resume must reuse every classified fragment and completed theme');
  assert.equal((await db.query('SELECT count(*)::int n FROM document_import_fragments WHERE job_id=$1',[job.id])).rows[0].n,fragments.length);
@@ -102,6 +116,7 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  // Reimport the same repository reference after a manual edit: same document ID,
  // a review proposal rather than overwriting the user's changes.
  await db.query("UPDATE documents SET body='Ручная правка заказчика',updated_at=now() WHERE id=$1",[preorder.id]);
+ await db.query("UPDATE documents SET body='Ручная правка источника',updated_at=now() WHERE id=$1",[rawReadme.id]);
  const fresh=await makeJob();
  const rerun=await importByTopics(makeArgs(fresh));
  assert.equal(rerun.generated_documents,6);
@@ -113,6 +128,13 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  assert.equal(proposals.length,1);
  assert.equal(proposals[0].status,'open');
  assert.match(proposals[0].proposed_body,/Предзаказ и выдача/);
+
+ assert.equal((await db.query("SELECT body FROM documents WHERE id=$1",[rawReadme.id])).rows[0].body,'Ручная правка источника');
+ assert.equal((await db.query("SELECT count(*)::int n FROM document_import_proposals WHERE document_id=$1 AND status='open'",[rawReadme.id])).rows[0].n,1,
+  'Reimport proposes source changes instead of overwriting a manually edited archived page');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId])).rows[0].n,9,
+  'Rerunning the same import does not duplicate archived sources');
+
 
  // Regression for an actual failed import: 122/122 fragments were classified,
  // the model put all of them in one topic, and its second portion returned >5 questions.
@@ -126,6 +148,9 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",
   [collapsedRoot,collapsedProject]);
+ for(const [key,title] of [['architecture','Архитектура и технические решения'],['operations','Запуск и эксплуатация'],['design','Дизайн и интерфейсы'],['research','Исходные материалы и исследования']]){
+  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),collapsedProject,title,key]);
+ }
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,import_synced_hash) VALUES($1,$2,$3,$4,$5,$6,$7)",
   [collapsedPage,collapsedProject,legacyTitle,legacyBody,collapsedRoot,'topic:'+collapsedSourceKey+':everything',fingerprint(legacyTitle,legacyBody)]);
@@ -211,6 +236,9 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",
   [replayRoot,replayProject]);
+ for(const [key,title] of [['architecture','Архитектура и технические решения'],['operations','Запуск и эксплуатация'],['design','Дизайн и интерфейсы'],['research','Исходные материалы и исследования']]){
+  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),replayProject,title,key]);
+ }
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,import_synced_hash) VALUES($1,$2,'Предзаказ и выдача',$3,$4,$5,$6)",
   [replayPage,replayProject,replayBody,replayRoot,replayKey,fingerprint('Предзаказ и выдача',replayBody)]);

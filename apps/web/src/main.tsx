@@ -1005,6 +1005,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setProjectInput('');setProjectPendingId(optimisticId);setProjectChatBusy(true);
   try{
    const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
+   let completedJob=false;
    let response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
     message,mode,attachments,documentId:mode==='documentation'?analystDocumentId:null
    })});
@@ -1018,7 +1019,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      if(job.status==='failed')throw new Error(job.message||'Не удалось импортировать документацию');
      if(job.status==='completed'){
       if(!job.result)throw new Error('Импорт завершился без результата');
-      response=job.result;break;
+      response=job.result;completedJob=true;break;
      }
     }
    }
@@ -1027,7 +1028,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
     if(files.length)setAnalystFiles([]);
    }
-   if(chatScope.current.startsWith(projectId+':')&&(response.created_task_id||response.created_document_id))await loadProject(projectId);
+   if(chatScope.current.startsWith(projectId+':')&&(completedJob||response.created_task_id||response.created_document_id))await loadProject(projectId);
   }catch(e){
    setProjectMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
    fail(e);
@@ -1464,7 +1465,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>}
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
-   <div className="docs-list-heading"><b>Страницы проекта</b><button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div>
+   <div className="docs-list-heading"><b>Страницы проекта</b><div className="docs-actions">
+     <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);setProjectChatMode('documentation');setProjectInput('Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');setProjectChatOpen(true);}}><LayoutGrid size={17}/></button>
+     <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
    <div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    <div className="docs-list-footer">
     <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
@@ -1635,7 +1638,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → Аналитику':'Аналитик → Вам'):(m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам')}</span>
       <div>{m.body}</div>
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
-      {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. Сообщение осталось в чате.</small>}
+      {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
       {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setProjectChatOpen(false);}}>Открыть документ</button>}
     </div>)}
