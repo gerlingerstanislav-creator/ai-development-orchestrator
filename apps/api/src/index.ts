@@ -5,6 +5,7 @@ import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
+import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {fingerprint} from './topic-import.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
@@ -252,6 +253,7 @@ async function dbInit() {
  `);
  await initDocumentationSystem(pool);
  await initKnowledgeContext(pool);
+ await initKnowledgeWorkflow(pool);
  const email=configuredAdminEmail();
  const password=process.env.ADMIN_PASSWORD;
  if (!email || !password || password.length < 12) throw Error('Set ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters)');
