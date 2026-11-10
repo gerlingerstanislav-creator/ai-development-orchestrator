@@ -9,13 +9,11 @@ import {registerAgentToolRoutes} from '../dist/agent-tool-routes.js';
 test('scoped MCP agent tools: migration, auth, document writes, rollback, idempotence and memory',async t=>{
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
  await db.connect();
- let inTransaction=false;
  const app=Fastify();
- t.after(async()=>{await app.close();if(inTransaction)await db.query('ROLLBACK');await db.end();});
- await db.query('BEGIN');inTransaction=true;
  const schema='agenttool_'+randomUUID().replaceAll('-','');
+ t.after(async()=>{await app.close();await db.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await db.end();});
  await db.query('CREATE SCHEMA '+schema);
- await db.query('SET LOCAL search_path TO '+schema+',public');
+ await db.query('SET search_path TO '+schema+',public');
  await db.query([
   'CREATE TABLE users(id uuid PRIMARY KEY)',
   'CREATE TABLE projects(id uuid PRIMARY KEY,name text,description text)',
@@ -83,5 +81,5 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.ok((await db.query('SELECT count(*)::int n FROM agent_tool_events WHERE session_id=$1',[session.id])).rows[0].n>=8);
  await finishAgentSession(pool,session.id);
  assert.equal((await call('documents.list')).statusCode,403);
- await db.query('ROLLBACK');inTransaction=false;
+
 });
