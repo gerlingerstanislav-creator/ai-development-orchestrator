@@ -5,6 +5,7 @@ import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
 import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
+import {taskConversationEvidence} from './task-agent-notes.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 
@@ -172,7 +173,12 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  case 'tasks.read':{
   const {task_id}=z.object({task_id:uuid}).parse(params);
   const r=await pool.query('SELECT id,title,description,stage,analysis_state,clarification_questions,depends_on_task_id,pr_url,updated_at FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]);
-  if(!r.rowCount)throw rejected('Задача не найдена',404);return {task:r.rows[0]};
+  if(!r.rowCount)throw rejected('Задача не найдена',404);
+  const [conversation,questions]=await Promise.all([
+   taskConversationEvidence(pool,projectId,task_id),
+   pool.query("SELECT body AS question,answer,answer_author FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='answered' AND answer IS NOT NULL ORDER BY answered_at DESC NULLS LAST,id DESC LIMIT 12",[projectId,task_id])
+  ]);
+  return {task:r.rows[0],conversation,answered_questions:questions.rows};
  }
  case 'tasks.create':{
   const {title,description}=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(10).max(12000)}).parse(params);

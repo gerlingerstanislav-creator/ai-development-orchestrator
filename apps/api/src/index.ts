@@ -1750,7 +1750,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,sta
  const client=await temporal();
  await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
 }});
-registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken,
+const assistant=registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken,
  startDocumentationWorkflow:async jobId=>{
   const client=await temporal();
   await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
@@ -1852,6 +1852,7 @@ registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirements
 }});
 registerTaskCancellationRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
+ decideAction:assistant.decideTaskManagerAction,
  workerSecret:runnerKey,
  workerAuthorization:async(actorId,email)=>'Bearer '+await new SignJWT({email}).setProtectedHeader({alg:'HS256'})
   .setSubject(actorId).setIssuedAt().setExpirationTime('2m').sign(jwtKey),
