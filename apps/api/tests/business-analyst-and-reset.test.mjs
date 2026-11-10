@@ -48,7 +48,7 @@ test('documentation reset is previewed, project-scoped, one-time and removes onl
   'CREATE TABLE projects(id uuid PRIMARY KEY,name text NOT NULL)',
   "CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),parent_id uuid REFERENCES documents(id) ON DELETE SET NULL,title text NOT NULL,body text DEFAULT '',updated_at timestamptz DEFAULT now(),system_key text,knowledge_summary text DEFAULT '',knowledge_tags text[] DEFAULT ARRAY[]::text[],knowledge_key text,knowledge_status text DEFAULT 'approved')",
   "CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),updated_at timestamptz DEFAULT now(),status text DEFAULT 'completed')",
-  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),type text DEFAULT 'task',document_id uuid REFERENCES documents(id),title text,description text,question_status text)"
+  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),type text DEFAULT 'task',document_id uuid REFERENCES documents(id),title text,description text,question_status text,updated_at timestamptz DEFAULT now())"
  ].join(';\n')+';');
  const pool={query:(...args)=>db.query(...args),connect:async()=>({
   query:(sql,...args)=>sql==='BEGIN ISOLATION LEVEL SERIALIZABLE'?db.query('SAVEPOINT test_reset'):
@@ -66,6 +66,8 @@ test('documentation reset is previewed, project-scoped, one-time and removes onl
  await db.query("INSERT INTO document_import_jobs(id,project_id,status) VALUES($1,$2,'completed')",[importId,project]);
  const otherPage=randomUUID();
  await db.query("INSERT INTO documents(id,project_id,title,system_key) VALUES($1,$2,'Техническое задание','spec')",[otherPage,other]);
+ const developmentTask=randomUUID();
+ await db.query("INSERT INTO tasks(id,project_id,type,title) VALUES($1,$2,'task','Сохранить задачу разработки')",[developmentTask,project]);
  registerDocumentationResetRoutes(app,{pool,uid:()=>user,access:async()=>true,requireAdmin:async()=>true});
  const url='/api/projects/'+project+'/documentation/reset';
  const preview=await app.inject({method:'POST',url:url+'/preview'});
@@ -77,15 +79,28 @@ test('documentation reset is previewed, project-scoped, one-time and removes onl
  const stale=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:staleId,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
  assert.equal(stale.statusCode,409,stale.body);
  const next=await app.inject({method:'POST',url:url+'/preview'});
- const denied=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:next.json().intent_id,project_name:'Другое имя',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
+ assert.equal(next.json().questions,0);
+ const newQuestion=randomUUID();
+ await db.query("INSERT INTO tasks(id,project_id,type,document_id,title,description,question_status) VALUES($1,$2,'question',$3,'Вопрос к ПО','Нужно решение владельца','open')",[newQuestion,project,page]);
+ const staleQuestions=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:next.json().intent_id,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
+ assert.equal(staleQuestions.statusCode,409,'New analyst questions must invalidate the deletion preview');
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE id=$1',[newQuestion])).rows[0].n,1);
+ const current=await app.inject({method:'POST',url:url+'/preview'});
+ assert.equal(current.json().questions,1,'Preview must reveal all analyst-question tasks that will be removed');
+ const denied=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:current.json().intent_id,project_name:'Другое имя',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
  assert.equal(denied.statusCode,409,denied.body);
- const done=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:next.json().intent_id,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
+ const done=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:current.json().intent_id,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
  assert.equal(done.statusCode,200,done.body);
  assert.equal(done.json().deleted_pages,2);
+ assert.equal(done.json().deleted_questions,1);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE id=$1',[developmentTask])).rows[0].n,1,'Development tasks must be preserved');
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE id=$1',[newQuestion])).rows[0].n,0);
+ assert.equal((await db.query('SELECT deleted_questions FROM documentation_reset_audit WHERE project_id=$1',[project])).rows[0].deleted_questions,1);
+
  assert.equal((await db.query('SELECT count(*)::int n FROM documents WHERE project_id=$1',[project])).rows[0].n,1,'Only the existing top-level root remains; no template sections are recreated');
  assert.equal((await db.query('SELECT count(*)::int n FROM document_import_jobs WHERE project_id=$1',[project])).rows[0].n,0);
  assert.equal((await db.query('SELECT count(*)::int n FROM documents WHERE project_id=$1',[other])).rows[0].n,1);
- const replay=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:next.json().intent_id,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
+ const replay=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:current.json().intent_id,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
  assert.equal(replay.statusCode,409,replay.body);
  await db.query('ROLLBACK');opened=false;
 });
