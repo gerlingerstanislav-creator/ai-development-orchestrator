@@ -5,6 +5,7 @@ import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
+import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
@@ -279,6 +280,7 @@ async function dbInit() {
  ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
  await initDocumentationSystem(pool);
+ await initDocumentationReset(pool);
  await initKnowledgeContext(pool);
  await initKnowledgeWorkflow(pool);
  await initKnowledgeDocumentUpdates(pool);
@@ -1659,6 +1661,7 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 });
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
+registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
 registerKnowledgeDocumentUpdateRoutes(app,{pool,uid,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
