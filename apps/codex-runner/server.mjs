@@ -316,7 +316,8 @@ async function runJob(job,state){
   if(!existingPr.ok)throw new Error('Не удалось проверить существующий PR: GitHub HTTP '+existingPr.status);
   const openPrs=await existingPr.json();
   const samePr=openPrs.find(pr=>pr.base?.ref===job.baseBranch);
-  const prUrl=samePr?.html_url||await createPullRequest(job,branch,attempt.answer||'Изменения подготовлены.');
+  const prBody=String(attempt.answer||'').replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
+   const prUrl=samePr?.html_url||await createPullRequest(job,branch,prBody||'Изменения подготовлены.');
   const handoff=String(attempt.answer||'').match(/HANDOFF_NOTE:\s*([^\n\r]{1,2800})/i)?.[1]?.trim()||'';
   state.handoffNote=/^(none|нет|отсутствуют)[.!]?$/i.test(handoff)?'':handoff.slice(0,2500);
    const learning=String(attempt.answer||'').match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim()||'';
