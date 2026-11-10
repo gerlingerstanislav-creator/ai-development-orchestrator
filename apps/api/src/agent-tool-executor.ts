@@ -37,7 +37,7 @@ async function updatePage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<
  }
  if(revision(old.updated_at)!==revision(params.expected_revision))throw rejected('Страница изменилась с момента чтения. Получи новую revision через documents.read.');
  const updated=await db.query(
-  'UPDATE documents SET title=$3,body=$4,parent_id=$5,updated_at=clock_timestamp() WHERE project_id=$1 AND id=$2 RETURNING updated_at',
+  'WITH updated AS (UPDATE documents SET title=$3,body=$4,parent_id=$5,updated_at=clock_timestamp() WHERE project_id=$1 AND id=$2 RETURNING id,body,updated_at), revision AS (INSERT INTO document_versions(id,document_id,body) SELECT gen_random_uuid(),id,body FROM updated) SELECT updated_at FROM updated',
   [projectId,params.document_id,title,params.body??old.body,parent]);
  return {id:params.document_id,revision:revision(updated.rows[0].updated_at)};
 }
