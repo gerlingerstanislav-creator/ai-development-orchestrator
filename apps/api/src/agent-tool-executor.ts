@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
+import {tasksWithCustomerQuestions} from './project-manager.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 
@@ -72,6 +73,10 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const r=await pool.query('SELECT id,title,parent_id,system_key,left(body,1500) excerpt,updated_at FROM documents WHERE project_id=$1 AND (title ILIKE $2 OR body ILIKE $2) ORDER BY updated_at DESC LIMIT 40',
    [projectId,'%'+query+'%']);
   return {documents:r.rows.map(d=>({...d,revision:revision(d.updated_at)}))};
+ }
+ case 'documentation.request_reset':{
+  z.object({}).strict().parse(params);
+  return {requires_user_confirmation:true};
  }
  case 'documents.create':return createPage(pool,projectId,createDoc.parse(params));
  case 'documents.update':{
@@ -146,6 +151,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
 
  case 'tasks.list':{
+  const {product_owner_questions_only}=z.object({product_owner_questions_only:z.boolean().optional()}).parse(params);
+  if(product_owner_questions_only){
+   const tasks=(await tasksWithCustomerQuestions(pool,projectId)).filter(task=>task.awaits_product_owner);
+   return {tasks:tasks.map(({id,title,stage,analysis_state,display_number})=>({id,title,stage,analysis_state,display_number}))};
+  }
   const r=await pool.query('SELECT id,title,description,stage,analysis_state,display_number,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 100',[projectId]);
   return {tasks:r.rows};
  }

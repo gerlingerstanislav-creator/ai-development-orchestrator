@@ -1,3 +1,4 @@
+import {executeAgentTool} from '../dist/agent-tool-executor.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
@@ -161,9 +162,18 @@ test('owner questions project onto the board without changing task stages',async
   {...defaults,id:'resolved',stage:'analysis',clarification_questions:[]},
   {...defaults,id:'review',stage:'merge_queue',spec_review_status:'needs_approval',material_review:true}
  ];
- const tasks=await tasksWithCustomerQuestions({query:async()=>({rows})},'project');
+ const db={query:async(_sql,params)=>{
+  assert.deepEqual(params,['project']);
+  return {rows};
+ }};
+ const tasks=await tasksWithCustomerQuestions(db,'project');
  assert.deepEqual(tasks.map(task=>[task.id,task.stage,task.awaits_product_owner]),[
   ['new','analysis',true],['internal','development',false],['later','testing',true],
   ['resolved','analysis',false],['review','merge_queue',true]
+ ]);
+ const result=await executeAgentTool(db,{project_id:'project',role:'manager'},'tasks.list',
+  {product_owner_questions_only:true});
+ assert.deepEqual(result.tasks.map(task=>[task.id,task.stage]),[
+  ['new','analysis'],['later','testing'],['review','merge_queue']
  ]);
 });

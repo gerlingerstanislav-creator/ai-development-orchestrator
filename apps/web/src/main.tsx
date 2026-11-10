@@ -74,8 +74,8 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean};
-type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean};
+type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean};
 type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
@@ -1137,6 +1137,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setBaHandoffBusy(false);}
  }
+ async function reloadAfterDocumentationReset(projectId:string){
+  setSelectedDocId(null);
+  setAnalystDocumentId(null);
+  await loadProject(projectId);
+  navigate(projectUrl(projectId,'docs'));
+ }
  function toggleAgentChat(mode:'project'|'documentation'){
   if(projectChatOpen&&projectChatMode===mode){setProjectChatOpen(false);return;}
   if(mode==='documentation')openDocumentationChat();
@@ -1182,7 +1188,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    }
    if(chatScope.current===scope){
     setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
-     {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
+     {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,documentation_reset_requested:response.documentation_reset_requested,created_at:new Date().toISOString()}]);
     if(files.length)setAnalystFiles([]);
    }
    if(chatScope.current.startsWith(projectId+':')&&(completedJob||response.created_task_id||response.created_document_id))await loadProject(projectId);
@@ -1654,7 +1660,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}
    <div className="docs-list-footer">
     <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
-    {selected&&<DocumentationReset key={selected.id} projectId={selected.id} request={api} onReset={async()=>{setSelectedDocId(null);await loadProject(selected.id);navigate(projectUrl(selected.id,'docs'));}}/>}
+    {selected&&<DocumentationReset key={selected.id} projectId={selected.id} request={api} onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
    </div>
   </aside>
   <section className="panel docs-reading">
@@ -1868,6 +1874,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
+      {selected&&m.documentation_reset_requested&&<DocumentationReset projectId={selected.id} request={api} onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
       {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setProjectChatOpen(false);}}>Открыть документ</button>}
     </div>)}
     {projectChatBusy&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}

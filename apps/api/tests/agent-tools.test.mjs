@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import pg from 'pg';
-import {initAgentToolsSchema,createAgentSession,finishAgentSession,readAgentSession} from '../dist/agent-tools.js';
+import {agentSessionEffects,initAgentToolsSchema,createAgentSession,finishAgentSession,readAgentSession} from '../dist/agent-tools.js';
 import {registerAgentToolRoutes} from '../dist/agent-tool-routes.js';
 
 test('scoped MCP agent tools: migration, auth, document writes, rollback, idempotence and memory',async t=>{
@@ -48,7 +48,21 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  });
  const catalog=await app.inject({url:'/internal/agent-tools/catalog',headers:{'x-agent-token':session.secret}});
  assert.equal(catalog.statusCode,200);
- assert.ok(catalog.json().tools.some(x=>x.name==='documents.changeset'));
+ const tools=new Map(catalog.json().tools.map(tool=>[tool.name,tool]));
+ for(const name of ['documents.list','documents.read','tasks.list','documentation.request_reset']){
+  assert.deepEqual(tools.get(name).annotations,{readOnlyHint:true,openWorldHint:false,destructiveHint:false});
+ }
+ assert.equal(tools.get('documents.changeset').annotations.readOnlyHint,false);
+ const manager=await createAgentSession(pool,project,user,'manager');
+ const managerCatalog=await app.inject({url:'/internal/agent-tools/catalog',headers:{'x-agent-token':manager.secret}});
+ assert.equal(managerCatalog.json().tools.find(tool=>tool.name==='tasks.list').annotations.readOnlyHint,true);
+ const managerReset=await app.inject({method:'POST',url:'/internal/agent-tools/call',
+  headers:{'x-agent-token':manager.secret},payload:{name:'documentation.request_reset'}});
+ assert.equal(managerReset.statusCode,403);
+ assert.equal(tools.has('documentation.reset.confirm'),false);
+ assert.deepEqual((await call('documentation.request_reset')).json().result,{requires_user_confirmation:true});
+ assert.equal((await agentSessionEffects(pool,session.id)).documentation_reset_requested,true);
+ assert.equal((await agentSessionEffects(pool,manager.id)).documentation_reset_requested,false);
  const list=(await call('documents.list')).json().result.documents;
  assert.equal(list.length,1,'The agent only sees its own project');
  assert.equal((await call('documents.read',{document_id:foreign})).statusCode,404);
