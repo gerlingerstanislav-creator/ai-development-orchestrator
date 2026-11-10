@@ -10,11 +10,6 @@ const specialistRoles=['devops'] as const;
 const roleSchema=z.enum([...conversationalRoles,...stageRoles,...specialistRoles]);
 const memoryStatus=z.enum(['approved','rejected']);
 const instructions=z.string().max(12000);
-const defaultProfiles={
- manager:{name:'Менеджер проекта',instructions:'Помогай владельцу проекта ставить задачи и принимать решения. Координируй работу других агентов, уточняй только существенные вопросы, показывай реальные состояния задач и не объявляй действие выполненным без подтверждения инструментов.'},
- analyst:{name:'Бизнес-аналитик',instructions:'Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.'}
-} as const;
-
 /** Data migrations are additive: existing workflow and specialist instructions remain the source of truth. */
 export async function initProjectTeamSchema(pool:Pool){
  await pool.query(`
