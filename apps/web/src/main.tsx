@@ -1005,6 +1005,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setProjectInput('');setProjectPendingId(optimisticId);setProjectChatBusy(true);
   try{
    const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
+   let completedJob=false;
    let response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
     message,mode,attachments,documentId:mode==='documentation'?analystDocumentId:null
    })});
@@ -1018,7 +1019,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      if(job.status==='failed')throw new Error(job.message||'Не удалось импортировать документацию');
      if(job.status==='completed'){
       if(!job.result)throw new Error('Импорт завершился без результата');
-      response=job.result;break;
+      response=job.result;completedJob=true;break;
      }
     }
    }
@@ -1027,7 +1028,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,created_at:new Date().toISOString()}]);
     if(files.length)setAnalystFiles([]);
    }
-   if(chatScope.current.startsWith(projectId+':')&&(response.created_task_id||response.created_document_id))await loadProject(projectId);
+   if(chatScope.current.startsWith(projectId+':')&&(completedJob||response.created_task_id||response.created_document_id))await loadProject(projectId);
   }catch(e){
    setProjectMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
    fail(e);
