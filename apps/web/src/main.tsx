@@ -7,6 +7,7 @@ import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
 import {KnowledgeAudit} from './KnowledgeAudit.js';
+import {DocumentationReset} from './DocumentationReset.js';
 
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
@@ -405,6 +406,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
  const [projectChatOpen,setProjectChatOpen]=useState(false);
  const [projectChatMode,setProjectChatMode]=useState<'project'|'documentation'>('project');
+ const [baHandoffOpen,setBaHandoffOpen]=useState(false);
+ const [baHandoffTitle,setBaHandoffTitle]=useState('');
+ const [baHandoffBody,setBaHandoffBody]=useState('');
+ const [baHandoffBusy,setBaHandoffBusy]=useState(false);
+ const [baHandoffNotice,setBaHandoffNotice]=useState('');
  useEffect(()=>{if(projectChatOpen)projectInputRef.current?.focus();},[projectChatOpen]);
  const [projectMessages,setProjectMessages]=useState<AssistantMessage[]>([]);
  const [projectPendingId,setProjectPendingId]=useState<string|null>(null);
@@ -1077,6 +1083,22 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setProjectChatMode('documentation');
   setProjectChatOpen(true);
  }
+ async function sendBaHandoff(){
+  if(!selected||baHandoffBusy||!baHandoffTitle.trim()||!baHandoffBody.trim())return;
+  setBaHandoffBusy(true);setBaHandoffNotice('');
+  try{
+   const response=await api<{task_id:string}>('/projects/'+selected.id+'/business-analyst/handoff',{
+    method:'POST',body:JSON.stringify({title:baHandoffTitle.trim(),description:baHandoffBody.trim(),approved:true})
+   });
+   setBaHandoffOpen(false);setBaHandoffTitle('');setBaHandoffBody('');
+   setBaHandoffNotice('Согласованный пакет передан системному аналитику: задача '+response.task_id);
+   await loadProject(selected.id);
+  }catch(e){fail(e);}finally{setBaHandoffBusy(false);}
+ }
+ function toggleAgentChat(mode:'project'|'documentation'){
+  if(projectChatOpen&&projectChatMode===mode){setProjectChatOpen(false);return;}
+  setProjectChatMode(mode);setProjectChatOpen(true);setBaHandoffOpen(false);setBaHandoffNotice('');
+ }
  function attachAnalystFiles(files:FileList|null){
   const next=[...analystFiles,...Array.from(files||[])];
   if(next.length>5||next.some(file=>file.size===0||file.size>100000||! /\.(?:md|txt|csv|json|ya?ml)$/i.test(file.name))||next.reduce((size,file)=>size+file.size,0)>250000){
@@ -1575,7 +1597,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}\n   <div className="docs-list-footer">
     <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
-    <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
+    {selected&&<DocumentationReset projectId={selected.id} request={api} onReset={async()=>{setSelectedDocId(null);await loadProject(selected.id);navigate(projectUrl(selected.id,'docs'));}}/>}
    </div>
   </aside>
   <section className="panel docs-reading">
@@ -1767,11 +1789,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </main>
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
-   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Аналитик проекта':'Менеджер проекта'}</strong><small>{aiSettings.model}</small></div><button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат"><X size={17}/></button></header>
+   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)'}</strong><small>{aiSettings.model}</small></div>
+    <div className="docs-actions">{projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').at(-1)?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
+    <button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат" aria-label="Свернуть чат"><X size={17}/></button></div>
+   </header>
+   {projectChatMode==='documentation'&&baHandoffOpen&&<div className="ba-handoff-form">
+    <strong>Передача согласованного пакета системному аналитику</strong>
+    <p className="muted">Проверь название и постановку. Только после твоего подтверждения появится задача на этапе анализа.</p>
+    <input aria-label="Название пакета" value={baHandoffTitle} maxLength={220} onChange={e=>setBaHandoffTitle(e.target.value)} placeholder="Название согласованного изменения"/>
+    <textarea aria-label="Согласованная постановка" rows={5} value={baHandoffBody} onChange={e=>setBaHandoffBody(e.target.value)} placeholder="Границы, цели, требования и принятые решения"/>
+    <div className="docs-actions"><button type="button" disabled={baHandoffBusy} onClick={()=>setBaHandoffOpen(false)}>Отмена</button>
+     <button type="button" className="primary" disabled={baHandoffBusy||baHandoffTitle.trim().length<5||baHandoffBody.trim().length<20} onClick={()=>void sendBaHandoff()}>Согласовать и передать СА</button></div>
+   </div>}
+   {projectChatMode==='documentation'&&baHandoffNotice&&<p className="ba-handoff-notice">{baHandoffNotice}</p>}
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
-    {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Опиши проект, прикрепи текстовые файлы или пришли ссылку на папку либо Markdown-файл в GitHub. Я составлю ТЗ и задам вопросы, если понадобится твоё решение.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
+    {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Обсуди со мной идеи, бизнес-логику и требования. Я не создаю задачи без твоего решения. После согласования передай пакет системному аналитику.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
-      <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → Аналитику':'Аналитик → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
+      <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       <div>{m.body}</div>
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
@@ -1795,14 +1829,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {mentionMatches(projectInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>{setProjectInput(addMention(projectInput,option.alias));projectInputRef.current?.focus();}}>
        <strong>@{option.alias}</strong><small>{stages.find(s=>s.stage===option.stage)?.agent_name||option.alias}</small></button>)}
      </div>}
-     <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
+     <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Обсудить продукт, сценарии и требования…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение бизнес-аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
     <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||(!projectInput.trim()&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
   </section>}
-  <button className="chat-fab" onClick={()=>{if(projectChatMode==='documentation'){setProjectChatMode('project');setProjectChatOpen(true);}else setProjectChatOpen(open=>!open);}} title={projectChatOpen&&projectChatMode==='project'?'Закрыть чат':'Открыть чат Менеджера проекта'} aria-label={projectChatOpen?'Закрыть чат':'Открыть чат Менеджера проекта'}>
-   {projectChatOpen&&projectChatMode==='project'?<X size={22}/>:<MessageCircle size={22}/>}
-  </button>
+  <div className="chat-agent-launchers" role="group" aria-label="Чаты с агентами">
+   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><MessageCircle size={19}/><span>ПМ</span></button>
+   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='documentation'?'active':'')} onClick={()=>toggleAgentChat('documentation')} title="Чат с бизнес-аналитиком" aria-label="Открыть чат с БА"><MessageCircle size={19}/><span>БА</span></button>
+  </div>
  </>}
  {workflowModal&&selected&&<div className="overlay workflow-stage-overlay" onMouseDown={()=>{if(!workflowSaving)setWorkflowModal(null);}}>
   <div className="dialog workflow-stage-dialog" role="dialog" aria-modal="true" aria-label={'Настройки этапа '+workflowModal.label} onMouseDown={e=>e.stopPropagation()}>
