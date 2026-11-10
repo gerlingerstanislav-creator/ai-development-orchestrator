@@ -6,8 +6,8 @@ const steps=proxyActivities<typeof activities>({
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
 const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'>>({
- startToCloseTimeout:'6 minutes',scheduleToCloseTimeout:'20 minutes',
- retry:{maximumAttempts:2,initialInterval:'5 seconds'}
+ startToCloseTimeout:'6 minutes',scheduleToCloseTimeout:'1 day',
+ retry:{maximumAttempts:20,initialInterval:'10 seconds',maximumInterval:'1 minute',backoffCoefficient:2}
 });
 const watchSteps=proxyActivities<Pick<typeof activities,'readProjectManagerWatch'>>({
  startToCloseTimeout:'30 seconds',retry:{maximumAttempts:3,initialInterval:'2 seconds'}
