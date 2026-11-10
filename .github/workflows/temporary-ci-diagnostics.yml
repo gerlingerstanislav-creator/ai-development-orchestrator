@@ -3,46 +3,54 @@ on:
   pull_request:
 permissions:
   contents: read
-  statuses: write
 jobs:
   diagnose:
     if: github.head_ref == 'fix/agent-owned-documentation-structure-20261110'
     runs-on: ubuntu-latest
+    outputs:
+      phase: ${{ steps.capture.outputs.phase }}
+      reason: ${{ steps.capture.outputs.reason }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install, check, build, tests
-        id: diagnostic
+      - name: Capture first failed operation
+        id: capture
         shell: bash
         run: |
-          set -o pipefail
-          {
-            echo "=== npm install ==="
-            npm install --no-audit --no-fund || exit $?
-            echo "=== npm run check ==="
-            npm run check || exit $?
-            echo "=== npm run build ==="
-            npm run build || exit $?
-            echo "=== node --test ==="
-            node --test apps/api/tests/*.test.mjs || exit $?
-          } 2>&1 | tee diagnostics.log
-      - name: Publish failure detail to commit status
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          REPO: ${{ github.repository }}
-          RESULT: ${{ steps.diagnostic.outcome }}
-        run: |
-          node --input-type=module <<'EOF'
-          import fs from 'node:fs';
-          const s=fs.existsSync('diagnostics.log')?fs.readFileSync('diagnostics.log','utf8'):'Workflow failed before diagnostic command';
-          const lines=s.split('\n').map(x=>x.trim()).filter(Boolean);
-          const errors=lines.filter(x=>/error TS\d+|npm error|^Error:|^not ok |FAIL|failed|Cannot find module|ENOENT|EACCES/i.test(x));
-          const message=(errors[0]||lines.at(-1)||'No diagnostic output').slice(0,130);
-          const payload={state:process.env.RESULT==='success'?'success':'failure',context:'diagnostic/ci-reason',description:message,target_url:`https://github.com/${process.env.REPO}/actions`};
-          const r=await fetch(`https://api.github.com/repos/${process.env.REPO}/statuses/${process.env.HEAD_SHA}`,{method:'POST',headers:{Authorization:`Bearer ${process.env.GH_TOKEN}`,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'},body:JSON.stringify(payload)});
-          if(!r.ok)throw new Error('Publish diagnostic status: '+r.status+' '+(await r.text()).slice(0,300));
-          EOF
+          set +e
+          phase=install
+          npm install --no-audit --no-fund > diagnostic.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            phase=check
+            npm run check > diagnostic.log 2>&1
+            code=$?
+          fi
+          if [ "$code" -eq 0 ]; then
+            phase=build
+            npm run build > diagnostic.log 2>&1
+            code=$?
+          fi
+          if [ "$code" -eq 0 ]; then
+            phase=tests
+            node --test apps/api/tests/*.test.mjs > diagnostic.log 2>&1
+            code=$?
+          fi
+          if [ "$code" -eq 0 ]; then
+            reason=SUCCESS
+          else
+            reason=$(grep -E 'error TS[0-9]+|npm error|^Error:|^not ok|FAIL|Cannot find module|ENOENT|EACCES|failed' diagnostic.log | head -1 | cut -c 1-100)
+            if [ -z "$reason" ]; then reason=$(tail -1 diagnostic.log | cut -c 1-100); fi
+          fi
+          reason=$(echo "$reason" | tr -cd '[:print:]' | cut -c 1-100)
+          echo "phase=$phase" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason (exit=$code)" >> "$GITHUB_OUTPUT"
+  report:
+    needs: diagnose
+    if: always()
+    runs-on: ubuntu-latest
+    name: "${{ needs.diagnose.outputs.phase }} :: ${{ needs.diagnose.outputs.reason }}"
+    steps:
+      - run: echo "Diagnostic result is reflected in job name"
