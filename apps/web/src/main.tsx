@@ -203,7 +203,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
 }
-type ProjectSection='overview'|'tasks'|'docs'|'qa'|'processes'|'team'|'rules'|'settings';
+type ProjectSection='overview'|'tasks'|'docs'|'qa'|'processes'|'team'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string;planning?:boolean;iterationId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function parseAppRoute(pathname:string):AppRoute{
@@ -213,7 +213,7 @@ function parseAppRoute(pathname:string):AppRoute{
  if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
   const projectId=parts[1];
   if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
-  if(parts.length===3&&['overview','tasks','docs','qa','processes','team','rules','settings'].includes(parts[2]))
+  if(parts.length===3&&['overview','tasks','docs','qa','processes','team','settings'].includes(parts[2]))
    return {kind:'project',projectId,section:parts[2] as ProjectSection};
   if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
    return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
@@ -1674,7 +1674,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <div className="sidebar-nav">
   {selected?<><div className="sidebar-label">ПРОЕКТ</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
   </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
   </div>
   <div className="sidebar-bottom">
@@ -1683,7 +1683,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
   </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
     <div className="quota-popover" role="tooltip">
@@ -2026,19 +2026,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <p className="muted">Лимиты использования общие для сервиса и настраиваются в разделе «Настройки сервиса». Здесь выбирается модель для этого проекта.</p>
   <button className="primary" disabled={aiBusy} onClick={()=>void saveAiSettings()}>Сохранить настройки AI</button>
   {aiMessage&&<p>{aiMessage}</p>}
- </section>}
- {section==='rules'&&<section className="panel">
-  <h3>Правила проекта</h3>
-  <p className="muted">Правила отделены от документации. AI учитывает утверждённые правила при постановке, анализе и разработке. Новые предложения AI требуют твоего подтверждения.</p>
-  <form onSubmit={addRule}>
-   <label>Добавить правило<textarea rows={3} placeholder="Например: все новые API-эндпоинты должны иметь проверку прав доступа" value={ruleDraft} onChange={e=>setRuleDraft(e.target.value)}/></label>
-   <button className="primary" type="submit" disabled={knowledgeBusy||ruleDraft.trim().length<5}>Добавить правило</button>
-  </form>
-  {rules.map(r=><div className="setting-row" key={r.id}><div><strong>{r.body}</strong><small>{r.origin==='ai_approved'?'Предложено AI, утверждено':'Добавлено вручную'}</small></div><button className="secondary" disabled={knowledgeBusy} onClick={()=>void removeRule(r.id)}>Удалить</button></div>)}
-  {ruleSuggestions.length>0&&<><h4>Предложения AI — на утверждение</h4>
-   {ruleSuggestions.map(r=><div className="setting-row" key={r.id}><div><strong>{r.body}</strong><small>По задаче #{r.task_id?.slice(0,8)}</small></div>
-    <div className="codex-actions"><button className="primary" disabled={knowledgeBusy} onClick={()=>void decideRule(r.id,'approve')}>Принять</button><button className="secondary" disabled={knowledgeBusy} onClick={()=>void decideRule(r.id,'reject')}>Отклонить</button></div>
-   </div>)}</>}
  </section>}
  {section==='settings'&&<section className="panel">
   <div className="row-line"><h3>GitHub · Репозиторий проекта</h3><button className="secondary" onClick={()=>{setCred({name:'',provider:'github_token',secret:''});setShowConnection(true);}}><KeyRound size={15}/> Добавить GitHub token</button></div>
