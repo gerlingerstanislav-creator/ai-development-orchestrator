@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import pg from 'pg';
-import {createAssistantService,isExplicitTaskCreation,isExplicitDocumentationChange,isDocumentationStructureCommand} from '../dist/assistant.js';
+import {createAssistantService,isExplicitTaskCreation,isExplicitDocumentationChange,isDocumentationStructureCommand,isDocumentationRebuildCommand} from '../dist/assistant.js';
 
 test('task commands are explicit even in the analyst chat',()=>{
  assert.equal(isExplicitTaskCreation('Создай задачу, а в ней уже спроси'),true);
@@ -20,6 +20,10 @@ test('analyst distinguishes questions, critique and explicit structural edits',(
  assert.equal(isDocumentationStructureCommand('Перестрой структуру ТЗ'),true);
  assert.equal(isExplicitDocumentationChange('Добавь в ТЗ критерии приёмки'),true);
  assert.equal(isExplicitDocumentationChange('Давай обсудим риски проекта'),false);
+ assert.equal(isDocumentationRebuildCommand('Ок, давай перепиши текущее ТЗ в соответствии с предложенной тобой структурой, а текущие материалы можешь перенести в исходники'),true);
+ assert.equal(isDocumentationRebuildCommand('Перепиши ТЗ по согласованной структуре'),true);
+ assert.equal(isDocumentationRebuildCommand('Тебя устраивает структура нашего ТЗ?'),false);
+ assert.equal(isDocumentationRebuildCommand('Улучши структуру документации'),false);
 });
 
 test('analyst writes topic drafts, resolves PO questions, resumes and preserves manual edits',async t=>{
@@ -42,11 +46,11 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   CREATE TEMP TABLE project_rules (project_id uuid,body text,created_at timestamptz);
   CREATE TEMP TABLE process_instructions (project_id uuid,process_id uuid,body text,created_at timestamptz);
   CREATE TEMP TABLE process_events (id uuid,project_id uuid,process_id uuid,process_kind text,level text,stage text,detail text);
-  CREATE TEMP TABLE document_import_jobs (id uuid PRIMARY KEY,project_id uuid,actor_id uuid,status text,message text,source_url text,source_key text,request_text text,analyst_input jsonb,source_snapshot jsonb,source_commit text,draft_result jsonb,result jsonb,source_file_count int,total_chunks int,analyzed_chunks int,saved_documents int DEFAULT 0,updated_at timestamptz DEFAULT now());
+  CREATE TEMP TABLE document_import_jobs (id uuid PRIMARY KEY,project_id uuid,actor_id uuid,status text,message text,source_url text,source_key text,request_text text,analyst_input jsonb,source_snapshot jsonb,source_commit text,rebuild_sources jsonb,rebuild_plan jsonb,draft_result jsonb,result jsonb,source_file_count int,total_chunks int,analyzed_chunks int,saved_documents int DEFAULT 0,updated_at timestamptz DEFAULT now());
   CREATE UNIQUE INDEX ON document_import_jobs(project_id) WHERE status='running' AND analyst_input IS NOT NULL;
   CREATE TEMP TABLE document_import_checkpoints (job_id uuid,chunk_index int,file_path text,content_sha text,notes text,created_at timestamptz DEFAULT now(),PRIMARY KEY(job_id,chunk_index));
   CREATE TEMP TABLE document_import_fragments (job_id uuid,fragment_index int,file_path text,heading text,content_sha text,notes text,topics jsonb,exclusion_reason text,PRIMARY KEY(job_id,fragment_index));
-  CREATE TEMP TABLE document_import_topics (job_id uuid,topic_key text,title text,status text DEFAULT 'pending',cursor int DEFAULT 0,page_id uuid,draft_body text DEFAULT '',source_refs jsonb DEFAULT '[]'::jsonb,review_suggestion text,updated_at timestamptz DEFAULT now(),PRIMARY KEY(job_id,topic_key));
+  CREATE TEMP TABLE document_import_topics (job_id uuid,topic_key text,title text,status text DEFAULT 'pending',cursor int DEFAULT 0,page_id uuid,draft_body text DEFAULT '',source_refs jsonb DEFAULT '[]'::jsonb,review_suggestion text,rebuild_questions jsonb NOT NULL DEFAULT '[]'::jsonb,updated_at timestamptz DEFAULT now(),PRIMARY KEY(job_id,topic_key));
   CREATE TEMP TABLE document_import_proposals (id uuid,project_id uuid,job_id uuid,topic_key text,document_id uuid,title text,proposed_body text,base_hash text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),decided_at timestamptz,UNIQUE(job_id,topic_key));
   CREATE TEMP TABLE documentation_questions (id uuid,project_id uuid,job_id uuid,topic_key text,question_key text,document_id uuid,question text,answer text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),answered_at timestamptz,UNIQUE(project_id,document_id,question_key));
  `.replaceAll('\\`','`'));
@@ -60,6 +64,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  await db.query("INSERT INTO project_ai_settings VALUES($1,true,'gpt-6-luna','low')",[projectId]);
  const originalFetch=globalThis.fetch;
  let pageId=null,modelCalls=0,failOnce=false,seenTopicCalls=0;
+ let failRebuildOnce=false,rebuildPartCalls=0,rebuildPlanCalls=0;
  globalThis.fetch=async(url,options)=>{
   assert.equal(url,'http://codex.test/assistant','Imported sources must not be requested again during follow-up');
   modelCalls++;
@@ -67,6 +72,27 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   if(prompt.includes('Ты системный аналитик проекта и собеседник владельца продукта.')){
    assert.ok(prompt.includes('Предзаказ'),'Analyst must see current project documentation for a reasoned critique');
    return Response.json({message:'Структура пока недостаточно подробная: два сценария нужно сгруппировать по подсистемам. Предлагаю разделить функциональные требования, UX и исходные материалы.'});
+  }
+  if(prompt.includes('Составь план НОВЫХ содержательных тематических страниц')){
+   rebuildPlanCalls++;
+   assert.match(prompt,/Структура пока недостаточно подробная/,'Reuse actual previously proposed structure');
+   const old=(await db.query("SELECT id,import_source FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%' ORDER BY title,id",[projectId])).rows;
+   assert.equal(old.length,2);
+   return Response.json({message:JSON.stringify({chapters:[
+    {key:'customer-preorder',title:'Оформление предзаказа',section:'spec',group:'Покупатель',source_ids:[old[0].id]},
+    {key:'handoff',title:'Выдача готового заказа',section:'spec',group:'Покупатель',source_ids:[old[1].id]}
+   ]})});
+  }
+  if(prompt.includes('ПЕРЕПИШИ один фрагмент')){
+   rebuildPartCalls++;
+   if(failRebuildOnce&&rebuildPartCalls===2){
+    failRebuildOnce=false;
+    return Response.json({error:'Simulated second-section model failure'},{status:400});
+   }
+   const body=prompt.includes('Оформление предзаказа')?
+    '## Предзаказ покупателя\nПокупатель оформляет заказ. Существующие требования сохранены и согласованные правила не изменены.':
+    '## Выдача готового заказа\nБариста передаёт готовый заказ покупателю. Существующие требования и ограничения сохранены.';
+   return Response.json({message:JSON.stringify({body,questions:['Как подтверждается готовность заказа?']})});
   }
   if(prompt.includes('Улучши НАВИГАЦИОННУЮ структуру')){
    const found=await db.query("SELECT id FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%'",[projectId]);
@@ -168,4 +194,61 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  // This standalone assistant fixture does not register the general index.ts route.
  assert.equal(reject.statusCode,404);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'topic:%'")).rows[0].n,2,'No duplicate topics on repeated import');
+
+ // The user's real follow-up is a COMMAND, not a request for another opinion.
+ // Build two new substantive pages; a simulated failure must not move old docs.
+ const oldVersions=(await db.query("SELECT id,title,body,parent_id,source_refs FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%' ORDER BY title,id",[projectId])).rows;
+ assert.equal(oldVersions.length,2);
+ failRebuildOnce=true;rebuildPartCalls=0;
+ const rewriteMessage='Ок, давай перепиши текущее ТЗ в соответствии с предложенной тобой структурой, а текущие материалы можешь перенести в исходники';
+ const rewrite=await send({mode:'documentation',message:rewriteMessage});
+ assert.equal(rewrite.statusCode,202,rewrite.body);
+ const rewriteId=rewrite.json().import_job_id;
+ const flag=(await db.query('SELECT analyst_input FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0].analyst_input;
+ assert.equal(flag.rebuildSpec,true,'The explicit conversational command must choose the rewrite workflow');
+ await service.runDocumentationJob(rewriteId);
+ assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0].status,'failed');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'rebuild:%'",[projectId])).rows[0].n,1,
+  'The first completed rewritten page must already be persisted');
+ for(const oldDoc of oldVersions){
+  const current=(await db.query('SELECT body,parent_id FROM documents WHERE id=$1',[oldDoc.id])).rows[0];
+  assert.equal(current.body,oldDoc.body);
+  assert.equal(current.parent_id,oldDoc.parent_id,'Old documents stay where they were before all new pages are complete');
+ }
+ const planCallsBeforeResume=rebuildPlanCalls;
+ const resumeRewrite=await app.inject({method:'POST',url:'/api/projects/'+projectId+'/document-import/'+rewriteId+'/resume'});
+ assert.equal(resumeRewrite.statusCode,202,resumeRewrite.body);
+ await service.runDocumentationJob(rewriteId);
+ const finished=(await db.query('SELECT status,rebuild_sources,rebuild_plan,result FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0];
+ assert.equal(finished.status,'completed');
+ assert.equal(finished.rebuild_sources.length,2);
+ assert.equal(finished.rebuild_plan.chapters.length,2);
+ assert.equal(finished.result.generated_documents,2);
+ assert.equal(rebuildPlanCalls,planCallsBeforeResume,'The same structure plan must be reused after failure');
+ assert.equal(rebuildPartCalls,3,'On resume only the failed second page is regenerated');
+ const rewritten=(await db.query("SELECT id,title,body,parent_id,import_source FROM documents WHERE project_id=$1 AND import_source LIKE 'rebuild:%' ORDER BY title",[projectId])).rows;
+ assert.equal(rewritten.length,2);
+ assert.ok(rewritten.every(d=>d.body.includes('## Исходные материалы')),'Each new page identifies original source documents');
+ assert.ok(rewritten.every(d=>oldVersions.some(o=>d.body.includes(o.id))),'New text links to the underlying original pages');
+ const oldArchive=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND import_source=$2",[projectId,'rebuild-archive:'+rewriteId])).rows[0];
+ assert.ok(oldArchive,'Previous versions are grouped under Research');
+ const research=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='research'",[projectId])).rows[0];
+ assert.equal((await db.query('SELECT parent_id FROM documents WHERE id=$1',[oldArchive.id])).rows[0].parent_id,research.id);
+ for(const original of oldVersions){
+  const current=(await db.query('SELECT id,title,body,parent_id,source_refs,import_source FROM documents WHERE id=$1',[original.id])).rows[0];
+  assert.equal(current.id,original.id);
+  assert.equal(current.title,original.title);
+  assert.equal(current.body,original.body,'Exact historical version is not rewritten or deleted');
+  assert.deepEqual(current.source_refs,original.source_refs);
+  assert.equal(current.parent_id,oldArchive.id,'Previous pages are moved to Research after successful rewrite');
+  assert.match(current.import_source,/^archived-topic:/);
+ }
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0,'Rebuilding does not launch development');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documentation_questions WHERE job_id=$1",[rewriteId])).rows[0].n,2,
+  'Open product-owner questions are linked to rewritten pages');
+ const beforeReplay=rebuildPartCalls;
+ await service.runDocumentationJob(rewriteId);
+ assert.equal(rebuildPartCalls,beforeReplay,'A completed rewrite is not rerun');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'rebuild:%'",[projectId])).rows[0].n,2);
+
 });
