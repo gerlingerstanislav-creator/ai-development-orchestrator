@@ -1014,3 +1014,15 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 
 .assistant-composer:has(.agent-mention-menu){flex-wrap:wrap}
 .assistant-composer .agent-mention-menu{order:-1}
+
+/* Knowledge Management: compact contextual controls within existing documentation layout. */
+.docs-search-field{width:calc(100% - 20px);margin:7px 10px 8px;min-height:33px;border-radius:7px;}
+.knowledge-document-panel{margin:10px 16px;padding:12px 14px;display:block;}
+.knowledge-document-panel>summary{font-size:13px;font-weight:600;cursor:pointer;}
+.knowledge-document-panel h4{margin:12px 0 6px;font-size:13px;}
+.knowledge-document-panel .doc-metadata-editor{margin:9px 0;display:flex;flex-wrap:wrap;align-items:end;gap:8px;}
+.knowledge-document-panel .doc-metadata-editor label{min-width:145px;flex:1;font-size:12px;}
+.knowledge-document-panel .doc-metadata-editor input,.knowledge-document-panel .doc-metadata-editor select{width:100%;}
+.knowledge-link{display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 0;}
+.knowledge-link a{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.knowledge-link button{flex:none;padding:4px;}
