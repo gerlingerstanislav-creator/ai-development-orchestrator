@@ -42,7 +42,7 @@ async function updatePage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<
  return {id:params.document_id,revision:revision(updated.rows[0].updated_at)};
 }
 export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSession,name:string,args:unknown,
- startWorkflow:(jobId:string)=>Promise<void>):Promise<unknown>{
+ _startWorkflow:(jobId:string)=>Promise<void>):Promise<unknown>{
  const projectId=session.project_id,actorId=session.actor_id;
  const params=(args&&typeof args==='object'&&!Array.isArray(args)?args:{}) as Record<string,unknown>;
  switch(name){
@@ -124,15 +124,16 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const input={location,attachments:[],mode:'documentation',documentId:null,
    structureOnly:name==='documentation.organize',rebuildSpec:name==='documentation.rebuild'};
   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:name+':'+jobId;
-  const created=await pool.query(
-   "INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_url,source_key,request_text,analyst_input) VALUES($1,$2,$3,'running','Агент запустил процесс',$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id",
+  const competing=await pool.query(
+   "SELECT id FROM document_import_jobs WHERE project_id=$1 AND status IN ('running','queued') LIMIT 1 FOR UPDATE",
+   [projectId]);
+  if(competing.rowCount)throw rejected('В проекте уже выполняется процесс аналитика');
+  // The job and audit event commit together. Temporal is started only after COMMIT,
+  // and a retry of the same idempotency key recovers a queued job, not a new one.
+  await pool.query(
+   "INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_url,source_key,request_text,analyst_input) VALUES($1,$2,$3,'queued','Запуск процесса ожидает Temporal',$4,$5,$6,$7)",
    [jobId,projectId,actorId,sourceUrl,sourceKey,data.instructions||name,JSON.stringify(input)]);
-  if(!created.rowCount)throw rejected('Аналитик уже выполняет другой процесс');
-  try{await startWorkflow(jobId);}catch(e){
-   await pool.query("UPDATE document_import_jobs SET status='failed',message='Не удалось запустить Temporal' WHERE id=$1",[jobId]);
-   throw e;
-  }
-  return {import_job_id:jobId,status:'running',kind:name};
+  return {import_job_id:jobId,status:'queued',kind:name};
  }
  case 'processes.list':{
   const [a,b]=await Promise.all([
