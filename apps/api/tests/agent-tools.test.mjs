@@ -35,10 +35,11 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  await db.query('INSERT INTO users(id) VALUES($1)',[user]);
  await db.query("INSERT INTO projects(id,name,description) VALUES($1,'Coffee','Предзаказ'),($2,'Other','Другой проект')",[project,other]);
  await db.query("INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec'),($3,$4,'Чужой документ','Текст',NULL,'spec')",[root,project,foreign,other]);
+ const startedWorkflows=[];
  const session=await createAgentSession(pool,project,user,'analyst');
  assert.equal((await readAgentSession(pool,session.secret)).project_id,project);
  await app.register(async server=>registerAgentToolRoutes(server,{
-  pool,access:async()=>true,requireAdmin:async()=>true,startDocumentationWorkflow:async()=>{}
+  pool,access:async()=>true,requireAdmin:async()=>true,startDocumentationWorkflow:async jobId=>{startedWorkflows.push(jobId);}
  }));
  const call=async(name,args={})=>app.inject({
   method:'POST',url:'/internal/agent-tools/call',
@@ -88,6 +89,16 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  await db.query('DROP TRIGGER reject_audit_success ON agent_tool_events');
  await db.query('DROP FUNCTION reject_audit_success()');
 
+ const longAction={instructions:'Перераспредели импортированные страницы без удаления данных',idempotency_key:'doc-organize-unique-action'};
+ const requested=await call('documentation.organize',longAction);
+ assert.equal(requested.statusCode,200,requested.body);
+ const jobId=requested.json().result.import_job_id;
+ assert.equal(requested.json().result.status,'running');
+ assert.equal(startedWorkflows[0],jobId);
+ const requestedAgain=await call('documentation.organize',longAction);
+ assert.equal(requestedAgain.statusCode,200,requestedAgain.body);
+ assert.equal(requestedAgain.json().result.import_job_id,jobId,'Retries reuse one durable Temporal job');
+ assert.equal((await db.query('SELECT count(*)::int n FROM document_import_jobs WHERE project_id=$1',[project])).rows[0].n,1);
  const memory=await call('memory.record',{kind:'observation',text:'Сначала изучай полную структуру ТЗ, затем редактируй конкретную страницу.',evidence:'Проверено в тесте'});
  assert.equal(memory.statusCode,200,memory.body);
  assert.equal((await call('memory.list')).json().result.memories.length,1);
