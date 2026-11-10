@@ -176,8 +176,13 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   return r.rows.reverse().map(x=>x.role+': '+x.body.slice(0,1600)).join('\n\n');
  }
  async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null,channel:'project'|'documentation'='project',db:Pick<Pool,'query'>=pool,actions:{documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean}={},relation:{replyTo?:string|null;topicId?:string|null}={}){
-  await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested,owner_question_cleanup_requested,reply_to,topic_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10,$11,$12,$13)',
-   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false,relation.replyTo??null,relation.topicId??null]);
+  if(relation.replyTo||relation.topicId){
+   await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested,owner_question_cleanup_requested,reply_to,topic_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10,$11,$12,$13)',
+    [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false,relation.replyTo??null,relation.topicId??null]);
+  }else{
+   await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10,$11)',
+    [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false]);
+  }
  }
  async function storeTokenUsage(id:string,taskId:string|null,model:string,usage:{input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined){
   if(!usage)return;
