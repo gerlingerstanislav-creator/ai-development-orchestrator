@@ -1076,3 +1076,8 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .documentation-reset-dialog input{width:100%;box-sizing:border-box;padding:9px;border-radius:7px;border:1px solid #d8dfe8}
 .documentation-reset-dialog .docs-actions{display:flex;justify-content:flex-end;gap:7px}
 @media(max-width:650px){.chat-agent-launchers{bottom:12px;right:12px}.chat-agent-button{width:49px;height:49px}.project-chat{bottom:72px;right:10px;height:min(560px,calc(100vh - 100px))}}
+
+.chat-agent-button{display:grid;place-items:center}
+.chat-agent-glyph{width:36px;height:36px;position:relative;display:grid;place-items:center}
+.chat-agent-glyph svg{width:32px;height:32px}
+.chat-agent-glyph>span{position:absolute;top:11px;left:0;right:1px;font-size:10px;line-height:1;font-weight:800;letter-spacing:-.2px;text-align:center;pointer-events:none}
