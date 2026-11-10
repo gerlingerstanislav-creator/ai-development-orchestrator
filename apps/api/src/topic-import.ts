@@ -407,8 +407,8 @@ export async function importByTopics(args:TopicImportArgs){
     for(const question of new Set(result.questions.map(q=>q.trim()))){
      const questionKey=sha(key+'\n'+question.trim().toLowerCase()).slice(0,24);
      await client.query(
-      "INSERT INTO documentation_questions(id,project_id,job_id,topic_key,question_key,document_id,question) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,document_id,question_key) DO NOTHING",
-      [randomUUID(),projectId,jobId,key,questionKey,pageId,question]);
+      "INSERT INTO tasks(id,project_id,title,description,type,stage,position,document_id,question_key,question_topic,question_status,question_job_id) VALUES($1,$2,$3,$4,'question','backlog',(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2),$5,$6,$7,'open',$8) ON CONFLICT DO NOTHING",
+      [randomUUID(),projectId,question.slice(0,300),question,pageId,questionKey,key,jobId]);
     }
     await client.query("UPDATE document_import_jobs SET saved_documents=(SELECT count(*)::int FROM document_import_topics WHERE job_id=$1 AND page_id IS NOT NULL),message=$2,updated_at=now() WHERE id=$1",
      [jobId,'Сохранена тема «'+title+'», часть '+(i+1)+'/'+batches.length+(conflict?' · требуется сверка ручных изменений':'')]);
