@@ -225,11 +225,48 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Общие документы проекта:\n'+JSON.stringify(common.rows).slice(0,1500),
   'Правила проекта и инструкции СА:\n'+(rules.rows.map(row=>row.body).join('\n')+'\n'+(profile.rows[0]?.agent_instructions??'')).slice(0,1500)
  ].join('\n\n');
- const draft=epicPlan.parse(parseAgentObject(await ask(prompt,run.project_id)));
+ const analyst=epicPlan.parse(parseAgentObject(await ask(prompt,run.project_id)));
+ const hasDevelopment=analyst.epics.some(epic=>epic.tasks.some(task=>task.kind==='development'));
+ const technical=z.object({subtasks:z.array(z.object({
+  epic_key:key,key,title,description:z.string().trim().min(1).max(6000),tags:tags.default([]),depends_on:key.optional()
+ })).max(40)}).strict();
+ let proposals:z.infer<typeof technical>={subtasks:[]};
+ if(hasDevelopment){
+  await pool.query("UPDATE iteration_planning_runs SET message='Разработчик предлагает технические задачи',updated_at=now() WHERE id=$1",[runId]);
+  await planningEvent(pool,run.project_id,runId,'developer','Разработчик анализирует эпики и ограничения реализации');
+  const developerPrompt=[
+   'Ты разработчик. СА уже утвердил состав эпиков и задачи требований. Предлагай ТОЛЬКО необходимые технические подзадачи внутри существующих эпиков, не меняй требования, критерии приёмки или границы MVP.',
+   'Используй только существующие epic_key; для новых задач выбери уникальные ключи. depends_on может ссылаться на задачу СА или другую техническую задачу.',
+   'Если дополнительные технические задачи не нужны, верни пустой массив.',
+   'Ответ только JSON: {"subtasks":[{"epic_key":"ключ эпика","key":"новый уникальный ключ","title":"название","description":"техническая работа и проверка","tags":["backend"],"depends_on":"необязательный ключ"}]}.',
+   'Итерация: '+details.title+'\n'+details.body.slice(0,8000),
+   'Декомпозиция СА: '+JSON.stringify(analyst).slice(0,18000),
+   'Правила проекта: '+rules.rows.map(row=>row.body).join('\n').slice(0,4000)
+  ].join('\n\n');
+  proposals=technical.parse(parseAgentObject(await ask(developerPrompt,run.project_id)));
+ }
+ await pool.query("UPDATE iteration_planning_runs SET message='ПМ собирает общий черновик',updated_at=now() WHERE id=$1",[runId]);
+ await planningEvent(pool,run.project_id,runId,'manager','ПМ объединяет требования СА и технические предложения разработчика');
+ const managerPrompt=[
+  'Ты ПМ. Собери единый черновик. Эпики, задачи и критерии СА обязательны и не могут быть удалены или переписаны. Добавь уместные предложения разработчика внутрь существующих эпиков; не создавай задачи вне итерации.',
+  'Не публикуй карточки и не запускай разработку: требуется отдельное подтверждение владельца.',
+  'Ответ строго JSON {"epics":[{"key":"...","title":"...","description":"...","tasks":[{"key":"...","title":"...","description":"...","kind":"development","tags":[],"depends_on":"optional"}]}]}.',
+  'СА: '+JSON.stringify(analyst).slice(0,20000),
+  'Предложения разработчика: '+JSON.stringify(proposals).slice(0,14000),
+  'Исходные границы: '+details.body.slice(0,7000)
+ ].join('\n\n');
+ const draft=epicPlan.parse(parseAgentObject(await ask(managerPrompt,run.project_id)));
+ // Analyst requirements remain authoritative. PM can propose additions, not rewrite them.
+ const analystKeys=new Set(analyst.epics.flatMap(epic=>[epic.key,...epic.tasks.map(task=>task.key)]));
+ const mergedByEpic=new Map(draft.epics.map(epic=>[epic.key,epic]));
+ const finalized=epicPlan.parse({epics:analyst.epics.map(epic=>({
+  ...epic,tasks:[...epic.tasks,...(mergedByEpic.get(epic.key)?.tasks??[]).filter(task=>!analystKeys.has(task.key))]
+ }))});
+ validatePlan({...planScope,...finalized});
  await transaction(pool,async db=>{
   const state=(await db.query('SELECT status FROM iteration_planning_runs WHERE id=$1 FOR UPDATE',[runId])).rows[0];
   if(!state||state.status!=='running')return;
-  const result=await proposeIterationPlan(db,run.project_id,run.actor_id,{...planScope,...draft});
+  const result=await proposeIterationPlan(db,run.project_id,run.actor_id,{...planScope,...finalized});
   await db.query("UPDATE iteration_planning_runs SET status='completed',message='Черновик готов к предпросмотру',plan_id=$2,updated_at=now() WHERE id=$1",[runId,result.id]);
   await planningEvent(db,run.project_id,runId,'completed','Черновик декомпозиции готов к предпросмотру');
  });
