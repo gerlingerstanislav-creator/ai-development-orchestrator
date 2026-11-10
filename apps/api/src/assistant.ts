@@ -352,7 +352,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     const addition='\n\n---\n\n### Решение владельца продукта\n\n**Вопрос:** '+q.question+'\n\n'+parsed.addition;
     if(d.body.length+addition.length>100000)throw Error('Размер страницы ТЗ превышает допустимый лимит; нельзя безопасно дописать решение');
     await client.query('UPDATE documents SET body=body || $2,updated_at=now() WHERE id=$1',[documentId,addition]);
-    await client.query("UPDATE tasks SET question_status='resolved',updated_at=now() WHERE id=$1 AND type='question' AND question_status='answered'",[questionId]);
+    await client.query("UPDATE tasks SET question_status='resolved',stage='done',updated_at=now() WHERE id=$1 AND type='question' AND question_status='answered'",[questionId]);
     const result={message:parsed.summary,created_task_id:null,created_document_id:documentId,changed_documents:1};
     await store(id,null,actorId,'user',message,null,null,mode,client);
     await store(id,null,null,'assistant',result.message,null,documentId,mode,client);
@@ -465,7 +465,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      }
      await store(id,null,actorId,'user',input.message,null,null,mode,client);
      await store(id,null,null,'assistant',answer,null,resultSaved.created_document_id,mode,client);
-     if(questionId)await client.query("UPDATE tasks SET question_status='resolved',updated_at=now() WHERE id=$1 AND project_id=$2 AND document_id=$3 AND type='question' AND question_status='answered'",[questionId,id,documentId]);
+     if(questionId)await client.query("UPDATE tasks SET question_status='resolved',stage='done',updated_at=now() WHERE id=$1 AND project_id=$2 AND document_id=$3 AND type='question' AND question_status='answered'",[questionId,id,documentId]);
      await client.query("UPDATE document_import_jobs SET status='completed',message='Анализ завершён',result=$2,saved_documents=$3,updated_at=now() WHERE id=$1",[jobId,JSON.stringify(resultSaved),prepared.length]);
      await client.query('COMMIT');
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
