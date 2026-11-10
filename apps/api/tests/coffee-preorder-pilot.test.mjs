@@ -49,6 +49,9 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  const pool={query:(...a)=>db.query(...a),connect:async()=>({query:(...a)=>db.query(...a),release(){}})};
  const projectId=randomUUID(),actorId=randomUUID(),rootId=randomUUID();
  await db.query("INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",[rootId,projectId]);
+ for(const [key,title] of [['architecture','Архитектура и технические решения'],['operations','Запуск и эксплуатация'],['design','Дизайн и интерфейсы'],['research','Исходные материалы и исследования']]){
+  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),projectId,title,key]);
+ }
  const sourceKey='github-ai:gerlingerstanislav-creator/ideas@main:coffee-preorder-43-0.3';
  const makeJob=async()=>{const id=randomUUID();await db.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_key,request_text) VALUES($1,$2,$3,'running','start',$4,'Подготовь ТЗ по темам')",[id,projectId,actorId,sourceKey]);return {id,project_id:projectId,actor_id:actorId,request_text:'Подготовь ТЗ по темам',source_key:sourceKey};};
  const job=await makeJob();
@@ -126,6 +129,9 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",
   [collapsedRoot,collapsedProject]);
+ for(const [key,title] of [['architecture','Архитектура и технические решения'],['operations','Запуск и эксплуатация'],['design','Дизайн и интерфейсы'],['research','Исходные материалы и исследования']]){
+  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),collapsedProject,title,key]);
+ }
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,import_synced_hash) VALUES($1,$2,$3,$4,$5,$6,$7)",
   [collapsedPage,collapsedProject,legacyTitle,legacyBody,collapsedRoot,'topic:'+collapsedSourceKey+':everything',fingerprint(legacyTitle,legacyBody)]);
@@ -211,6 +217,9 @@ test('Coffee Preorder pinned snapshot: all 9 originals, visible checkpoints afte
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",
   [replayRoot,replayProject]);
+ for(const [key,title] of [['architecture','Архитектура и технические решения'],['operations','Запуск и эксплуатация'],['design','Дизайн и интерфейсы'],['research','Исходные материалы и исследования']]){
+  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),replayProject,title,key]);
+ }
  await db.query(
   "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,import_synced_hash) VALUES($1,$2,'Предзаказ и выдача',$3,$4,$5,$6)",
   [replayPage,replayProject,replayBody,replayRoot,replayKey,fingerprint('Предзаказ и выдача',replayBody)]);
