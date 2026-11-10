@@ -1565,6 +1565,21 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
   const old=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
   if(!old.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Задача не найдена'});}
   const t=old.rows[0];
+  if(t.type==='question'){
+   if(data.stage&&data.stage!==t.stage){
+    await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос не участвует в этапах разработки'});
+   }
+   if(t.question_status!=='open'&&(data.title!==undefined||data.description!==undefined)){
+    await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже передан аналитику и не редактируется'});
+   }
+   const questionTitle=data.title??t.title,questionText=data.description??t.description;
+   await client.query('UPDATE tasks SET title=$3,description=$4,updated_at=now() WHERE id=$1 AND project_id=$2',[taskId,id,questionTitle,questionText]);
+   if(questionTitle!==t.title||questionText!==t.description)
+    await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+     [randomUUID(),taskId,uid(req),'question_updated','Вопрос уточнён владельцем продукта']);
+   await client.query('COMMIT');
+   return {ok:true};
+  }
   if(t.type==='question'&&data.stage&&data.stage!==t.stage){
    await client.query('ROLLBACK');return reply.code(409).send({error:'Этап вопроса изменяется после обработки ответа аналитиком'});
   }
