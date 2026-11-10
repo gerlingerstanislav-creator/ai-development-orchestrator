@@ -17,6 +17,10 @@ const id=field('string','UUID'),str=field('string','Произвольный т�
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
+ tool('iterations.record_decision','Записать ответ владельца на вопрос аналитика по итерации. Ответ попадёт в следующие попытки декомпозиции и не будет утерян.',{iteration_id:id,question:str,answer:str},['iteration_id','question','answer']),
+ tool('iterations.approve','Согласовать редакцию объёма итерации после явного подтверждения владельца. Нужна текущая revision.',{iteration_id:id,expected_revision:field('integer','Текущая ревизия объёма')},['iteration_id','expected_revision']),
+ tool('iterations.preview_plan','Посмотреть точные изменения черновика задач до утверждения и публикации.',{iteration_id:id,plan_id:id},['iteration_id','plan_id']),
+ tool('iterations.publish_plan','Опубликовать только явно подтверждённые изменения черновика задач. Требуются значения актуального предпросмотра и список выбранных ключей.',{iteration_id:id,plan_id:id,preview_revision:str,selected_changes:{type:'array',items:str}},['iteration_id','plan_id','preview_revision','selected_changes']),
  tool('iterations.list','Найти итерации в разделе «План разработки».',{}),
  tool('iterations.read','Прочитать объём итерации, ссылки на документы, текущие задачи и ревизии.',{iteration_id:id},['iteration_id']),
  tool('iterations.save','По явной просьбе сохрани согласованное в обсуждении описание как черновик итерации. Для обновления передай ID и текущую ревизию. Сохраняй цель, границы, критерии готовности и исходные страницы.',
@@ -47,6 +51,14 @@ export const agentToolCatalog=[
  tool('documentation.request_reset','Предложить пользователю открыть подтверждение полной очистки документации проекта. Вызывай только по явной просьбе пользователя удалить всю документацию. Вызов показывает кнопку и не изменяет документы.',{}),
  tool('documentation.rebuild','Запустить пересборку ТЗ с сохранением предыдущих документов.',{instructions:str,idempotency_key:idem}),
  tool('documentation.organize','Запустить улучшение структуры и расположения страниц.',{instructions:str,idempotency_key:idem}),
+ tool('approvals.answer_question','Передать конкретный ответ владельца на открытый вопрос агента через стандартный API, возобновляющий аналитическую сверку.',{task_id:id,note_id:id,answer:str},['task_id','note_id','answer']),
+ tool('approvals.decide','Применить явное решение владельца по открытому запросу менеджера задачи через стандартные серверные проверки и текущие ограничения workflow.',{task_id:id,request_id:id,choice:field('string','answer, approve_requirements, reject_requirements, wait_for_tools; исключения QA только по явному согласию владельца'),answer:field('string','Текст ответа владельца')},['task_id','request_id','choice']),
+ tool('workflow.approve_development','Запустить разработку по явно подтверждённому поручению владельца через стандартный API; проверяет требования и блокировки.',{task_id:id},['task_id']),
+ tool('approvals.list','Прочитать ожидающие решения владельца согласования по задачам (требования, вопросы агентов, QA).',{}),
+ tool('discussions.list','Список тем ПМ проекта с открытыми и закрытыми обсуждениями.',{}),
+ tool('discussions.open','Создать тему обсуждения с владельцем. Повторно используй уже открытую тему с тем же смыслом.',{title:str},['title']),
+ tool('discussions.close','Закрыть обсуждение после ответа владельца и передачи решения. Можно открыть повторно через discussions.reopen.',{topic_id:id},['topic_id']),
+ tool('discussions.reopen','Открыть закрытую тему для дополнительных уточнений.',{topic_id:id},['topic_id']),
  tool('processes.list','Получить текущие и завершённые процессы проекта.',{}),
  tool('processes.report','Зафиксировать прогресс автономного агента в журнале.',{stage:str,message:str},['stage','message']),
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
@@ -57,8 +69,9 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch']);
+const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole){
- return agentToolCatalog.filter(t=>role==='manager'?t.name!=='documentation.request_reset':!BA_DENIED.has(t.name));
+ return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.'));
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);

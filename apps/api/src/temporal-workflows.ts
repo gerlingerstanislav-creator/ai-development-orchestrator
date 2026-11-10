@@ -1,10 +1,35 @@
-import {patched,proxyActivities,sleep} from '@temporalio/workflow';
+import {patched,proxyActivities,sleep,startChild,ParentClosePolicy} from '@temporalio/workflow';
 import type * as activities from './temporal-activities.js';
 
 const steps=proxyActivities<typeof activities>({
  startToCloseTimeout:'4 minutes',
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
+const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'>>({
+ startToCloseTimeout:'6 minutes',scheduleToCloseTimeout:'1 day',
+ retry:{maximumAttempts:20,initialInterval:'10 seconds',maximumInterval:'1 minute',backoffCoefficient:2}
+});
+const watchSteps=proxyActivities<Pick<typeof activities,'readProjectManagerWatch'>>({
+ startToCloseTimeout:'30 seconds',retry:{maximumAttempts:3,initialInterval:'2 seconds'}
+});
+export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'}):Promise<void>{
+ for(let count=0;count<20160;count++){
+  const status=await watchSteps.readProjectManagerWatch(watch);
+  if(status==='completed')return;
+  await sleep('30 seconds');
+ }
+}
+export async function processProjectManagerInbox(projectId:string,messageId:string):Promise<void>{
+ const watched=await inboxSteps.runProjectManagerInbox(projectId,messageId);
+ for(const watch of watched){
+  try{
+   await startChild(watchProjectManagerDelegation,{workflowId:'pm-followup-'+watch.processId,args:[watch],parentClosePolicy:ParentClosePolicy.ABANDON});
+  }catch(error){
+   // A second PM turn can attach to the same already-running process.
+   if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error).name))throw error;
+  }
+ }
+}
 const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
 const deploymentSteps=proxyActivities<typeof activities>({startToCloseTimeout:'30 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
 export async function automaticDeployment(runId:string):Promise<void>{

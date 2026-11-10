@@ -2,7 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole} from './agent-tools.js';
+import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,type AgentSession} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
 
 const uuid=z.string().uuid();
@@ -22,9 +22,10 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
  startDocumentationWorkflow:(jobId:string)=>Promise<void>;
- startIterationPlanning?:(runId:string)=>Promise<void>
+ startIterationPlanning?:(runId:string)=>Promise<void>;
+ delegateManagerAction?:(session:AgentSession,name:string,args:Record<string,unknown>)=>Promise<unknown>;
 }){
- const {pool,access,requireAdmin,startDocumentationWorkflow,startIterationPlanning}=deps;
+ const {pool,access,requireAdmin,startDocumentationWorkflow,startIterationPlanning,delegateManagerAction}=deps;
  async function startQueuedJob(jobId:string){
   const row=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0];
   if(!row)throw Object.assign(Error('Процесс не найден'),{statusCode:404});
@@ -130,7 +131,11 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
      return {result,cached:true};
     }
    }
-   const result=await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow);
+   const delegated=['approvals.decide','approvals.answer_question','workflow.approve_development'].includes(name);
+   if(delegated&&(!delegateManagerAction||session.role!=='manager'))throw Error('Недоступно делегированное действие ПМ');
+   const result=delegated
+    ?await delegateManagerAction!(session,name,args)
+    :await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow);
    await db.query(
     'INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,true,$7)',
     [randomUUID(),session.id,session.project_id,name,JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify(result),key]);

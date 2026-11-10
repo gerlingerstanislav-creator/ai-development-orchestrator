@@ -13,6 +13,7 @@ import {initDocumentationSystem} from './documentation-system.js';
 import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
 import {registerSafeTaskDeletion} from './task-deletion.js';
 import {registerBusinessAnalystHandoff} from './business-analyst-handoff.js';
+import {registerProjectManagerInbox} from './project-manager-inbox.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
@@ -248,6 +249,19 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS created_document_id uuid REFERENCES documents(id) ON DELETE SET NULL;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT 'project';
+ ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'completed';
+ ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS reply_to uuid REFERENCES assistant_messages(id) ON DELETE SET NULL;
+ ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS topic_id uuid;
+ CREATE TABLE IF NOT EXISTS project_pm_process_reports(
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  process_id uuid NOT NULL,
+  kind text NOT NULL,
+  reported_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(project_id,process_id)
+ );
+ CREATE TABLE IF NOT EXISTS project_chat_topics (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title text NOT NULL, status text NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')), created_at timestamptz NOT NULL DEFAULT now(), closed_at timestamptz);
+ CREATE INDEX IF NOT EXISTS idx_project_chat_topics_project ON project_chat_topics(project_id,status,created_at);
+ CREATE INDEX IF NOT EXISTS idx_assistant_reply ON assistant_messages(project_id,reply_to);
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS documentation_reset_requested boolean NOT NULL DEFAULT false;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS owner_question_cleanup_requested boolean NOT NULL DEFAULT false;
  CREATE INDEX IF NOT EXISTS idx_assistant_channel ON assistant_messages(project_id,channel,created_at);
@@ -1834,6 +1848,40 @@ async function startIterationPlanning(runId:string){
 registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,startDocumentationWorkflow:async jobId=>{
  const client=await temporal();
  await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
+},delegateManagerAction:async(session,name,args)=>{
+ const projectId=session.project_id;
+ if(session.role!=='manager')throw Object.assign(Error('Действие только для ПМ'),{statusCode:403});
+ const user=(await pool.query('SELECT email FROM users WHERE id=$1',[session.actor_id])).rows[0];
+ if(!user)throw Object.assign(Error('Пользователь не найден'),{statusCode:403});
+ const id=z.string().uuid();
+ const taskId=id.parse(args.task_id);
+ const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
+ if(!task)throw Object.assign(Error('Задача не найдена'),{statusCode:404});
+ const token=await accessToken(session.actor_id,user.email);
+ let url='/api/projects/'+projectId+'/tasks/'+taskId,payload:Record<string,unknown>={};
+ if(name==='approvals.answer_question'){
+  const noteId=id.parse(args.note_id);
+  const answer=z.string().trim().min(3).max(3000).parse(args.answer);
+  url+='/agent-notes/'+noteId+'/answer';payload={answer};
+ }else if(name==='approvals.decide'){
+  const requestId=id.parse(args.request_id);
+  const choice=z.enum(['approve_without_visual','wait_for_tools','answer','approve_requirements','reject_requirements']).parse(args.choice);
+  const answer=z.string().trim().max(3000).default('').parse(args.answer);
+  url+='/manager/requests/'+requestId+'/decision';payload={choice,answer};
+ }else if(name==='workflow.approve_development'){
+  url+='/run-ai';payload={approveAnalysis:true};
+  if(task.iteration_id){
+   const iteration=(await pool.query('SELECT id,revision,approved_revision FROM project_iterations WHERE project_id=$1 AND id=$2',[projectId,task.iteration_id])).rows[0];
+   if(!iteration||iteration.approved_revision!==iteration.revision)
+    throw Object.assign(Error('Объём итерации не согласован или изменился'),{statusCode:409});
+   payload.iterationApproval={id:iteration.id,revision:iteration.revision};
+  }
+ }else throw Object.assign(Error('Недопустимое действие ПМ'),{statusCode:403});
+ const response=await app.inject({method:'POST',url,headers:{authorization:'Bearer '+token},payload});
+ let result:any;
+ try{result=response.json();}catch{result={error:response.body.slice(0,300)};}
+ if(response.statusCode>=400)throw Object.assign(Error(String(result.error||'Операция не выполнена').slice(0,700)),{statusCode:response.statusCode});
+ return result;
 }});
 const assistant=registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken,
  startDocumentationWorkflow:async jobId=>{
@@ -1841,6 +1889,11 @@ const assistant=registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexU
   await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
  }
 });
+registerProjectManagerInbox(app,{pool,uid,access,requireAdmin,start:async(projectId,messageId)=>{
+ const client=await temporal();
+ await client.workflow.start('processProjectManagerInbox',{taskQueue:'agent-pipeline',workflowId:'project-pm-'+messageId,
+  workflowIdReusePolicy:'REJECT_DUPLICATE',args:[projectId,messageId]});
+}});
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});

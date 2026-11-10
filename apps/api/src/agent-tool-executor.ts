@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
-import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch} from './project-iterations.js';
+import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
 import {taskConversationEvidence} from './task-agent-notes.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
@@ -51,6 +51,53 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  const projectId=session.project_id,actorId=session.actor_id;
  const params=(args&&typeof args==='object'&&!Array.isArray(args)?args:{}) as Record<string,unknown>;
  switch(name){
+ case 'approvals.answer_question':{
+  const {task_id,note_id,answer}=z.object({task_id:uuid,note_id:uuid,answer:z.string().trim().min(3).max(3000)}).parse(params);
+  const changed=await pool.query("UPDATE task_agent_notes SET status='answered',answer=$4,answered_at=now(),answered_by=$5,answer_author='Владелец через ПМ' WHERE project_id=$1 AND task_id=$2 AND id=$3 AND kind='question' AND status='open' AND requires_customer=true RETURNING id",[projectId,task_id,note_id,answer,actorId]);
+  if(!changed.rowCount)throw rejected('Вопрос уже закрыт или не запрашивал решение владельца',409);
+  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",[randomUUID(),task_id,actorId,'Ответ владельца через ПМ: '+answer.slice(0,1600)]);
+  return {answered:true,task_id,note_id,requires_requirements_recheck:true,message:'Ответ сохранён. До повторной сверки СА запуск разработки не подтверждён.'};
+ }
+ case 'approvals.list':{
+  const pending=await pool.query("SELECT r.id AS request_id,r.task_id,r.kind,r.status,r.payload,r.created_at,t.title,t.stage FROM manager_requests r JOIN tasks t ON t.id=r.task_id AND t.project_id=r.project_id WHERE r.project_id=$1 AND r.status IN ('open','waiting') ORDER BY r.created_at DESC LIMIT 80",[projectId]);
+  return {requests:pending.rows};
+ }
+ case 'discussions.list':{
+  const topics=await pool.query('SELECT id,title,status,created_at,closed_at FROM project_chat_topics WHERE project_id=$1 ORDER BY status,created_at DESC LIMIT 100',[projectId]);
+  return {topics:topics.rows};
+ }
+ case 'discussions.open':{
+  const {title}=z.object({title:z.string().trim().min(3).max(180)}).parse(params);
+  const existing=await pool.query("SELECT id,title,status FROM project_chat_topics WHERE project_id=$1 AND status='open' AND lower(title)=lower($2) LIMIT 1",[projectId,title]);
+  if(existing.rowCount)return {topic:existing.rows[0],existing:true};
+  const id=randomUUID();
+  const inserted=await pool.query("INSERT INTO project_chat_topics(id,project_id,title) VALUES($1,$2,$3) RETURNING id,title,status",[id,projectId,title]);
+  return {topic:inserted.rows[0],existing:false};
+ }
+ case 'discussions.close':
+ case 'discussions.reopen':{
+  const {topic_id}=z.object({topic_id:uuid}).parse(params);
+  const status=name==='discussions.close'?'closed':'open';
+  const updated=await pool.query("UPDATE project_chat_topics SET status=$3,closed_at=CASE WHEN $3='closed' THEN now() ELSE NULL END WHERE project_id=$1 AND id=$2 RETURNING id,title,status",[projectId,topic_id,status]);
+  if(!updated.rowCount)throw rejected('Тема не найдена',404);
+  return {topic:updated.rows[0]};
+ }
+ case 'iterations.record_decision':{
+  const {iteration_id,question,answer}=z.object({iteration_id:uuid,question:z.string().trim().min(3).max(2000),answer:z.string().trim().min(3).max(5000)}).parse(params);
+  return recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
+ }
+ case 'iterations.approve':{
+  const {iteration_id,expected_revision}=z.object({iteration_id:uuid,expected_revision:z.number().int().positive()}).parse(params);
+  return approveIterationViaManager(pool,projectId,iteration_id,expected_revision);
+ }
+ case 'iterations.preview_plan':{
+  const {iteration_id,plan_id}=z.object({iteration_id:uuid,plan_id:uuid}).parse(params);
+  return previewIterationPlanViaManager(pool,projectId,iteration_id,plan_id);
+ }
+ case 'iterations.publish_plan':{
+  const {iteration_id,plan_id,preview_revision,selected_changes}=z.object({iteration_id:uuid,plan_id:uuid,preview_revision:z.string().length(64),selected_changes:z.array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,79}$/)).max(95)}).parse(params);
+  return publishIterationPlanViaManager(pool as PoolClient,projectId,iteration_id,plan_id,actorId,preview_revision,selected_changes);
+ }
  case 'iterations.list':return listIterations(pool,projectId);
  case 'iterations.read':{
   const {iteration_id}=z.object({iteration_id:uuid}).parse(params);
