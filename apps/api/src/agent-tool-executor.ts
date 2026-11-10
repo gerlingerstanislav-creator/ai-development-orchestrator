@@ -4,6 +4,7 @@ import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
+import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 
 const uuid=z.string().uuid();
 const createDoc=z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:uuid,
@@ -106,8 +107,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    if(!task.rowCount)throw rejected('Задача не найдена',404);
   }
   const d=r.rows[0];
-  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage) VALUES($1,$2,$3,$4,$5,$6)',
-   [randomUUID(),projectId,task_id||null,document_id,revision(d.updated_at),session.role]);
+  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage,agent_session_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
+   [randomUUID(),projectId,task_id||null,document_id,revision(d.updated_at),session.role,session.id]);
   return {document:{id:d.id,title:d.title,parent_id:d.parent_id,status:d.knowledge_status,summary:d.knowledge_summary||d.body.slice(0,360),tags:d.knowledge_tags,version:revision(d.updated_at),...(mode==='full'?{body:d.body}:{})}};
  }
 
@@ -116,31 +117,19 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const {document_id}=z.object({document_id:uuid}).parse(params);
   const r=await pool.query("SELECT title,body,updated_at FROM documents WHERE project_id=$1 AND id=$2 AND knowledge_status='approved'",[projectId,document_id]);
   if(!r.rowCount)throw rejected('Утверждённый документ не найден',404);
-  const lines=String(r.rows[0].body).split(/\r?\n/);
-  const sections:{section_id:number;title:string;level:number}[]=[];
-  lines.forEach((line,index)=>{
-   const h=/^(#{1,6})\s+(.+)$/.exec(line);
-   if(h)sections.push({section_id:index,title:h[2],level:h[1].length});
-  });
+  const sections=markdownSections(document_id,String(r.rows[0].body)).map(s=>({section_id:s.section_id,level:s.level,title:s.title}));
   return {document_id,title:r.rows[0].title,version:revision(r.rows[0].updated_at),sections};
  }
-
  case 'knowledge.section':{
-  const {document_id,section_id,task_id}=z.object({document_id:uuid,section_id:z.number().int().min(0),task_id:uuid.optional()}).parse(params);
+  const {document_id,section_id,task_id}=z.object({document_id:uuid,section_id:z.union([uuid,z.number().int().min(0)]),task_id:uuid.optional()}).parse(params);
   const r=await pool.query("SELECT body,title,updated_at FROM documents WHERE project_id=$1 AND id=$2 AND knowledge_status='approved'",[projectId,document_id]);
   if(!r.rowCount)throw rejected('Утверждённый документ не найден',404);
   if(task_id&&!await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[task_id,projectId]).then(r=>r.rowCount))throw rejected('Задача не найдена',404);
-  const lines=String(r.rows[0].body).split(/\r?\n/);
-  const heading=/^(#{1,6})\s+(.+)$/.exec(lines[section_id]||'');
-  if(!heading)throw rejected('Раздел не найден',404);
-  let end=lines.length;
-  for(let i=section_id+1;i<lines.length;i++){
-   const next=/^(#{1,6})\s+/.exec(lines[i]);
-   if(next&&next[1].length<=heading[1].length){end=i;break;}
-  }
-  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage) VALUES($1,$2,$3,$4,$5,$6)',
-   [randomUUID(),projectId,task_id||null,document_id,revision(r.rows[0].updated_at),session.role]);
-  return {document_id,section_id,title:heading[2],body:lines.slice(section_id,end).join('\n'),version:revision(r.rows[0].updated_at)};
+  const section=markdownSections(document_id,String(r.rows[0].body)).find(s=>typeof section_id==='number'?s.line===section_id:s.section_id===section_id);
+  if(!section)throw rejected('Раздел не найден',404);
+  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage,agent_session_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
+   [randomUUID(),projectId,task_id||null,document_id,revision(r.rows[0].updated_at),session.role,session.id]);
+  return {document_id,section_id:section.section_id,title:section.title,body:sectionBody(String(r.rows[0].body),section),version:revision(r.rows[0].updated_at)};
  }
 
  case 'knowledge.related':{
