@@ -109,6 +109,25 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    [randomUUID(),projectId,task_id||null,document_id,revision(d.updated_at),session.role]);
   return {document:{id:d.id,title:d.title,parent_id:d.parent_id,status:d.knowledge_status,summary:d.knowledge_summary||d.body.slice(0,360),tags:d.knowledge_tags,version:revision(d.updated_at),...(mode==='full'?{body:d.body}:{})}};
  }
+
+ case 'knowledge.section':{
+  const {document_id,section_id,task_id}=z.object({document_id:uuid,section_id:z.number().int().min(0),task_id:uuid.optional()}).parse(params);
+  const r=await pool.query("SELECT body,title,updated_at FROM documents WHERE project_id=$1 AND id=$2 AND knowledge_status='approved'",[projectId,document_id]);
+  if(!r.rowCount)throw rejected('Утверждённый документ не найден',404);
+  if(task_id&&!await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[task_id,projectId]).then(r=>r.rowCount))throw rejected('Задача не найдена',404);
+  const lines=String(r.rows[0].body).split(/\r?\n/);
+  const heading=/^(#{1,6})\s+(.+)$/.exec(lines[section_id]||'');
+  if(!heading)throw rejected('Раздел не найден',404);
+  let end=lines.length;
+  for(let i=section_id+1;i<lines.length;i++){
+   const next=/^(#{1,6})\s+/.exec(lines[i]);
+   if(next&&next[1].length<=heading[1].length){end=i;break;}
+  }
+  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage) VALUES($1,$2,$3,$4,$5,$6)',
+   [randomUUID(),projectId,task_id||null,document_id,revision(r.rows[0].updated_at),session.role]);
+  return {document_id,section_id,title:heading[2],body:lines.slice(section_id,end).join('\n'),version:revision(r.rows[0].updated_at)};
+ }
+
  case 'knowledge.related':{
   const {document_id}=z.object({document_id:uuid}).parse(params);
   const r=await pool.query("SELECT k.id,k.relation,d.id AS related_document_id,d.title,d.knowledge_summary AS summary FROM knowledge_links k JOIN documents d ON d.id=CASE WHEN k.source_document_id=$2 THEN k.target_document_id ELSE k.source_document_id END AND d.project_id=$1 WHERE k.project_id=$1 AND (k.source_document_id=$2 OR k.target_document_id=$2) AND d.knowledge_status='approved' LIMIT 60",[projectId,document_id]);
