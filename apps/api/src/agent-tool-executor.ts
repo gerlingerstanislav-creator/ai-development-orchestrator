@@ -165,9 +165,9 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const {product_owner_questions_only}=z.object({product_owner_questions_only:z.boolean().optional()}).parse(params);
   if(product_owner_questions_only){
    const tasks=(await tasksWithCustomerQuestions(pool,projectId)).filter(task=>task.awaits_product_owner);
-   return {tasks:tasks.map(({id,title,stage,analysis_state,display_number})=>({id,title,stage,analysis_state,display_number}))};
+   return {tasks:tasks.map(({id,title,stage,type,document_id,question_status,analysis_state,display_number})=>({id,title,stage,type,document_id,question_status,analysis_state,display_number}))};
   }
-  const r=await pool.query('SELECT id,title,description,stage,analysis_state,display_number,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 100',[projectId]);
+  const r=await pool.query('SELECT id,title,description,type,stage,analysis_state,display_number,document_id,question_status,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 500',[projectId]);
   return {tasks:r.rows};
  }
  case 'tasks.read':{
@@ -190,15 +190,15 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {id,stage:'backlog'};
  }
  case 'questions.list':{
-  const r=await pool.query("SELECT q.id,q.question,q.answer,q.status,q.document_id,d.title AS document_title FROM documentation_questions q JOIN documents d ON d.id=q.document_id WHERE q.project_id=$1 AND q.status IN ('open','answered') ORDER BY q.created_at DESC LIMIT 100",[projectId]);
+  const r=await pool.query("SELECT q.id,q.description AS question,q.question_answer AS answer,q.question_status AS status,q.document_id,d.title AS document_title FROM tasks q JOIN documents d ON d.id=q.document_id WHERE q.project_id=$1 AND q.type='question' AND q.question_status IN ('open','answered') ORDER BY q.created_at DESC LIMIT 500",[projectId]);
   return {questions:r.rows};
  }
  case 'questions.create':{
   const {document_id,question}=z.object({document_id:uuid,question:z.string().trim().min(8).max(700)}).parse(params);
   if(!await parentExists(pool,projectId,document_id))throw rejected('Документ не найден',404);
   const key=hashSecret(question.trim().toLowerCase()).slice(0,24);
-  await pool.query("INSERT INTO documentation_questions(id,project_id,job_id,topic_key,question_key,document_id,question) VALUES($1,$2,NULL,'agent',$3,$4,$5) ON CONFLICT(project_id,document_id,question_key) DO NOTHING",
-   [randomUUID(),projectId,key,document_id,question]);
+  await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,position,document_id,question_key,question_topic,question_status) VALUES($1,$2,$3,$4,'question','backlog',(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2),$5,$6,'agent','open') ON CONFLICT DO NOTHING",
+   [randomUUID(),projectId,question.slice(0,300),question,document_id,key]);
   return {document_id,question_key:key};
  }
  case 'documentation.import':case 'documentation.rebuild':case 'documentation.organize':{
