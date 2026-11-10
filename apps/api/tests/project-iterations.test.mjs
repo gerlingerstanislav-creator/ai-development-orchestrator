@@ -71,14 +71,23 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  const complete=()=>runIterationPlanning(pool,runId,async(prompt,projectId)=>{
   calls++;
   assert.equal(projectId,project);
-  assert.match(prompt,/Ты системный аналитик/);
-  assert.match(prompt,/Ручное оформление/i);
-  assert.match(prompt,/Первый рабочий сценарий/);
-  return JSON.stringify({epics:proposal.epics});
+  if(calls===1){
+   assert.match(prompt,/Ты системный аналитик/);
+   assert.match(prompt,/Ручное оформление/i);
+   assert.match(prompt,/Первый рабочий сценарий/);
+   return JSON.stringify({epics:proposal.epics});
+  }
+  if(calls===2){
+   assert.match(prompt,/Ты разработчик/);
+   return JSON.stringify({subtasks:[{epic_key:'checkout',key:'form-validation',title:'Валидация формы',description:'Добавить и протестировать валидацию полей',tags:['frontend'],depends_on:'form'}]});
+  }
+  assert.match(prompt,/Ты ПМ/);
+  return JSON.stringify({epics:[{...proposal.epics[0],tasks:[...proposal.epics[0].tasks,
+   {key:'form-validation',title:'Валидация формы',description:'Добавить и протестировать валидацию полей',kind:'development',tags:['frontend'],depends_on:'form'}]}]});
  });
  await complete();
  await complete();
- assert.equal(calls,1,'Temporal retry does not regenerate a completed draft');
+ assert.equal(calls,3,'Temporal retry does not regenerate a completed draft');
  const status=(await request('GET',url)).json();
  assert.equal(status.planning_runs[0].status,'completed');
  const plan=await propose();
@@ -87,7 +96,7 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
  const planUrl=url+'/plans/'+plan.id;
  const preview=(await request('GET',planUrl)).json();
- assert.equal(preview.items.length,3);
+ assert.equal(preview.items.length,4);
  const publish=(value=preview.preview_revision)=>request('POST',planUrl+'/publish',{confirm:true,preview_revision:value});
  await db.query("UPDATE documents SET updated_at=updated_at+interval '1 second' WHERE id=$1",[source]);
  assert.equal((await publish()).statusCode,409,'Changed source invalidates publication');
@@ -97,7 +106,7 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  const firstPublish=await request('POST',nextUrl+'/publish',{confirm:true,preview_revision:nextPreview.preview_revision});
  assert.equal(firstPublish.statusCode,200,firstPublish.body);
  const result=firstPublish.json();
- assert.equal(result.created.length,3);
+ assert.equal(result.created.length,4);
  assert.deepEqual((await request('POST',nextUrl+'/publish',{confirm:true,preview_revision:nextPreview.preview_revision})).json(),result);
  const {tasks}=await readIteration(db,project,id);
  const epic=tasks.find(task=>task.type==='epic'),form=tasks.find(task=>task.title==='Форма'),order=tasks.find(task=>task.title==='Заказ');
@@ -107,8 +116,8 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal(order.stage,'analysis');
  assert.equal(order.analysis_state,'new');
  assert.equal(form.analysis_state,'ready_for_development');
- assert.equal((await db.query('SELECT count(*)::int n FROM task_spec_versions')).rows[0].n,2);
- assert.equal((await db.query('SELECT count(*)::int n FROM knowledge_task_links')).rows[0].n,2);
+ assert.equal((await db.query('SELECT count(*)::int n FROM task_spec_versions')).rows[0].n,3);
+ assert.equal((await db.query('SELECT count(*)::int n FROM knowledge_task_links')).rows[0].n,3);
  const changedProposal=structuredClone(proposal);
  changedProposal.epics[0].tasks[0].title='Форма заказа';
  changedProposal.epics[0].tasks[0].description='Ввод и проверка данных';
