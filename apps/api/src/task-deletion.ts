@@ -26,7 +26,8 @@ export function registerSafeTaskDeletion(app:FastifyInstance,{pool,uid,access,re
     ['SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]],
     ['SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]],
     ['SELECT 1 FROM qa_test_plans WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]],
-    ['SELECT 1 FROM qa_test_cases WHERE project_id=$1 AND source_task_id=$2 LIMIT 1',[id,taskId]]
+    ['SELECT 1 FROM qa_test_cases WHERE project_id=$1 AND source_task_id=$2 LIMIT 1',[id,taskId]],
+    ["SELECT 1 FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]]
    ] as Array<[string,string[]]>)related.push(await client.query(sql,params));
    if(related.some(r=>r.rowCount)){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Задача имеет связанные задачи или результаты выполнения. Удаление заблокировано'});
