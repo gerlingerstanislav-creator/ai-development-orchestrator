@@ -73,7 +73,7 @@ type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;crea
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
-type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed';reply_to?:string|null;created_at:string};
+type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
@@ -1336,6 +1336,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,status:'failed'}:m)}:old);
   }finally{setManagerSending(false);}
  }
+ async function stopManagerMessage(messageId:string){
+  if(!selected||!activeTask||managerBusy)return;
+  const projectId=selected.id,taskId=activeTask.id;
+  setManagerBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+projectId+'/tasks/'+taskId+'/manager/messages/'+messageId+'/stop',
+    {method:'POST',body:'{}'});
+   setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===messageId?{...m,status:'cancelled'}:m)}:old);
+   await refreshTaskActivity(projectId,taskId);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось прервать ответ ПМ');}
+  finally{setManagerBusy(false);}
+ }
  async function decideAsManager(request:ManagerRequest,choice:string){
   if(!selected||!activeTask||managerBusy)return;
   if(choice==='answer'&&managerAnswer.trim().length<3){setManagerFeedback('Ответь на вопрос Менеджера проекта');return;}
@@ -2212,6 +2224,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <small>{new Date(m.created_at).toLocaleString('ru-RU')}</small>
        </div>
        <div className="manager-message-body">{m.body}</div>
+       {m.role==='user'&&['queued','processing'].includes(m.status)&&!m.id.startsWith('pending-')&&
+        <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void stopManagerMessage(m.id)}>Прервать ответ ПМ</button>}
+       {m.role==='user'&&m.status==='cancelled'&&<small className="muted">Обработка прервана</small>}
        {m.role==='user'&&m.status==='failed'&&<div className="manager-message-error">
         Не удалось обработать запрос. Сообщение сохранено.
         <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void retryManagerMessage(m.id)}>Повторить</button>
