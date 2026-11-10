@@ -4,20 +4,9 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 
 const uuid=z.string().uuid();
-const SPEC_SECTIONS=[
-  ['overview','01. Общие сведения'],
-  ['goals','02. Назначение и цели'],
-  ['scope','03. Границы и состав системы'],
-  ['functional','04. Функциональные требования'],
-  ['nonfunctional','05. Нефункциональные требования'],
-  ['integrations','06. Данные и интеграции'],
-  ['constraints','07. Ограничения и допущения'],
-  ['acceptance','08. Критерии приёмки']
-] as const;
-
 /** Extend the current document tree in place. Never replace existing pages or IDs. */
 export async function initKnowledgeContext(pool:Pool){
- await pool.query(String.raw\`
+ await pool.query(String.raw`
   ALTER TABLE documents ADD COLUMN IF NOT EXISTS knowledge_key text;
   ALTER TABLE documents ADD COLUMN IF NOT EXISTS knowledge_status text NOT NULL DEFAULT 'approved';
   ALTER TABLE documents ADD COLUMN IF NOT EXISTS knowledge_summary text NOT NULL DEFAULT '';
@@ -42,9 +31,9 @@ export async function initKnowledgeContext(pool:Pool){
    created_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS idx_knowledge_reads_task ON knowledge_context_reads(project_id,task_id,created_at DESC);
- \`);
+ `);
  // Seed only headings, leaving existing TЗ and user-authored content intact.
- await pool.query(\`
+ await pool.query(`
   INSERT INTO documents(id,project_id,parent_id,title,body,knowledge_key,knowledge_status)
   SELECT gen_random_uuid(),p.id,root.id,section.title,'',section.key,'approved'
   FROM projects p
@@ -57,7 +46,7 @@ export async function initKnowledgeContext(pool:Pool){
   ) AS section(key,title)
   WHERE NOT EXISTS(SELECT 1 FROM documents d WHERE d.project_id=p.id AND d.knowledge_key=section.key)
   ON CONFLICT DO NOTHING
- \`);
+ `);
 }
 type Dependencies={pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(req:any,reply:any)=>Promise<boolean>};
 function documentShape(row:any,mode:'summary'|'full'){
@@ -74,7 +63,7 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
  app.get('/api/projects/:id/knowledge/search',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id))return;
   const args=z.object({q:z.string().trim().min(2).max(300),limit:z.coerce.number().int().min(1).max(30).default(10),status:z.enum(['approved','draft','review','obsolete','all']).default('approved')}).parse(req.query);
-  const r=await pool.query(\`
+  const r=await pool.query(`
    SELECT id,parent_id,title,knowledge_summary,knowledge_status,knowledge_tags,updated_at,
     ts_rank_cd(to_tsvector('simple',title||' '||body),plainto_tsquery('simple',$2)) AS score,
     left(body,360) AS excerpt
@@ -83,7 +72,7 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
     AND (to_tsvector('simple',title||' '||body) @@ plainto_tsquery('simple',$2)
        OR title ILIKE '%'||$2||'%' OR body ILIKE '%'||$2||'%'
        OR $2=ANY(knowledge_tags))
-   ORDER BY score DESC,updated_at DESC LIMIT $4\`,[id,args.q,args.status,args.limit]);
+   ORDER BY score DESC,updated_at DESC LIMIT $4`,[id,args.q,args.status,args.limit]);
   return {results:r.rows.map(row=>({...documentShape({...row,body:row.excerpt},'summary'),score:Number(row.score),excerpt:row.excerpt}))};
  });
  app.get('/api/projects/:id/knowledge/documents/:documentId',async(req:any,reply)=>{
@@ -97,18 +86,18 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
  });
  app.get('/api/projects/:id/knowledge/documents/:documentId/related',async(req:any,reply)=>{
   const {id,documentId}=z.object({id:uuid,documentId:uuid}).parse(req.params);if(!await access(req,reply,id))return;
-  const r=await pool.query(\`SELECT k.id,k.relation,k.source_document_id,k.target_document_id,d.id AS related_document_id,d.title,d.knowledge_summary
+  const r=await pool.query(`SELECT k.id,k.relation,k.source_document_id,k.target_document_id,d.id AS related_document_id,d.title,d.knowledge_summary
    FROM knowledge_links k JOIN documents d ON d.id=CASE WHEN k.source_document_id=$2 THEN k.target_document_id ELSE k.source_document_id END AND d.project_id=$1
-   WHERE k.project_id=$1 AND (k.source_document_id=$2 OR k.target_document_id=$2) ORDER BY k.created_at DESC LIMIT 100\`,[id,documentId]);
+   WHERE k.project_id=$1 AND (k.source_document_id=$2 OR k.target_document_id=$2) ORDER BY k.created_at DESC LIMIT 100`,[id,documentId]);
   return {results:r.rows};
  });
  app.post('/api/projects/:id/knowledge/links',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const data=z.object({source_document_id:uuid,target_document_id:uuid,relation:z.enum(['related_to','depends_on','implements','describes','supersedes','tested_by'])}).parse(req.body);
   if(data.source_document_id===data.target_document_id)return reply.code(400).send({error:'Невозможно связать документ с самим собой'});
-  const r=await pool.query(\`INSERT INTO knowledge_links(id,project_id,source_document_id,target_document_id,relation)
+  const r=await pool.query(`INSERT INTO knowledge_links(id,project_id,source_document_id,target_document_id,relation)
   SELECT $1,$2,$3,$4,$5 WHERE (SELECT count(*) FROM documents WHERE project_id=$2 AND id=ANY(ARRAY[$3,$4]::uuid[]))=2
-  ON CONFLICT(project_id,source_document_id,target_document_id,relation) DO UPDATE SET relation=EXCLUDED.relation RETURNING id\`,
+  ON CONFLICT(project_id,source_document_id,target_document_id,relation) DO UPDATE SET relation=EXCLUDED.relation RETURNING id`,
   [randomUUID(),id,data.source_document_id,data.target_document_id,data.relation]);
   if(!r.rowCount)return reply.code(400).send({error:'Оба документа должны принадлежать проекту'});
   return reply.code(201).send({id:r.rows[0].id});
@@ -116,9 +105,9 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
  app.patch('/api/projects/:id/knowledge/documents/:documentId/metadata',async(req:any,reply)=>{
   const {id,documentId}=z.object({id:uuid,documentId:uuid}).parse(req.params);if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const data=z.object({status:z.enum(['approved','draft','review','obsolete']).optional(),summary:z.string().max(1500).optional(),tags:z.array(z.string().trim().min(1).max(60)).max(30).optional()}).parse(req.body);
-  const r=await pool.query(\`UPDATE documents SET knowledge_status=COALESCE($3,knowledge_status),
+  const r=await pool.query(`UPDATE documents SET knowledge_status=COALESCE($3,knowledge_status),
    knowledge_summary=COALESCE($4,knowledge_summary),knowledge_tags=COALESCE($5,knowledge_tags),updated_at=now()
-   WHERE project_id=$1 AND id=$2 RETURNING id\`,[id,documentId,data.status??null,data.summary??null,data.tags??null]);
+   WHERE project_id=$1 AND id=$2 RETURNING id`,[id,documentId,data.status??null,data.summary??null,data.tags??null]);
   if(!r.rowCount)return reply.code(404).send({error:'Документ не найден'});
   return {ok:true};
  });
