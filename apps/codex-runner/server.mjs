@@ -633,9 +633,9 @@ http.createServer(async(req,res)=>{
      '-c','mcp_servers.orchestrator.env_vars=["ADO_AGENT_SESSION_TOKEN","ADO_AGENT_API_URL"]',
      '-c','mcp_servers.orchestrator.startup_timeout_sec=15',
      '-c','mcp_servers.orchestrator.tool_timeout_sec=90',
-     '-c','mcp_servers.orchestrator.default_tools_approval_mode="auto"',
-     // These writes use a role-scoped API session and run in unattended chats.
-     '-c','mcp_servers.orchestrator.tools={"tasks.create"={approval_mode="approve"},"documentation.import"={approval_mode="approve"},"documentation.rebuild"={approval_mode="approve"},"documentation.organize"={approval_mode="approve"}}',
+     // This MCP server only exposes tools authorized by the project-scoped API session.
+     // Operations that require a human decision use separate application endpoints.
+     '-c','mcp_servers.orchestrator.default_tools_approval_mode="approve"',
      '--json','--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
     ],{cwd:'/opt/codex-runner',
      env:{...cliEnv,ADO_AGENT_SESSION_TOKEN:data.session_token,

@@ -32,7 +32,7 @@ export const agentToolCatalog=[
  tool('tasks.list','Получить задачи и этапы. Для колонки «Вопросы к ПО» передай product_owner_questions_only=true. Карточки вопросов по документам в этот список не входят.',{product_owner_questions_only:field('boolean','Показать только задачи из колонки «Вопросы к ПО»')}),
  tool('tasks.read','Прочитать задачу по UUID.',{task_id:id},['task_id']),
  tool('tasks.request_owner_question_cleanup','По явному запросу пользователя удалить задачи из «Вопросов к ПО» покажи кнопку предпросмотра и подтверждения. Вызов не удаляет задачи.',{}),
- tool('tasks.create','Создать задачу в аналитике с конкретными требованиями.',{title:str,description:str,idempotency_key:idem},['title','description']),
+ tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
  tool('questions.list','Посмотреть открытые вопросы к владельцу продукта.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
  tool('documentation.import','Запустить через Temporal импорт Markdown из GitHub. Источники будут закреплены на SHA.',{source_url:str,instructions:str,idempotency_key:idem},['source_url']),

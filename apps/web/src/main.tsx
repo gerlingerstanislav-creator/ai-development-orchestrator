@@ -837,7 +837,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function restoreKnowledgeVersion(versionId:string){
   if(!selected||!selectedDocId||docBusy)return;
   const doc=docs.find(x=>x.id===selectedDocId);
-  if(!doc||!window.confirm('Восстановить содержимое выбранной версии? Текущая версия останется в истории.'))return;
+  if(!doc)return;
   setDocBusy(true);
   try{
    await api('/projects/'+selected.id+'/knowledge/documents/'+doc.id+'/versions/'+versionId+'/restore',{method:'POST',body:JSON.stringify({expected_version:new Date(doc.updated_at).toISOString()})});
@@ -1736,7 +1736,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <button className="secondary" disabled={!knowledgeTarget||docBusy} onClick={()=>void linkKnowledgeDocument()}>Добавить связь</button>
       </div>
       <details><summary>История версий ({knowledgeVersions.length})</summary>
-       {knowledgeVersions.map(v=><p key={v.id}><small>{new Date(v.created_at).toLocaleString('ru-RU')} · {v.excerpt}</small> <button className="secondary" type="button" disabled={docBusy} onClick={()=>void restoreKnowledgeVersion(v.id)}>Восстановить</button></p>)}
+       {knowledgeVersions.map(v=><p key={v.id}><small>{new Date(v.created_at).toLocaleString('ru-RU')} · {v.excerpt}</small> <button className="secondary" type="button" title="Текущая версия останется в истории" disabled={docBusy} onClick={()=>void restoreKnowledgeVersion(v.id)}>Восстановить</button></p>)}
       </details>
      </details>}
      <header className="docs-reading-header">
