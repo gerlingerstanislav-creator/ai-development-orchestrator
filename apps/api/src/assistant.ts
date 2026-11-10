@@ -501,7 +501,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    await store(id,null,null,'assistant',answer,null,null,mode);
    return {message:answer,created_task_id:null,created_document_id:null};
   }
-  const documentationAction=localDocumentIntent||isExplicitDocumentationChange(message);
+  const documentationAction=localDocumentIntent||isExplicitDocumentationChange(message)||isDocumentationStructureCommand(message);
   const structureOnly=documentationMode&&!location&&!attachments.length&&isDocumentationStructureCommand(message);
   if(!create&&(documentationMode&&(!!location||attachments.length>0||documentationAction)||location&&docImportIntent)){
    const config=await configuration(id);
