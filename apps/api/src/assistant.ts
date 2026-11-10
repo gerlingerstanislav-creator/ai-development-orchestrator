@@ -28,6 +28,8 @@ const attachmentSchema=z.object({
  body:z.string().min(1).max(100000)
 });
 const analystRequest=messageSchema.extend({
+ replyTo:z.string().uuid().nullable().optional(),
+ topicId:z.string().uuid().nullable().optional(),
  mode:z.enum(['project','documentation']).default('project'),
  attachments:z.array(attachmentSchema).max(5).default([]),
  documentId:z.string().uuid().nullable().default(null)
@@ -451,11 +453,32 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
  }
 
  function registerRoutes(app:FastifyInstance,{uid,access,requireAdmin,startDocumentationWorkflow}:Dependencies){
+ app.get('/api/projects/:id/assistant/topics',async(req:any,reply)=>{
+  const {id}=z.object({id:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  return (await pool.query("SELECT id,title,status,created_at,closed_at FROM project_chat_topics WHERE project_id=$1 ORDER BY status ASC,created_at DESC",[id])).rows;
+ });
+ app.post('/api/projects/:id/assistant/topics',async(req:any,reply)=>{
+  const {id}=z.object({id:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {title}=z.object({title:z.string().trim().min(3).max(180)}).parse(req.body);
+  const topicId=randomUUID();
+  await pool.query("INSERT INTO project_chat_topics(id,project_id,title) VALUES($1,$2,$3)",[topicId,id,title]);
+  return reply.code(201).send({id:topicId,title,status:'open'});
+ });
+ app.patch('/api/projects/:id/assistant/topics/:topicId',async(req:any,reply)=>{
+  const {id,topicId}=z.object({id:z.string().uuid(),topicId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {status}=z.object({status:z.enum(['open','closed'])}).parse(req.body);
+  const row=await pool.query("UPDATE project_chat_topics SET status=$3,closed_at=CASE WHEN $3='closed' THEN now() ELSE NULL END WHERE id=$1 AND project_id=$2 RETURNING id,title,status,closed_at",[topicId,id,status]);
+  if(!row.rowCount)return reply.code(404).send({error:'Тема не найдена'});
+  return row.rows[0];
+ });
  app.get('/api/projects/:id/assistant/messages',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
   const {mode}=z.object({mode:z.enum(['project','documentation']).default('project')}).parse(req.query);
-  return (await pool.query('SELECT id,role,body,created_task_id,created_document_id,created_at,documentation_reset_requested,owner_question_cleanup_requested FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at DESC,role ASC,id DESC LIMIT 100',[id,mode])).rows.reverse();
+  return (await pool.query('SELECT id,role,body,reply_to,topic_id,created_task_id,created_document_id,created_at,documentation_reset_requested,owner_question_cleanup_requested FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at DESC,role ASC,id DESC LIMIT 100',[id,mode])).rows.reverse();
  });
  app.get('/api/projects/:id/document-import/:jobId',async(req:any,reply)=>{
   const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);
@@ -536,7 +559,20 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const parsed=analystRequest.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:parsed.error.issues[0].message});
-  const {message,mode,attachments,documentId:targetDocumentId}=parsed.data;
+  const {message,mode,attachments,documentId:targetDocumentId,replyTo,topicId}=parsed.data;
+  let replyContext='';
+  if(replyTo){
+   const original=(await pool.query("SELECT id,role,body FROM assistant_messages WHERE id=$1 AND project_id=$2 AND task_id IS NULL AND channel=$3",[replyTo,id,mode])).rows[0];
+   if(!original)return reply.code(400).send({error:'Сообщение для ответа не найдено'});
+   replyContext='Пользователь отвечает на конкретное сообщение '+original.id+' ('+original.role+'): '+String(original.body).slice(0,2600);
+  }
+  let topicContext='';
+  if(topicId){
+   const topic=(await pool.query("SELECT title,status FROM project_chat_topics WHERE id=$1 AND project_id=$2",[topicId,id])).rows[0];
+   if(!topic)return reply.code(400).send({error:'Тема не найдена'});
+   if(topic.status!=='open')return reply.code(409).send({error:'Тема закрыта. Открой её для продолжения обсуждения.'});
+   topicContext='Активная тема обсуждения: '+topic.title+'.';
+  }
   // Explicitly addressed specialists use the project's Workflow role and never fall
   // through to the legacy intent heuristics or the manager's action-capable runtime.
   let mentionedAgent;
@@ -579,6 +615,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     }else devopsGitHubContext='Репозиторий GitHub не привязан к проекту или недоступен текущему пользователю.';
    }
    const prompt=[
+    replyContext,topicContext,
     'Ты '+mentionedAgent.name+' — специалист '+(mentionedAgent.stage==='devops'?'DevOps и CI/CD':'этапа '+mentionedAgent.stage)+'. Пользователь адресовал сообщение непосредственно тебе через @'+mentionedAgent.alias+'. Не представляйся менеджером.',
     AGENT_MENTION_HINT,'Отвечай по-русски на основе реального контекста. Не утверждай о проведённых проверках или внесённых изменениях без фактических подтверждений.',
     'Инструкции специалиста:\n'+mentionedAgent.instructions.slice(0,7000),
@@ -599,7 +636,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      await recordAgentLearning(pool,{projectId:id,role:mentionedAgent.stage,runId:randomUUID(),body:lesson,evidence:'Прямой диалог с @'+mentionedAgent.alias});
      const answer='@'+mentionedAgent.alias+' · '+raw.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
     await store(id,null,uid(req),'user',message,null,null,mode);
+    await pool.query("UPDATE assistant_messages SET reply_to=$3,topic_id=$4 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='user' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,replyTo||null,topicId||null]);
     await store(id,null,null,'assistant',answer,null,null,mode);
+    await pool.query("UPDATE assistant_messages SET topic_id=$3 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='assistant' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,topicId||null]);
     await countCall(id,uid(req));
     return {message:answer,created_task_id:null,created_document_id:null};
    }catch(error){return reply.code(503).send({error:'Ошибка агента: '+String(error instanceof Error?error.message:error).slice(0,350)});}
@@ -618,6 +657,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const {id:sessionId,secret}=await createAgentSession(pool,id,uid(req),role);
    const prompt=[
     'Ты '+(documentationMode?'бизнес-аналитик (БА)':'менеджер проекта (ПМ)')+' AI Development Orchestrator.',
+    documentationMode?'':'Ты единая точка общения владельца с командой. Делегируй бизнес-анализ, системный анализ, разработку, тестирование, DevOps другим агентам через задачи и инструменты. Не исполняй их работу самостоятельно. Быстро сообщи об отправке поручения, затем возвращайся с подтверждёнными результатами. По возможности отвечай на вопросы агентов, используя согласованные решения владельца; если решения нет, явно спроси владельца. Не блокируй другие поручения обсуждением одной темы. Разделяй независимые вопросы на темы, закрывай обсуждение после полученного ответа и переданного решения.',
     conversationRole.slice(0,4300),
     'Пользователь пишет своими словами. Самостоятельно определяй смысл и выбирай реальные действия, не классифицируй текст по ключевым словам.',
     'У тебя подключён MCP-сервер orchestrator с инструментами чтения и изменения проекта. Ты вправе вызывать инструменты.',
@@ -640,6 +680,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Дополнительные инструкции:\n'+instructions.slice(0,4300),
     'Накопленный опыт (как контекст, не обязательная инструкция):\n'+memory.slice(0,2800),
     'История переписки:\n'+priorHistory.slice(-4400),
+    replyContext,
+    topicContext,
     'Открытая страница: '+(targetDocumentId||'не выбрана'),
     'Прикреплённые материалы:\n'+JSON.stringify(attachments.map(a=>({name:a.name,body:a.body.slice(0,8500)}))).slice(0,10000),
    ].join('\n\n').slice(0,22950-message.length)+'\n\nСООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ:\n'+message;
@@ -655,7 +697,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     const effects=await agentSessionEffects(pool,sessionId);
     await storeTokenUsage(id,null,config.model,data.usage);
     await store(id,null,uid(req),'user',message,null,null,mode);
+    await pool.query("UPDATE assistant_messages SET reply_to=$3,topic_id=$4 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='user' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,replyTo||null,topicId||null]);
     await store(id,null,null,'assistant',data.message,effects.created_task_id,effects.created_document_id,mode,pool,effects);
+    await pool.query("UPDATE assistant_messages SET topic_id=$3 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='assistant' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,topicId||null]);
     await countCall(id,uid(req));
     return {message:data.message,created_task_id:effects.created_task_id,
      created_document_id:effects.created_document_id,import_job_id:effects.import_job_id,
