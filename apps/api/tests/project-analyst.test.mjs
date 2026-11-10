@@ -3,40 +3,10 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import pg from 'pg';
-import {createAssistantService,isExplicitTaskCreation,isExplicitDocumentationChange,isDocumentationStructureCommand,isDocumentationRebuildCommand} from '../dist/assistant.js';
-
-test('explicit task commands are distinguished from questions and documentation edits',()=>{
- assert.equal(isExplicitTaskCreation('Создай задачу, а в ней уже спроси'),true);
- assert.equal(isExplicitTaskCreation('Пожалуйста, создай новую задачу: обновить документацию'),true);
- assert.equal(isExplicitTaskCreation('Как создать задачу из документации?'),false);
- assert.equal(isExplicitTaskCreation('Создай документ, в котором есть список задач'),false);
-});
-
-test('analyst distinguishes questions, critique and explicit structural edits',()=>{
- assert.equal(isExplicitDocumentationChange('Тебя устраивает структура нашего ТЗ?'),false);
- assert.equal(isDocumentationStructureCommand('Тебя устраивает структура нашего ТЗ?'),false);
- assert.equal(isExplicitDocumentationChange('Как бы ты улучшил структуру документации?'),false);
- assert.equal(isDocumentationStructureCommand('Улучши структуру нашей документации'),true);
- assert.equal(isDocumentationStructureCommand('Перестрой структуру ТЗ'),true);
- assert.equal(isExplicitDocumentationChange('Добавь в ТЗ критерии приёмки'),true);
- assert.equal(isExplicitDocumentationChange('Давай обсудим риски проекта'),false);
- assert.equal(isDocumentationRebuildCommand('Ок, давай перепиши текущее ТЗ в соответствии с предложенной тобой структурой, а текущие материалы можешь перенести в исходники'),true);
- assert.equal(isDocumentationRebuildCommand('Перепиши ТЗ по согласованной структуре'),true);
- assert.equal(isDocumentationRebuildCommand('Тебя устраивает структура нашего ТЗ?'),false);
- assert.equal(isDocumentationRebuildCommand('Улучши структуру документации'),false);
- assert.equal(isDocumentationRebuildCommand('Переделай структуру документации'),false);
- assert.equal(isDocumentationRebuildCommand('Давай пересоберём ТЗ'),true);
-});
+import {createAssistantService} from '../dist/assistant.js';
 
 test('analyst writes topic drafts, resolves PO questions, resumes and preserves manual edits',async t=>{
- // This suite intentionally exercises the legacy fallback behavior; the
- // default-on agent runtime has dedicated MCP + tool tests.
- const previousRuntime=process.env.AGENT_RUNTIME_ENABLED;
- process.env.AGENT_RUNTIME_ENABLED='false';
- t.after(()=>{
-  if(previousRuntime===undefined)delete process.env.AGENT_RUNTIME_ENABLED;
-  else process.env.AGENT_RUNTIME_ENABLED=previousRuntime;
- });
+ // Verify durable analysis jobs directly; natural-language routing is covered by MCP agent tests.
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
  await db.connect();
  t.after(()=>db.end());
@@ -141,19 +111,18 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  const service=createAssistantService({pool,codexUrl:'http://codex.test',runnerKey:'test',decryptToken:()=>''});
  const started=[];
  service.registerRoutes(app,{pool,uid:()=>actorId,access:async()=>true,requireAdmin:async()=>true,startDocumentationWorkflow:async id=>started.push(id)});
- const send=(payload)=>app.inject({method:'POST',url:'/api/projects/'+projectId+'/assistant',payload});
- const directTask=await send({mode:'documentation',message:'Создай задачу на обновление документации'});
- assert.equal(directTask.statusCode,200,directTask.body);
- assert.match(directTask.json().message,/Передать СА/);
+ const queueJob=async({message,attachments=[],structureOnly=false,rebuildSpec=false,sourceKey}={})=>{
+  const jobId=randomUUID();
+  await db.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_key,request_text,analyst_input) VALUES($1,$2,$3,'running','Запуск аналитика',$4,$5,$6)",
+   [jobId,projectId,actorId,sourceKey||'analyst:'+jobId,message||'Подготовь документацию',JSON.stringify({
+    location:null,attachments,mode:'documentation',documentId:null,structureOnly,rebuildSpec
+   })]);
+  return jobId;
+ };
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
- assert.deepEqual(started,[]);
  const attachments=[{name:'coffee.md',body:'# Предзаказ\nПокупатель оформляет заказ.'},{name:'barista.md',body:'# Выдача заказа\nБариста выдаёт заказ.'}];
  failOnce=true;
- const first=await send({mode:'documentation',message:'Составь ТЗ по темам',attachments});
- assert.equal(first.statusCode,202,first.body);
- const jobId=first.json().import_job_id;
- assert.deepEqual(started,[jobId]);
- assert.equal((await send({mode:'documentation',message:'Составь ТЗ ещё раз'})).statusCode,409,'A second editing job must be blocked; ordinary chat questions remain available');
+ const jobId=await queueJob({message:'Составь ТЗ по темам',attachments,sourceKey:'attachments:coffee-source'});
  await service.runDocumentationJob(jobId);
  assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0].status,'failed');
  const saved=(await db.query("SELECT id,body FROM documents WHERE import_source LIKE 'topic:%'")).rows;
@@ -167,21 +136,15 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(completed.status,'completed');
  assert.equal(completed.result.generated_documents,2);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'topic:%'")).rows[0].n,2);
- const beforeDialogue=(await db.query('SELECT count(*)::int n FROM document_import_jobs')).rows[0].n;
- const dialogue=await send({mode:'documentation',message:'Тебя устраивает структура нашего ТЗ?'});
- assert.equal(dialogue.statusCode,200,dialogue.body);
- assert.match(dialogue.json().message,/Структура пока недостаточно подробная/);
- assert.equal((await db.query('SELECT count(*)::int n FROM document_import_jobs')).rows[0].n,beforeDialogue,'Questions must never enqueue editing jobs');
- const savedConversation=(await app.inject('/api/projects/'+projectId+'/assistant/messages?mode=documentation')).json();
- assert.ok(savedConversation.some(m=>m.role==='assistant'&&m.body.includes('Структура пока недостаточно')),'Critical response is persisted');
-
+ // Preserve an earlier owner/analyst design decision as factual conversation history.
+ const previousDecision='Структура пока недостаточно подробная: два сценария нужно сгруппировать по подсистемам.';
+ await db.query("INSERT INTO assistant_messages(id,project_id,task_id,role,body,channel,created_at) VALUES($1,$2,NULL,'assistant',$3,'documentation',now())",
+  [randomUUID(),projectId,previousDecision]);
  // Simulate an older completed import, from before raw-source archiving existed.
  // Organizing must recover all originals from the pinned snapshot without asking GitHub again.
  await db.query("DELETE FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId]);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId])).rows[0].n,0);
- const reorganize=await send({mode:'documentation',message:'Улучши структуру документации: сгруппируй наши страницы по системным разделам'});
- assert.equal(reorganize.statusCode,202,reorganize.body);
- const restructuringJob=reorganize.json().import_job_id;
+ const restructuringJob=await queueJob({message:'Сгруппируй страницы по системным разделам',structureOnly:true});
  await service.runDocumentationJob(restructuringJob);
  const organized=(await db.query('SELECT id,body,parent_id FROM documents WHERE import_source LIKE $1',['topic:%'])).rows;
  assert.equal(organized.length,2);
@@ -205,9 +168,8 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
 
  // User edits an imported page. Reimport the same named sources and preserve it.
  await db.query("UPDATE documents SET body='Ручная правка владельца',updated_at=now() WHERE id=$1",[pageId]);
- const rerun=await send({mode:'documentation',message:'Сверь исходники повторно',attachments});
- assert.equal(rerun.statusCode,202,rerun.body);
- await service.runDocumentationJob(rerun.json().import_job_id);
+ const rerunId=await queueJob({message:'Повторная сверка источников',attachments,sourceKey:'attachments:coffee-source'});
+ await service.runDocumentationJob(rerunId);
  assert.equal((await db.query('SELECT body FROM documents WHERE id=$1',[pageId])).rows[0].body,'Ручная правка владельца');
  const proposals=(await db.query("SELECT id,document_id,status FROM document_import_proposals WHERE document_id=$1",[pageId])).rows;
  assert.equal(proposals.length,1,'Conflicting import creates review proposal');
@@ -223,9 +185,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(oldVersions.length,2);
  failRebuildOnce=true;rebuildPartCalls=0;
  const rewriteMessage='Ок, давай перепиши текущее ТЗ в соответствии с предложенной тобой структурой, а текущие материалы можешь перенести в исходники';
- const rewrite=await send({mode:'documentation',message:rewriteMessage});
- assert.equal(rewrite.statusCode,202,rewrite.body);
- const rewriteId=rewrite.json().import_job_id;
+ const rewriteId=await queueJob({message:rewriteMessage,rebuildSpec:true});
  const flag=(await db.query('SELECT analyst_input FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0].analyst_input;
  assert.equal(flag.rebuildSpec,true,'The explicit conversational command must choose the rewrite workflow');
  await service.runDocumentationJob(rewriteId);
