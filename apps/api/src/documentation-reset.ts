@@ -54,7 +54,7 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    [intentId,id,uid(req),inventory.digest,inventory.pages,inventory.imports]);
   return {intent_id:intentId,project_name:project.name,pages:inventory.pages,imports:inventory.imports,
    roots_preserved:inventory.roots,confirmation_phrase:CONFIRM,
-   warning:'Будут безвозвратно удалены пользовательские и импортированные страницы, вопросы документации, история версий и прежние записи импорта. Системные корни и пустая структура ТЗ будут созданы заново. Задачи, план разработки и проектные правила не удаляются.'};
+   warning:'Будут безвозвратно удалены пользовательские и импортированные страницы, вопросы документации, история версий и прежние записи импорта. Системные корни и пустая структура ТЗ будут созданы заново. Вопросы аналитика (задачи типа question) удаляются вместе с документацией; задачи разработки, план и правила сохраняются.'};
  });
  app.post('/api/projects/:id/documentation/reset/confirm',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
@@ -81,6 +81,9 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    const digest=createHash('sha256').update(JSON.stringify({docs,imports})).digest('hex');
    if(digest!==intent.snapshot_digest){await client.query('ROLLBACK');return reply.code(409).send({error:'Документация изменилась после просмотра. Сформируй новое подтверждение.'});}
    const deletedPages=docs.filter((doc:any)=>doc.system_key===null).length;
+   // Questions are task records tied to the documentation being reset.
+   // Keep unrelated development tasks and their history intact.
+   await client.query("DELETE FROM tasks WHERE project_id=$1 AND type='question'",[id]);
    // FK references to deleted pages cascade. System root guard remains enabled.
    // Leaf-first deletion avoids the ON DELETE SET NULL parent FK triggering the
    // project root guard on surviving child pages.

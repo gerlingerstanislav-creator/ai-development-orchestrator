@@ -569,6 +569,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const t=await pool.query('SELECT id,title,description,stage,type,iteration_id,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status,spec_version,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  const task=t.rows[0];
+ if(task.type==='question')return reply.code(409).send({error:'Вопрос к ПО не является задачей разработки'});
  const fromAnalysis=approveAnalysis&&task.stage==='analysis';
  if(iterationApproval&&(task.iteration_id!==iterationApproval.id||task.type==='epic'))
   return reply.code(409).send({error:'Задача не входит в выбранную итерацию'});
@@ -1436,10 +1437,20 @@ app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
 app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return tasksWithCustomerQuestions(pool,id);});
 app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
- const data=parse(z.object({title:z.string().trim().min(1).max(300),description:z.string().max(20000).default(''),type:z.enum(['task','bug','improvement','epic']).default('task'),parent_id:z.string().uuid().nullable().optional()}),req.body);
+ const data=parse(z.object({title:z.string().trim().min(1).max(300),description:z.string().max(20000).default(''),type:z.enum(['task','bug','improvement','epic','question']).default('task'),parent_id:z.string().uuid().nullable().optional(),document_id:z.string().uuid().nullable().optional()}),req.body);
  if(data.parent_id){const p=await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[data.parent_id,id]);if(!p.rowCount)return reply.code(400).send({error:'Родительская задача не найдена'});}
+ if(data.type==='question'){
+  if(!data.document_id||data.parent_id)return reply.code(400).send({error:'Вопрос к ПО должен быть связан с документом и не иметь родительской задачи'});
+  const doc=await pool.query('SELECT 1 FROM documents WHERE project_id=$1 AND id=$2',[id,data.document_id]);
+  if(!doc.rowCount)return reply.code(404).send({error:'Документ для вопроса не найден'});
+ }else if(data.document_id)return reply.code(400).send({error:'Привязка к документу предусмотрена только для вопросов к ПО'});
  const taskId=randomUUID();
- await pool.query('INSERT INTO tasks(id,project_id,title,description,type,parent_id,position) VALUES($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2))',[taskId,id,data.title,data.description,data.type,data.parent_id||null]);
+ if(data.type==='question'){
+  await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,position,document_id,question_key,question_topic,question_status) VALUES($1,$2,$3,$4,'question','backlog',(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2),$5,$6,'manual','open')",
+   [taskId,id,data.title,data.description||data.title,data.document_id,taskId]);
+ }else{
+  await pool.query('INSERT INTO tasks(id,project_id,title,description,type,parent_id,position) VALUES($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2))',[taskId,id,data.title,data.description,data.type,data.parent_id||null]);
+ }
  await pool.query('INSERT INTO task_events(id,task_id,actor_id,event) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,uid(req),'created']);
  return reply.code(201).send({id:taskId});
 });
@@ -1561,6 +1572,24 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
   const old=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
   if(!old.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Задача не найдена'});}
   const t=old.rows[0];
+  if(t.type==='question'){
+   if(data.stage&&data.stage!==t.stage){
+    await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос не участвует в этапах разработки'});
+   }
+   if(t.question_status!=='open'&&(data.title!==undefined||data.description!==undefined)){
+    await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже передан аналитику и не редактируется'});
+   }
+   const questionTitle=data.title??t.title,questionText=data.description??t.description;
+   await client.query('UPDATE tasks SET title=$3,description=$4,updated_at=now() WHERE id=$1 AND project_id=$2',[taskId,id,questionTitle,questionText]);
+   if(questionTitle!==t.title||questionText!==t.description)
+    await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
+     [randomUUID(),taskId,uid(req),'question_updated','Вопрос уточнён владельцем продукта']);
+   await client.query('COMMIT');
+   return {ok:true};
+  }
+  if(t.type==='question'&&data.stage&&data.stage!==t.stage){
+   await client.query('ROLLBACK');return reply.code(409).send({error:'Этап вопроса изменяется после обработки ответа аналитиком'});
+  }
   if(data.stage&&data.stage!==t.stage&&(!['backlog','analysis'].includes(t.stage)||!['backlog','analysis'].includes(data.stage))){
    await client.query('ROLLBACK');return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
   }

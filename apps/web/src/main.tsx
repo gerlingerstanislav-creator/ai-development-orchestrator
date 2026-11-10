@@ -14,7 +14,7 @@ import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -44,7 +44,7 @@ type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'oth
 type KanbanLane=Pick<Stage,'stage'|'label'>;
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
 const productOwnerLane:KanbanLane={stage:'product_owner_questions',label:'Вопросы к ПО'};
-const boardLaneFor=(task:Task)=>task.awaits_product_owner?productOwnerLane.stage:task.stage;
+const boardLaneFor=(task:Task)=>task.type==='question'&&task.question_status!=='resolved'?productOwnerLane.stage:task.awaits_product_owner?productOwnerLane.stage:task.stage;
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
  {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
@@ -471,7 +471,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,documentId}));
  }
  useEffect(()=>{if(projectChatOpen)projectInputRef.current?.focus();},[projectChatOpen,projectChatMode]);
- const [docQuestions,setDocQuestions]=useState<DocumentationQuestion[]>([]);
+ const [,setDocQuestions]=useState<DocumentationQuestion[]>([]);
  const [docProposals,setDocProposals]=useState<DocumentationProposal[]>([]);
  const [questionAnswers,setQuestionAnswers]=useState<Record<string,string>>({});
  const analystFileInput=useRef<HTMLInputElement>(null);
@@ -582,6 +582,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){fail(e);}
  }
  function canAdvance(task:Task,from:string,to:string){
+  if(task.type==='question')return false;
   if(task.stage!==from)return false;
   if(from==='backlog'&&to==='analysis')return true;
   if(from==='analysis'&&to==='development')return readyForDevelopment&&!taskChatBusy&&!managerWorking&&!!gitLink&&aiSettings.enabled;
@@ -1538,10 +1539,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </span>;
  }
  function renderKanbanCard(t:Task,showStage=false){
+  if(t.type==='question')return renderDocQuestionCard(t);
   return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
     draggable={!t.awaits_product_owner} onDragStart={t.awaits_product_owner?undefined:e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
-    <span className="task-card-top"><span className="task-type">{t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
+    <span className="task-card-top"><span className="task-type">{t.type==='question'?'Вопрос к ПО':t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
     <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     {renderTaskPlanningLabels(t)}
     <p>{t.description||'Без описания'}</p>
@@ -1550,12 +1552,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     </small>}
   </a>;
  }
- function renderDocQuestionCard(question:DocumentationQuestion){
+ function renderDocQuestionCard(question:Task){
   return <div className="task-card docs-question-card" key={'doc-question-'+question.id}>
    <span className="task-type">Уточнение документации</span>
-   <strong>{question.question}</strong>
-   <a href={projectUrl(selected!.id,'docs')+'/'+question.document_id} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+question.document_id)}>ТЗ: {question.document_title}</a>
-   {question.status==='answered'?<small className="muted">Ответ получен. Аналитик обновляет страницу.</small>:<>
+   <strong>{question.description}</strong>
+   {question.document_id&&<a href={projectUrl(selected!.id,'docs')+'/'+question.document_id} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+question.document_id)}>ТЗ: {question.document_title||'Документ'}</a>}
+   <a href={projectUrl(selected!.id,'tasks')+'/'+question.id} onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+question.id)}>Открыть карточку #{question.display_number}</a>
+   {question.question_status==='answered'?<small className="muted">Ответ получен. Аналитик обновляет страницу.</small>:<>
     <textarea rows={3} value={questionAnswers[question.id]||''} onChange={e=>setQuestionAnswers(old=>({...old,[question.id]:e.target.value}))} placeholder="Решение владельца продукта"/>
     <button className="secondary" disabled={processActionBusy||!(questionAnswers[question.id]||'').trim()} onClick={()=>void answerDocumentationQuestion(question)}>Ответить аналитику</button>
    </>}
@@ -1567,14 +1570,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return <div className="lane" key={s.stage}
    onDragOver={isQuestions?undefined:e=>e.preventDefault()}
    onDrop={isQuestions?undefined:e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
-   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length+(isQuestions?boardDocQuestions.length:0)}</span>
+   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
     {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
     {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
    </div>
    <div className="cards">
      {stageTasks.map(t=>renderKanbanCard(t))}
-     {isQuestions&&boardDocQuestions.map(renderDocQuestionCard)}
-      {stageTasks.length===0&&(!isQuestions||boardDocQuestions.length===0)&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}
+      {stageTasks.length===0&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}
     </div>
   </div>;
  }
@@ -1587,7 +1589,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    return ai-bi || new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
   });
   return <div className="kanban-group-combined">
-   {ordered.length||(group.key==='analytics'&&boardDocQuestions.length)?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}{group.key==='analytics'&&boardDocQuestions.map(renderDocQuestionCard)}</div>:
+   {ordered.length?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}</div>:
      <div className="lane-empty">В группе пока нет задач</div>}
    {group.stages.some(stage=>stage.stage==='merge_queue')&&tasks.some(t=>t.stage==='merge_queue')&&
     <button className="secondary group-action" disabled={mergeBusy} onClick={()=>void mergeReady()}>Слить готовые</button>}
@@ -1595,7 +1597,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <button className="secondary group-action" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
   </div>;
  }
- async function answerDocumentationQuestion(question:DocumentationQuestion){
+ async function answerDocumentationQuestion(question:Task){
   if(!selected||processActionBusy)return;
   const answer=questionAnswers[question.id]?.trim();
   if(!answer){setError('Введи ответ владельца продукта');return;}
@@ -1659,7 +1661,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status;
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
- const boardDocQuestions=iterationFilter||tagFilter||sprintFilter||versionFilter?[]:docQuestions;
  const taskTags=[...new Set(tasks.flatMap(task=>task.tags??[]))].sort((a,b)=>a.localeCompare(b,'ru'));
  const filtered=tasks.filter(t=>(!iterationFilter||(iterationFilter==='unassigned'?!t.iteration_id:t.iteration_id===iterationFilter))&&
   (!tagFilter||t.tags?.includes(tagFilter))&&(!sprintFilter||(sprintFilter==='unassigned'?!t.sprint_id:t.sprint_id===sprintFilter))&&(!versionFilter||(versionFilter==='unassigned'?!t.version_id:t.version_id===versionFilter))&&(t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,''))));
@@ -1791,7 +1792,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board board-groups">
  {kanbanGroups.map(group=>{
   const expanded=expandedGroups.includes(group.key);
-  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t))).length+(group.key==='analytics'?boardDocQuestions.length:0);
+  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t))).length;
   return <section key={group.key} className={'kanban-group '+(expanded?'is-expanded':'is-collapsed')} style={{['--kanban-stage-count' as string]:group.stages.length} as React.CSSProperties}>
    <button className="kanban-group-heading" type="button" aria-expanded={expanded} onClick={()=>toggleKanbanGroup(group.key)}
     title={expanded?'Свернуть этапы':'Развернуть этапы'}><span className="group-mark"/>
@@ -2176,7 +2177,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <div className="task-modal-actions">
      <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
      {['backlog','analysis'].includes(activeTask.stage)&&<button type="button" className="secondary" title="Удалить ненужную задачу без результатов разработки" onClick={()=>void deleteUnstartedTask()}><Trash2 size={14}/> Удалить</button>}
-     {!['documentation','done'].includes(activeTask.stage)&&
+     {activeTask.type!=='question'&&!['documentation','done'].includes(activeTask.stage)&&
       <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
      <button className="task-close" type="button" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу" aria-label="Закрыть задачу"><X size={20}/></button>
     </div>
@@ -2334,7 +2335,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </form>
     </aside>
    </div>
-   <div className="task-workflow" aria-label="Этапы выполнения">
+   {activeTask.type!=='question'&&<div className="task-workflow" aria-label="Этапы выполнения">
     {stages.map((stage,i)=><React.Fragment key={stage.stage}>
      {i>0&&<button className="workflow-arrow" disabled={!canAdvance(activeTask,stages[i-1].stage,stage.stage)}
        title={canAdvance(activeTask,stages[i-1].stage,stage.stage)?'Перейти: '+stage.label:'Для этого перехода нужны выполненные условия предыдущего этапа'}
@@ -2344,7 +2345,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span>{stage.label}</span>
      </div>
     </React.Fragment>)}
-   </div>
+   </div>}
   </div>
  </div>}
  {showConnection&&<div className="overlay" onMouseDown={()=>setShowConnection(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={addConnection}><div className="modal-heading"><h2>Новое подключение</h2><button type="button" onClick={()=>setShowConnection(false)}><X/></button></div><p className="muted">{cred.provider==='github_token'?'Подключение GitHub для выбранного проекта. Токен создаётся в GitHub и хранится в сервисе зашифрованным.':'Подключение по API-ключу. ChatGPT Plus / Codex CLI настраивается отдельно в разделе «Настройки аккаунта».'}</p>

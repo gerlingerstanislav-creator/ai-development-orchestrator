@@ -136,14 +136,43 @@ export async function initDocumentationSystem(pool:Pool){
   status text NOT NULL DEFAULT 'open',created_at timestamptz NOT NULL DEFAULT now(),
   decided_at timestamptz,UNIQUE(job_id,topic_key)
  );
- CREATE TABLE IF NOT EXISTS documentation_questions(
-  id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  job_id uuid REFERENCES document_import_jobs(id) ON DELETE SET NULL,
-  topic_key text NOT NULL,question_key text NOT NULL,
-  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  question text NOT NULL,answer text,status text NOT NULL DEFAULT 'open',
-  created_at timestamptz NOT NULL DEFAULT now(),answered_at timestamptz,
-  UNIQUE(project_id,document_id,question_key)
- );
+ `);
+
+ await pool.query(String.raw`
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS document_id uuid REFERENCES documents(id) ON DELETE CASCADE;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_key text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_topic text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_status text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_answer text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_answered_at timestamptz;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_job_id uuid REFERENCES document_import_jobs(id) ON DELETE SET NULL;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_document_questions
+  ON tasks(project_id,document_id,question_key) WHERE type='question' AND document_id IS NOT NULL AND question_key IS NOT NULL;
+ -- Preserve UUIDs because existing Temporal answer jobs reference them.
+ DO $migrate_questions$
+ BEGIN
+ IF to_regclass('documentation_questions') IS NOT NULL THEN
+ INSERT INTO tasks(id,project_id,title,description,type,stage,position,created_at,updated_at,document_id,question_key,question_topic,question_status,question_answer,question_answered_at,question_job_id)
+ SELECT q.id,q.project_id,left(q.question,300),q.question,'question','backlog',
+  COALESCE((SELECT max(t.position)+1 FROM tasks t WHERE t.project_id=q.project_id),0),
+  q.created_at,COALESCE(q.answered_at,q.created_at),q.document_id,q.question_key,q.topic_key,
+  q.status,q.answer,q.answered_at,q.job_id
+ FROM documentation_questions q
+ WHERE NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id=q.id)
+ ON CONFLICT DO NOTHING;
+ -- Never drop source data if even one legacy question failed to migrate.
+ IF EXISTS (
+  SELECT 1 FROM documentation_questions q
+  LEFT JOIN tasks t ON t.id=q.id AND t.project_id=q.project_id AND t.type='question'
+  WHERE t.id IS NULL OR t.document_id IS DISTINCT FROM q.document_id
+     OR t.question_key IS DISTINCT FROM q.question_key
+     OR t.question_status IS DISTINCT FROM q.status
+     OR t.question_answer IS DISTINCT FROM q.answer
+ ) THEN
+  RAISE EXCEPTION 'Legacy question migration incomplete; source table preserved';
+ END IF;
+ DROP TABLE documentation_questions;
+ END IF;
+ END $migrate_questions$;
  `);
 }

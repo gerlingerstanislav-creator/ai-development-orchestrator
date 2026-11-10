@@ -8,12 +8,13 @@ const uuid=z.string().uuid();
 const projectParams=z.object({id:uuid});
 const taskParams=projectParams.extend({taskId:uuid});
 const ownerQuestionsPath='/api/projects/:id/tasks/owner-questions/delete';
-type TaskForDeletion={id:string;title:string;display_number:number;stage:string;git_branch:string|null;pr_url:string|null;has_related_data:boolean};
+type TaskForDeletion={id:string;title:string;display_number:number;type:string;stage:string;git_branch:string|null;pr_url:string|null;has_related_data:boolean;active_question_job:boolean};
 
 async function tasksForDeletion(db:Pick<Pool,'query'>,projectId:string,taskIds:string[]){
  if(!taskIds.length)return [];
  const result=await db.query<TaskForDeletion>(`
-  SELECT t.id,t.title,t.display_number,t.stage,t.git_branch,t.pr_url,
+  SELECT t.id,t.title,t.display_number,t.type,t.stage,t.git_branch,t.pr_url,
+   EXISTS(SELECT 1 FROM document_import_jobs j WHERE j.project_id=t.project_id AND j.source_key='po-answer:'||t.id::text AND j.status IN ('queued','running')) AS active_question_job,
    (EXISTS (SELECT 1 FROM tasks d WHERE d.project_id=t.project_id AND (d.parent_id=t.id OR d.depends_on_task_id=t.id))
    OR EXISTS (SELECT 1 FROM ai_task_runs r WHERE r.project_id=t.project_id AND r.task_id=t.id)
    OR EXISTS (SELECT 1 FROM ai_test_runs r WHERE r.project_id=t.project_id AND r.task_id=t.id)
@@ -27,6 +28,11 @@ async function tasksForDeletion(db:Pick<Pool,'query'>,projectId:string,taskIds:s
 }
 
 function deletionBlocker(task:TaskForDeletion){
+ if(task.type==='question'){
+  if(task.active_question_job)return 'Ответ уже обрабатывается аналитиком. Дождитесь завершения процесса';
+  if(task.has_related_data)return 'У вопроса есть связанные задачи или результаты выполнения';
+  return null;
+ }
  if(!['backlog','analysis'].includes(task.stage)||task.pr_url||task.git_branch)
   return 'Задача уже связана с исполнением. Для неё используй отмену задачи';
  if(task.has_related_data)

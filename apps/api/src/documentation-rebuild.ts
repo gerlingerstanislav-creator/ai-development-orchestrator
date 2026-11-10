@@ -230,8 +230,8 @@ export async function rebuildProjectDocumentation(args:{
      for(const q of accumulated){
       const questionKey=hash(c.key+'\n'+q.toLowerCase()).slice(0,24);
       await client.query(
-       "INSERT INTO documentation_questions(id,project_id,job_id,topic_key,question_key,document_id,question) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,document_id,question_key) DO NOTHING",
-       [randomUUID(),id,jobId,chapterKey,questionKey,pageId,q]);
+       "INSERT INTO tasks(id,project_id,title,description,type,stage,position,document_id,question_key,question_topic,question_status,question_job_id) VALUES($1,$2,$3,$4,'question','backlog',(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2),$5,$6,$7,'open',$8) ON CONFLICT DO NOTHING",
+       [randomUUID(),id,q.slice(0,300),q,pageId,questionKey,chapterKey,jobId]);
      }
     }
     await client.query(

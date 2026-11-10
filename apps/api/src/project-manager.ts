@@ -47,7 +47,7 @@ function isCustomerQuestion(body:string){
 /** Read the live sources, even if nobody has opened the task chat yet. */
 export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,projectId:string){
  const result=await pool.query(`
-  SELECT t.*,
+  SELECT t.*,doc.title AS document_title,
    ARRAY(SELECT n.body FROM task_agent_notes n
     WHERE n.project_id=t.project_id AND n.task_id=t.id AND n.kind='question' AND n.status='open'
       AND (n.target_stage='all' OR n.requires_customer)
@@ -61,6 +61,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
      AND r.source_id=qa.id AND r.kind='qa_visual' AND r.status='waiting')
     THEN to_jsonb(qa) END AS blocked_qa
   FROM tasks t
+  LEFT JOIN documents doc ON doc.id=t.document_id AND doc.project_id=t.project_id
   LEFT JOIN LATERAL (
    SELECT id,task_id,status,verdict,qa_spec_version,qa_plan_snapshot,report FROM ai_test_runs
    WHERE t.stage='testing' AND project_id=t.project_id AND task_id=t.id
@@ -70,7 +71,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
  `,[projectId]);
  return result.rows.map(({open_notes,material_review,blocked_qa,...task})=>({
   ...task,
-  awaits_product_owner:task.stage!=='done'&&(
+  awaits_product_owner:task.type==='question'&&['open','answered'].includes(task.question_status) || task.stage!=='done'&&(
    task.stage==='analysis'&&Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0
    ||task.spec_review_status==='needs_approval'&&material_review
    ||(open_notes as string[]).some(isCustomerQuestion)
