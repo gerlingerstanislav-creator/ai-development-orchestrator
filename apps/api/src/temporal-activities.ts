@@ -12,7 +12,7 @@ import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
-import {agentMemoryContext,conversationInstructions} from './project-team.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning} from './project-team.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
