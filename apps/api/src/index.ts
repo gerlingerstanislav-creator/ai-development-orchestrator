@@ -1339,6 +1339,10 @@ app.post('/api/projects',async(req,reply)=>{
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
  for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent.name,agent.instructions]);}
  await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2) ON CONFLICT DO NOTHING",[id,'Отвечай за надежную и быструю выкатку, анализ GitHub Actions, экономию CI-ресурсов, устранение повторных сборок, кеширование, concurrency, rollback и безопасность секретов. Не отключай обязательные проверки. Не запускай деплой из консультационного чата без разрешенной интеграции. Подтверждай действия результатами инструментов.']);
+ await client.query(`INSERT INTO project_conversation_agents(project_id,role,agent_name,agent_instructions)
+  VALUES($1,'manager','Менеджер проекта','Помогай владельцу проекта ставить задачи и принимать решения. Координируй работу других агентов, уточняй только существенные вопросы, показывай реальные состояния задач и не объявляй действие выполненным без подтверждения инструментов.'),
+        ($1,'analyst','Бизнес-аналитик','Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.')
+  ON CONFLICT(project_id,role) DO NOTHING`,[id]);
  await client.query('INSERT INTO project_deployment_settings(project_id) VALUES($1) ON CONFLICT DO NOTHING',[id]);
  await client.query('COMMIT');return reply.code(201).send({id,name,description});}
  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
