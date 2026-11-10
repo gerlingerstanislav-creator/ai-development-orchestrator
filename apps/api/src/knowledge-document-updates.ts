@@ -44,6 +44,9 @@ export function registerKnowledgeDocumentUpdateRoutes(app:FastifyInstance,d:Deps
    if(!doc||doc.system_key){await client.query('ROLLBACK');return reply.code(409).send({error:'Системный документ недоступен для автоматического обновления'});}
    if(decision==='approve'&&new Date(doc.updated_at).getTime()!==new Date(p.base_version).getTime()){
     await client.query("UPDATE knowledge_document_updates SET status='stale',resolved_at=now() WHERE id=$1",[proposalId]);
+    // Re-run the documentation activity against the changed document rather than
+    // approving a stale AI suggestion or marking the task finished.
+    await client.query("UPDATE tasks SET documentation_updated_at=NULL,updated_at=now() WHERE project_id=$1 AND id=ANY($2::uuid[]) AND stage='documentation'",[id,p.task_ids]);
     await client.query('COMMIT');
     return reply.code(409).send({error:'Документ изменён после создания предложения. Нужна новая сверка.'});
    }
@@ -55,6 +58,8 @@ export function registerKnowledgeDocumentUpdateRoutes(app:FastifyInstance,d:Deps
     }
    }
    await client.query('UPDATE knowledge_document_updates SET status=$2,resolved_at=now(),resolved_by=$3 WHERE id=$1',[proposalId,decision==='approve'?'approved':'rejected',uid(req)]);
+   const finalized=await client.query("UPDATE tasks t SET stage='done',updated_at=now() WHERE t.project_id=$1 AND t.id=ANY($2::uuid[]) AND t.stage='documentation' AND t.documentation_updated_at IS NOT NULL AND NOT EXISTS(SELECT 1 FROM knowledge_document_updates u WHERE u.project_id=$1 AND u.status='pending' AND t.id=ANY(u.task_ids)) RETURNING id",[id,p.task_ids]);
+   for(const task of finalized.rows)await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'documentation_updated','Тематическая документация рассмотрена, задача завершена')",[randomUUID(),task.id,uid(req)]);
    await client.query('COMMIT');
    return {ok:true,decision,document_id:p.document_id};
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
