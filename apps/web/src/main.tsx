@@ -1097,7 +1097,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  function toggleAgentChat(mode:'project'|'documentation'){
   if(projectChatOpen&&projectChatMode===mode){setProjectChatOpen(false);return;}
-  setProjectChatMode(mode);setProjectChatOpen(true);setBaHandoffOpen(false);setBaHandoffNotice('');
+  if(mode==='documentation')openDocumentationChat();
+  else {setAnalystDocumentId(null);setProjectChatMode('project');setProjectChatOpen(true);}
+  setBaHandoffOpen(false);setBaHandoffNotice('');
  }
  function attachAnalystFiles(files:FileList|null){
   const next=[...analystFiles,...Array.from(files||[])];
@@ -1801,7 +1803,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)'}</strong><small>{aiSettings.model}</small></div>
-    <div className="docs-actions">{projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').at(-1)?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
+    <div className="docs-actions">{projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').slice(-1)[0]?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
     <button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат" aria-label="Свернуть чат"><X size={17}/></button></div>
    </header>
    {projectChatMode==='documentation'&&baHandoffOpen&&<div className="ba-handoff-form">
