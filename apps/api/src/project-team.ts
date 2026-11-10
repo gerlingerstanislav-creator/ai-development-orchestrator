@@ -11,6 +11,24 @@ const specialistRoles=['devops'] as const;
 const roleSchema=z.enum([...conversationalRoles,...stageRoles,...specialistRoles]);
 const memoryStatus=z.enum(['approved','rejected']);
 const instructions=z.string().max(12000);
+const oldDeploymentInstructions='Организуй проверяемую доставку прошедших QA и слитых изменений. Используй GitHub Actions, неизменяемые артефакты и конкретный SHA; обеспечь защиту секретов, идемпотентность и rollback. Без подключённого окружения не запускай деплой и не объявляй публикацию успешной. Подготовка CI/CD должна проходить через PR и проверки; запроси недостающие данные окружения, но не выдумывай их.';
+
+/** Keep project-specific edits from both formerly independent DevOps roles. */
+export function mergeDevopsInstructions(specialist:string,stage:string,historicalStage:string|null=null){
+ const result=specialist.trim();
+ const additions=[stage.trim(),historicalStage?.trim()||'']
+  .filter(Boolean).filter(value=>value!==oldDeploymentInstructions);
+ let combined=result;
+ for(const text of additions){
+  if(combined.includes(text))continue;
+  // Avoid a merge that truncates custom instructions or breaks editor validation.
+  const next=combined+'\\n\\nДополнительные инструкции прежнего этапа выкладки:\\n'+text;
+  if(next.length>12000)throw Error('DevOps: объединение инструкций превысило 12000 символов; исходные настройки сохранены для ручного согласования');
+  combined=next;
+ }
+ return combined;
+}
+
 /** Data migrations are additive: existing workflow and specialist instructions remain the source of truth. */
 export async function initProjectTeamSchema(pool:Pool){
  await pool.query(`
@@ -46,12 +64,7 @@ export async function initProjectTeamSchema(pool:Pool){
  ('analyst','Бизнес-аналитик','Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.')
  ) AS r(role,agent_name,agent_instructions)
  ON CONFLICT(project_id,role) DO NOTHING;
- -- Deployment is a workflow stage, not a second AI persona. The specialist
- -- profile is authoritative; stage configuration remains for compatibility.
- UPDATE workflow_stages w SET agent_name=s.agent_name,agent_instructions=s.agent_instructions
- FROM project_specialist_agents s
- WHERE w.project_id=s.project_id AND w.stage='deployment' AND s.role='devops'
-   AND (w.agent_name IS DISTINCT FROM s.agent_name OR w.agent_instructions IS DISTINCT FROM s.agent_instructions);
+ -- Reconcile DevOps after the schema migration without discarding edited stage instructions.
  `);
  // Move only untouched built-in profiles to concise current instructions.
  // Preserve any role with an instruction edit recorded by a project owner.
@@ -68,7 +81,55 @@ export async function initProjectTeamSchema(pool:Pool){
   await pool.query("UPDATE workflow_stages w SET agent_instructions=$3 WHERE stage=$1 AND agent_instructions=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=w.project_id AND h.role=$1)",[role,['',legacyDefaults[role],bootstrapDefaults[role]],agentInstructions[role]]);
  }
  await pool.query("UPDATE project_specialist_agents a SET agent_instructions=$2,updated_at=now() WHERE role='devops' AND agent_instructions=ANY($1::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role='devops')",[[legacyDefaults.devops,''],agentInstructions.devops]);
- await pool.query("UPDATE workflow_stages w SET agent_name=s.agent_name,agent_instructions=s.agent_instructions FROM project_specialist_agents s WHERE w.project_id=s.project_id AND w.stage='deployment' AND s.role='devops'");
+ // A prior version kept an independent deployment-stage role. Read the
+ // last saved stage instruction before synchronizing the two profile tables.
+ // A role edited through Team has history; workflow-setting edits may not.
+ const profiles=await pool.query(`
+  SELECT w.project_id,w.agent_name AS stage_name,w.agent_instructions AS stage_instructions,
+         s.agent_name AS specialist_name,s.agent_instructions AS specialist_instructions,
+         history.next_instructions AS historical_stage_instructions,history.created_at AS stage_edited_at,
+         devops_history.created_at AS devops_edited_at
+  FROM workflow_stages w JOIN project_specialist_agents s
+   ON s.project_id=w.project_id AND s.role='devops'
+  LEFT JOIN LATERAL (
+   SELECT next_instructions,created_at FROM agent_instruction_history
+   WHERE project_id=w.project_id AND role='deployment'
+   ORDER BY created_at DESC,id DESC LIMIT 1
+  ) history ON true
+  LEFT JOIN LATERAL (
+   SELECT created_at FROM agent_instruction_history
+   WHERE project_id=w.project_id AND role='devops'
+   ORDER BY created_at DESC,id DESC LIMIT 1
+  ) devops_history ON true
+  WHERE w.stage='deployment'
+ `);
+ for(const row of profiles.rows){
+  const recoverHistory=row.historical_stage_instructions&&
+   (!row.devops_edited_at||new Date(row.stage_edited_at)>new Date(row.devops_edited_at));
+  const merged=mergeDevopsInstructions(
+   String(row.specialist_instructions||''),String(row.stage_instructions||''),
+   recoverHistory?String(row.historical_stage_instructions):null);
+  const customStage=String(row.stage_instructions||'').trim()!==oldDeploymentInstructions
+   &&String(row.stage_instructions||'').trim()!==String(row.specialist_instructions||'').trim();
+  const name=customStage&&row.specialist_name==='AI-DevOps'&&row.stage_name!=='AI-DevOps'
+   ?String(row.stage_name):String(row.specialist_name);
+  if(merged===row.specialist_instructions&&row.stage_instructions===merged&&row.stage_name===name)continue;
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   // Lock both records; no silent overwrite of an edited legacy stage.
+   const specialist=await client.query("SELECT agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 AND role='devops' FOR UPDATE",[row.project_id]);
+   const stage=await client.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='deployment' FOR UPDATE",[row.project_id]);
+   if(!specialist.rowCount||!stage.rowCount){await client.query('ROLLBACK');continue;}
+   if(merged!==specialist.rows[0].agent_instructions||name!==specialist.rows[0].agent_name){
+    await client.query("UPDATE project_specialist_agents SET agent_name=$2,agent_instructions=$3,updated_at=now() WHERE project_id=$1 AND role='devops'",[row.project_id,name,merged]);
+    await client.query("INSERT INTO agent_instruction_history(id,project_id,role,previous_name,previous_instructions,next_name,next_instructions) VALUES($1,$2,'devops',$3,$4,$5,$6)",
+     [randomUUID(),row.project_id,specialist.rows[0].agent_name,specialist.rows[0].agent_instructions,name,merged]);
+   }
+   await client.query("UPDATE workflow_stages SET agent_name=$2,agent_instructions=$3 WHERE project_id=$1 AND stage='deployment'",[row.project_id,name,merged]);
+   await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
+ }
 }
 export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId:string,role:'manager'|'analyst'){
  const row=(await pool.query('SELECT agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role])).rows[0];
