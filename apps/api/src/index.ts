@@ -1377,8 +1377,14 @@ app.put('/api/projects/:id/specialist-agents/devops',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
  const p=parse(z.object({agent_name:z.string().trim().min(1).max(120),agent_instructions:z.string().trim().min(1).max(12000)}),req.body);
- const r=await pool.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops',$2,$3) ON CONFLICT(project_id,role) DO UPDATE SET agent_name=EXCLUDED.agent_name,agent_instructions=EXCLUDED.agent_instructions,updated_at=now() RETURNING role,agent_name,agent_instructions,updated_at",[id,p.agent_name,p.agent_instructions]);
- return r.rows[0];
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const r=await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops',$2,$3) ON CONFLICT(project_id,role) DO UPDATE SET agent_name=EXCLUDED.agent_name,agent_instructions=EXCLUDED.agent_instructions,updated_at=now() RETURNING role,agent_name,agent_instructions,updated_at",[id,p.agent_name,p.agent_instructions]);
+  await client.query("UPDATE workflow_stages SET agent_name=$2,agent_instructions=$3 WHERE project_id=$1 AND stage='deployment'",[id,p.agent_name,p.agent_instructions]);
+  await client.query('COMMIT');
+  return r.rows[0];
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 });
 app.get('/api/projects/:id/deployment/settings',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
