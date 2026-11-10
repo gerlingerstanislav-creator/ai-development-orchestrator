@@ -1,5 +1,6 @@
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
+import {executeProjectManagerInbox} from './project-manager-inbox.js';
 import {runIterationPlanning} from './project-iterations.js';
 import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
 import pg from 'pg';
@@ -686,3 +687,8 @@ export async function runAutomaticDeployment(runId:string){
  try{heartbeat();await performAutomaticDeployment(pool,runId,decrypt);}finally{clearInterval(interval);}
 }
 export async function failAutomaticDeployment(runId:string,message:string){await markDeploymentFailed(pool,runId,message);}
+
+/** Each durable PM message is an independently scheduled Temporal activity. */
+export async function runProjectManagerInbox(projectId:string,messageId:string):Promise<void>{
+ await executeProjectManagerInbox(pool,projectId,messageId,codexUrl,runnerKey);
+}
