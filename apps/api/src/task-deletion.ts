@@ -98,4 +98,41 @@ export function registerSafeTaskDeletion(app:FastifyInstance,{pool,access,requir
    throw error;
   }finally{client.release();}
  });
+ // Generic deletion preview is scoped to exactly the IDs selected by PM.
+ // The owner must explicitly confirm after reviewing all dependent-data blockers.
+ app.get('/api/projects/:id/tasks/delete/preview',async(req:any,reply)=>{
+  const {id}=projectParams.parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {ids}=z.object({ids:z.string().min(1).max(3900)}).parse(req.query);
+  const taskIds=[...new Set(ids.split(',').map(value=>uuid.parse(value)))];
+  if(!taskIds.length||taskIds.length>100)return reply.code(400).send({error:'Выбери от 1 до 100 задач'});
+  const tasks=await tasksForDeletion(pool,id,taskIds);
+  if(tasks.length!==taskIds.length)return reply.code(409).send({error:'Часть выбранных задач больше не существует. Обнови список'});
+  return {tasks:tasks.map(task=>({id:task.id,title:task.title,display_number:task.display_number,blocked_reason:deletionBlocker(task)}))};
+ });
+ app.post('/api/projects/:id/tasks/delete/confirm',async(req:any,reply)=>{
+  const {id}=projectParams.parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {task_ids,confirm}=z.object({task_ids:z.array(uuid).min(1).max(100),confirm:z.literal(true)}).parse(req.body||{});
+  const taskIds=[...new Set(task_ids)];
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
+   await client.query('SELECT id FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[id,taskIds]);
+   const tasks=await tasksForDeletion(client,id,taskIds);
+   if(tasks.length!==taskIds.length||tasks.some(task=>deletionBlocker(task))){
+    await client.query('ROLLBACK');
+    return reply.code(409).send({error:'Выбранные задачи изменились или содержат связанные данные. Открой предпросмотр заново.'});
+   }
+   const removed=await client.query('DELETE FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) RETURNING id',[id,taskIds]);
+   await client.query('COMMIT');
+   return {ok:true,deleted_task_ids:removed.rows.map(row=>row.id)};
+  }catch(error){
+   await client.query('ROLLBACK').catch(()=>{});
+   if(['23503','40001'].includes((error as any)?.code))
+    return reply.code(409).send({error:'Задачи изменились или защищены связанными данными. Открой предпросмотр заново.'});
+   throw error;
+  }finally{client.release();}
+ });
+
 }
