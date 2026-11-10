@@ -1552,6 +1552,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setProcessEvents(events);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
  }
+ async function stopAnalystProcess(process:ProjectProcess){
+  if(!selected||processActionBusy)return;
+  setProcessActionBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/processes/'+process.id+'/stop',{method:'POST',body:'{}'});
+   const [current,events]=await Promise.all([
+    api<{processes:ProjectProcess[]}>('/projects/'+selected.id+'/processes'),
+    api<ProjectProcessEvent[]>('/projects/'+selected.id+'/processes/'+process.id+'/events')
+   ]);
+   setProjectProcesses(current.processes);setProcessEvents(events);
+  }catch(e){fail(e);}finally{setProcessActionBusy(false);}
+ }
  async function retryProcessSave(process:ProjectProcess){
   if(!selected||processActionBusy)return;
   setProcessActionBusy(true);
@@ -1562,7 +1574,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
  }
- const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status;
+ const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status;
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
  const boardDocQuestions=iterationFilter||tagFilter?[]:docQuestions;
@@ -1739,11 +1751,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <small>Готовые страницы сохранены; возобновление использует тот же процесс и пропускает завершённые темы.</small>
      </div>}
      {process.kind==='document_import'&&process.status==='running'&&<div className="process-instruction-box">
-      <strong>Уточнить задание для AI</strong>
-      <p>Сообщение будет учтено на следующем этапе анализа или формирования документов.</p>
+      <strong>Диалог с аналитиком во время работы</strong>
+      <p>Новые сообщения попадут в контекст следующего шага. Если ответ уже формируется, агент пересчитает его с учётом уточнения.</p>
       <textarea rows={3} value={processInstruction} onChange={e=>setProcessInstruction(e.target.value)} placeholder="Добавить требование или уточнить решение…"/>
-      <button className="secondary" disabled={processActionBusy||!processInstruction.trim()} onClick={()=>void sendProcessInstruction(process)}>Отправить уточнение</button>
+      <div className="process-actions">
+       <button className="secondary" disabled={processActionBusy||!processInstruction.trim()} onClick={()=>void sendProcessInstruction(process)}>Отправить аналитику</button>
+       <button className="secondary" disabled={processActionBusy} onClick={()=>void stopAnalystProcess(process)}>Прервать работу</button>
+      </div>
      </div>}
+     {process.kind==='document_import'&&process.status==='cancelled'&&<p className="muted">Работа остановлена. Уже сохранённые страницы и контрольные точки остаются в проекте.</p>}
      {selected&&process.taskId&&<KnowledgeAudit projectId={selected.id} taskId={process.taskId} processId={process.id} request={api}/>}
      <h4>Журнал событий</h4>
      {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{processEvents.map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
