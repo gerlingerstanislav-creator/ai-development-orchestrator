@@ -88,6 +88,45 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   }
   return {changed};
  }
+
+ case 'knowledge.search':{
+  const {query,limit}=z.object({query:z.string().trim().min(2).max(300),limit:z.number().int().min(1).max(20).default(8)}).parse(params);
+  const r=await pool.query(
+   "SELECT id,title,parent_id,knowledge_summary AS summary,knowledge_tags AS tags,updated_at AS version,ts_rank_cd(to_tsvector('simple',title||' '||body),plainto_tsquery('simple',$2)) AS score FROM documents WHERE project_id=$1 AND knowledge_status='approved' AND (to_tsvector('simple',title||' '||body) @@ plainto_tsquery('simple',$2) OR title ILIKE '%'||$2||'%' OR body ILIKE '%'||$2||'%') ORDER BY score DESC,updated_at DESC LIMIT $3",
+   [projectId,query,limit]);
+  return {results:r.rows};
+ }
+ case 'knowledge.read':{
+  const {document_id,mode,task_id}=z.object({document_id:uuid,mode:z.enum(['summary','full']).default('summary'),task_id:uuid.optional()}).parse(params);
+  const r=await pool.query("SELECT id,title,parent_id,body,knowledge_summary,knowledge_status,knowledge_tags,updated_at FROM documents WHERE project_id=$1 AND id=$2 AND knowledge_status='approved'",[projectId,document_id]);
+  if(!r.rowCount)throw rejected('Утверждённый документ не найден',404);
+  if(task_id){
+   const task=await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[task_id,projectId]);
+   if(!task.rowCount)throw rejected('Задача не найдена',404);
+  }
+  const d=r.rows[0];
+  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage) VALUES($1,$2,$3,$4,$5,$6)',
+   [randomUUID(),projectId,task_id||null,document_id,revision(d.updated_at),session.role]);
+  return {document:{id:d.id,title:d.title,parent_id:d.parent_id,status:d.knowledge_status,summary:d.knowledge_summary||d.body.slice(0,360),tags:d.knowledge_tags,version:revision(d.updated_at),...(mode==='full'?{body:d.body}:{})}};
+ }
+ case 'knowledge.related':{
+  const {document_id}=z.object({document_id:uuid}).parse(params);
+  const r=await pool.query("SELECT k.id,k.relation,d.id AS related_document_id,d.title,d.knowledge_summary AS summary FROM knowledge_links k JOIN documents d ON d.id=CASE WHEN k.source_document_id=$2 THEN k.target_document_id ELSE k.source_document_id END AND d.project_id=$1 WHERE k.project_id=$1 AND (k.source_document_id=$2 OR k.target_document_id=$2) AND d.knowledge_status='approved' LIMIT 60",[projectId,document_id]);
+  return {results:r.rows};
+ }
+ case 'knowledge.context':{
+  const {task_id,stage}=z.object({task_id:uuid,stage:z.string().min(2).max(60).default('development')}).parse(params);
+  const task=(await pool.query('SELECT id,title,description FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id])).rows[0];
+  if(!task)throw rejected('Задача не найдена',404);
+  const [rules,agent,docs]=await Promise.all([
+   pool.query('SELECT id,body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[projectId]),
+   pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,stage]),
+   pool.query("SELECT id,title,knowledge_summary AS summary,updated_at AS version,knowledge_key FROM documents WHERE project_id=$1 AND knowledge_status='approved' AND (knowledge_key IS NOT NULL OR to_tsvector('simple',title||' '||body) @@ plainto_tsquery('simple',$2)) ORDER BY (knowledge_key IS NOT NULL) DESC,updated_at DESC LIMIT 12",[projectId,task.title])
+  ]);
+  return {task,stage,agent:agent.rows[0]||null,mandatory_rules:rules.rows,documents:docs.rows,
+   instruction:'Дополнительные документы читай через knowledge.read. Поиск не гарантирует полноту; проверяй связанные требования.'};
+ }
+
  case 'tasks.list':{
   const r=await pool.query('SELECT id,title,description,stage,analysis_state,display_number,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 100',[projectId]);
   return {tasks:r.rows};
