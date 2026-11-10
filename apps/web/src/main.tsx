@@ -44,7 +44,7 @@ type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'oth
 type KanbanLane=Pick<Stage,'stage'|'label'>;
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
 const productOwnerLane:KanbanLane={stage:'product_owner_questions',label:'Вопросы к ПО'};
-const boardLaneFor=(task:Task)=>task.type==='question'&&task.question_status!=='resolved'?productOwnerLane.stage:task.awaits_product_owner?productOwnerLane.stage:task.stage;
+const boardLaneFor=(task:Task)=>task.type==='question'?(task.question_status==='resolved'?null:productOwnerLane.stage):task.awaits_product_owner?productOwnerLane.stage:task.stage;
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
  {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
