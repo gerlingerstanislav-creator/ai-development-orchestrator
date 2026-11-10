@@ -84,6 +84,13 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    [projectId,'%'+query+'%']);
   return {documents:r.rows.map(d=>({...d,revision:revision(d.updated_at)}))};
  }
+ case 'tasks.request_deletion_preview':{
+  const {task_ids}=z.object({task_ids:z.array(uuid).min(1).max(100)}).parse(params);
+  const ids=[...new Set(task_ids)];
+  const found=await pool.query('SELECT id FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[])',[projectId,ids]);
+  if(found.rows.length!==ids.length)throw rejected('Некоторые задачи не найдены. Обнови список задач',409);
+  return {requires_user_confirmation:true,task_ids:ids};
+ }
  case 'tasks.request_owner_question_cleanup':
  case 'documentation.request_reset':{
   z.object({}).strict().parse(params);
