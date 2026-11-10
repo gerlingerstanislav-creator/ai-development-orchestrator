@@ -1277,6 +1277,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  // The active documentation run is independent of message submission: the owner can
  // keep chatting while Temporal processes the original request.
+ useEffect(()=>{
+  if(!selectedProjectId||!projectChatOpen||projectChatMode!=='documentation')return;
+  let active=true;
+  void api<{processes:ProjectProcess[]}>('/projects/'+selectedProjectId+'/processes').then(result=>{
+   if(!active)return;
+   const running=result.processes.find(process=>process.kind==='document_import'&&process.status==='running');
+   if(!running)return;
+   updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>chat.jobId?chat:{
+    ...chat,jobId:running.id,progress:running.detail||'Аналитик продолжает работу…'
+   });
+  }).catch(()=>{});
+  return ()=>{active=false;};
+ },[selectedProjectId,projectChatOpen,projectChatMode]);
  const activeDocumentJob=projectChats[projectChatKey(selectedProjectId,'documentation')]?.jobId;
  useEffect(()=>{
   if(!selectedProjectId||!activeDocumentJob)return;
