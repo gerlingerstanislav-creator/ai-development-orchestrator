@@ -319,7 +319,7 @@ async function runJob(job,state){
   const prUrl=samePr?.html_url||await createPullRequest(job,branch,attempt.answer||'Изменения подготовлены.');
   const handoff=String(attempt.answer||'').match(/HANDOFF_NOTE:\s*([^\n\r]{1,2800})/i)?.[1]?.trim()||'';
   state.handoffNote=/^(none|нет|отсутствуют)[.!]?$/i.test(handoff)?'':handoff.slice(0,2500);
-   const learning=String(attempt.answer||'').match(/LEARNING_SUGGESTION:\\s*([^\\n\\r]{1,1600})/i)?.[1]?.trim()||'';
+   const learning=String(attempt.answer||'').match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim()||'';
    state.learningSuggestion=/^(none|нет|отсутствуют)[.!]?$/i.test(learning)?'':learning.slice(0,1600);
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
@@ -391,6 +391,7 @@ async function runTestJob(job,state){
     verdict:{type:'string',enum:['passed','failed','blocked']},
     summary:{type:'string'},
     handoffNote:{type:'string'},
+     learningSuggestion:{type:'string'},
     findings:{type:'array',items:{type:'object',additionalProperties:false,required:['severity','description','steps','expected','actual'],properties:{
      severity:{type:'string',enum:['critical','major','minor']},description:{type:'string'},steps:{type:'string'},expected:{type:'string'},actual:{type:'string'}}}},
     checks:{type:'array',items:{type:'object',additionalProperties:false,required:['name','result','details'],properties:{
