@@ -75,18 +75,27 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
   for(const task of pending.rows)if(await pendingAgentQuestions(pool,id,task.id))return reply.code(409).send({error:'Документация ожидает ответы на вопросы агентов по задаче '+task.title});
   const doc=(await pool.query("SELECT id,title,body FROM documents WHERE project_id=$1 AND title='Реализованные возможности' LIMIT 1",[id])).rows[0];
   const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 60',[id]);
+  // Only explicitly linked thematic pages are candidates; no blind rewriting of unrelated human documents.
+  const candidate=await pool.query("SELECT DISTINCT d.id,d.title,d.body,d.updated_at FROM documents d JOIN knowledge_task_links l ON l.document_id=d.id AND l.project_id=d.project_id WHERE d.project_id=$1 AND l.task_id=ANY($2::uuid[]) AND d.system_key IS NULL AND d.title<>'Реализованные возможности' AND d.knowledge_status IN ('approved','draft') ORDER BY d.updated_at DESC LIMIT 8",[id,pending.rows.map(x=>x.id)]);
   const prompt=['Ты технический писатель. Обнови документацию только по уже слитым Pull Request.',
-   'Ответь ТОЛЬКО JSON {"body":"полное Markdown-содержимое документа"}.',
+   'Ответь ТОЛЬКО JSON {"body":"полное Markdown-содержимое документа Реализованные возможности","updates":[{"document_id":"UUID связанного документа","body":"полное предлагаемое Markdown-содержимое","reason":"какая задача и PR доказывают изменение"}]}.',
+   'Для связанных документов СОЗДАВАЙ ТОЛЬКО ПРЕДЛОЖЕНИЯ на согласование, не объявляй поведение реализованным без достоверных подтверждений. Если PR diff недоступен, не делай предположений об изменении разделов; updates может быть пустым.',
    'Не удаляй прежние реализованные возможности. Не выдумывай факты, не включай секреты.',
    'Рабочие комментарии и история обсуждений не являются утверждённой функциональностью. Не переписывай их в документацию как факт.',
    'Предыдущий документ:\n'+String(doc?.body||'# Реализованные возможности\n').slice(0,40000),
    'Правила проекта (учитывай, не изменяй):\n'+rules.rows.map(x=>x.body).join('\n').slice(0,7000),
+   'Связанные документы для возможного обновления:\n'+JSON.stringify(candidate.rows.map(d=>({id:d.id,title:d.title,body:String(d.body).slice(0,8500)}))).slice(0,30000),
    'Выполненные задачи:\n'+JSON.stringify(pending.rows).slice(0,22000)].join('\n\n');
   const ids=pending.rows.map(x=>x.id);
   const runId=randomUUID();
   await recordAgentActivity(pool,id,ids,runId,'documentation','running','Документатор обрабатывает слитые изменения');
   let body:string;
-  try{body=z.object({body:z.string().min(20).max(90000)}).parse(await ask(id,prompt)).body;}
+  let updates:Array<{document_id:string;body:string;reason:string}>=[];
+  try{
+   const parsed=z.object({body:z.string().min(20).max(90000),updates:z.array(z.object({document_id:z.string().uuid(),body:z.string().min(20).max(100000),reason:z.string().min(5).max(2000)})).max(8).default([])}).parse(await ask(id,prompt));
+   body=parsed.body;
+   updates=parsed.updates.filter(p=>candidate.rows.some(d=>d.id===p.document_id&&d.body!==p.body));
+  }
   catch(e){
    await recordAgentActivity(pool,id,ids,runId,'documentation','failed','Не удалось подготовить изменения документации.');
    return reply.code(503).send({error:e instanceof Error?e.message:'Ошибка обновления документации'});
@@ -102,11 +111,20 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
      if(!parent)throw Error('Не найден системный раздел архитектуры');
      documentId=randomUUID();await client.query("INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,'Реализованные возможности',$3,$4)",[documentId,id,body,parent.id]);}
    await client.query('INSERT INTO document_versions(id,document_id,task_ids,body) VALUES($1,$2,$3,$4)',[randomUUID(),documentId,JSON.stringify(ids),body]);
+   let proposed=0;
+   for(const update of updates){
+    const current=(await client.query('SELECT id,updated_at FROM documents WHERE id=$1 AND project_id=$2 AND system_key IS NULL FOR UPDATE',[update.document_id,id])).rows[0];
+    const base=candidate.rows.find(d=>d.id===update.document_id);
+    if(!current||!base||new Date(current.updated_at).getTime()!==new Date(base.updated_at).getTime())continue;
+    const result=await client.query("INSERT INTO knowledge_document_updates(id,project_id,document_id,task_ids,base_version,proposed_body,reason) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id",
+     [randomUUID(),id,update.document_id,ids,base.updated_at,update.body,update.reason]);
+    proposed+=result.rowCount||0;
+   }
    await client.query("UPDATE tasks SET stage='done',documentation_updated_at=now(),updated_at=now() WHERE project_id=$1 AND id=ANY($2::uuid[])",[id,ids]);
    for(const taskId of ids)await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'documentation_updated','Документация обновлена после слияния')",[randomUUID(),taskId,uid(req)]);
    await recordAgentActivity(client,id,ids,runId,'documentation','completed','Обновлён документ «Реализованные возможности».');
    await client.query('COMMIT');
-   return {ok:true,updated_tasks:ids.length,document_id:documentId};
+   return {ok:true,updated_tasks:ids.length,document_id:documentId,proposals:proposed};
   }catch(e){
    await client.query('ROLLBACK');
    await recordAgentActivity(client,id,ids,runId,'documentation','failed','Не удалось сохранить изменения документации.');
