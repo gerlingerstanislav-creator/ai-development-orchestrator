@@ -39,7 +39,7 @@ export const agentToolCatalog=[
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('tasks.list','Получить задачи и этапы. Для колонки «Вопросы к ПО» передай product_owner_questions_only=true. Включает также вопросы по документации, созданные аналитиком: это задачи типа question.',{product_owner_questions_only:field('boolean','Показать только задачи из колонки «Вопросы к ПО»')}),
  tool('tasks.read','Прочитать задачу, недавние реплики и ответы на вопросы. Используй перед повторным обращением к пользователю по этой задаче.',{task_id:id},['task_id']),
- tool('tasks.request_owner_question_cleanup','По явному запросу пользователя удалить задачи из «Вопросов к ПО» покажи кнопку предпросмотра и подтверждения. Вызов не удаляет задачи.',{}),
+ tool('tasks.request_owner_question_cleanup','По явному запросу пользователя открыть предпросмотр удаления из колонки «Вопросы к ПО». Учти задачи типа question, созданные аналитиком. Удаление — только после явного подтверждения владельца.',{}),
  tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
  tool('questions.list','Посмотреть вопросы по документации (задачи типа question), включая их статус и привязку к документу.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
