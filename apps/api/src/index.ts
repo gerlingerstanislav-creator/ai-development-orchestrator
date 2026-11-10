@@ -166,6 +166,18 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_rule_suggestions_project ON project_rule_suggestions(project_id,status);
  CREATE TABLE IF NOT EXISTS connections (id uuid primary key, owner_id uuid not null references users(id), name text not null, provider text not null, secret_encrypted text not null, created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS project_connections (project_id uuid references projects(id) on delete cascade, connection_id uuid references connections(id) on delete cascade, primary key(project_id,connection_id));
+ CREATE TABLE IF NOT EXISTS project_specialist_agents (
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  role text NOT NULL CHECK(role IN ('devops')),
+  agent_name text NOT NULL,
+  agent_instructions text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(project_id,role)
+ );
+ INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions)
+ SELECT id,'devops','AI-DevOps',
+ 'Отвечай за надёжность, скорость и экономичность CI/CD, GitHub Actions и выкладки. Анализируй фактические job, длительность, повторные установки зависимостей, кеширование, concurrency, отмену устаревших запусков, повторные сборки, артефакты, безопасность секретов и права GitHub token. Предлагай минимальные проверяемые изменения с измеримым эффектом. Не отключай тесты или защиту веток ради скорости. Используй неизменяемые версии артефактов, гарантируй идемпотентность и исключай параллельные деплои в одну среду. Перед выкладкой проверяй обязательные статусы и SHA; для продакшена нужен явный разрешённый механизм выкладки и стратегия отката. Не утверждай, что сделал deploy, если нет результата инструмента. Не запускай выкладку в ходе консультации.'
+ FROM projects ON CONFLICT(project_id,role) DO NOTHING;
  CREATE TABLE IF NOT EXISTS project_git_repositories (project_id uuid primary key references projects(id) on delete cascade, connection_id uuid not null references connections(id), repository text not null, default_branch text not null, updated_at timestamptz not null default now());
  ALTER TABLE project_git_repositories ADD COLUMN IF NOT EXISTS target_branch text;
  UPDATE project_git_repositories SET target_branch=default_branch WHERE target_branch IS NULL;
