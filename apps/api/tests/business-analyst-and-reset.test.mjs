@@ -87,15 +87,19 @@ test('task deletion protects execution history and removes unstarted analyst tas
  await db.query('SET LOCAL search_path TO '+schema+',public');
  await db.query([
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
-  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,stage text,display_number int,git_branch text,pr_url text,parent_id uuid REFERENCES tasks(id),depends_on_task_id uuid REFERENCES tasks(id))",
+  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,stage text,display_number int,git_branch text,pr_url text,parent_id uuid REFERENCES tasks(id),depends_on_task_id uuid REFERENCES tasks(id),clarification_questions jsonb DEFAULT '[]',spec_review_status text,spec_version int,position int,created_at timestamptz)",
   'CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id))',
-  'CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id))',
+  'CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),status text,verdict text,qa_spec_version int,qa_plan_snapshot jsonb,report jsonb,created_at timestamptz)',
+  'CREATE TABLE task_agent_notes(project_id uuid,task_id uuid,body text,kind text,status text,target_stage text,requires_customer boolean,created_at timestamptz)',
+  'CREATE TABLE task_requirement_reviews(project_id uuid,task_id uuid,spec_version int,status text,classification text)',
+  'CREATE TABLE qa_merge_waivers(project_id uuid,task_id uuid)',
+  'CREATE TABLE manager_requests(project_id uuid,task_id uuid,source_id uuid,kind text,status text)',
   'CREATE TABLE qa_test_plans(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id))',
   'CREATE TABLE qa_test_cases(id uuid PRIMARY KEY,project_id uuid,source_task_id uuid REFERENCES tasks(id))',
   "CREATE TABLE requirement_review_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),status text DEFAULT 'queued')"
  ].join(';\n')+';');
  const pool={query:(...args)=>db.query(...args),connect:async()=>({
-  query:(sql,...args)=>sql==='BEGIN'?db.query('SAVEPOINT test_delete'):
+  query:(sql,...args)=>sql.startsWith('BEGIN')?db.query('SAVEPOINT test_delete'):
    sql==='COMMIT'?db.query('RELEASE SAVEPOINT test_delete'):
    sql==='ROLLBACK'?db.query('ROLLBACK TO SAVEPOINT test_delete'):db.query(sql,...args),
   release(){}
@@ -112,6 +116,27 @@ test('task deletion protects execution history and removes unstarted analyst tas
  const yes=await app.inject({method:'DELETE',url:path+removable,payload:{confirm_task_id:removable}});
  assert.equal(yes.statusCode,200,yes.body);
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE project_id=$1',[project])).rows[0].n,1);
+ const eligible=randomUUID(),stale=randomUUID(),foreign=randomUUID(),other=randomUUID();
+ await db.query('INSERT INTO projects(id) VALUES($1)',[other]);
+ await db.query("INSERT INTO tasks(id,project_id,title,stage,display_number,clarification_questions) VALUES($1,$2,'Анализ','analysis',3,$6),($3,$2,'Уточнения','analysis',4,$6),($4,$5,'Другой проект','analysis',5,$6)",
+  [eligible,project,stale,foreign,other,JSON.stringify(['Какого цвета круг?'])]);
+ await db.query("INSERT INTO task_agent_notes(project_id,task_id,body,kind,status,target_stage) VALUES($1,$2,'Какой цвет использовать?','question','open','all')",[project,protectedTask]);
+ const bulk=path+'owner-questions/delete/';
+ const preview=await app.inject({method:'GET',url:bulk+'preview'});
+ assert.equal(preview.statusCode,200,preview.body);
+ assert.deepEqual(preview.json().tasks.map(({id,blocked_reason})=>[id,!!blocked_reason]),[
+  [protectedTask,true],[eligible,false],[stale,false]
+ ]);
+ const confirm=(task_ids,confirm=true)=>app.inject({method:'POST',url:bulk+'confirm',payload:{task_ids,confirm}});
+ assert.equal((await confirm([eligible],false)).statusCode,409);
+ assert.equal((await confirm([eligible,protectedTask])).statusCode,409);
+ assert.equal((await confirm([eligible,foreign])).statusCode,409);
+ await db.query("UPDATE tasks SET clarification_questions='[]' WHERE id=$1",[stale]);
+ assert.equal((await confirm([eligible,stale])).statusCode,409);
+ const removed=await confirm([eligible]);
+ assert.equal(removed.statusCode,200,removed.body);
+ assert.deepEqual(removed.json().deleted_task_ids,[eligible]);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,3);
  await db.query('ROLLBACK');opened=false;
 });
 

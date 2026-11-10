@@ -74,6 +74,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    [projectId,'%'+query+'%']);
   return {documents:r.rows.map(d=>({...d,revision:revision(d.updated_at)}))};
  }
+ case 'tasks.request_owner_question_cleanup':
  case 'documentation.request_reset':{
   z.object({}).strict().parse(params);
   return {requires_user_confirmation:true};

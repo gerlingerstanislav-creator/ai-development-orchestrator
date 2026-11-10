@@ -63,6 +63,12 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.deepEqual((await call('documentation.request_reset')).json().result,{requires_user_confirmation:true});
  assert.equal((await agentSessionEffects(pool,session.id)).documentation_reset_requested,true);
  assert.equal((await agentSessionEffects(pool,manager.id)).documentation_reset_requested,false);
+ assert.equal(await call('tasks.request_owner_question_cleanup').then(res=>res.statusCode),403);
+ const managerCleanup=await app.inject({method:'POST',url:'/internal/agent-tools/call',
+  headers:{'x-agent-token':manager.secret},payload:{name:'tasks.request_owner_question_cleanup'}});
+ assert.deepEqual(managerCleanup.json().result,{requires_user_confirmation:true});
+ assert.equal((await agentSessionEffects(pool,manager.id)).owner_question_cleanup_requested,true);
+
  const list=(await call('documents.list')).json().result.documents;
  assert.equal(list.length,1,'The agent only sees its own project');
  assert.equal((await call('documents.read',{document_id:foreign})).statusCode,404);
@@ -115,6 +121,15 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.equal(requestedAgain.statusCode,200,requestedAgain.body);
  assert.equal(requestedAgain.json().result.import_job_id,jobId,'Retries reuse one durable Temporal job');
  assert.equal((await db.query('SELECT count(*)::int n FROM document_import_jobs WHERE project_id=$1',[project])).rows[0].n,1);
+ await db.query("UPDATE document_import_jobs SET status='completed' WHERE id=$1",[jobId]);
+ const sourceUrl='https://github.com/gerlingerstanislav-creator/ideas/tree/main/coffee-preorder-43-0.3';
+ const imported=await call('documentation.import',{source_url:sourceUrl,idempotency_key:'coffee-import-action'});
+ assert.equal(imported.statusCode,200,imported.body);
+ const importId=imported.json().result.import_job_id;
+ assert.equal(startedWorkflows.at(-1),importId);
+ const savedImport=(await db.query('SELECT source_url,analyst_input FROM document_import_jobs WHERE id=$1',[importId])).rows[0];
+ assert.equal(savedImport.source_url,sourceUrl);
+ assert.equal(savedImport.analyst_input.location.path,'coffee-preorder-43-0.3');
  const memory=await call('memory.record',{kind:'observation',text:'Сначала изучай полную структуру ТЗ, затем редактируй конкретную страницу.',evidence:'Проверено в тесте'});
  assert.equal(memory.statusCode,200,memory.body);
  assert.equal((await call('memory.list')).json().result.memories.length,1);
