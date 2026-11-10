@@ -8,10 +8,11 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{pool:Pool;ac
  app.get('/api/projects/:id/team',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
-  const [stages,specialists,memory]=await Promise.all([
+  const [stages,specialists,memory,baInstructions]=await Promise.all([
    pool.query('SELECT stage,label,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 ORDER BY role',[id]),
-   pool.query("SELECT id,role,kind,body,evidence,status,created_at,reviewed_at FROM agent_memory WHERE project_id=$1 ORDER BY created_at DESC,id DESC LIMIT 500",[id])
+   pool.query("SELECT id,role,kind,body,evidence,status,created_at,reviewed_at FROM agent_memory WHERE project_id=$1 ORDER BY created_at DESC,id DESC LIMIT 500",[id]),
+   pool.query("SELECT title,body FROM knowledge_instruction_modules WHERE (project_id=$1 OR project_id IS NULL) AND status='approved' AND (stage='business_analyst' OR stage IS NULL) ORDER BY mandatory DESC,priority DESC LIMIT 30",[id])
   ]);
   const entries=stages.rows.map(row=>({
    id:'stage:'+row.stage,role:row.stage,name:row.agent_name,stage:row.label,
@@ -26,7 +27,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{pool:Pool;ac
   // The manager and business analyst are conversational roles, not Kanban stages.
   entries.unshift(
    {id:'conversation:manager',role:'manager',name:'ПМ',stage:'Коммуникации',type:'conversation',instructions:''},
-   {id:'conversation:analyst',role:'analyst',name:'БА',stage:'Бизнес-анализ',type:'conversation',instructions:''}
+   {id:'conversation:business_analyst',role:'business_analyst',name:'БА',stage:'Бизнес-анализ',type:'conversation',instructions:baInstructions.rows.map(row=>row.title+': '+row.body).join('\n\n')}
   );
   return {agents:entries,memory:memory.rows};
  });
