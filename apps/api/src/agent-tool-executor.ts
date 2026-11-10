@@ -110,6 +110,20 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {document:{id:d.id,title:d.title,parent_id:d.parent_id,status:d.knowledge_status,summary:d.knowledge_summary||d.body.slice(0,360),tags:d.knowledge_tags,version:revision(d.updated_at),...(mode==='full'?{body:d.body}:{})}};
  }
 
+
+ case 'knowledge.sections':{
+  const {document_id}=z.object({document_id:uuid}).parse(params);
+  const r=await pool.query("SELECT title,body,updated_at FROM documents WHERE project_id=$1 AND id=$2 AND knowledge_status='approved'",[projectId,document_id]);
+  if(!r.rowCount)throw rejected('Утверждённый документ не найден',404);
+  const lines=String(r.rows[0].body).split(/\r?\n/);
+  const sections:{section_id:number;title:string;level:number}[]=[];
+  lines.forEach((line,index)=>{
+   const h=/^(#{1,6})\s+(.+)$/.exec(line);
+   if(h)sections.push({section_id:index,title:h[2],level:h[1].length});
+  });
+  return {document_id,title:r.rows[0].title,version:revision(r.rows[0].updated_at),sections};
+ }
+
  case 'knowledge.section':{
   const {document_id,section_id,task_id}=z.object({document_id:uuid,section_id:z.number().int().min(0),task_id:uuid.optional()}).parse(params);
   const r=await pool.query("SELECT body,title,updated_at FROM documents WHERE project_id=$1 AND id=$2 AND knowledge_status='approved'",[projectId,document_id]);
