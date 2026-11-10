@@ -7,9 +7,9 @@ export function deploymentDecision(mode:unknown):{stage:'documentation'|'deploym
   stage:'documentation',status:'skipped',
   reason:'Нет настроенного окружения: этап выкладки пропущен согласно настройкам проекта'
  };
- if(mode==='manual')return {
+ if(mode==='manual'||mode==='automatic')return {
   stage:'deployment',status:'pending',
-  reason:'Ожидание подтверждённой ручной выкладки'
+  reason:mode==='automatic'?'Ожидание проверяемой автоматической выкладки':'Ожидание подтверждённой ручной выкладки'
  };
  throw new Error('Неизвестный режим выкладки: действие заблокировано');
 }
