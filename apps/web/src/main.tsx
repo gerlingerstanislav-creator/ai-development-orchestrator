@@ -9,6 +9,7 @@ import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
 import {KnowledgeAudit} from './KnowledgeAudit.js';
 import {DocumentationReset} from './DocumentationReset.js';
+import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
@@ -74,8 +75,17 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean};
-type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type ProjectChatMode='project'|'documentation';
+type ProjectChatState={
+ messages:AssistantMessage[];input:string;pendingId:string|null;progress:string;historyLoaded:boolean;
+ files:File[];documentId:string|null;error:string;
+};
+const emptyProjectChat:ProjectChatState={
+ messages:[],input:'',pendingId:null,progress:'',historyLoaded:false,files:[],documentId:null,error:''
+};
+const projectChatKey=(projectId:string,mode:ProjectChatMode)=>projectId+':'+mode;
+type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
@@ -409,26 +419,43 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
- const [projectChatOpen,setProjectChatOpen]=useState(false);
- const [projectChatMode,setProjectChatMode]=useState<'project'|'documentation'>('project');
+ const [openChatProjectId,setOpenChatProjectId]=useState<string|null>(null);
+ const [projectChatMode,setProjectChatMode]=useState<ProjectChatMode>('project');
  const [baHandoffOpen,setBaHandoffOpen]=useState(false);
  const [baHandoffTitle,setBaHandoffTitle]=useState('');
  const [baHandoffBody,setBaHandoffBody]=useState('');
  const [baHandoffBusy,setBaHandoffBusy]=useState(false);
  const [baHandoffNotice,setBaHandoffNotice]=useState('');
- useEffect(()=>{if(projectChatOpen)projectInputRef.current?.focus();},[projectChatOpen]);
- const [projectMessages,setProjectMessages]=useState<AssistantMessage[]>([]);
- const [projectPendingId,setProjectPendingId]=useState<string|null>(null);
- const [projectInput,setProjectInput]=useState('');const [projectChatBusy,setProjectChatBusy]=useState(false);
- const [projectImportProgress,setProjectImportProgress]=useState('');
+ const [projectChats,setProjectChats]=useState<Record<string,ProjectChatState>>({});
+ const selectedProjectId=selected?.id||'';
+ const projectChatOpen=openChatProjectId===selectedProjectId;
+ const selectedProjectRef=useRef(selectedProjectId);
+ selectedProjectRef.current=selectedProjectId;
+ function getProjectChat(mode:ProjectChatMode){
+  return projectChats[projectChatKey(selectedProjectId,mode)]??emptyProjectChat;
+ }
+ function updateProjectChat(chatKey:string,update:(chat:ProjectChatState)=>ProjectChatState){
+  setProjectChats(previous=>{
+   const current=previous[chatKey]??emptyProjectChat;
+   const next=update(current);
+   return next===current?previous:{...previous,[chatKey]:next};
+  });
+ }
+ const {messages:projectMessages,pendingId:projectPendingId,input:projectInput,progress:projectImportProgress,
+  historyLoaded:projectHistoryLoaded,error:projectChatError}=getProjectChat(projectChatMode);
+ const projectChatBusy=projectPendingId!==null;
+ const {files:analystFiles,documentId:analystDocumentId}=getProjectChat('documentation');
+ function setProjectInput(input:string){
+  updateProjectChat(projectChatKey(selectedProjectId,projectChatMode),chat=>({...chat,input}));
+ }
+ function setAnalystDocumentId(documentId:string|null){
+  updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,documentId}));
+ }
+ useEffect(()=>{if(projectChatOpen)projectInputRef.current?.focus();},[projectChatOpen,projectChatMode]);
  const [docQuestions,setDocQuestions]=useState<DocumentationQuestion[]>([]);
  const [docProposals,setDocProposals]=useState<DocumentationProposal[]>([]);
  const [questionAnswers,setQuestionAnswers]=useState<Record<string,string>>({});
- const [analystFiles,setAnalystFiles]=useState<File[]>([]);
- const [analystDocumentId,setAnalystDocumentId]=useState<string|null>(null);
  const analystFileInput=useRef<HTMLInputElement>(null);
- const chatScope=useRef('');
- chatScope.current=(selected?.id||'')+':'+projectChatMode;
 
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
  const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
@@ -687,7 +714,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>{alive=false;window.clearInterval(timer);};
  },[token,selected?.id,section]);
 
- useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy]);
+ useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy,projectChatMode]);
  useLayoutEffect(()=>{
   const element=taskThreadRef.current;
   if(element)element.scrollTop=element.scrollHeight;
@@ -729,22 +756,32 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const timer=window.setInterval(()=>void refresh(),4000);
   return()=>{alive=false;window.clearInterval(timer);};
  },[selected?.id,activeTask?.id,editingField]);
- useEffect(()=>{setProjectMessages([]);setProjectInput('');setProjectPendingId(null);if(selected&&!accountSettings){void api<AssistantMessage[]>('/projects/'+selected.id+'/assistant/messages?mode='+projectChatMode).then(setProjectMessages).catch(fail);}},[selected?.id,projectChatMode]);
  useEffect(()=>{
-  if(!selected?.id||!projectChatOpen||projectChatMode!=='documentation'||projectChatBusy)return;
-  const projectId=selected.id;
-  let active=true;
+  if(!selectedProjectId||!projectChatOpen||projectChatBusy)return;
+  const chatKey=projectChatKey(selectedProjectId,projectChatMode);
+  const controller=new AbortController();
+  let refreshing=false;
   const refresh=async()=>{
+   if(refreshing)return;
+   refreshing=true;
    try{
-    const messages=await api<AssistantMessage[]>('/projects/'+projectId+'/assistant/messages?mode=documentation');
-    if(active)setProjectMessages(previous=>JSON.stringify(previous)===JSON.stringify(messages)?previous:
-     [...messages,...previous.filter(message=>message.failed)]);
-   }catch{/* Keep the current dialogue if the connection is interrupted. */}
+    const messages=await api<AssistantMessage[]>('/projects/'+selectedProjectId+'/assistant/messages?mode='+projectChatMode,{signal:controller.signal});
+    if(controller.signal.aborted)return;
+    updateProjectChat(chatKey,chat=>chat.pendingId?chat:{
+     ...chat,historyLoaded:true,messages:[...messages,...chat.messages.filter(message=>message.failed)]
+    });
+   }catch(e){if(!controller.signal.aborted&&!projectHistoryLoaded)fail(e);}
+   finally{refreshing=false;}
   };
-  const timer=window.setInterval(()=>void refresh(),4000);
-  return()=>{active=false;window.clearInterval(timer);};
- },[selected?.id,projectChatOpen,projectChatMode,projectChatBusy]);
- useEffect(()=>{setProjectChatOpen(false);setProjectChatMode('project');setAnalystFiles([]);setAnalystDocumentId(null);},[selected?.id]);
+  if(!projectHistoryLoaded)void refresh();
+  const timer=projectChatMode==='documentation'?window.setInterval(()=>void refresh(),4000):null;
+  return()=>{controller.abort();if(timer!==null)window.clearInterval(timer);};
+ },[selectedProjectId,projectChatOpen,projectChatMode,projectChatBusy,projectHistoryLoaded]);
+ useEffect(()=>{
+  setOpenChatProjectId(id=>id===selectedProjectId?id:null);
+  setBaHandoffOpen(false);setBaHandoffNotice('');
+ },[selectedProjectId]);
+ useEffect(()=>{if(!token)setProjectChats({});},[token]);
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -1120,11 +1157,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   },7000);
   return()=>{alive=false;window.clearInterval(timer);};
  },[token,selected?.id,loadedProjectId,section]);
- function openDocumentationChat(){
-  setAnalystDocumentId(selectedDocId);
-  setProjectChatMode('documentation');
-  setProjectChatOpen(true);
- }
  async function sendBaHandoff(){
   if(!selected||baHandoffBusy||!baHandoffTitle.trim()||!baHandoffBody.trim())return;
   setBaHandoffBusy(true);setBaHandoffNotice('');
@@ -1143,11 +1175,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   await loadProject(projectId);
   navigate(projectUrl(projectId,'docs'));
  }
- function toggleAgentChat(mode:'project'|'documentation'){
-  if(projectChatOpen&&projectChatMode===mode){setProjectChatOpen(false);return;}
-  if(mode==='documentation')openDocumentationChat();
-  else {setAnalystDocumentId(null);setProjectChatMode('project');setProjectChatOpen(true);}
-  setBaHandoffOpen(false);setBaHandoffNotice('');
+ function openProjectChat(mode:ProjectChatMode,input?:string){
+  if(!selectedProjectId)return;
+  if(input!==undefined)updateProjectChat(projectChatKey(selectedProjectId,mode),chat=>({...chat,input:chat.input.trim()?chat.input:input}));
+  setProjectChatMode(mode);
+  setOpenChatProjectId(selectedProjectId);
+ }
+ function toggleAgentChat(mode:ProjectChatMode){
+  if(projectChatOpen&&projectChatMode===mode){setOpenChatProjectId(null);return;}
+  if(mode==='documentation'&&selectedDocId&&!analystDocumentId)setAnalystDocumentId(selectedDocId);
+  openProjectChat(mode);
  }
  function attachAnalystFiles(files:FileList|null){
   const next=[...analystFiles,...Array.from(files||[])];
@@ -1155,7 +1192,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setError('Можно прикрепить до 5 непустых текстовых файлов (Markdown, TXT, CSV, JSON, YAML), до 100 КБ каждый и до 250 КБ суммарно.');
    return;
   }
-  setAnalystFiles(next);
+  updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,files:next}));
  }
  async function sendProjectMessage(e:React.FormEvent){
   e.preventDefault();
@@ -1163,9 +1200,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!selected||(!projectInput.trim()&&!files.length)||projectChatBusy)return;
   const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+crypto.randomUUID();
   const message=projectInput.trim()||'Подготовь ТЗ по приложенным материалам.';
-  const scope=projectId+':'+mode;
-  setProjectMessages(old=>[...old,{id:optimisticId,role:'user',body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:new Date().toISOString()}]);
-  setProjectInput('');setProjectPendingId(optimisticId);setProjectChatBusy(true);
+  const chatKey=projectChatKey(projectId,mode);
+  const sentAt=new Date().toISOString();
+  updateProjectChat(chatKey,chat=>({...chat,input:'',pendingId:optimisticId,error:'',messages:[
+   ...chat.messages,{id:optimisticId,role:'user',body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:sentAt}
+  ]}));
+  function updatePendingChat(update:(chat:ProjectChatState)=>ProjectChatState){
+   updateProjectChat(chatKey,chat=>chat.pendingId===optimisticId?update(chat):chat);
+  }
   try{
    const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
    let completedJob=false;
@@ -1174,11 +1216,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    })});
    if(response.import_job_id){
     const jobId=response.import_job_id;
-    setProjectImportProgress('Аналитик начал работу…');
+    updatePendingChat(chat=>({...chat,progress:'Аналитик начал работу…'}));
     for(;;){
      await new Promise(resolve=>setTimeout(resolve,2500));
      const job=await api<ImportJob>('/projects/'+projectId+'/document-import/'+jobId);
-     setProjectImportProgress(job.message||'Аналитик готовит ответ…');
+     updatePendingChat(chat=>({...chat,progress:job.message||'Аналитик готовит ответ…'}));
      if(job.status==='failed')throw new Error(job.message||'Не удалось импортировать документацию');
      if(job.status==='completed'){
       if(!job.result)throw new Error('Импорт завершился без результата');
@@ -1186,16 +1228,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      }
     }
    }
-   if(chatScope.current===scope){
-    setProjectMessages(old=>[...old.map(m=>m.id===optimisticId?{...m,pending:false}:m),
-     {id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,created_task_id:response.created_task_id,created_document_id:response.created_document_id,documentation_reset_requested:response.documentation_reset_requested,created_at:new Date().toISOString()}]);
-    if(files.length)setAnalystFiles([]);
-   }
-   if(chatScope.current.startsWith(projectId+':')&&(completedJob||response.created_task_id||response.created_document_id))await loadProject(projectId);
+   const reply:AssistantMessage={id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,
+    created_task_id:response.created_task_id,created_document_id:response.created_document_id,
+    documentation_reset_requested:response.documentation_reset_requested,owner_question_cleanup_requested:response.owner_question_cleanup_requested,created_at:new Date().toISOString()};
+   updatePendingChat(chat=>({...chat,files:[],messages:[
+    ...chat.messages.map(m=>m.id===optimisticId?{...m,pending:false}:m),reply
+   ]}));
+   if(selectedProjectRef.current===projectId&&(completedJob||response.created_task_id||response.created_document_id))await loadProject(projectId);
   }catch(e){
-   setProjectMessages(old=>old.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m));
-   fail(e);
-  }finally{setProjectChatBusy(false);setProjectPendingId(null);setProjectImportProgress('');}
+   updatePendingChat(chat=>({...chat,error:e instanceof Error?e.message:String(e),
+    messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m)
+   }));
+  }finally{updatePendingChat(chat=>({...chat,pendingId:null,progress:''}));}
  }
  async function sendTaskMessage(e:React.FormEvent){
   e.preventDefault();
@@ -1585,7 +1629,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  :<div className="project-grid">{projects.map(p=><div key={p.id} className="project-card project-card-active"><a href={projectUrl(p.id)} className="project-card-link" onClick={e=>followLink(e,projectUrl(p.id))}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></a>{p.is_owner&&<button type="button" className="secondary project-trash-button" title="Переместить проект в корзину" aria-label={'В корзину: '+p.name} disabled={projectDeleteBusy} onClick={()=>void moveProjectToTrash(p)}><Trash2 size={15}/></button>}</div>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div>}</div>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
  {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
- {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>{setProjectInput(old=>old.trim()?old:'Создай задачу: ');setProjectChatOpen(true);}}><FileText size={17}/></button></div></div>
+ {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>openProjectChat('project','Создай задачу: ')}><FileText size={17}/></button></div></div>
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board board-groups">
  {kanbanGroups.map(group=>{
   const expanded=expandedGroups.includes(group.key);
@@ -1654,7 +1698,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
    <div className="docs-list-heading"><b>Страницы проекта</b><div className="docs-actions">
-     <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);setProjectChatMode('documentation');setProjectInput('Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');setProjectChatOpen(true);}}><LayoutGrid size={17}/></button>
+     <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);openProjectChat('documentation','Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');}}><LayoutGrid size={17}/></button>
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}
@@ -1855,7 +1899,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)'}</strong><small>{aiSettings.model}</small></div>
     <div className="docs-actions">{projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').slice(-1)[0]?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
-    <button onClick={()=>setProjectChatOpen(false)} title="Свернуть чат" aria-label="Свернуть чат"><X size={17}/></button></div>
+    <button onClick={()=>setOpenChatProjectId(null)} title="Свернуть чат" aria-label="Свернуть чат"><X size={17}/></button></div>
    </header>
    {projectChatMode==='documentation'&&baHandoffOpen&&<div className="ba-handoff-form">
     <strong>Передача согласованного пакета системному аналитику</strong>
@@ -1875,15 +1919,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
       {selected&&m.documentation_reset_requested&&<DocumentationReset projectId={selected.id} request={api} onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
-      {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setProjectChatOpen(false);}}>Открыть документ</button>}
+      {selected&&m.owner_question_cleanup_requested&&<OwnerQuestionCleanup projectId={selected.id} request={api}
+       onDeleted={()=>loadProject(selected.id)} onOpenTask={id=>navigate(projectUrl(selected.id,'tasks')+'/'+id)}/>}
+      {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setOpenChatProjectId(null);}}>Открыть документ</button>}
     </div>)}
     {projectChatBusy&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
+    {projectChatError&&<p className="task-action-error" role="alert">{projectChatError}</p>}
    </div>
    {projectChatMode==='documentation'&&(analystDocumentId||analystFiles.length>0)&&<div className="analyst-materials">
     {analystDocumentId&&<span>Раздел: {docs.find(doc=>doc.id===analystDocumentId)?.title||'Выбранная страница'}
      <button type="button" aria-label="Снять выбор раздела" onClick={()=>setAnalystDocumentId(null)} disabled={projectChatBusy}><X size={13}/></button></span>}
     {analystFiles.map((file,index)=><span key={file.name+'-'+index}>{file.name}
-     <button type="button" aria-label={'Убрать '+file.name} disabled={projectChatBusy} onClick={()=>setAnalystFiles(current=>current.filter((_,i)=>i!==index))}><X size={13}/></button></span>)}
+     <button type="button" aria-label={'Убрать '+file.name} disabled={projectChatBusy} onClick={()=>updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,files:chat.files.filter((_,i)=>i!==index)}))}><X size={13}/></button></span>)}
    </div>}
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
     {projectChatMode==='documentation'&&<>

@@ -5,7 +5,7 @@ import {agentMemoryContext} from './project-team.js';
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
- 'tasks.list','tasks.read','questions.list','processes.list','memory.list','documentation.request_reset',
+ 'tasks.list','tasks.read','tasks.request_owner_question_cleanup','questions.list','processes.list','memory.list','documentation.request_reset',
  'knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
@@ -31,6 +31,7 @@ export const agentToolCatalog=[
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('tasks.list','Получить задачи и этапы. Для колонки «Вопросы к ПО» передай product_owner_questions_only=true. Карточки вопросов по документам в этот список не входят.',{product_owner_questions_only:field('boolean','Показать только задачи из колонки «Вопросы к ПО»')}),
  tool('tasks.read','Прочитать задачу по UUID.',{task_id:id},['task_id']),
+ tool('tasks.request_owner_question_cleanup','По явному запросу пользователя удалить задачи из «Вопросов к ПО» покажи кнопку предпросмотра и подтверждения. Вызов не удаляет задачи.',{}),
  tool('tasks.create','Создать задачу в аналитике с конкретными требованиями.',{title:str,description:str,idempotency_key:idem},['title','description']),
  tool('questions.list','Посмотреть открытые вопросы к владельцу продукта.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
@@ -47,7 +48,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.create','questions.create']);
+const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create']);
 export function toolsForRole(role:AgentRole){
  return agentToolCatalog.filter(t=>role==='manager'?t.name!=='documentation.request_reset':!BA_DENIED.has(t.name));
 }
@@ -85,6 +86,7 @@ export async function agentSessionEffects(pool:Pick<Pool,'query'>,id:string){
  const rows=(await pool.query('SELECT tool,result,success,created_at FROM agent_tool_events WHERE session_id=$1 ORDER BY created_at,id',[id])).rows;
  const value=(name:string,key:string)=>rows.filter(r=>r.success&&r.tool===name).map(r=>r.result?.[key]).filter(Boolean).at(-1)||null;
  return {events:rows,created_document_id:value('documents.create','id'),created_task_id:value('tasks.create','id'),
+  owner_question_cleanup_requested:value('tasks.request_owner_question_cleanup','requires_user_confirmation')===true,
   documentation_reset_requested:value('documentation.request_reset','requires_user_confirmation')===true,
   import_job_id:value('documentation.import','import_job_id')||value('documentation.rebuild','import_job_id')||value('documentation.organize','import_job_id')};
 }
