@@ -5,6 +5,13 @@ const steps=proxyActivities<typeof activities>({
  startToCloseTimeout:'4 minutes',
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
+const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'>>({
+ startToCloseTimeout:'6 minutes',scheduleToCloseTimeout:'20 minutes',
+ retry:{maximumAttempts:2,initialInterval:'5 seconds'}
+});
+export async function processProjectManagerInbox(projectId:string,messageId:string):Promise<void>{
+ await inboxSteps.runProjectManagerInbox(projectId,messageId);
+}
 const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
 const deploymentSteps=proxyActivities<typeof activities>({startToCloseTimeout:'30 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
 export async function automaticDeployment(runId:string):Promise<void>{
