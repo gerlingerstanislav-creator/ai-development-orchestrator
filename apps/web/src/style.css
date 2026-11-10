@@ -1011,3 +1011,6 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .assistant-composer .agent-mention-menu button{display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;padding:7px 10px;border:0;border-radius:5px;background:transparent;text-align:left;cursor:pointer;color:inherit}
 .assistant-composer .agent-mention-menu button:hover,.assistant-composer .agent-mention-menu button:focus-visible{background:var(--hover,#edf2f7)}
 .assistant-composer .agent-mention-menu small{opacity:.65}
+
+.assistant-composer:has(.agent-mention-menu){flex-wrap:wrap}
+.assistant-composer .agent-mention-menu{order:-1}
