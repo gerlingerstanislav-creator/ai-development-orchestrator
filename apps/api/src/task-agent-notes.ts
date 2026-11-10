@@ -70,9 +70,9 @@ export async function resolveAgentQuestionsForReview(client:PoolClient,projectId
  return {remaining:0,requiresApproval:false};
 }
 /** Return bounded, addressed task comments as untrusted advisory context. */
-export async function taskNotesContext(pool:Pool,projectId:string,taskId:string,targetStage:string,limit=18){
+export async function taskNotesContext(pool:Pool,projectId:string,taskId:string,targetStage:string|null,limit=18){
  const results=await pool.query(
-  "SELECT author_stage,author_name,target_stage,kind,body,answer,status,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND (target_stage=$3 OR target_stage='all' OR (author_stage=$3 AND status='answered')) ORDER BY created_at DESC,id DESC LIMIT $4",
+  "SELECT author_stage,author_name,target_stage,kind,body,answer,status,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND ($3::text IS NULL OR target_stage=$3 OR target_stage='all' OR (author_stage=$3 AND status='answered')) ORDER BY created_at DESC,id DESC LIMIT $4",
   [projectId,taskId,targetStage,Math.min(30,Math.max(1,limit))]
  );
  return JSON.stringify(results.rows.reverse().map(r=>({author:r.author_name,stage:r.author_stage,kind:r.kind,target:r.target_stage,
