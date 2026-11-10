@@ -545,9 +545,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  function fail(e:unknown){if(e instanceof AuthExpiredError)return;setError(e instanceof Error?e.message:'Неизвестная ошибка');}
  async function loadProjects(){try{setProjects(await api('/projects'));setProjectsLoaded(true);}catch(e){fail(e);}}
  async function loadProject(id:string){
-  const deployment=await api<{mode:'skip'|'manual'}>('/projects/'+id+'/deployment/settings');
-  setDeploymentMode(deployment.mode);
   try{
+   const deployment=await api<{mode:'skip'|'manual'}>('/projects/'+id+'/deployment/settings');
+   setDeploymentMode(deployment.mode);
    const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
    setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
   }catch(e){fail(e);}
@@ -1227,7 +1227,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
   setMergeBusy(true);try{
-   const merged=await api<{deployment_stage?:string}>('/projects/'+selected.id+'/tasks/'+task.id+'/merge',{method:'POST'});
+   await api('/projects/'+selected.id+'/tasks/'+task.id+'/merge',{method:'POST'});
    await loadProject(selected.id);
    setMergeReport('PR слит. '+(deploymentMode==='skip'?'Выкладка пропущена согласно настройкам проекта.':'Задача передана на этап выкладки.'));
   }catch(e){fail(e);}finally{setMergeBusy(false);}
