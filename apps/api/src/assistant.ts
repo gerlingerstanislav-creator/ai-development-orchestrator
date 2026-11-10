@@ -478,7 +478,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
   const {mode}=z.object({mode:z.enum(['project','documentation']).default('project')}).parse(req.query);
-  return (await pool.query('SELECT id,role,body,reply_to,topic_id,created_task_id,created_document_id,created_at,documentation_reset_requested,owner_question_cleanup_requested FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at DESC,role ASC,id DESC LIMIT 100',[id,mode])).rows.reverse();
+  return (await pool.query('SELECT id,role,body,status,reply_to,topic_id,created_task_id,created_document_id,created_at,documentation_reset_requested,owner_question_cleanup_requested FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at DESC,role ASC,id DESC LIMIT 100',[id,mode])).rows.reverse();
  });
  app.get('/api/projects/:id/document-import/:jobId',async(req:any,reply)=>{
   const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);
