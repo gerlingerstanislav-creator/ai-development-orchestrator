@@ -69,7 +69,7 @@ test('documentation reset is previewed, project-scoped, one-time and removes onl
  const done=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:next.json().intent_id,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
  assert.equal(done.statusCode,200,done.body);
  assert.equal(done.json().deleted_pages,2);
- assert.equal((await db.query('SELECT count(*)::int n FROM documents WHERE project_id=$1',[project])).rows[0].n,9);
+ assert.equal((await db.query('SELECT count(*)::int n FROM documents WHERE project_id=$1',[project])).rows[0].n,1,'Only the existing top-level root remains; no template sections are recreated');
  assert.equal((await db.query('SELECT count(*)::int n FROM document_import_jobs WHERE project_id=$1',[project])).rows[0].n,0);
  assert.equal((await db.query('SELECT count(*)::int n FROM documents WHERE project_id=$1',[other])).rows[0].n,1);
  const replay=await app.inject({method:'POST',url:url+'/confirm',payload:{intent_id:next.json().intent_id,project_name:'Мой проект',confirmation_phrase:'УДАЛИТЬ ДОКУМЕНТАЦИЮ'}});
