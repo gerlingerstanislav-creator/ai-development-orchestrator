@@ -217,7 +217,7 @@ export async function startDevelopment(args:TaskRef){
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
   model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,projectRules:rules,relatedTasks:[],handoffContext:'Утверждённые знания:\n'+knowledge.documents+'\n\nРабочие комментарии:\n'+await taskNotesContext(pool,projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
+  title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskNotesContext(pool,projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
  await dispatch(job);
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -291,7 +291,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,projectRules:rules,testPlan,handoffContext:'Утверждённые знания:\n'+knowledge.documents+'\n\nРабочие комментарии:\n'+await taskNotesContext(pool,projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
+  title:task.title,description:task.description,projectRules:rules,testPlan,knowledgeContext:knowledge.documents,handoffContext:await taskNotesContext(pool,projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
