@@ -1,5 +1,6 @@
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
+import {runIterationPlanning} from './project-iterations.js';
 import pg from 'pg';
 import {randomUUID,createDecipheriv} from 'node:crypto';
 import {ApplicationFailure} from '@temporalio/common';
@@ -81,10 +82,13 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,stage));
  if(stage==='analysis')prompt='Ты СИСТЕМНЫЙ аналитик (SA). Тебе передана только согласованная постановка для технической проработки. Анализируй API, состояния, данные, зависимости и критерии реализации. Не создавай задачи и вопросы по будущему функционалу вне переданного пула. Технические противоречия возвращай на согласование BA; только блокирующие продуктовые решения направляй владельцу.\n\n'+prompt;
  prompt+='\n\nУтверждённые тематические знания (не изменяй требования без согласования):\n'+knowledge.documents+'\n\nПрименимые инструкции:\n'+knowledge.modules+'\n\nНакопленный опыт этапа:\n'+await agentMemoryContext(pool,projectId,stage);
+ return askRunnerAssistant(prompt,projectId,taskId,operation,ai);
+}
+async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000):Promise<string>{
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
   body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
-  signal:AbortSignal.timeout(110000)});
+  signal:AbortSignal.timeout(timeoutMs)});
  const data=await response.json().catch(()=>({})) as any;
  if(!response.ok||typeof data.message!=='string')throw Error(String(data.error||'Codex не вернул результат').slice(0,500));
  if(data.usage){
@@ -94,6 +98,19 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
    [randomUUID(),projectId,taskId,src,operation,ai.model,Number(u.input_tokens)||0,Number(u.cached_input_tokens)||0,Number(u.output_tokens)||0]);
  }
  return data.message;
+}
+export async function prepareIterationPlanDraft(runId:string){
+ await runIterationPlanning(pool,runId,async(prompt,projectId)=>{
+  const ai=(await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0];
+  if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
+  return askRunnerAssistant(prompt,projectId,null,'iteration_planning',ai,210000);
+ });
+}
+export async function failIterationPlanDraft(runId:string,message:string){
+ const result=await pool.query(`UPDATE iteration_planning_runs r SET status='failed',message=$2,updated_at=now()
+  FROM project_iterations i WHERE r.id=$1 AND r.iteration_id=i.id AND r.status IN ('queued','running')
+  RETURNING i.project_id`,[runId,message.slice(0,700)]);
+ if(result.rowCount)await event(result.rows[0].project_id,runId,'analysis','failed',message,'error');
 }
 async function prEvidence(projectId:string,taskId:string):Promise<{commitSha:string;patch:string;summary:string}>{
  const task=await pool.query('SELECT pr_number,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);

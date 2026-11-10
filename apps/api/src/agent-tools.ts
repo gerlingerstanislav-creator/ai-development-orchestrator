@@ -6,7 +6,7 @@ export const hashSecret=(text:string)=>createHash('sha256').update(text).digest(
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
  'tasks.list','tasks.read','tasks.request_owner_question_cleanup','questions.list','processes.list','memory.list','documentation.request_reset',
- 'knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
+ 'iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
  annotations:readOnlyTools.has(name)
@@ -17,6 +17,14 @@ const id=field('string','UUID'),str=field('string','Произвольный т�
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
+ tool('iterations.list','Найти итерации в разделе «План разработки».',{}),
+ tool('iterations.read','Прочитать объём итерации, ссылки на документы, текущие задачи и ревизии.',{iteration_id:id},['iteration_id']),
+ tool('iterations.save','По явной просьбе сохрани согласованное в обсуждении описание как черновик итерации. Для обновления передай ID и текущую ревизию. Сохраняй цель, границы, критерии готовности и исходные страницы.',
+  {iteration_id:id,expected_revision:field('integer','Текущая ревизия'),title:str,body:str,document_ids:{type:'array',items:id},idempotency_key:idem},['title','body']),
+ tool('iterations.prepare_plan','Передать согласованный объём системному аналитику. Запускает подготовку черновика с эпиками, задачами, тегами и зависимостями. Для создания задач владелец подтверждает предпросмотр.',
+  {iteration_id:id,request:field('string','Уточнение владельца к декомпозиции в границах согласованного объёма'),idempotency_key:idem},['iteration_id']),
+ tool('iterations.recommend_launch','Сохранить предлагаемый пакет до пяти задач в порядке запуска для выбора владельцем. Вызов не запускает разработку.',
+  {iteration_id:id,task_ids:{type:'array',items:id},idempotency_key:idem},['iteration_id','task_ids']),
  tool('documents.list','Показать дерево документации с ревизиями.',{}),
  tool('documents.read','Прочитать полную страницу и получить revision.',{document_id:id},['document_id']),
  tool('documents.search','Найти страницы по содержимому или названию.',{query:str},['query']),
@@ -48,7 +56,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create']);
+const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch']);
 export function toolsForRole(role:AgentRole){
  return agentToolCatalog.filter(t=>role==='manager'?t.name!=='documentation.request_reset':!BA_DENIED.has(t.name));
 }

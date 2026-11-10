@@ -5,6 +5,15 @@ const steps=proxyActivities<typeof activities>({
  startToCloseTimeout:'4 minutes',
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
+export async function prepareIterationPlan(runId:string):Promise<void>{
+ try{await steps.prepareIterationPlanDraft(runId);}
+ catch(error){
+  let cause=error;
+  while(cause instanceof Error&&cause.cause instanceof Error)cause=cause.cause;
+  await steps.failIterationPlanDraft(runId,cause instanceof Error?cause.message:String(cause));
+ }
+}
+
 export type CycleInput={projectId:string;taskId:string;runId:string;maxFixes:number};
 
 // Workflow history is durable. Secrets and Codex jobs live only in Activities.

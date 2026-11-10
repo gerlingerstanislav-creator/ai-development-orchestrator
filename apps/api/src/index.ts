@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import {findActiveProjectOperation,projectDeletionConfirmation} from './project-lifecycle.js';
 import {deploymentDecision} from './deployment-stage.js';
 import { registerAssistantRoutes } from './assistant.js';
+import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
@@ -562,11 +563,14 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const {approveAnalysis}=z.object({approveAnalysis:z.boolean().default(false)}).parse(req.body||{});
- const t=await pool.query('SELECT id,title,description,stage,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status,spec_version,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
+ const {approveAnalysis,iterationApproval}=z.object({approveAnalysis:z.boolean().default(false),
+  iterationApproval:z.object({id:z.string().uuid(),revision:z.number().int().positive()}).optional()}).parse(req.body||{});
+ const t=await pool.query('SELECT id,title,description,stage,type,iteration_id,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status,spec_version,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  const task=t.rows[0];
  const fromAnalysis=approveAnalysis&&task.stage==='analysis';
+ if(iterationApproval&&(task.iteration_id!==iterationApproval.id||task.type==='epic'))
+  return reply.code(409).send({error:'Задача не входит в выбранную итерацию'});
  if(fromAnalysis&&(task.analysis_state!=='ready_for_development'||task.spec_review_status!=='current'||(task.clarification_questions||[]).length))
   return reply.code(409).send({error:'Анализ ещё не завершён. Ответь на открытые вопросы в чате задачи и дождись проверки аналитика.'});
  if(!fromAnalysis&&(task.stage!=='development'||task.analysis_state!=='approved'))
@@ -624,12 +628,17 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const db=await pool.connect();
  try{
   await db.query('BEGIN');
+  if(iterationApproval){
+   const approved=await db.query('SELECT id FROM project_iterations WHERE project_id=$1 AND id=$2 AND revision=$3 AND approved_revision=revision FOR SHARE',
+    [id,iterationApproval.id,iterationApproval.revision]);
+   if(!approved.rowCount){await db.query('ROLLBACK');return reply.code(409).send({error:'Итерация изменилась после выбора задач.'});}
+  }
   if(!await acquireTaskOrchestration(db,id,taskId,runId,'task-cycle-'+runId,'development')){
    await db.query('ROLLBACK');
    return reply.code(409).send({error:'Для задачи уже выполняется цикл разработки, сверки требований или тестирования.'});
   }
-  const current=(await db.query("SELECT stage,analysis_state,spec_version,spec_review_status,clarification_questions,depends_on_task_id FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[id,taskId])).rows[0];
-  const ready=current&&current.stage===task.stage&&current.analysis_state===task.analysis_state&&current.spec_version===task.spec_version&&current.spec_review_status===task.spec_review_status&&current.depends_on_task_id===task.depends_on_task_id;
+  const current=(await db.query("SELECT stage,analysis_state,spec_version,spec_review_status,clarification_questions,depends_on_task_id,iteration_id FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[id,taskId])).rows[0];
+  const ready=current&&current.stage===task.stage&&current.analysis_state===task.analysis_state&&current.spec_version===task.spec_version&&current.spec_review_status===task.spec_review_status&&current.depends_on_task_id===task.depends_on_task_id&&(!iterationApproval||current.iteration_id===iterationApproval.id);
   if(!ready||fromAnalysis&&(current.clarification_questions||[]).length||await pendingAgentQuestions(db,id,taskId)){
    await db.query('ROLLBACK');
    return reply.code(409).send({error:'Состояние задачи изменилось. Обнови карточку и проверь вопросы аналитика.'});
@@ -1073,7 +1082,7 @@ const runningMergeProjects=new Map<string,string>();
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
- const [developments,imports,accessibleProjects,tests,merges,analyses]=await Promise.all([
+ const [developments,imports,accessibleProjects,tests,merges,analyses,iterationRuns]=await Promise.all([
   pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.title AS task_title,t.display_number,a.status,a.message,a.created_at,a.cycle_id
     FROM ai_task_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
     JOIN tasks t ON t.id=a.task_id
@@ -1086,7 +1095,11 @@ app.get('/api/background-processes',async(req:any)=>{
   pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId]),
   pool.query("SELECT t.id,t.project_id,t.message,t.created_at,p.name AS project_name FROM ai_test_runs t JOIN projects p ON p.id=t.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE t.status IN ('queued','running') ORDER BY t.created_at DESC LIMIT 50",[userId]),
   pool.query("SELECT j.id,j.project_id,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50",[userId]),
-  pool.query("SELECT r.id,r.project_id,r.task_id,r.message,r.created_at,t.title,p.name AS project_name FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id JOIN projects p ON p.id=r.project_id JOIN memberships m ON m.project_id=r.project_id AND m.user_id=$1 WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50",[userId])
+  pool.query("SELECT r.id,r.project_id,r.task_id,r.message,r.created_at,t.title,p.name AS project_name FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id JOIN projects p ON p.id=r.project_id JOIN memberships m ON m.project_id=r.project_id AND m.user_id=$1 WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50",[userId]),
+  pool.query(`SELECT r.id,r.status,r.message,r.created_at,i.id AS iteration_id,i.project_id,i.title,p.name AS project_name
+   FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id JOIN projects p ON p.id=i.project_id
+   JOIN memberships m ON m.project_id=i.project_id AND m.user_id=$1
+   WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50`,[userId])
  ]);
  const processes:BackgroundProcess[]=[];
  for(const row of developments.rows){
@@ -1150,6 +1163,11 @@ app.get('/api/background-processes',async(req:any)=>{
   if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // A Temporal review already appears within its development cycle.
   processes.push({id:'analysis:'+row.id,kind:'analysis',projectId:row.project_id,projectName:row.project_name,
    taskId:row.task_id,title:'Сверка требований · '+row.title,detail:row.message||'AI-аналитик работает',status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
+ }
+ for(const row of iterationRuns.rows){
+  processes.push({id:'iteration-plan:'+row.id,kind:'analysis',projectId:row.project_id,projectName:row.project_name,
+   title:'План задач · '+row.title,detail:row.message,status:row.status,createdAt:row.created_at,
+   url:'/projects/'+row.project_id+'/docs/plan/'+row.iteration_id});
  }
  for(const row of merges.rows){
   processes.push({id:'merge:'+row.id,kind:'merge',projectId:row.project_id,projectName:row.project_name,
@@ -1597,14 +1615,19 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const [imports,developments,tests,merges,analyses]=await Promise.all([
+ const [imports,developments,tests,merges,analyses,iterationRuns]=await Promise.all([
   pool.query("SELECT j.id,j.status,j.message,j.source_url,j.request_text,j.source_file_count,j.analyzed_chunks,j.total_chunks,j.saved_documents,j.created_at,j.updated_at,j.result,j.draft_result IS NOT NULL AS has_draft,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id) AS topic_total,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id AND tp.status IN ('complete','conflict')) AS topic_completed FROM document_import_jobs j WHERE j.project_id=$1 ORDER BY j.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT id,status,message,created_at,finished_at,results FROM merge_process_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.completed_at,r.spec_version,t.display_number,t.title AS task_title FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
+  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.completed_at,r.spec_version,t.display_number,t.title AS task_title FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
+  pool.query(`SELECT r.id,r.status,r.message,r.created_at,r.updated_at,r.plan_id,i.id AS iteration_id,i.title
+   FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id
+   WHERE i.project_id=$1 ORDER BY r.created_at DESC LIMIT 70`,[id])
  ]);
  const processes:any[]=[
+  ...iterationRuns.rows.map(row=>({id:row.id,kind:'analysis',title:'План задач · '+row.title,status:row.status,
+   detail:row.message,createdAt:row.created_at,updatedAt:row.updated_at,iterationId:row.iteration_id,result:{message:row.message}})),
   ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:(r.source_url?'Анализ материалов · '+r.source_url.split('/').slice(-1)[0]:'Подготовка ТЗ'),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,requestText:r.request_text,progress:{completed:r.analyzed_chunks,total:r.total_chunks},topicProgress:{completed:r.topic_completed,total:r.topic_total},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
   ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
  ];
@@ -1716,7 +1739,14 @@ app.post('/api/connections',async(req,reply)=>{
 });
 app.get('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT c.id,c.name,c.provider FROM connections c JOIN project_connections pc ON pc.connection_id=c.id WHERE pc.project_id=$1 AND c.owner_id=$2',[id,uid(req)])).rows;});
 app.post('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;const {connectionId}=parse(z.object({connectionId:z.string().uuid()}),req.body);const r=await pool.query('INSERT INTO project_connections(project_id,connection_id) SELECT $1,id FROM connections WHERE id=$2 AND owner_id=$3 ON CONFLICT DO NOTHING RETURNING connection_id',[id,connectionId,uid(req)]);if(!r.rowCount)return reply.code(400).send({error:'Подключение не найдено или уже добавлено'});return {ok:true};});
-registerAgentToolRoutes(app,{pool,access,requireAdmin,startDocumentationWorkflow:async jobId=>{
+async function startIterationPlanning(runId:string){
+ try{
+  const client=await temporal();
+  await client.workflow.start('prepareIterationPlan',{taskQueue:'agent-pipeline',workflowId:'iteration-plan-'+runId,
+   workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
+ }catch(error){if((error as Error)?.name!=='WorkflowExecutionAlreadyStartedError')throw error;}
+}
+registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,startDocumentationWorkflow:async jobId=>{
  const client=await temporal();
  await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
 }});
@@ -1730,6 +1760,7 @@ registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
+registerProjectIterationRoutes(app,{pool,uid,access,requireAdmin,startPlanning:startIterationPlanning});
 registerBusinessAnalystHandoff(app,{pool,uid,access});
 registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
@@ -1830,5 +1861,5 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});

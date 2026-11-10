@@ -21,9 +21,10 @@ function redactArgs(args:Record<string,unknown>){
 export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
- startDocumentationWorkflow:(jobId:string)=>Promise<void>
+ startDocumentationWorkflow:(jobId:string)=>Promise<void>;
+ startIterationPlanning?:(runId:string)=>Promise<void>
 }){
- const {pool,access,requireAdmin,startDocumentationWorkflow}=deps;
+ const {pool,access,requireAdmin,startDocumentationWorkflow,startIterationPlanning}=deps;
  async function startQueuedJob(jobId:string){
   const row=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0];
   if(!row)throw Object.assign(Error('Процесс не найден'),{statusCode:404});
@@ -61,6 +62,12 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    for(const job of pending.rows){
     try{await startQueuedJob(job.id);}
     catch(error){app.log.error({error,jobId:job.id},'Could not recover durable agent workflow start');}
+   }
+   if(startIterationPlanning){
+    const iterations=await pool.query("SELECT id FROM iteration_planning_runs WHERE status='queued' ORDER BY created_at LIMIT 15");
+    for(const run of iterations.rows){
+     await startIterationPlanning(run.id).catch(error=>app.log.error({error,runId:run.id},'Could not dispatch iteration planning'));
+    }
    }
   }finally{recovering=false;}
  }
@@ -118,6 +125,8 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
      const result=previous.rows[0].result;
      if(name.startsWith('documentation.')&&result?.import_job_id)
       return {result:{...result,status:await startQueuedJob(result.import_job_id)},cached:true};
+     if(startIterationPlanning&&name==='iterations.prepare_plan'&&result?.planning_run_id&&result?.status==='queued')
+      await startIterationPlanning(result.planning_run_id).catch(error=>req.log.error({error},'Iteration planning will retry dispatch'));
      return {result,cached:true};
     }
    }
@@ -130,6 +139,9 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
     const state=await startQueuedJob((result as any).import_job_id);
     return {result:{...(result as object),status:state}};
    }
+   const planning=result as {planning_run_id?:string;status?:string};
+   if(startIterationPlanning&&name==='iterations.prepare_plan'&&planning.planning_run_id&&planning.status==='queued')
+    await startIterationPlanning(planning.planning_run_id).catch(error=>req.log.error({error},'Iteration planning will retry dispatch'));
    return {result};
   }catch(error){
    if(txOpen&&connection)await connection.query('ROLLBACK').catch(()=>{});

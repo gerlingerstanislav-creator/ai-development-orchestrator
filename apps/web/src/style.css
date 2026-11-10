@@ -1099,3 +1099,44 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .chat-agent-glyph{width:36px;height:36px;position:relative;display:grid;place-items:center}
 .chat-agent-glyph svg{width:32px;height:32px}
 .chat-agent-glyph>span{position:absolute;top:11px;left:0;right:1px;font-size:10px;line-height:1;font-weight:800;letter-spacing:-.2px;text-align:center;pointer-events:none}
+
+/* Iteration planning in documentation and on the existing task board. */
+.docs-plan-link{display:flex;align-items:center;gap:7px;padding:7px 6px;border-radius:6px;color:#43516d;text-decoration:none;font-size:13px;font-weight:600}
+.docs-plan-link:hover,.docs-plan-link.selected{background:#edf0ff;color:#4656be}
+.iteration-workspace{min-height:0;overflow:auto;padding:16px;display:grid;align-content:start;gap:12px}
+.iteration-header,.iteration-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.iteration-header{justify-content:space-between}
+.iteration-header h2,.iteration-header p,.iteration-section h3,.iteration-section h4{margin:0}
+.iteration-header h2{overflow-wrap:anywhere}
+.iteration-back{display:flex;gap:4px;align-items:center;padding:0;margin-bottom:6px}
+.iteration-list,.iteration-editor{display:grid;gap:8px}
+.iteration-list-item{justify-content:space-between;text-align:left}
+.iteration-list-item span,.iteration-task small{color:#52617a;font-size:12px}
+.iteration-editor label,.task-planning-fields label{margin:0;gap:4px}
+.iteration-description{overflow-wrap:anywhere}
+.iteration-doc-picker{max-height:185px;overflow:auto;padding:6px}
+.iteration-doc-picker label{display:flex;flex-direction:row;align-items:center;gap:6px}
+.iteration-doc-picker input,.iteration-task input{width:auto;margin:0}
+.iteration-links{margin:0;padding-left:18px}
+.iteration-section{display:grid;gap:8px;border-top:1px solid #e8ebf1;padding-top:10px}
+.iteration-section h3{display:flex;align-items:center;gap:6px;font-size:15px}
+.iteration-section p{margin:0}
+.iteration-preview{display:grid;gap:6px;background:#f7f8fc;border:1px solid #e8ebf1;border-radius:8px;padding:10px}
+.iteration-preview details{overflow-wrap:anywhere}
+.iteration-preview summary{cursor:pointer}
+.iteration-preview p{padding:5px 0}
+.iteration-task{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:6px 0;border-bottom:1px solid #edf0f5;font-size:13px}
+.iteration-task a,.iteration-links a{color:#4d5bd4}
+.iteration-child{padding-left:14px}
+.planning-filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap;flex:1;min-width:0}
+.planning-filters select{width:auto;max-width:180px;padding:7px 9px;font-size:12px}
+.task-planning-labels{display:flex;gap:3px;flex-wrap:wrap;margin:3px 0}
+.task-planning-labels span{border-radius:4px;padding:2px 5px;background:#f1f3f8;color:#53627b;font-size:10px;overflow-wrap:anywhere}
+.task-planning-labels .task-iteration-label{background:#edf0ff;color:#4656be}
+.task-planning-fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;align-items:end;gap:6px;margin:8px 0}
+.task-planning-fields input,.task-planning-fields select,.task-planning-fields button{font-size:12px;padding:6px 8px}
+.task-planning-fields .error{grid-column:1/-1;margin:0}
+@media(max-width:800px){
+ .iteration-workspace{padding:10px}
+ .task-planning-fields{grid-template-columns:1fr}
+}

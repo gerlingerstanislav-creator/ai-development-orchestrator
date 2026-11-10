@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
+import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
@@ -49,6 +50,14 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  const projectId=session.project_id,actorId=session.actor_id;
  const params=(args&&typeof args==='object'&&!Array.isArray(args)?args:{}) as Record<string,unknown>;
  switch(name){
+ case 'iterations.list':return listIterations(pool,projectId);
+ case 'iterations.read':{
+  const {iteration_id}=z.object({iteration_id:uuid}).parse(params);
+  return readIteration(pool,projectId,iteration_id);
+ }
+ case 'iterations.save':return saveIteration(pool,projectId,params);
+ case 'iterations.prepare_plan':return queueIterationPlanning(pool,projectId,actorId,params);
+ case 'iterations.recommend_launch':return recommendIterationLaunch(pool,projectId,params);
  case 'project.context':{
   const [p,stages,rules,github]=await Promise.all([
    pool.query('SELECT id,name,description FROM projects WHERE id=$1',[projectId]),
