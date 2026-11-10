@@ -126,7 +126,12 @@ export async function initProjectTeamSchema(pool:Pool){
     await client.query("INSERT INTO agent_instruction_history(id,project_id,role,previous_name,previous_instructions,next_name,next_instructions) VALUES($1,$2,'devops',$3,$4,$5,$6)",
      [randomUUID(),row.project_id,specialist.rows[0].agent_name,specialist.rows[0].agent_instructions,name,merged]);
    }
-   await client.query("UPDATE workflow_stages SET agent_name=$2,agent_instructions=$3 WHERE project_id=$1 AND stage='deployment'",[row.project_id,name,merged]);
+   if(stage.rows[0].agent_name!==name||stage.rows[0].agent_instructions!==merged){
+    // Keep the original stage name and instructions discoverable in history.
+    await client.query("INSERT INTO agent_instruction_history(id,project_id,role,previous_name,previous_instructions,next_name,next_instructions) VALUES($1,$2,'deployment',$3,$4,$5,$6)",
+     [randomUUID(),row.project_id,stage.rows[0].agent_name,stage.rows[0].agent_instructions,name,merged]);
+    await client.query("UPDATE workflow_stages SET agent_name=$2,agent_instructions=$3 WHERE project_id=$1 AND stage='deployment'",[row.project_id,name,merged]);
+   }
    await client.query('COMMIT');
   }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
  }
