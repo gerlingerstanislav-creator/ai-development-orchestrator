@@ -3,7 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
-import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager} from './project-iterations.js';
+import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
 import {taskConversationEvidence} from './task-agent-notes.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
@@ -82,6 +82,10 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(!updated.rowCount)throw rejected('Тема не найдена',404);
   return {topic:updated.rows[0]};
  }
+ case 'iterations.record_decision':{
+  const {iteration_id,question,answer}=z.object({iteration_id:uuid,question:z.string().trim().min(3).max(2000),answer:z.string().trim().min(3).max(5000)}).parse(params);
+  return recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
+ }
  case 'iterations.approve':{
   const {iteration_id,expected_revision}=z.object({iteration_id:uuid,expected_revision:z.number().int().positive()}).parse(params);
   return approveIterationViaManager(pool,projectId,iteration_id,expected_revision);
@@ -92,10 +96,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
  case 'iterations.publish_plan':{
   const {iteration_id,plan_id,preview_revision,selected_changes}=z.object({iteration_id:uuid,plan_id:uuid,preview_revision:z.string().length(64),selected_changes:z.array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,79}$/)).max(95)}).parse(params);
-  // executeAgentTool receives a transaction-capable pool/client. The publication
-  // helper owns its own transaction and must not run inside the agent-tool transaction.
-  // API orchestration delegates this operation via a dedicated post-commit handler.
-  throw rejected('Публикация выполняется через отдельное подтверждение в карточке итерации. Используй iterations.preview_plan и предоставь ссылку на предпросмотр.');
+  return publishIterationPlanViaManager(pool as PoolClient,projectId,iteration_id,plan_id,actorId,preview_revision,selected_changes);
  }
  case 'iterations.list':return listIterations(pool,projectId);
  case 'iterations.read':{
