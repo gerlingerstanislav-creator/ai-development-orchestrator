@@ -318,7 +318,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   async function applyOwnerAnswer(config:Awaited<ReturnType<typeof configuration>>){
    if(!questionId||!documentId)throw Error('Отсутствует связанный вопрос или страница ТЗ');
    const found=await pool.query(
-    "SELECT q.id,q.question,q.answer,q.status,d.title,d.body FROM documentation_questions q JOIN documents d ON d.id=q.document_id AND d.project_id=q.project_id WHERE q.id=$1 AND q.project_id=$2 AND q.document_id=$3",
+    "SELECT q.id,q.description AS question,q.question_answer AS answer,q.question_status AS status,d.title,d.body FROM tasks q JOIN documents d ON d.id=q.document_id AND d.project_id=q.project_id WHERE q.id=$1 AND q.project_id=$2 AND q.document_id=$3 AND q.type='question'",
     [questionId,id,documentId]);
    if(!found.rowCount)throw Error('Связанный вопрос к ТЗ не найден');
    const current=found.rows[0];
@@ -345,14 +345,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     await client.query('BEGIN');
     const liveJob=await client.query("SELECT id FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='running' FOR UPDATE",[jobId,id]);
     if(!liveJob.rowCount){await client.query('ROLLBACK');return;}
-    const q=(await client.query("SELECT status,answer,question FROM documentation_questions WHERE id=$1 AND project_id=$2 AND document_id=$3 FOR UPDATE",[questionId,id,documentId])).rows[0];
+    const q=(await client.query("SELECT question_status AS status,question_answer AS answer,description AS question FROM tasks WHERE id=$1 AND project_id=$2 AND document_id=$3 AND type='question' FOR UPDATE",[questionId,id,documentId])).rows[0];
     if(!q||q.status!=='answered'){await client.query('ROLLBACK');if(q?.status==='resolved')return;throw Error('Связанный вопрос больше не ожидает обновления');}
     const d=(await client.query("SELECT body,system_key FROM documents WHERE project_id=$1 AND id=$2 FOR UPDATE",[id,documentId])).rows[0];
     if(!d||d.system_key)throw Error('Страница ТЗ недоступна для обновления');
     const addition='\n\n---\n\n### Решение владельца продукта\n\n**Вопрос:** '+q.question+'\n\n'+parsed.addition;
     if(d.body.length+addition.length>100000)throw Error('Размер страницы ТЗ превышает допустимый лимит; нельзя безопасно дописать решение');
     await client.query('UPDATE documents SET body=body || $2,updated_at=now() WHERE id=$1',[documentId,addition]);
-    await client.query("UPDATE documentation_questions SET status='resolved' WHERE id=$1 AND status='answered'",[questionId]);
+    await client.query("UPDATE tasks SET question_status='resolved',updated_at=now() WHERE id=$1 AND type='question' AND question_status='answered'",[questionId]);
     const result={message:parsed.summary,created_task_id:null,created_document_id:documentId,changed_documents:1};
     await store(id,null,actorId,'user',message,null,null,mode,client);
     await store(id,null,null,'assistant',result.message,null,documentId,mode,client);
@@ -465,7 +465,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      }
      await store(id,null,actorId,'user',input.message,null,null,mode,client);
      await store(id,null,null,'assistant',answer,null,resultSaved.created_document_id,mode,client);
-     if(questionId)await client.query("UPDATE documentation_questions SET status='resolved' WHERE id=$1 AND project_id=$2 AND document_id=$3 AND status='answered'",[questionId,id,documentId]);
+     if(questionId)await client.query("UPDATE tasks SET question_status='resolved',updated_at=now() WHERE id=$1 AND project_id=$2 AND document_id=$3 AND type='question' AND question_status='answered'",[questionId,id,documentId]);
      await client.query("UPDATE document_import_jobs SET status='completed',message='Анализ завершён',result=$2,saved_documents=$3,updated_at=now() WHERE id=$1",[jobId,JSON.stringify(resultSaved),prepared.length]);
      await client.query('COMMIT');
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
@@ -509,7 +509,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
  app.get('/api/projects/:id/documentation/questions',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
-  return (await pool.query("SELECT q.id,q.topic_key,q.question,q.status,q.answer,q.document_id,d.title AS document_title,q.created_at FROM documentation_questions q JOIN documents d ON d.id=q.document_id WHERE q.project_id=$1 AND q.status IN ('open','answered') ORDER BY q.created_at,q.id",[id])).rows;
+  return (await pool.query("SELECT q.id,q.question_topic AS topic_key,q.description AS question,q.question_status AS status,q.question_answer AS answer,q.document_id,d.title AS document_title,q.created_at FROM tasks q JOIN documents d ON d.id=q.document_id WHERE q.project_id=$1 AND q.type='question' AND q.question_status IN ('open','answered') ORDER BY q.created_at,q.id",[id])).rows;
  });
  app.post('/api/projects/:id/documentation/questions/:questionId/answer',async(req:any,reply)=>{
   const {id,questionId}=z.object({id:z.string().uuid(),questionId:z.string().uuid()}).parse(req.params);
@@ -518,13 +518,13 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const jobId=randomUUID(),client=await pool.connect();
   try{
    await client.query('BEGIN');
-   const q=await client.query("SELECT document_id,question FROM documentation_questions WHERE id=$1 AND project_id=$2 AND status='open' FOR UPDATE",[questionId,id]);
+   const q=await client.query("SELECT document_id,description AS question FROM tasks WHERE id=$1 AND project_id=$2 AND type='question' AND question_status='open' FOR UPDATE",[questionId,id]);
    if(!q.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос уже обработан'});}
    const row=q.rows[0];
    const inserted=await client.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,request_text,source_key,analyst_input) VALUES($1,$2,$3,'running','Обновление ТЗ по ответу владельца',$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id",
     [jobId,id,uid(req),'Ответ владельца продукта на вопрос: '+row.question+'\n\nОтвет: '+answer,'po-answer:'+questionId,JSON.stringify({location:null,attachments:[],mode:'documentation',documentId:row.document_id,questionId})]);
    if(!inserted.rowCount){await client.query('ROLLBACK');return reply.code(409).send({error:'Аналитик уже выполняет другой процесс'});}
-   await client.query("UPDATE documentation_questions SET status='answered',answer=$2,answered_at=now() WHERE id=$1",[questionId,answer]);
+   await client.query("UPDATE tasks SET question_status='answered',question_answer=$2,question_answered_at=now(),updated_at=now() WHERE id=$1 AND type='question'",[questionId,answer]);
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   try{await startDocumentationWorkflow(jobId);}
