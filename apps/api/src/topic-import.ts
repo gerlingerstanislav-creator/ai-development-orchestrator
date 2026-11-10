@@ -194,8 +194,9 @@ async function diversifyCollapsedTopics(args:TopicImportArgs,classified:Classifi
   // All new assignments appear together; on crash a retry cannot see a half-remapped map.
   for(const fragment of pending){
    const topic=assignments.get(fragment.index)!;
+   const others=fragment.topics.filter(t=>t.key!==oldKey);
    await client.query('UPDATE document_import_fragments SET topics=$3 WHERE job_id=$1 AND fragment_index=$2',
-    [job.id,fragment.index,JSON.stringify([topic])]);
+    [job.id,fragment.index,JSON.stringify([...others,topic])]);
   }
   if(cursor>0){
    if(!persisted?.page_id)throw Error('Сохранённая часть темы не имеет связанной страницы');
@@ -222,7 +223,7 @@ async function diversifyCollapsedTopics(args:TopicImportArgs,classified:Classifi
   }
   await client.query('COMMIT');
  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
- for(const fragment of pending)fragment.topics=[assignments.get(fragment.index)!];
+ for(const fragment of pending)fragment.topics=[...fragment.topics.filter(t=>t.key!==oldKey),assignments.get(fragment.index)!];
  await progress('remapped','Большая тема разделена на '+new Set([...assignments.values()].map(t=>t.key)).size+' предметных разделов. Уже сохранённые части и вопросы сохранены.');
 }
 
@@ -301,6 +302,16 @@ export async function importByTopics(args:TopicImportArgs){
   await pool.query('UPDATE document_import_jobs SET analyzed_chunks=$2 WHERE id=$1',[jobId,fragment.index]);
  }
  await diversifyCollapsedTopics(args,classified,sourceName,location);
+ // A pathological oversized topic can coexist with other topics. Split it as
+ // well when a single page would require seven or more synthesis portions.
+ const counts=new Map<string,ClassifiedFragment[]>();
+ for(const fragment of classified)for(const topic of fragment.topics){
+  const bucket=counts.get(topic.key)||[];bucket.push(fragment);counts.set(topic.key,bucket);
+ }
+ for(const items of counts.values()){
+  if(items.length>=18&&new Set(items.map(x=>x.path)).size>=3&&splitBatches(items).length>=7)
+   await diversifyCollapsedTopics(args,items,sourceName,location);
+ }
  // Remapping may introduce new stable keys after the initial classifier pass.
  for(const fragment of classified)for(const topic of fragment.topics)knownTopics.set(topic.key,knownTopics.get(topic.key)||topic.title);
  const groups=new Map<string,ClassifiedFragment[]>();
