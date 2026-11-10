@@ -1886,6 +1886,10 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
  workerAuthorization:async(actorId,email)=>'Bearer '+await new SignJWT({email}).setProtectedHeader({alg:'HS256'})
   .setSubject(actorId).setIssuedAt().setExpirationTime('2m').sign(jwtKey),
  recoverTask,
+ stopManagerWorkflow:async messageId=>{
+  const client=await temporal();
+  await client.workflow.getHandle('manager-msg-'+messageId).cancel();
+ },
  startManagerWorkflow:async({projectId,taskId,messageId})=>{
   const client=await temporal();
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
