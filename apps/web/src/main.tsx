@@ -1,8 +1,9 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
+import {ProjectTeam} from './ProjectTeam.js';
 import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
@@ -189,7 +190,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
 }
-type ProjectSection='overview'|'tasks'|'docs'|'qa'|'processes'|'rules'|'settings';
+type ProjectSection='overview'|'tasks'|'docs'|'qa'|'processes'|'team'|'rules'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function parseAppRoute(pathname:string):AppRoute{
@@ -199,7 +200,7 @@ function parseAppRoute(pathname:string):AppRoute{
  if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
   const projectId=parts[1];
   if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
-  if(parts.length===3&&['overview','tasks','docs','qa','processes','rules','settings'].includes(parts[2]))
+  if(parts.length===3&&['overview','tasks','docs','qa','processes','team','rules','settings'].includes(parts[2]))
    return {kind:'project',projectId,section:parts[2] as ProjectSection};
   if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
    return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
@@ -1407,7 +1408,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <div className="sidebar-nav">
   {selected?<><div className="sidebar-label">ПРОЕКТ</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['rules','Правила',FileText],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
   </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
   </div>
   <div className="sidebar-bottom">
@@ -1416,7 +1417,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
   </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':section==='rules'?'Правила':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
     <div className="quota-popover" role="tooltip">
@@ -1663,6 +1664,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </section>
  </div>}
  {section==='qa'&&<QaPanel projectId={selected.id} api={api} onError={fail}/>}
+ {section==='team'&&<ProjectTeam projectId={selected.id} request={api}/>}
  {section==='settings'&&<section className="panel workflow-settings-panel">
   <div className="row-line">
    <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы настроить исполнителя, режим работы и инструкции.</p></div>
