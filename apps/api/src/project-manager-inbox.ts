@@ -126,7 +126,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
-  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize')",[projectId,session.id]);
+  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','discussions.open')",[projectId,session.id]);
   const seen=new Set<string>();
   watchers=toolEvents.rows.flatMap(row=>{
    const kind:ProjectManagerWatch['kind']=row.tool==='iterations.prepare_plan'?'iteration_plan':'document_import';
@@ -135,13 +135,16 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    seen.add(id);
    return [{projectId,processId:id,kind}];
   });
+  const openedTopic=toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string');
+  const effectiveTopic=turn.topic_id||openedTopic||null;
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
    const finished=await client.query("UPDATE assistant_messages SET status='completed' WHERE id=$1 AND status='processing' RETURNING id",[messageId]);
    if(finished.rowCount){
+    if(effectiveTopic)await client.query("UPDATE assistant_messages SET topic_id=$2 WHERE id=$1",[messageId,effectiveTopic]);
     await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,created_task_id,created_document_id,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5,$6,$7,$8)",
-     [randomUUID(),projectId,data.message,turn.topic_id||null,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
+     [randomUUID(),projectId,data.message,effectiveTopic,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
    }
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
