@@ -4,6 +4,7 @@ import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,Lay
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {KnowledgeInstructions} from './KnowledgeInstructions.js';
+import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
@@ -1572,6 +1573,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <label>Теги через запятую<input defaultValue={knowledgeMeta.tags.join(', ')} onBlur={e=>setKnowledgeMeta({...knowledgeMeta,tags:e.target.value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,30)})}/></label>
        <button className="secondary" disabled={docBusy} onClick={()=>void saveKnowledgeMetadata()}>Сохранить метаданные</button>
       </div>
+      {selected&&<KnowledgeTraceability projectId={selected.id} documentId={doc.id} tasks={tasks} request={api}/>}
       <h4>Связанные документы</h4>
       {knowledgeRelated.map(link=><div className="knowledge-link" key={link.id}>
        <span>{link.relation}: </span><a href={selected?projectUrl(selected.id,'docs')+'/'+link.related_document_id:'#'} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+link.related_document_id)}>{link.title}</a>
