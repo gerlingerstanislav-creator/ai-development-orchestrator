@@ -1228,8 +1228,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
  function logout(){void fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}).catch(()=>{});sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setProjectsLoaded(false);setLoadedProjectId(null);setCodex(null);navigate('/projects',true);}
+ function docTreeMatches(d:Doc):boolean {const q=docSearch.trim().toLowerCase();return !q||d.title.toLowerCase().includes(q)||docs.some(child=>child.parent_id===d.id&&docTreeMatches(child));}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
-  return docs.filter(d=>d.parent_id===parentId&&(!docSearch.trim()||d.title.toLowerCase().includes(docSearch.trim().toLowerCase())||docs.some(child=>child.parent_id===d.id&&child.title.toLowerCase().includes(docSearch.trim().toLowerCase())))).sort((a,b)=>parentId===null?(['spec','architecture','operations','design','research'].indexOf(a.system_key||'')-['spec','architecture','operations','design','research'].indexOf(b.system_key||'')):a.title.localeCompare(b.title,'ru')).map(d=>{
+  return docs.filter(d=>d.parent_id===parentId&&docTreeMatches(d)).sort((a,b)=>parentId===null?(['spec','architecture','operations','design','research'].indexOf(a.system_key||'')-['spec','architecture','operations','design','research'].indexOf(b.system_key||'')):a.title.localeCompare(b.title,'ru')).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
    return <div key={d.id}>
     <div className="doc-node" style={{paddingLeft:8+Math.min(depth,8)*18}}>
@@ -1553,7 +1554,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <option value="approved">Утверждён</option><option value="draft">Черновик</option><option value="review">На согласовании</option><option value="obsolete">Устарел</option>
        </select></label>
        <label>Краткое описание<input value={knowledgeMeta.summary} maxLength={1500} onChange={e=>setKnowledgeMeta({...knowledgeMeta,summary:e.target.value})} placeholder="Что агент найдёт в документе"/></label>
-       <label>Теги через запятую<input value={knowledgeMeta.tags.join(', ')} onChange={e=>setKnowledgeMeta({...knowledgeMeta,tags:e.target.value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,30)})}/></label>
+       <label>Теги через запятую<input defaultValue={knowledgeMeta.tags.join(', ')} onBlur={e=>setKnowledgeMeta({...knowledgeMeta,tags:e.target.value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,30)})}/></label>
        <button className="secondary" disabled={docBusy} onClick={()=>void saveKnowledgeMetadata()}>Сохранить метаданные</button>
       </div>
       <h4>Связанные документы</h4>
