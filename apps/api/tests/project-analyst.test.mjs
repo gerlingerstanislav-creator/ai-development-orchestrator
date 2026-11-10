@@ -14,7 +14,8 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  t.after(()=>app.close());
  await db.query(String.raw`
   CREATE TEMP TABLE projects (id uuid, name text, description text);
-  CREATE TEMP TABLE tasks (id uuid,project_id uuid,title text,description text,type text,stage text,analysis_state text,clarification_questions jsonb,related_task_ids jsonb,depends_on_task_id uuid,dependency_source text,created_at timestamptz DEFAULT now());
+  CREATE TEMP TABLE tasks (id uuid PRIMARY KEY,project_id uuid,title text,description text,type text,stage text,position int DEFAULT 0,analysis_state text,clarification_questions jsonb,related_task_ids jsonb,depends_on_task_id uuid,dependency_source text,document_id uuid,question_key text,question_topic text,question_status text,question_answer text,question_answered_at timestamptz,question_job_id uuid,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
+  CREATE UNIQUE INDEX ON tasks(project_id,document_id,question_key) WHERE type='question';
   CREATE TEMP TABLE task_events (id uuid,task_id uuid,actor_id uuid,event text,detail text);
   CREATE TEMP TABLE project_git_repositories (project_id uuid,repository text,default_branch text,target_branch text);
   CREATE TEMP TABLE assistant_usage (id uuid,project_id uuid,actor_id uuid);
@@ -35,7 +36,6 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   CREATE TEMP TABLE document_import_fragments (job_id uuid,fragment_index int,file_path text,heading text,content_sha text,notes text,topics jsonb,exclusion_reason text,PRIMARY KEY(job_id,fragment_index));
   CREATE TEMP TABLE document_import_topics (job_id uuid,topic_key text,title text,status text DEFAULT 'pending',cursor int DEFAULT 0,page_id uuid,draft_body text DEFAULT '',source_refs jsonb DEFAULT '[]'::jsonb,review_suggestion text,rebuild_questions jsonb NOT NULL DEFAULT '[]'::jsonb,updated_at timestamptz DEFAULT now(),PRIMARY KEY(job_id,topic_key));
   CREATE TEMP TABLE document_import_proposals (id uuid,project_id uuid,job_id uuid,topic_key text,document_id uuid,title text,proposed_body text,base_hash text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),decided_at timestamptz,UNIQUE(job_id,topic_key));
-  CREATE TEMP TABLE documentation_questions (id uuid,project_id uuid,job_id uuid,topic_key text,question_key text,document_id uuid,question text,answer text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),answered_at timestamptz,UNIQUE(project_id,document_id,question_key));
  `.replaceAll('\\`','`'));
  const pool={query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})};
  const projectId=randomUUID(),actorId=randomUUID(),rootId=randomUUID();
@@ -119,7 +119,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
    })]);
   return jobId;
  };
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0);
  const attachments=[{name:'coffee.md',body:'# Предзаказ\nПокупатель оформляет заказ.'},{name:'barista.md',body:'# Выдача заказа\nБариста выдаёт заказ.'}];
  failOnce=true;
  const jobId=await queueJob({message:'Составь ТЗ по темам',attachments,sourceKey:'attachments:coffee-source'});
@@ -152,7 +152,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(organized.find(x=>x.id===pageId).id,pageId,'Document ID survives reorganization');
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'structure:%'")).rows[0].n,1);
  assert.equal(organized[0].parent_id,organized[1].parent_id,'Related pages are grouped under the same navigation node');
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0);
  const checkpointCalls=modelCalls;
  await service.runDocumentationJob(jobId);
  assert.equal(modelCalls,checkpointCalls,'Completed jobs must not replay');
@@ -162,9 +162,9 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  const answered=await app.inject({method:'POST',url:'/api/projects/'+projectId+'/documentation/questions/'+questions[0].id+'/answer',payload:{answer:'Оплата при получении'}});
  assert.equal(answered.statusCode,202,answered.body);
  await service.runDocumentationJob(answered.json().import_job_id);
- assert.equal((await db.query("SELECT status FROM documentation_questions WHERE id=$1",[questions[0].id])).rows[0].status,'resolved');
+ assert.equal((await db.query("SELECT question_status AS status FROM tasks WHERE id=$1",[questions[0].id])).rows[0].status,'resolved');
  assert.match((await db.query('SELECT body FROM documents WHERE id=$1',[pageId])).rows[0].body,/оплачивает его при получении/);
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0,'Documentation questions never create development tasks');
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0,'Documentation questions never create development tasks');
 
  // User edits an imported page. Reimport the same named sources and preserve it.
  await db.query("UPDATE documents SET body='Ручная правка владельца',updated_at=now() WHERE id=$1",[pageId]);
@@ -225,8 +225,8 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   assert.equal(current.parent_id,oldArchive.id,'Previous pages are moved to Research after successful rewrite');
   assert.match(current.import_source,/^archived-topic:/);
  }
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0,'Rebuilding does not launch development');
- assert.equal((await db.query("SELECT count(*)::int n FROM documentation_questions WHERE job_id=$1",[rewriteId])).rows[0].n,2,
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0,'Rebuilding does not launch development');
+ assert.equal((await db.query("SELECT count(*)::int n FROM tasks WHERE type='question' AND question_job_id=$1",[rewriteId])).rows[0].n,2,
   'Open product-owner questions are linked to rewritten pages');
  const beforeReplay=rebuildPartCalls;
  await service.runDocumentationJob(rewriteId);
