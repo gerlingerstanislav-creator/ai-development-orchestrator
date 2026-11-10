@@ -67,7 +67,7 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
   }).parse(req.body);
   const client=await pool.connect();
   try{
-   await client.query('BEGIN');
+   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
    // Serialise destructive operations and document updates under the project row.
    const project=(await client.query('SELECT name FROM projects WHERE id=$1 FOR UPDATE',[id])).rows[0];
    if(!project){await client.query('ROLLBACK');return reply.code(404).send({error:'Проект не найден'});}
@@ -84,7 +84,15 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    if(digest!==intent.snapshot_digest){await client.query('ROLLBACK');return reply.code(409).send({error:'Документация изменилась после просмотра. Сформируй новое подтверждение.'});}
    const deletedPages=docs.filter((doc:any)=>doc.system_key===null).length;
    // FK references to deleted pages cascade. System root guard remains enabled.
-   await client.query('DELETE FROM documents WHERE project_id=$1 AND system_key IS NULL',[id]);
+   // Leaf-first deletion avoids the ON DELETE SET NULL parent FK triggering the
+   // project root guard on surviving child pages.
+   let remaining=deletedPages;
+   while(remaining>0){
+    const removed=await client.query(
+     'DELETE FROM documents d WHERE d.project_id=$1 AND d.system_key IS NULL AND NOT EXISTS (SELECT 1 FROM documents child WHERE child.parent_id=d.id) RETURNING id',[id]);
+    if(!removed.rowCount)throw new Error('Документы содержат циклические ссылки. Очистка отменена без изменений.');
+    remaining-=removed.rowCount;
+   }
    await client.query("UPDATE documents SET body='',knowledge_summary='',knowledge_tags=ARRAY[]::text[],updated_at=clock_timestamp() WHERE project_id=$1 AND system_key IS NOT NULL",[id]);
    await client.query('DELETE FROM document_import_jobs WHERE project_id=$1',[id]);
    // Restore only the eight canonical empty headings, not any of the old generated pages.
@@ -105,7 +113,9 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
     [randomUUID(),id,uid(req),deletedPages,imports.length]);
    await client.query('COMMIT');
    return {ok:true,deleted_pages:deletedPages,deleted_imports:imports.length,remaining_system_roots:5,empty_spec_sections:8};
-  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
+  }catch(error){await client.query('ROLLBACK').catch(()=>{});
+   if((error as any)?.code==='40001')return reply.code(409).send({error:'Во время очистки документы изменились. Повтори предварительный просмотр.'});
+   throw error;}
   finally{client.release();}
  });
 }
