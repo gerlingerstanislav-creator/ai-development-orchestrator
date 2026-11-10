@@ -1,4 +1,4 @@
-import {patched,proxyActivities,sleep,startChild} from '@temporalio/workflow';
+import {patched,proxyActivities,sleep,startChild,ParentClosePolicy} from '@temporalio/workflow';
 import type * as activities from './temporal-activities.js';
 
 const steps=proxyActivities<typeof activities>({
@@ -22,7 +22,12 @@ export async function watchProjectManagerDelegation(watch:{projectId:string;proc
 export async function processProjectManagerInbox(projectId:string,messageId:string):Promise<void>{
  const watched=await inboxSteps.runProjectManagerInbox(projectId,messageId);
  for(const watch of watched){
-  await startChild(watchProjectManagerDelegation,{workflowId:'pm-followup-'+watch.processId,args:[watch]});
+  try{
+   await startChild(watchProjectManagerDelegation,{workflowId:'pm-followup-'+watch.processId,args:[watch],parentClosePolicy:ParentClosePolicy.ABANDON});
+  }catch(error){
+   // A second PM turn can attach to the same already-running process.
+   if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error).name))throw error;
+  }
  }
 }
 const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
