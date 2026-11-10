@@ -47,6 +47,10 @@ export const agentToolCatalog=[
  tool('documentation.request_reset','Предложить пользователю открыть подтверждение полной очистки документации проекта. Вызывай только по явной просьбе пользователя удалить всю документацию. Вызов показывает кнопку и не изменяет документы.',{}),
  tool('documentation.rebuild','Запустить пересборку ТЗ с сохранением предыдущих документов.',{instructions:str,idempotency_key:idem}),
  tool('documentation.organize','Запустить улучшение структуры и расположения страниц.',{instructions:str,idempotency_key:idem}),
+ tool('discussions.list','Список тем ПМ проекта с открытыми и закрытыми обсуждениями.',{}),
+ tool('discussions.open','Создать тему обсуждения с владельцем. Повторно используй уже открытую тему с тем же смыслом.',{title:str},['title']),
+ tool('discussions.close','Закрыть обсуждение после ответа владельца и передачи решения. Можно открыть повторно через discussions.reopen.',{topic_id:id},['topic_id']),
+ tool('discussions.reopen','Открыть закрытую тему для дополнительных уточнений.',{topic_id:id},['topic_id']),
  tool('processes.list','Получить текущие и завершённые процессы проекта.',{}),
  tool('processes.report','Зафиксировать прогресс автономного агента в журнале.',{stage:str,message:str},['stage','message']),
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
@@ -58,7 +62,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch']);
 export function toolsForRole(role:AgentRole){
- return agentToolCatalog.filter(t=>role==='manager'?t.name!=='documentation.request_reset':!BA_DENIED.has(t.name));
+ return agentToolCatalog.filter(t=>role==='manager'?t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.'));
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);
