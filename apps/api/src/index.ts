@@ -6,6 +6,8 @@ import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
 import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
+import {registerSafeTaskDeletion} from './task-deletion.js';
+import {registerBusinessAnalystHandoff} from './business-analyst-handoff.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
@@ -1662,6 +1664,8 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
+registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
+registerBusinessAnalystHandoff(app,{pool,uid,access});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
 registerKnowledgeDocumentUpdateRoutes(app,{pool,uid,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
