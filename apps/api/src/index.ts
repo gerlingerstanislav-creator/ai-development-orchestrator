@@ -7,6 +7,7 @@ import {initDocumentationSystem} from './documentation-system.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
+import {initKnowledgeDocumentUpdates,registerKnowledgeDocumentUpdateRoutes} from './knowledge-document-updates.js';
 import {fingerprint} from './topic-import.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
@@ -255,6 +256,7 @@ async function dbInit() {
  await initDocumentationSystem(pool);
  await initKnowledgeContext(pool);
  await initKnowledgeWorkflow(pool);
+ await initKnowledgeDocumentUpdates(pool);
  const email=configuredAdminEmail();
  const password=process.env.ADMIN_PASSWORD;
  if (!email || !password || password.length < 12) throw Error('Set ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters)');
@@ -1578,6 +1580,7 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
+registerKnowledgeDocumentUpdateRoutes(app,{pool,uid,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
 registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 async function recoverTask({projectId,taskId,auth,cookie}:Parameters<ManagerDeps['recoverTask']>[0]):ReturnType<ManagerDeps['recoverTask']>{
