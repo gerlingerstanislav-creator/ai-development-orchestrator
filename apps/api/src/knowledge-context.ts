@@ -198,4 +198,30 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
   return {filename:'technical-specification.md',markdown,documents:r.rows.length};
  });
 
+ app.post('/api/projects/:id/knowledge/documents/:documentId/versions/:versionId/restore',async(req:any,reply)=>{
+  const {id,documentId,versionId}=z.object({id:uuid,documentId:uuid,versionId:uuid}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {expected_version}=z.object({expected_version:z.string().datetime({offset:true})}).parse(req.body);
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const current=(await client.query('SELECT id,body,updated_at FROM documents WHERE project_id=$1 AND id=$2 FOR UPDATE',[id,documentId])).rows[0];
+   if(!current){await client.query('ROLLBACK');return reply.code(404).send({error:'Документ не найден'});}
+   if(new Date(current.updated_at).toISOString()!==new Date(expected_version).toISOString()){
+    await client.query('ROLLBACK');return reply.code(409).send({error:'Документ изменился. Обнови страницу перед восстановлением.'});
+   }
+   const saved=(await client.query('SELECT body FROM document_versions WHERE id=$1 AND document_id=$2',[versionId,documentId])).rows[0];
+   if(!saved){await client.query('ROLLBACK');return reply.code(404).send({error:'Версия не найдена'});}
+   if(saved.body===current.body){
+    await client.query('ROLLBACK');return {ok:true,changed:false,version:current.updated_at};
+   }
+   await client.query('INSERT INTO document_versions(id,document_id,body) VALUES($1,$2,$3)',[randomUUID(),documentId,current.body]);
+   const updated=await client.query('UPDATE documents SET body=$1,updated_at=clock_timestamp() WHERE id=$2 AND project_id=$3 RETURNING updated_at',[saved.body,documentId,id]);
+   await client.query('INSERT INTO document_versions(id,document_id,body) VALUES($1,$2,$3)',[randomUUID(),documentId,saved.body]);
+   await client.query('COMMIT');
+   return {ok:true,changed:true,version:updated.rows[0].updated_at};
+  }catch(error){await client.query('ROLLBACK');throw error;}
+  finally{client.release();}
+ });
+
 }
