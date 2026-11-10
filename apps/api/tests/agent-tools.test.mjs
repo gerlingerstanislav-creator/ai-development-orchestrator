@@ -75,6 +75,19 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.equal(change.statusCode,404);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE title='Внутренний вопрос'")).rows[0].n,0,
   'A failed changeset must roll back all pages');
+ // Database writes AND their success audit must be one transaction.
+ // If the success event cannot be persisted, the new document must roll back.
+ await db.query("CREATE FUNCTION reject_audit_success() RETURNS trigger AS $ BEGIN RAISE EXCEPTION 'simulated audit storage failure'; END $ LANGUAGE plpgsql");
+ await db.query("CREATE TRIGGER reject_audit_success BEFORE INSERT ON agent_tool_events FOR EACH ROW WHEN (NEW.success AND NEW.tool='documents.create') EXECUTE FUNCTION reject_audit_success()");
+ const auditFailure=await call('documents.create',{
+  title:'Нельзя сохранить без аудита',body:'Текст',parent_id:root,idempotency_key:'audit-failure-atomic'
+ });
+ assert.equal(auditFailure.statusCode,400,auditFailure.body);
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND title='Нельзя сохранить без аудита'",[project])).rows[0].n,0,
+  'A successful API write must never survive if the matching audit event failed');
+ await db.query('DROP TRIGGER reject_audit_success ON agent_tool_events');
+ await db.query('DROP FUNCTION reject_audit_success()');
+
  const memory=await call('memory.record',{kind:'observation',text:'Сначала изучай полную структуру ТЗ, затем редактируй конкретную страницу.',evidence:'Проверено в тесте'});
  assert.equal(memory.statusCode,200,memory.body);
  assert.equal((await call('memory.list')).json().result.memories.length,1);
