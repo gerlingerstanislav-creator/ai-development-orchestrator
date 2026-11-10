@@ -176,7 +176,9 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
   const current=await pool.query("SELECT spec_reviewed_commit,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2",[taskId,projectId]);
   if(current.rows[0]?.spec_review_status!=='current'||!evidence.commitSha||current.rows[0].spec_reviewed_commit!==evidence.commitSha)
    throw new Error('Код PR изменился после сверки аналитиком. Требуется повторная проверка требований.');
+  const qaKnowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',runId));
   const count=await prepareQaDocumentation(pool,{...args,implementationEvidence:evidence.patch},async(prompt)=>{
+   prompt+='\\n\\nУтверждённые знания:\\n'+qaKnowledge.documents+'\\n\\nПрименимые инструкции:\\n'+qaKnowledge.modules;
    const response=await fetch(codexUrl+'/assistant',{method:'POST',
     headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
     body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
@@ -186,6 +188,8 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
    if(typeof data.message!=='string')throw new Error('Codex не вернул QA-документацию');
    return data.message;
   });
+  // Derived links attach the actual current QA plan to the requirements governing the task.
+  await pool.query("INSERT INTO knowledge_artifact_links(id,project_id,document_id,artifact_kind,artifact_ref,relation) SELECT gen_random_uuid(),$1,l.document_id,'qa_case',pc.case_id::text,'tested_by' FROM knowledge_task_links l JOIN qa_test_plans p ON p.project_id=l.project_id AND p.task_id=l.task_id JOIN qa_plan_cases pc ON pc.plan_id=p.id WHERE l.project_id=$1 AND l.task_id=$2 AND l.relation IN ('requires','implements','tests') ON CONFLICT DO NOTHING",[projectId,taskId]);
   await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,'QA-документация подготовлена: '+count+' проверок',projectId]);
   await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'testing',authorName:'AI-тестировщик',targetStage:'all',kind:'observation',body:'Подготовлен план тестирования по актуальному ТЗ: '+count+' проверок. Фактические результаты будут записаны после выполнения, это не подтверждение прохождения тестов.',sourceKey:'test-plan:'+runId,sourceRunId:runId});
   await event(projectId,runId,'testing','test_design_ready','QA-документация подготовлена: '+count+' проверок');
@@ -256,6 +260,7 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   if(status==='completed'){
    if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'development',authorName:'AI-разработчик',targetStage:'all',kind:'handoff',body:String(remote.handoffNote),sourceKey:'developer:'+runId,sourceRunId:runId});
    const match=/\/pull\/(\d+)$/.exec(String(remote.prUrl));
+   if(remote.prUrl)await pool.query("INSERT INTO knowledge_artifact_links(id,project_id,document_id,artifact_kind,artifact_ref,relation) SELECT gen_random_uuid(),$1,l.document_id,'pr',$3,'implemented_by' FROM knowledge_task_links l WHERE l.project_id=$1 AND l.task_id=$2 ON CONFLICT DO NOTHING",[projectId,taskId,String(remote.prUrl)]);
    await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
     [taskId,remote.branch||taskId,remote.prUrl,match?Number(match[1]):null,remote.baseBranch||null,projectId]);
    await event(projectId,runId,'development','testing','Разработка завершена. Передача отдельному AI-тестировщику.');
