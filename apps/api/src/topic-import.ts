@@ -191,8 +191,8 @@ async function diversifyCollapsedTopics(args:TopicImportArgs,classified:Classifi
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
-  const active=(await client.query("SELECT status FROM document_import_jobs WHERE id=$1 FOR UPDATE",[job.id])).rows[0]?.status;
-  if(active!=='running')throw Error('Работа аналитика остановлена пользователем');
+  const jobStatus=(await client.query("SELECT status FROM document_import_jobs WHERE id=$1 FOR UPDATE",[job.id])).rows[0]?.status;
+  if(jobStatus!=='running')throw Error('Работа аналитика остановлена пользователем');
   // All new assignments appear together; on crash a retry cannot see a half-remapped map.
   for(const fragment of pending){
    const topic=assignments.get(fragment.index)!;
