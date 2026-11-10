@@ -62,6 +62,6 @@ export async function agentSessionEffects(pool:Pick<Pool,'query'>,id:string){
   import_job_id:value('documentation.import','import_job_id')||value('documentation.rebuild','import_job_id')||value('documentation.organize','import_job_id')};
 }
 export async function agentLearnedContext(pool:Pick<Pool,'query'>,projectId:string,role:AgentRole){
- const rows=(await pool.query("SELECT body,evidence FROM agent_memory WHERE project_id=$1 AND role IN ($2,'manager') AND kind='observation' ORDER BY created_at DESC LIMIT 15",[projectId,role])).rows;
+ const rows=(await pool.query("SELECT body,evidence,kind,status FROM agent_memory WHERE project_id=$1 AND role IN ($2,'manager') AND (kind='observation' OR (kind='instruction_suggestion' AND status='approved')) ORDER BY created_at DESC LIMIT 20",[projectId,role])).rows;
  return rows.reverse().map(r=>'- '+String(r.body).slice(0,800)+(r.evidence?' (основание: '+String(r.evidence).slice(0,160)+')':'')).join('\n');
 }
