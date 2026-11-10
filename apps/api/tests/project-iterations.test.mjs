@@ -22,13 +22,13 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
    id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,description text,type text,stage text,analysis_state text,
    parent_id uuid REFERENCES tasks(id),depends_on_task_id uuid REFERENCES tasks(id),dependency_source text,position int,git_branch text,pr_url text,
    display_number int DEFAULT 1,spec_version int DEFAULT 1,spec_reviewed_version int DEFAULT 1,spec_review_status text DEFAULT 'current',
-   clarification_questions jsonb DEFAULT '[]'
+   clarification_questions jsonb DEFAULT '[]',spec_reviewed_commit text DEFAULT '',spec_review_note text DEFAULT '',updated_at timestamptz DEFAULT now()
   );
   CREATE TABLE project_ai_settings(project_id uuid PRIMARY KEY,enabled boolean);
   CREATE TABLE workflow_stages(project_id uuid,stage text,agent_instructions text);
   CREATE TABLE project_rules(project_id uuid,body text,created_at timestamptz DEFAULT now());
   CREATE TABLE process_events(id uuid PRIMARY KEY,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
-  CREATE TABLE task_spec_versions(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),version int,title text,description text,origin text,actor_id uuid,reason text);
+  CREATE TABLE task_spec_versions(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),version int,title text,description text,origin text,actor_id uuid,reason text,UNIQUE(task_id,version));
   CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid REFERENCES tasks(id),actor_id uuid,event text,detail text);
   CREATE TABLE knowledge_task_links(id uuid PRIMARY KEY,project_id uuid,document_id uuid,task_id uuid,relation text,UNIQUE(project_id,document_id,task_id,relation));
  `);
@@ -109,6 +109,29 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal(form.analysis_state,'ready_for_development');
  assert.equal((await db.query('SELECT count(*)::int n FROM task_spec_versions')).rows[0].n,2);
  assert.equal((await db.query('SELECT count(*)::int n FROM knowledge_task_links')).rows[0].n,2);
+ const changedProposal=structuredClone(proposal);
+ changedProposal.epics[0].tasks[0].title='Форма заказа';
+ changedProposal.epics[0].tasks[0].description='Ввод и проверка данных';
+ changedProposal.epics[0].tasks[0].tags=['frontend'];
+ const changePlan=await proposeIterationPlan(db,project,actor,changedProposal);
+ const changeUrl=url+'/plans/'+changePlan.id;
+ const changePreview=(await request('GET',changeUrl)).json();
+ const changedItem=changePreview.items.find(item=>item.key==='form');
+ assert.deepEqual(changedItem.changes.sort(),['description','tags','title']);
+ assert.ok(changePreview.items.every(item=>item.existing));
+ // A task edited after preview invalidates the original snapshot.
+ await db.query("UPDATE tasks SET description='Ручное уточнение',updated_at=now() WHERE id=$1",[form.id]);
+ assert.equal((await request('POST',changeUrl+'/publish',{confirm:true,preview_revision:changePreview.preview_revision,selected_changes:['form']})).statusCode,409);
+ const fresh=(await request('GET',changeUrl)).json();
+ const changedPublish=await request('POST',changeUrl+'/publish',{confirm:true,preview_revision:fresh.preview_revision,selected_changes:['form']});
+ assert.equal(changedPublish.statusCode,200,changedPublish.body);
+ assert.deepEqual(changedPublish.json().updated,[form.id]);
+ const after=(await db.query('SELECT title,description,tags,spec_version FROM tasks WHERE id=$1',[form.id])).rows[0];
+ assert.equal(after.title,'Форма заказа');
+ assert.equal(after.description,'Ввод и проверка данных');
+ assert.deepEqual(after.tags,['frontend']);
+ assert.equal(Number(after.spec_version),2);
+ assert.deepEqual((await request('POST',changeUrl+'/publish',{confirm:true,preview_revision:fresh.preview_revision,selected_changes:['form']})).json(),changedPublish.json());
  const rerun=await propose(),rerunUrl=url+'/plans/'+rerun.id;
  const rerunPreview=(await request('GET',rerunUrl)).json();
  assert.equal(rerunPreview.items.filter(item=>item.existing).length,3);
