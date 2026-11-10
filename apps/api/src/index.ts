@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import {findActiveProjectOperation,projectDeletionConfirmation} from './project-lifecycle.js';
 import {deploymentDecision} from './deployment-stage.js';
+import {initAutomaticDeployment,registerAutomaticDeploymentRoutes,validateHealthUrl} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
 import {initAgentToolsSchema} from './agent-tools.js';
@@ -1382,13 +1383,19 @@ app.put('/api/projects/:id/specialist-agents/devops',async(req:any,reply)=>{
 app.get('/api/projects/:id/deployment/settings',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- return (await pool.query("SELECT mode,updated_at FROM project_deployment_settings WHERE project_id=$1",[id])).rows[0]||{mode:'skip'};
+ return (await pool.query("SELECT mode,health_url,environment,updated_at FROM project_deployment_settings WHERE project_id=$1",[id])).rows[0]||{mode:'skip'};
 });
 app.put('/api/projects/:id/deployment/settings',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const {mode}=parse(z.object({mode:z.enum(['skip','manual'])}),req.body);
- const updated=await pool.query("INSERT INTO project_deployment_settings(project_id,mode) VALUES($1,$2) ON CONFLICT(project_id) DO UPDATE SET mode=$2,updated_at=now() RETURNING mode,updated_at",[id,mode]);
+ const {mode,health_url,environment}=parse(z.object({
+  mode:z.enum(['skip','manual','automatic']),
+  health_url:z.string().max(300).default(''),
+  environment:z.string().regex(/^[a-zA-Z0-9_-]{1,50}$/).default('production')
+ }),req.body);
+ if(mode==='automatic'&&!health_url)return reply.code(400).send({error:'Настрой HTTPS URL проверки окружения'});
+ if(health_url)validateHealthUrl(health_url);
+ const updated=await pool.query("INSERT INTO project_deployment_settings(project_id,mode,health_url,environment) VALUES($1,$2,$3,$4) ON CONFLICT(project_id) DO UPDATE SET mode=$2,health_url=$3,environment=$4,updated_at=now() RETURNING mode,health_url,environment,updated_at",[id,mode,health_url,environment]);
  return updated.rows[0];
 });
 app.post('/api/projects/:id/tasks/:taskId/deployment/resolve',async(req:any,reply)=>{
@@ -1615,7 +1622,7 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const [imports,developments,tests,merges,analyses,iterationRuns]=await Promise.all([
+ const [imports,developments,tests,merges,analyses,iterationRuns,deployments]=await Promise.all([
   pool.query("SELECT j.id,j.status,j.message,j.source_url,j.request_text,j.source_file_count,j.analyzed_chunks,j.total_chunks,j.saved_documents,j.created_at,j.updated_at,j.result,j.draft_result IS NOT NULL AS has_draft,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id) AS topic_total,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id AND tp.status IN ('complete','conflict')) AS topic_completed FROM document_import_jobs j WHERE j.project_id=$1 ORDER BY j.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
@@ -1623,9 +1630,13 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.completed_at,r.spec_version,t.display_number,t.title AS task_title FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query(`SELECT r.id,r.status,r.message,r.created_at,r.updated_at,r.plan_id,i.id AS iteration_id,i.title
    FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id
-   WHERE i.project_id=$1 ORDER BY r.created_at DESC LIMIT 70`,[id])
+   WHERE i.project_id=$1 ORDER BY r.created_at DESC LIMIT 70`,[id]),
+  pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
  const processes:any[]=[
+  ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
+   status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,taskId:r.task_id,
+   result:{message:r.message,sha:r.sha,github_url:r.github_url}})),
   ...iterationRuns.rows.map(row=>({id:row.id,kind:'analysis',title:'План задач · '+row.title,status:row.status,
    detail:row.message,createdAt:row.created_at,updatedAt:row.updated_at,iterationId:row.iteration_id,result:{message:row.message}})),
   ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:(r.source_url?'Анализ материалов · '+r.source_url.split('/').slice(-1)[0]:'Подготовка ТЗ'),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,requestText:r.request_text,progress:{completed:r.analyzed_chunks,total:r.total_chunks},topicProgress:{completed:r.topic_completed,total:r.topic_total},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
@@ -1790,6 +1801,11 @@ registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
 registerProjectIterationRoutes(app,{pool,uid,access,requireAdmin,startPlanning:startIterationPlanning});
+registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,start:async runId=>{
+ const client=await temporal();
+ await client.workflow.start('automaticDeployment',{taskQueue:'agent-pipeline',workflowId:'deployment-'+runId,
+  workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
+}});
 registerBusinessAnalystHandoff(app,{pool,uid,access});
 registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
@@ -1895,5 +1911,5 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});

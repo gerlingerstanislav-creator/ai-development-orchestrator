@@ -1,6 +1,7 @@
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
 import {runIterationPlanning} from './project-iterations.js';
+import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
 import pg from 'pg';
 import {randomUUID,createDecipheriv} from 'node:crypto';
 import {ApplicationFailure} from '@temporalio/common';
@@ -679,3 +680,9 @@ export async function failProjectSpecification(jobId:string):Promise<void>{
  const result=await pool.query("UPDATE document_import_jobs SET status='failed',message='Процесс аналитика прерван. Повтори запрос в чате.',updated_at=now() WHERE id=$1 AND status='running' RETURNING project_id",[jobId]);
  if(result.rowCount)await event(result.rows[0].project_id,jobId,'document_import','failed','Процесс аналитика прерван','error');
 }
+
+export async function runAutomaticDeployment(runId:string){
+ const interval=setInterval(()=>heartbeat(),10000);
+ try{heartbeat();await performAutomaticDeployment(pool,runId,decrypt);}finally{clearInterval(interval);}
+}
+export async function failAutomaticDeployment(runId:string,message:string){await markDeploymentFailed(pool,runId,message);}

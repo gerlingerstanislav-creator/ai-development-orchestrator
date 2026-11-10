@@ -6,6 +6,15 @@ const steps=proxyActivities<typeof activities>({
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
 const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
+const deploymentSteps=proxyActivities<typeof activities>({startToCloseTimeout:'30 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
+export async function automaticDeployment(runId:string):Promise<void>{
+ try{await deploymentSteps.runAutomaticDeployment(runId);}
+ catch(e){
+  let cause=e;
+  while(cause instanceof Error&&cause.cause instanceof Error)cause=cause.cause;
+  await steps.failAutomaticDeployment(runId,cause instanceof Error?cause.message:String(cause));
+ }
+}
 export async function prepareIterationPlan(runId:string):Promise<void>{
  try{await planningSteps.prepareIterationPlanDraft(runId);}
  catch(error){
