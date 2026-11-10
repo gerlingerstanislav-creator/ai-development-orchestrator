@@ -7,6 +7,9 @@ test('resolves explicit, case-insensitive leading agent mentions',()=>{
  assert.deepEqual(parseAgentMention('  @qa: какие проверки нужны?'),{alias:'QA',stage:'testing',message:'какие проверки нужны?'});
  assert.equal(parseAgentMention('Пожалуйста, позови @QA'),null);
  assert.equal(parseAgentMention('@QAnalyst проверь'),null);
+ assert.deepEqual(parseAgentMention('@DevOps проверь CI'),{alias:'DevOps',stage:'devops',message:'проверь CI'});
+ assert.deepEqual(parseAgentMention(' @devops: статус деплоя?'),{alias:'DevOps',stage:'devops',message:'статус деплоя?'});
+ assert.equal(parseAgentMention('обратись к @DevOps'),null);
 });
 test('uses workflow-scoped instructions and rejects unavailable agents',async()=>{
  const calls=[];
@@ -18,4 +21,14 @@ test('uses workflow-scoped instructions and rejects unavailable agents',async()=
  await assert.rejects(()=>resolveAgentMention(pool,'project-1','@QA'),/напиши сообщение/);
  const empty={query:async()=>({rowCount:0,rows:[]})};
  await assert.rejects(()=>resolveAgentMention(empty,'project-1','@Analyst вопрос'),/не настроен/);
+});
+
+test('DevOps resolves from project specialist registry, not the merge workflow stage',async()=>{
+ const calls=[];
+ const pool={query:async(sql,params)=>{calls.push({sql,params});return {rowCount:1,rows:[{agent_name:'AI-DevOps',agent_instructions:'Keep deployments idempotent'}]};}};
+ const agent=await resolveAgentMention(pool,'project-1','@DevOps проверь повторные CI сборки');
+ assert.equal(agent.name,'AI-DevOps');
+ assert.equal(agent.stage,'devops');
+ assert.match(calls[0].sql,/project_specialist_agents/);
+ assert.deepEqual(calls[0].params,['project-1','devops']);
 });
