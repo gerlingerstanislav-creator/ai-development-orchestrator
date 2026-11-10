@@ -3,6 +3,8 @@ import {z} from 'zod';
 import {randomUUID,createHash} from 'node:crypto';
 import {completeStructured} from './structured-agent-response.js';
 import type {DocumentationRootKey} from './documentation-import-structure.js';
+import {archiveSourceDocuments} from './documentation-import-structure.js';
+import {extractGitHubDocumentLocation} from './github-document-import.js';
 
 const section=z.enum(['spec','architecture','operations','design','research']);
 const item=z.object({
@@ -37,6 +39,24 @@ export async function organizeImportedDocumentation(args:{
  const documents=(await pool.query(
   "SELECT id,title,body,parent_id,import_source,source_refs FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%' ORDER BY title,id LIMIT 120",
   [projectId])).rows;
+ // Older imports predate raw-source archiving. Backfill from the exact pinned
+ // snapshots kept in PostgreSQL; no re-download, new import or lost exclusions.
+ const historical=(await pool.query(
+  "SELECT source_key,source_snapshot,source_url,source_commit FROM document_import_jobs WHERE project_id=$1 AND source_snapshot IS NOT NULL AND id<>$2 ORDER BY updated_at DESC LIMIT 10",
+  [projectId,job.id])).rows;
+ for(const source of historical){
+  const files=source.source_snapshot;
+  if(!Array.isArray(files)||!files.length||files.length>300||
+   !files.every((file:any)=>typeof file.path==='string'&&typeof file.body==='string'))continue;
+  const address=source.source_url?extractGitHubDocumentLocation(String(source.source_url)):null;
+  const location=address&&source.source_commit?{
+   owner:address.owner,repository:address.repository,commit:String(source.source_commit)
+  }:undefined;
+  await archiveSourceDocuments({
+   pool,jobId:job.id,projectId,sourceKey:source.source_key,files,location,progress
+  });
+ }
+
  if(!documents.length)throw Error('В проекте нет импортированных тематических страниц для реорганизации');
  const knownIds=new Set(documents.map(d=>d.id));
  const summaries=documents.map(d=>({
