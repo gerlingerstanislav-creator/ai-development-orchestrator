@@ -2,7 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {agentToolCatalog,readAgentSession,hashSecret} from './agent-tools.js';
+import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,toolAllowedForRole} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
 
 const uuid=z.string().uuid();
@@ -82,14 +82,14 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  };
  app.get('/internal/agent-tools/catalog',async(req:any,reply)=>{
   const session=await authenticate(req,reply);if(!session)return;
-  return {tools:agentToolCatalog};
+  return {tools:toolsForRole(session.role)};
  });
  app.post('/internal/agent-tools/call',async(req:any,reply)=>{
   const session=await authenticate(req,reply);if(!session)return;
   const parsed=callSchema.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:'Неверные параметры вызова инструмента'});
   const {name,arguments:args}=parsed.data;
-  if(!agentToolCatalog.some(tool=>tool.name===name))return reply.code(404).send({error:'Неизвестный инструмент'});
+  if(!toolAllowedForRole(session.role,name))return reply.code(403).send({error:'Инструмент недоступен для роли '+session.role});
   const key=typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
   const digest=hashSecret(JSON.stringify({name,args}));
   const mutating=!readonlyTools.has(name);
