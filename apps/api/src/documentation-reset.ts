@@ -32,10 +32,8 @@ export async function initDocumentationReset(pool:Pick<Pool,'query'>){
 }
 
 async function docInventory(db:Pick<Pool,'query'>,projectId:string){
- const [docs,imports]=await Promise.all([
-  db.query('SELECT id,updated_at,title,system_key FROM documents WHERE project_id=$1 ORDER BY id',[projectId]),
-  db.query('SELECT id,updated_at,status FROM document_import_jobs WHERE project_id=$1 ORDER BY id',[projectId])
- ]);
+ const docs=await db.query('SELECT id,updated_at,title,system_key FROM documents WHERE project_id=$1 ORDER BY id',[projectId]);
+ const imports=await db.query('SELECT id,updated_at,status FROM document_import_jobs WHERE project_id=$1 ORDER BY id',[projectId]);
  const active=imports.rows.filter((j:any)=>['queued','running'].includes(j.status));
  const pages=docs.rows.filter((d:any)=>d.system_key===null).length;
  const digest=createHash('sha256').update(JSON.stringify({docs:docs.rows,imports:imports.rows})).digest('hex');
