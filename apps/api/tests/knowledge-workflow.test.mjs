@@ -15,7 +15,7 @@ test('scoped mandatory instructions, task-linked knowledge, token budget and aud
  await client.query('SET LOCAL search_path TO '+schema+',public');
  await client.query([
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
-  "CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,body text,knowledge_summary text DEFAULT '',knowledge_status text DEFAULT 'approved',knowledge_key text,updated_at timestamptz DEFAULT now())",
+  "CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,body text,knowledge_summary text DEFAULT '',knowledge_tags text[] DEFAULT '{}',knowledge_status text DEFAULT 'approved',knowledge_key text,updated_at timestamptz DEFAULT now())",
   'CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,description text,pr_url text)',
   "CREATE TABLE project_rules(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),body text,created_at timestamptz DEFAULT now())",
   'CREATE TABLE workflow_stages(project_id uuid,stage text,agent_name text,agent_instructions text)',
