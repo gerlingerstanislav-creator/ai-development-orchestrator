@@ -7,7 +7,7 @@ import {QaPanel} from './QaPanel.js';
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
-const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'}] as const;
+const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
  const tail=/(?:^|\s)@([a-z]*)$/i.exec(value);
  if(!tail)return [];
@@ -39,7 +39,7 @@ const boardLaneFor=(task:Task)=>task.awaits_product_owner?productOwnerLane.stage
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
  {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
- {key:'results',title:'Итоги',ids:['documentation','done']}
+ {key:'results',title:'Итоги',ids:['deployment','documentation','done']}
 ];
 
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
@@ -73,7 +73,7 @@ type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;r
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
-const defaultStages=['backlog','analysis','development','merge_queue','documentation','done'];
+const defaultStages=['backlog','analysis','development','testing','merge_queue','deployment','documentation','done'];
 
 function markdownInline(source:string):React.ReactNode[]{
  const pattern=/(\[([^\]]+)\]\((https?:\/\/[^ )]+)\)|\*\*([^*]+)\*\*|\x60([^\x60]+)\x60)/g;
@@ -244,6 +244,7 @@ function App(){
  const [workflowModal,setWorkflowModal]=useState<Stage|null>(null);
  const [workflowEditing,setWorkflowEditing]=useState<'agent'|'mode'|'instructions'|null>(null);
  const [workflowSaving,setWorkflowSaving]=useState(false);
+ const [deploymentMode,setDeploymentMode]=useState<'skip'|'manual'>('skip');
  const [accountSettings,setAccountSettings]=useState(false);
  const [projectMenuOpen,setProjectMenuOpen]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
@@ -440,7 +441,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return [
    ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
    ...taskAgentNotes.map(note=>({id:'note-'+note.id,kind:'note' as const,title:note.author_name+
-    ' → '+(note.target_stage==='all'?'всем участникам':({analysis:'аналитику',development:'разработчику',testing:'тестировщику',merge_queue:'ответственному за слияние',documentation:'документатору'} as Record<string,string>)[note.target_stage]||note.target_stage)+
+    ' → '+(note.target_stage==='all'?'всем участникам':({analysis:'аналитику',development:'разработчику',testing:'тестировщику',merge_queue:'ответственному за слияние',deployment:'DevOps',documentation:'документатору'} as Record<string,string>)[note.target_stage]||note.target_stage)+
     ' · '+(note.kind==='question'?'Вопрос':note.kind==='risk'?'Риск':'Рабочий комментарий'),
     text:note.body+(note.answer?'\n\nОтвет: '+note.answer:note.status==='open'?'\n\nОжидает ответа':''),
     time:note.created_at})),
@@ -523,7 +524,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(from==='backlog'&&to==='analysis')return true;
   if(from==='analysis'&&to==='development')return readyForDevelopment&&!taskChatBusy&&!managerWorking&&!!gitLink&&aiSettings.enabled;
   if(from==='development'&&to==='merge_queue')return !aiBusy&&!aiRuns.some(r=>r.task_id===task.id&&['running','queued'].includes(r.status));
-  if(from==='merge_queue'&&to==='documentation')return !mergeBusy;
+  if(from==='merge_queue'&&to==='deployment')return !mergeBusy;
+  if(from==='deployment'&&to==='documentation')return !mergeBusy;
   if(from==='documentation'&&to==='done')return !knowledgeBusy;
   return false;
  }
@@ -536,12 +538,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }else if(from==='analysis')await approveDevelopment(task);
   else if(from==='development')await runAiTask();
   else if(from==='merge_queue')await mergeTask(task);
+  else if(from==='deployment')await resolveDeployment(task);
   else if(from==='documentation')await updateDocumentation();
  }
  const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){if(e instanceof AuthExpiredError)return;setError(e instanceof Error?e.message:'Неизвестная ошибка');}
  async function loadProjects(){try{setProjects(await api('/projects'));setProjectsLoaded(true);}catch(e){fail(e);}}
  async function loadProject(id:string){
+  const deployment=await api<{mode:'skip'|'manual'}>('/projects/'+id+'/deployment/settings');
+  setDeploymentMode(deployment.mode);
   try{
    const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
    setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
@@ -711,6 +716,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!selected||!workflowModal)return;
   setWorkflowSaving(true);
   try{
+   if(workflowModal.stage==='deployment')await api('/projects/'+selected.id+'/deployment/settings',{method:'PUT',body:JSON.stringify({mode:deploymentMode})});
    const updated=await api<Stage>('/projects/'+selected.id+'/workflow/'+workflowModal.stage,{
     method:'PATCH',body:JSON.stringify({
      mode:workflowModal.mode,agent_name:workflowModal.agent_name.trim(),agent_instructions:workflowModal.agent_instructions
@@ -1207,12 +1213,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    else fail(e);
   }finally{setTaskChatBusy(false);}
  }
+ async function resolveDeployment(task:Task){
+  if(!selected)return;
+  const skip=window.confirm('Пропустить выкладку? ОК — пропустить, Отмена — подтвердить ручную выкладку.');
+  const reason=window.prompt(skip?'Причина пропуска выкладки (минимум 5 символов):':'Укажите подтверждение ручной выкладки (окружение, релиз, проверка):');
+  if(!reason?.trim()||reason.trim().length<5)return;
+  setMergeBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+task.id+'/deployment/resolve',{method:'POST',body:JSON.stringify({outcome:skip?'skipped':'manual_confirmed',reason:reason.trim()})});
+   await loadProject(selected.id);
+   setMergeReport(skip?'Этап выкладки пропущен с записью причины.':'Ручная выкладка отмечена как подтверждённая пользователем.');
+  }catch(e){fail(e);}finally{setMergeBusy(false);}
+ }
  async function mergeTask(task:Task){if(!selected||!window.confirm('Слить PR задачи «'+task.title+'» в '+(gitLink?.target_branch||'целевую ветку')+'?'))return;
   setMergeBusy(true);try{
-   await api('/projects/'+selected.id+'/tasks/'+task.id+'/merge',{method:'POST'});
-   setTasks(old=>old.map(t=>t.id===task.id?{...t,stage:'documentation'}:t));
-   setActiveTask(old=>old?.id===task.id?{...old,stage:'documentation'}:old);
-   setMergeReport('PR слит. Задача ожидает актуализации документации.');
+   const merged=await api<{deployment_stage?:string}>('/projects/'+selected.id+'/tasks/'+task.id+'/merge',{method:'POST'});
+   await loadProject(selected.id);
+   setMergeReport('PR слит. '+(deploymentMode==='skip'?'Выкладка пропущена согласно настройкам проекта.':'Задача передана на этап выкладки.'));
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
  async function mergeReady(){if(!selected||!window.confirm('Последовательно слить PR с автоматическим разрешением конфликтов?'))return;
@@ -1227,7 +1244,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setMergeReport(state.message+' · Слито: '+state.results.filter(r=>r.status==='merged').length+'.');
    }
    const result=state;
-   setTasks(old=>old.map(t=>result.results.some(r=>r.taskId===t.id&&r.status==='merged')?{...t,stage:'documentation'}:t));
+   // Project state is reloaded from API after merge; deployment may be skipped or pending.
    const mergedCount=result.results.filter(r=>r.status==='merged').length;
    const skippedCount=result.results.filter(r=>r.status==='skipped').length;
    const errors=[...new Set(result.results.map(r=>r.reason).filter((value):value is string=>!!value))];
@@ -1659,7 +1676,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        title={'Настройки этапа «'+stage.label+'»'}>
        <span className="workflow-stage-label">{stage.label}</span>
        <span className="workflow-stage-agent">{stage.agent_name||'Исполнитель не указан'}</span>
-       <span className="workflow-stage-mode">{stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
+       <span className="workflow-stage-mode">{stage.stage==='deployment'?(deploymentMode==='skip'?'Пропуск без окружения':'Ручное подтверждение'):stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
        <Settings2 size={14} className="workflow-stage-icon"/>
       </button>
      </React.Fragment>)}
@@ -1813,6 +1830,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      placeholder="Цели, критерии качества, обязательные проверки и правила этапа…"/>:
      <div className="workflow-field-value workflow-instructions-readonly">{workflowModal.agent_instructions||'Инструкции пока не указаны'}</div>}
    </div>
+   {workflowModal.stage==='deployment'&&<div className="workflow-detail-field"><div className="workflow-field-heading"><strong>Порядок выкладки</strong></div><select value={deploymentMode} onChange={e=>setDeploymentMode(e.target.value as 'skip'|'manual')}><option value="skip">Пропускать, пока нет окружения</option><option value="manual">Ожидать ручную выкладку или явный пропуск</option></select><small className="muted">GitHub Actions для реального деплоя будут подключены позже. Пока система не выполняет выкладку автоматически и не сообщает ложный успех.</small></div>}
    <small className="muted workflow-agent-notice">Инструкции используются соответствующим AI-агентом. Системные ограничения имеют приоритет.</small>
    {workflowModal.stage==='testing'&&<p className="workflow-transition-description"><RotateCcw size={14}/> Если обнаружены ошибки, задача вернётся в разработку с замечаниями. Затем тесты выполнятся повторно.</p>}
    {workflowModal.stage==='development'&&<p className="workflow-transition-description">После успешной разработки задача передаётся на тестирование.</p>}
@@ -1870,7 +1888,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
      <div className="task-dependency">
       <label>Зависит от задачи
-       <select value={activeTask.depends_on_task_id||''} disabled={!!activeTask.git_branch||['merge_queue','documentation','done'].includes(activeTask.stage)}
+       <select value={activeTask.depends_on_task_id||''} disabled={!!activeTask.git_branch||['merge_queue','deployment','documentation','done'].includes(activeTask.stage)}
         onChange={e=>void setDependency(activeTask,e.target.value||null)}>
         <option value="">Нет кодовой зависимости</option>
         {tasks.filter(t=>t.id!==activeTask.id).map(t=><option key={t.id} value={t.id}>{t.title} · {stages.find(x=>x.stage===t.stage)?.label||t.stage}</option>)}
@@ -1882,6 +1900,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.pr_base_branch&&<div className="task-git-ref"><span>База PR</span><code>{activeTask.pr_base_branch}</code></div>}
      {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
+     {activeTask.stage==='deployment'&&<p className="muted">PR уже слит. Подтвердите ручную выкладку или явно пропустите её с указанием причины.</p>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
     <aside className="task-conversation manager-conversation">
