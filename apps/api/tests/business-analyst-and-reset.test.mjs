@@ -1,3 +1,16 @@
+
+test('DevOps unification retains custom stage instructions and is idempotent',()=>{
+ const own='Проверяй отдельные корпоративные секреты CI перед выкаткой';
+ const specialist='Управляй версиями артефактов GitHub Actions';
+ const merged=mergeDevopsInstructions(specialist,own);
+ assert.match(merged,/Управляй версиями артефактов/);
+ assert.match(merged,/корпоративные секреты/);
+ assert.equal(mergeDevopsInstructions(merged,own),merged);
+ const recovered=mergeDevopsInstructions(specialist,specialist,own);
+ assert.match(recovered,/корпоративные секреты/);
+ assert.throws(()=>mergeDevopsInstructions('a'.repeat(11990),own),/12000/);
+});
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -5,7 +18,7 @@ import pg from 'pg';
 import Fastify from 'fastify';
 import {initDocumentationReset,registerDocumentationResetRoutes} from '../dist/documentation-reset.js';
 import {registerSafeTaskDeletion} from '../dist/task-deletion.js';
-import {registerProjectTeamRoutes} from '../dist/project-team.js';
+import {registerProjectTeamRoutes,mergeDevopsInstructions} from '../dist/project-team.js';
 import {registerBusinessAnalystHandoff} from '../dist/business-analyst-handoff.js';
 import {toolsForRole,toolAllowedForRole} from '../dist/agent-tools.js';
 
