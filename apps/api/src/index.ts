@@ -6,6 +6,7 @@ import {initProjectIterations,registerProjectIterationRoutes} from './project-it
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
+import {agentInstructions} from './agent-instructions.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
 import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
@@ -59,12 +60,12 @@ const workflowDefaults = [
   ['done','Готово','manual']
 ] as const;
 const workflowAgentDefaults:Record<string,{name:string;instructions:string}>={
- backlog:{name:'',instructions:'Регистрируй новые запросы и сохраняй их контекст до анализа.'},
- analysis:{name:'Системный аналитик',instructions:'На основании согласованного бизнес-аналитиком пула анализируй технические требования, данные, API, интеграции, состояния, ограничения и зависимости. Уточняй только блокирующие вопросы по текущим задачам. Продуктовые решения возвращай бизнес-аналитику и владельцу продукта. Не создавай задачи и вопросы по невыбранному функционалу. Сверяй PR с утверждённым ТЗ; QA выполняет тестировщик.'},
- development:{name:'AI-разработчик',instructions:'Реализуй только утверждённое ТЗ в существующем репозитории/ветке, выполняй доступные проверки, исправляй воспроизводимые дефекты QA. Создай или обнови PR. Пиши тестировщику технические нюансы и вопросы, заказчику не обращайся. Не меняй секреты.'},
- testing:{name:'AI-тестировщик',instructions:'Независимо составь тест-план и проведи все доступные проверки на конкретном SHA. Сохраняй доказательства по каждому сценарию. Без реального браузера не засчитывай визуальное тестирование. Если инструментов нет — сообщи Менеджеру проекта непроверенные сценарии, не проси заказчика проводить тесты и не разрешай слияние самостоятельно.'},
- deployment:{name:'AI-DevOps',instructions:'Организуй проверяемую доставку прошедших QA и слитых изменений. Используй GitHub Actions, неизменяемые артефакты и конкретный SHA; обеспечь защиту секретов, идемпотентность и rollback. Без подключённого окружения не запускай деплой и не объявляй публикацию успешной. Подготовка CI/CD должна проходить через PR и проверки; запроси недостающие данные окружения, но не выдумывай их.'},
- documentation:{name:'AI-технический писатель',instructions:'Обновляй только проверенную, слитую функциональность по ТЗ и фактическим изменениям. Не включай неутверждённые рабочие заметки команды как установленные требования. Все вопросы направляй коллегам или Менеджеру проекта, а не заказчику.'},
+ backlog:{name:'',instructions:agentInstructions.backlog},
+ analysis:{name:'Системный аналитик',instructions:agentInstructions.analysis},
+ development:{name:'AI-разработчик',instructions:agentInstructions.development},
+ testing:{name:'AI-тестировщик',instructions:agentInstructions.testing},
+ deployment:{name:'AI-DevOps',instructions:agentInstructions.devops},
+ documentation:{name:'AI-технический писатель',instructions:agentInstructions.documentation}
 };
 // Preserve the original administrator account when upgrading legacy local installs.
 // A dotted reserved domain also passes conventional email validation.
@@ -1357,11 +1358,10 @@ app.post('/api/projects',async(req,reply)=>{
  await client.query('INSERT INTO projects(id,name,description,owner_id) VALUES($1,$2,$3,$4)',[id,name,description,uid(req)]);
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
  for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent?.name??'',agent?.instructions??'']);}
- await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2) ON CONFLICT DO NOTHING",[id,'Отвечай за надежную и быструю выкатку, анализ GitHub Actions, экономию CI-ресурсов, устранение повторных сборок, кеширование, concurrency, rollback и безопасность секретов. Не отключай обязательные проверки. Не запускай деплой из консультационного чата без разрешенной интеграции. Подтверждай действия результатами инструментов.']);
+ await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2) ON CONFLICT DO NOTHING",[id,agentInstructions.devops]);
  await client.query(`INSERT INTO project_conversation_agents(project_id,role,agent_name,agent_instructions)
-  VALUES($1,'manager','Менеджер проекта','Помогай владельцу проекта ставить задачи и принимать решения. Координируй работу других агентов, уточняй только существенные вопросы, показывай реальные состояния задач и не объявляй действие выполненным без подтверждения инструментов.'),
-        ($1,'analyst','Бизнес-аналитик','Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.')
-  ON CONFLICT(project_id,role) DO NOTHING`,[id]);
+  VALUES($1,'manager','Менеджер проекта',$2),($1,'analyst','Бизнес-аналитик',$3)
+  ON CONFLICT(project_id,role) DO NOTHING`,[id,agentInstructions.manager,agentInstructions.analyst]);
  await client.query('INSERT INTO project_deployment_settings(project_id) VALUES($1) ON CONFLICT DO NOTHING',[id]);
  await client.query('COMMIT');return reply.code(201).send({id,name,description});}
  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
