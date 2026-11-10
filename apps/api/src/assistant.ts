@@ -42,7 +42,7 @@ export function isExplicitTaskCreation(message:string):boolean{
 
 /** Discussion and critique are not editing jobs. Only an explicit imperative may mutate docs. */
 export function isExplicitDocumentationChange(message:string):boolean{
- return /^(?:пожалуйста[,\\s]+)?(?:(?:давай|можешь\\s+)?\\s*)?(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|сформируй|перенеси|перемести|исправь|измени|внеси|обнови|дополни|отредактируй|перестрой|реорганизуй|переорганизуй|структурируй|раздели|разбей|объедини|удали|сделай|переделай)(?:\\s|:|!|$)/i.test(message.trim());
+ return /^(?:пожалуйста[,\s]+)?(?:(?:давай|можешь\s+)?\s*)?(?:создай|создать|добавь|добавить|составь|напиши|подготовь|оформи|сформируй|перенеси|перемести|исправь|измени|внеси|обнови|дополни|отредактируй|перестрой|реорганизуй|переорганизуй|структурируй|раздели|разбей|объедини|удали|сделай|переделай)(?:\s|:|!|$)/i.test(message.trim());
 }
 
 function jsonObject(text:string):Record<string,unknown>{
