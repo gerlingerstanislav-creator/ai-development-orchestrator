@@ -1026,3 +1026,23 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .knowledge-link{display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 0;}
 .knowledge-link a{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .knowledge-link button{flex:none;padding:4px;}
+
+/* Knowledge and instructions: compact editing within the established documentation layout. */
+.knowledge-instructions-panel{margin:8px 10px;padding:9px;border:1px solid var(--border,rgba(150,150,150,.25));border-radius:8px;max-height:430px;overflow:auto;font-size:12px}
+.knowledge-instructions-panel summary,.knowledge-traceability summary{cursor:pointer;font-weight:600}
+.knowledge-instructions-panel p,.knowledge-traceability p{margin:6px 0}
+.knowledge-instruction-item{padding:7px 0;border-bottom:1px solid var(--border,rgba(150,150,150,.2));display:flex;justify-content:space-between;gap:5px}
+.knowledge-instruction-item strong,.knowledge-instruction-item small{display:block}
+.knowledge-instruction-form{display:grid;gap:6px;padding-top:9px}
+.knowledge-instruction-form label{display:grid;gap:3px;font-size:12px}
+.knowledge-instruction-form input,.knowledge-instruction-form textarea,.knowledge-instruction-form select{width:100%;min-width:0}
+.knowledge-inline-fields{display:flex;align-items:end;gap:6px;flex-wrap:wrap;margin:7px 0}
+.knowledge-inline-fields label{display:grid;gap:3px;flex:1;min-width:85px}
+.knowledge-inline-fields input,.knowledge-inline-fields select{flex:1;min-width:100px;max-width:100%}
+.knowledge-checkbox{display:flex!important;align-items:center;gap:5px}
+.knowledge-checkbox input{width:auto!important}
+.knowledge-traceability{margin:8px 0;padding:7px 0;border-top:1px solid var(--border,rgba(150,150,150,.2))}
+.knowledge-proposals{margin:10px 16px;padding:12px 14px;border:1px solid var(--border,rgba(150,150,150,.25));border-radius:8px}
+.knowledge-proposals details{padding:7px 0}
+.knowledge-proposals summary{cursor:pointer;font-size:12px}
+.knowledge-proposals pre{max-height:330px;overflow:auto;white-space:pre-wrap;font-size:12px}
