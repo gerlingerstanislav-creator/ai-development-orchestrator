@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {deploymentDecision} from './deployment-stage.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
@@ -36,7 +37,7 @@ const jwtKey = new TextEncoder().encode(process.env.JWT_SECRET || '');
 const keyText = process.env.CREDENTIALS_KEY || '';
 const encryptionKey = Buffer.from(keyText, 'hex');
 if (!process.env.JWT_SECRET || jwtKey.length < 32 || encryptionKey.length !== 32) throw Error('Set secure JWT_SECRET and 64-char hex CREDENTIALS_KEY');
-const validStages = z.enum(['backlog','analysis','development','testing','merge_queue','documentation','done']);
+const validStages = z.enum(['backlog','analysis','development','testing','merge_queue','deployment','documentation','done']);
 const validMode = z.enum(['automatic','approval','manual']);
 const workflowDefaults = [
   ['backlog','Бэклог','manual'],
@@ -44,6 +45,7 @@ const workflowDefaults = [
   ['development','Разработка','approval'],
   ['testing','Тестирование','automatic'],
   ['merge_queue','Ожидает слияния','manual'],
+  ['deployment','Выкладка','manual'],
   ['documentation','Документация','manual'],
   ['done','Готово','manual']
 ] as const;
@@ -53,6 +55,7 @@ const workflowAgentDefaults:Record<string,{name:string;instructions:string}>={
  development:{name:'AI-разработчик',instructions:'Реализуй только утверждённое ТЗ в существующем репозитории/ветке, выполняй доступные проверки, исправляй воспроизводимые дефекты QA. Создай или обнови PR. Пиши тестировщику технические нюансы и вопросы, заказчику не обращайся. Не меняй секреты.'},
  testing:{name:'AI-тестировщик',instructions:'Независимо составь тест-план и проведи все доступные проверки на конкретном SHA. Сохраняй доказательства по каждому сценарию. Без реального браузера не засчитывай визуальное тестирование. Если инструментов нет — сообщи Менеджеру проекта непроверенные сценарии, не проси заказчика проводить тесты и не разрешай слияние самостоятельно.'},
  merge_queue:{name:'Интегратор GitHub',instructions:'Проверяй состояние PR и доступные проверки перед слиянием. Не обходи защиту веток.'},
+ deployment:{name:'AI-DevOps',instructions:'Организуй проверяемую доставку прошедших QA и слитых изменений. Используй GitHub Actions, неизменяемые артефакты и конкретный SHA; обеспечь защиту секретов, идемпотентность и rollback. Без подключённого окружения не запускай деплой и не объявляй публикацию успешной. Подготовка CI/CD должна проходить через PR и проверки; запроси недостающие данные окружения, но не выдумывай их.'},
  documentation:{name:'AI-технический писатель',instructions:'Обновляй только проверенную, слитую функциональность по ТЗ и фактическим изменениям. Не включай неутверждённые рабочие заметки команды как установленные требования. Все вопросы направляй коллегам или Менеджеру проекта, а не заказчику.'},
  done:{name:'Система',instructions:'Фиксируй завершение только после тестирования, слияния и обновления документации.'}
 };
@@ -167,6 +170,22 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_rule_suggestions_project ON project_rule_suggestions(project_id,status);
  CREATE TABLE IF NOT EXISTS connections (id uuid primary key, owner_id uuid not null references users(id), name text not null, provider text not null, secret_encrypted text not null, created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS project_connections (project_id uuid references projects(id) on delete cascade, connection_id uuid references connections(id) on delete cascade, primary key(project_id,connection_id));
+ CREATE TABLE IF NOT EXISTS project_deployment_settings (
+  project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  mode text NOT NULL DEFAULT 'skip' CHECK(mode IN ('skip','manual')),
+  updated_at timestamptz NOT NULL DEFAULT now()
+ );
+ CREATE TABLE IF NOT EXISTS task_deployment_records (
+  task_id uuid PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  status text NOT NULL CHECK(status IN ('skipped','pending','manual_confirmed')),
+  reason text NOT NULL DEFAULT '',
+  merge_sha text,
+  actor_id uuid REFERENCES users(id),
+  updated_at timestamptz NOT NULL DEFAULT now()
+ );
+ CREATE INDEX IF NOT EXISTS idx_deployment_records_project ON task_deployment_records(project_id,status);
+ INSERT INTO project_deployment_settings(project_id) SELECT id FROM projects ON CONFLICT DO NOTHING;
  CREATE TABLE IF NOT EXISTS project_specialist_agents (
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   role text NOT NULL CHECK(role IN ('devops')),
@@ -186,6 +205,9 @@ async function dbInit() {
  SELECT p.id,'merge_queue','Ожидает слияния','manual',4 FROM projects p
  ON CONFLICT(project_id,stage) DO NOTHING;
  INSERT INTO workflow_stages(project_id,stage,label,mode,position)
+ SELECT p.id,'deployment','Выкладка','manual',6 FROM projects p
+ ON CONFLICT(project_id,stage) DO NOTHING;
+ INSERT INTO workflow_stages(project_id,stage,label,mode,position)
  SELECT p.id,'documentation','Документация','manual',5 FROM projects p
  ON CONFLICT(project_id,stage) DO NOTHING;
  INSERT INTO workflow_stages(project_id,stage,label,mode,position)
@@ -193,14 +215,16 @@ async function dbInit() {
  ON CONFLICT(project_id,stage) DO NOTHING;
  UPDATE workflow_stages SET position=4 WHERE stage='testing';
  UPDATE workflow_stages SET position=5 WHERE stage='merge_queue';
- UPDATE workflow_stages SET position=6 WHERE stage='documentation';
- UPDATE workflow_stages SET position=7 WHERE stage='done';
+ UPDATE workflow_stages SET position=6 WHERE stage='deployment';
+ UPDATE workflow_stages SET position=7 WHERE stage='documentation';
+ UPDATE workflow_stages SET position=8 WHERE stage='done';
  UPDATE workflow_stages SET agent_name=CASE stage
   WHEN 'backlog' THEN 'Оператор'
   WHEN 'analysis' THEN 'AI-аналитик'
   WHEN 'development' THEN 'AI-разработчик'
   WHEN 'testing' THEN 'AI-тестировщик'
   WHEN 'merge_queue' THEN 'Интегратор GitHub'
+  WHEN 'deployment' THEN 'AI-DevOps'
   WHEN 'documentation' THEN 'AI-технический писатель'
   WHEN 'done' THEN 'Система'
   ELSE 'Исполнитель' END WHERE agent_name='';
@@ -210,6 +234,7 @@ async function dbInit() {
   WHEN 'testing' THEN 'Независимо проверь задачу и доступные тесты. Возвращай структурированные ошибки со способом воспроизведения, ожидаемым и фактическим результатом. Не объявляй непроверенное успешным.'
   WHEN 'documentation' THEN 'Обновляй подтверждённую реализованную функциональность после слияния PR. Отделяй проектные требования от фактической реализации.'
   WHEN 'merge_queue' THEN 'Проверяй состояние PR и доступные проверки перед слиянием. Не обходи защиту веток.'
+  WHEN 'deployment' THEN 'Проверяй готовность окружения и GitHub Actions. Не объявляй выкладку успешной без подтверждения. Обеспечь идемпотентность и возможность отката. Не храни секреты в коде.'
   WHEN 'backlog' THEN 'Регистрируй новые запросы и сохраняй их контекст до анализа.'
   WHEN 'done' THEN 'Фиксируй завершение только после необходимых проверок и обновления документации.'
   ELSE '' END WHERE agent_instructions='';
@@ -548,7 +573,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
   const p=await pool.query('SELECT id,title,stage,git_branch,pr_url FROM tasks WHERE project_id=$1 AND id=$2',[id,parentId]);
   if(!p.rowCount)return reply.code(409).send({error:'Задача-основание отсутствует в проекте'});
   const parent=p.rows[0];
-  if(['documentation','done'].includes(parent.stage))parentBranch=null;
+  if(['deployment','documentation','done'].includes(parent.stage))parentBranch=null;
   else if(parent.stage==='merge_queue'&&parent.git_branch&&parent.pr_url)parentBranch=parent.git_branch;
   else return reply.code(409).send({error:'Ожидание зависимости: сначала заверши разработку задачи «'+parent.title+'» до открытого PR. После этого текущая задача сможет стартовать от её ветки.'});
  }
@@ -839,7 +864,7 @@ async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):
   const p=await pool.query('SELECT stage,git_branch,pr_url FROM tasks WHERE id=$1 AND project_id=$2',[row.depends_on_task_id,id]);
   if(!p.rowCount)throw Object.assign(new Error('Не найдена задача, от которой зависит разработка'),{statusCode:409});
   if(p.rows[0].stage==='merge_queue'&&p.rows[0].git_branch&&p.rows[0].pr_url)baseBranch=p.rows[0].git_branch;
-  else if(!['done','documentation'].includes(p.rows[0].stage))
+  else if(!['done','documentation','deployment'].includes(p.rows[0].stage))
    throw Object.assign(new Error('Зависимая задача ещё не подготовила PR'),{statusCode:409});
  }
  const apiBase='https://api.github.com/repos/'+row.repository;
@@ -899,6 +924,29 @@ async function restackChildren(projectId:string,parentId:string,parentHeadSha:st
   }
  }
 }
+async function registerMergedDeployment(projectId:string,taskId:string,userId:string,mergeSha:string|null){
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const task=await client.query('SELECT stage FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,projectId]);
+  if(!task.rowCount)throw new Error('Задача не найдена после слияния PR');
+  if(task.rows[0].stage!=='merge_queue'){
+   await client.query('COMMIT');
+   return task.rows[0].stage as string;
+  }
+  const mode=(await client.query("SELECT mode FROM project_deployment_settings WHERE project_id=$1",[projectId])).rows[0]?.mode||'skip';
+  const decision=deploymentDecision(mode);
+  const skipped=decision.status==='skipped';
+  const destination=decision.stage;
+  await client.query("INSERT INTO task_deployment_records(task_id,project_id,status,reason,merge_sha,actor_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id) DO UPDATE SET status=EXCLUDED.status,reason=EXCLUDED.reason,merge_sha=COALESCE(EXCLUDED.merge_sha,task_deployment_records.merge_sha),actor_id=EXCLUDED.actor_id,updated_at=now()",
+   [taskId,projectId,decision.status,decision.reason,mergeSha,userId]);
+  await client.query('UPDATE tasks SET stage=$3,updated_at=now() WHERE id=$1 AND project_id=$2',[taskId,projectId,destination]);
+  await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)",
+   [randomUUID(),taskId,userId,skipped?'deployment_skipped':'deployment_pending',skipped?'Выкладка пропущена: окружение не настроено':'Нужно подтвердить ручную выкладку или указать причину пропуска']);
+  await client.query('COMMIT');
+  return destination;
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}
 async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  const info=await pool.query("SELECT t.id,t.title,t.stage,t.pr_number,t.pr_url,t.depends_on_task_id,t.pr_base_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
  [taskId,projectId,userId]);
@@ -928,7 +976,7 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  if(!pull.ok)throw Object.assign(new Error('Не удалось получить PR: GitHub HTTP '+pull.status),{statusCode:502});
  const pr=await pull.json() as any;
  if(pr.merged){
-  await pool.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE id=$1",[taskId]);
+  await registerMergedDeployment(projectId,taskId,userId,String(pr.merge_commit_sha||pr.head.sha||''));
   await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
   return {taskId,status:'merged',url:row.pr_url};
  }
@@ -997,7 +1045,7 @@ async function mergeTaskPr(projectId:string,taskId:string,userId:string){
   signal:AbortSignal.timeout(25000)});
  const merged=await merge.json().catch(()=>({})) as any;
  if(!merge.ok || !merged.merged)throw Object.assign(new Error('GitHub отклонил слияние: '+String(merged.message||merge.status).slice(0,240)),{statusCode:409});
- await pool.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE id=$1",[taskId]);
+ await registerMergedDeployment(projectId,taskId,userId,String(merged.sha||pr.merge_commit_sha||''));
  await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'merged',$4)",[randomUUID(),taskId,userId,row.pr_url]);
  return {taskId,status:'merged',url:row.pr_url};
@@ -1221,6 +1269,7 @@ app.post('/api/projects',async(req,reply)=>{
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
  for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent.name,agent.instructions]);}
  await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2) ON CONFLICT DO NOTHING",[id,'Отвечай за надежную и быструю выкатку, анализ GitHub Actions, экономию CI-ресурсов, устранение повторных сборок, кеширование, concurrency, rollback и безопасность секретов. Не отключай обязательные проверки. Не запускай деплой из консультационного чата без разрешенной интеграции. Подтверждай действия результатами инструментов.']);
+ await client.query('INSERT INTO project_deployment_settings(project_id) VALUES($1) ON CONFLICT DO NOTHING',[id]);
  await client.query('COMMIT');return reply.code(201).send({id,name,description});}
  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 });
@@ -1237,6 +1286,37 @@ app.put('/api/projects/:id/specialist-agents/devops',async(req:any,reply)=>{
  const p=parse(z.object({agent_name:z.string().trim().min(1).max(120),agent_instructions:z.string().trim().min(1).max(12000)}),req.body);
  const r=await pool.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops',$2,$3) ON CONFLICT(project_id,role) DO UPDATE SET agent_name=EXCLUDED.agent_name,agent_instructions=EXCLUDED.agent_instructions,updated_at=now() RETURNING role,agent_name,agent_instructions,updated_at",[id,p.agent_name,p.agent_instructions]);
  return r.rows[0];
+});
+app.get('/api/projects/:id/deployment/settings',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ return (await pool.query("SELECT mode,updated_at FROM project_deployment_settings WHERE project_id=$1",[id])).rows[0]||{mode:'skip'};
+});
+app.put('/api/projects/:id/deployment/settings',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {mode}=parse(z.object({mode:z.enum(['skip','manual'])}),req.body);
+ const updated=await pool.query("INSERT INTO project_deployment_settings(project_id,mode) VALUES($1,$2) ON CONFLICT(project_id) DO UPDATE SET mode=$2,updated_at=now() RETURNING mode,updated_at",[id,mode]);
+ return updated.rows[0];
+});
+app.post('/api/projects/:id/tasks/:taskId/deployment/resolve',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {outcome,reason}=parse(z.object({outcome:z.enum(['skipped','manual_confirmed']),reason:z.string().trim().min(5).max(1500)}),req.body);
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const task=await client.query("SELECT stage FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[id,taskId]);
+  if(!task.rowCount||task.rows[0].stage!=='deployment'){
+   await client.query('ROLLBACK');return reply.code(409).send({error:'Задача не находится на этапе выкладки'});
+  }
+  const record=await client.query("UPDATE task_deployment_records SET status=$3,reason=$4,actor_id=$5,updated_at=now() WHERE project_id=$1 AND task_id=$2 AND status='pending' RETURNING task_id",[id,taskId,outcome,reason,uid(req)]);
+  if(!record.rowCount)throw Object.assign(new Error('Не найдена ожидающая выкладка для этой задачи'),{statusCode:409});
+  await client.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE project_id=$1 AND id=$2",[id,taskId]);
+  await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)",[randomUUID(),taskId,uid(req),outcome==='skipped'?'deployment_skipped':'deployment_manual_confirmed',reason]);
+  await client.query('COMMIT');
+  return {stage:'documentation',deployment_status:outcome};
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 });
 app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows;});
 app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
@@ -1268,7 +1348,7 @@ async function updateDependency(projectId:string,taskId:string,parentId:string|n
  if(parentId===taskId)throw Object.assign(new Error('Задача не может зависеть от самой себя'),{statusCode:409});
  const task=await pool.query('SELECT id,stage,git_branch FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]);
  if(!task.rowCount)throw Object.assign(new Error('Задача не найдена'),{statusCode:404});
- if(['merge_queue','documentation','done'].includes(task.rows[0].stage)||task.rows[0].git_branch)
+ if(['merge_queue','deployment','documentation','done'].includes(task.rows[0].stage)||task.rows[0].git_branch)
   throw Object.assign(new Error('Нельзя менять базовую зависимость после создания ветки. Сначала завершите текущую разработку.'),{statusCode:409});
  if(parentId){
   const parent=await pool.query('SELECT id FROM tasks WHERE project_id=$1 AND id=$2',[projectId,parentId]);

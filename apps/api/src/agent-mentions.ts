@@ -16,7 +16,7 @@ export async function resolveAgentMention(pool:Pick<Pool,'query'>,projectId:stri
  if(!mention)return null;
  if(!mention.message)throw Object.assign(new Error('После @'+mention.alias+' напиши сообщение агенту'),{statusCode:400});
  const result=mention.stage==='devops'
-  ?await pool.query('SELECT agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 AND role=$2',[projectId,'devops'])
+  ?await pool.query("SELECT COALESCE(NULLIF(w.agent_name,''),p.agent_name) AS agent_name, CONCAT_WS(E'\\n',p.agent_instructions,w.agent_instructions) AS agent_instructions FROM project_specialist_agents p LEFT JOIN workflow_stages w ON w.project_id=p.project_id AND w.stage='deployment' WHERE p.project_id=$1 AND p.role=$2",[projectId,'devops'])
   :await pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,mention.stage]);
  if(!result.rowCount)throw Object.assign(new Error('Агент '+mention.alias+' не настроен в проекте'),{statusCode:422});
  const stage=result.rows[0];
