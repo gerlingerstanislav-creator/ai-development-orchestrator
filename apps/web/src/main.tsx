@@ -2150,7 +2150,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
       {m.status==='queued'&&<small className="chat-message-status">В очереди ПМ</small>}
       {m.status==='processing'&&<small className="chat-message-status">ПМ распределяет поручение…</small>}
-      {m.status==='failed'&&<small className="chat-message-status chat-message-failed">Обработка не завершена. Скопируй сообщение и отправь повторно.</small>}
+      {m.status==='failed'&&<small className="chat-message-status chat-message-failed">Обработка не завершена. <button type="button" className="textbtn" onClick={async()=>{try{await api('/projects/'+selectedProjectId+'/manager/inbox/'+m.id+'/retry',{method:'POST'});updateProjectChat(projectChatKey(selectedProjectId,'project'),chat=>({...chat,messages:chat.messages.map(x=>x.id===m.id?{...x,status:'queued'}:x)}));}catch(e){fail(e);}}}>Повторить</button></small>}
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
