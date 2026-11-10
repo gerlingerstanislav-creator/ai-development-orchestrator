@@ -1662,6 +1662,25 @@ app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,rep
   [randomUUID(),id,processId,message]);
  return {ok:true,message:'Уточнение принято и будет учтено на следующем этапе анализа или формирования документации.'};
 });
+// Stop an active analyst run without rolling back previously committed checkpoints.
+ // Locking the job row also serializes the request with document-writing checkpoints.
+app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
+ const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const stopped=await pool.query(
+  "UPDATE document_import_jobs SET status='cancelled',message='Остановлен пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND actor_id=$3 AND status='running' RETURNING id",
+  [id,processId,uid(req)]);
+ if(!stopped.rowCount)return reply.code(409).send({error:'Процесс уже завершён или не принадлежит пользователю'});
+ await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','stopped','Пользователь остановил работу аналитика')",
+  [randomUUID(),id,processId]);
+ // The persisted status prevents subsequent writes even when cancellation reaches an
+ // in-flight Codex request later. Workflow cancellation releases its worker slot.
+ try{
+  const client=await temporal();
+  await client.workflow.getHandle('analyst-'+processId).cancel();
+ }catch(error){req.log.warn({error},'Temporal cancel pending; persisted stop gate already active');}
+ return {ok:true,status:'cancelled',message:'Аналитик остановлен. Уже сохранённые контрольные точки и документы не удалены.'};
+});
 app.get('/api/projects/:id/processes/:processId/events',async(req:any,reply)=>{
  const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
