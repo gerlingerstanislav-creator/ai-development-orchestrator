@@ -44,6 +44,9 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  const projectId=randomUUID(),actorId=randomUUID(),rootId=randomUUID();
  await db.query("INSERT INTO projects VALUES($1,'Coffee','Предзаказ кофе')",[projectId]);
  await db.query("INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,'Техническое задание','',NULL,'spec')",[rootId,projectId]);
+ for(const [key,title] of [['architecture','Архитектура и технические решения'],['operations','Запуск и эксплуатация'],['design','Дизайн и интерфейсы'],['research','Исходные материалы и исследования']]){
+  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),projectId,title,key]);
+ }
  await db.query("INSERT INTO project_ai_settings VALUES($1,true,'gpt-6-luna','low')",[projectId]);
  const originalFetch=globalThis.fetch;
  let pageId=null,modelCalls=0,failOnce=false,seenTopicCalls=0;
