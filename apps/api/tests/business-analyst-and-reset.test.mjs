@@ -9,12 +9,13 @@ import {registerBusinessAnalystHandoff} from '../dist/business-analyst-handoff.j
 import {toolsForRole,toolAllowedForRole} from '../dist/agent-tools.js';
 
 test('BA can edit documentation, but cannot create technical tasks or owner questions',()=>{
- const tools=toolsForRole('business_analyst').map(t=>t.name);
+ const tools=toolsForRole('analyst').map(t=>t.name);
  assert.ok(tools.includes('documents.create'));
  assert.ok(tools.includes('documentation.rebuild'));
  assert.ok(!tools.includes('tasks.create'));
  assert.ok(!tools.includes('questions.create'));
  assert.equal(toolAllowedForRole('manager','tasks.create'),true);
+ assert.equal(toolAllowedForRole('analyst','tasks.create'),false);
  assert.equal(toolAllowedForRole('business_analyst','tasks.create'),false);
 });
 

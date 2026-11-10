@@ -11,13 +11,17 @@ export function registerBusinessAnalystHandoff(app:FastifyInstance,deps:{
 }){
  const {pool,uid,access}=deps;
  app.post('/api/projects/:id/business-analyst/handoff',async(req:any,reply)=>{
-  const {id}=z.object({id:uuid}).parse(req.params);
+  const params=z.object({id:uuid}).safeParse(req.params);
+  if(!params.success)return reply.code(400).send({error:'Некорректный идентификатор проекта'});
+  const {id}=params.data;
   if(!await access(req,reply,id))return;
-  const {title,description,approved}=z.object({
+  const payload=z.object({
    title:z.string().trim().min(5).max(220),
    description:z.string().trim().min(20).max(18000),
    approved:z.literal(true)
-  }).parse(req.body);
+  }).safeParse(req.body);
+  if(!payload.success)return reply.code(400).send({error:'Укажи название и описание согласованного пакета и подтверди передачу',details:payload.error.flatten()});
+  const {title,description}=payload.data;
   const client=await pool.connect();
   try{
    await client.query('BEGIN');

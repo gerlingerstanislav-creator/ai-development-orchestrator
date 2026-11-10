@@ -1,5 +1,6 @@
 import type {Pool} from 'pg';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
+import {agentMemoryContext} from './project-team.js';
 
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
@@ -33,13 +34,13 @@ export const agentToolCatalog=[
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
  tool('memory.record','Сохранить опыт либо предложить улучшение инструкции. Опыт не становится автоматически обязательным правилом.',{kind:field('string','observation или instruction_suggestion'),text:str,evidence:str,idempotency_key:idem},['kind','text'])
 ];
-export type AgentRole='manager'|'analyst'|'business_analyst'|'systems_analyst';
+export type AgentRole='manager'|'analyst'|'business_analyst';
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['tasks.create','questions.create']);
 export function toolsForRole(role:AgentRole){
- return role==='business_analyst'?agentToolCatalog.filter(t=>!BA_DENIED.has(t.name)):agentToolCatalog;
+ return role==='analyst'||role==='business_analyst'?agentToolCatalog.filter(t=>!BA_DENIED.has(t.name)):agentToolCatalog;
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);
@@ -78,6 +79,5 @@ export async function agentSessionEffects(pool:Pick<Pool,'query'>,id:string){
   import_job_id:value('documentation.import','import_job_id')||value('documentation.rebuild','import_job_id')||value('documentation.organize','import_job_id')};
 }
 export async function agentLearnedContext(pool:Pick<Pool,'query'>,projectId:string,role:AgentRole){
- const rows=(await pool.query("SELECT body,evidence,kind,status FROM agent_memory WHERE project_id=$1 AND role IN ($2,'manager') AND (kind='observation' OR (kind='instruction_suggestion' AND status='approved')) ORDER BY created_at DESC LIMIT 20",[projectId,role])).rows;
- return rows.reverse().map(r=>'- '+String(r.body).slice(0,800)+(r.evidence?' (основание: '+String(r.evidence).slice(0,160)+')':'')).join('\n');
+ return agentMemoryContext(pool,projectId,role);
 }

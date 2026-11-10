@@ -1651,9 +1651,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);setProjectChatMode('documentation');setProjectInput('Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');setProjectChatOpen(true);}}><LayoutGrid size={17}/></button>
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
-   {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}\n   <div className="docs-list-footer">
+   {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}
+   <div className="docs-list-footer">
     <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
-    {selected&&<DocumentationReset projectId={selected.id} request={api} onReset={async()=>{setSelectedDocId(null);await loadProject(selected.id);navigate(projectUrl(selected.id,'docs'));}}/>}
+    {selected&&<DocumentationReset key={selected.id} projectId={selected.id} request={api} onReset={async()=>{setSelectedDocId(null);await loadProject(selected.id);navigate(projectUrl(selected.id,'docs'));}}/>}
    </div>
   </aside>
   <section className="panel docs-reading">

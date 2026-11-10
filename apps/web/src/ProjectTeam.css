@@ -33,3 +33,17 @@
 .team-memory-meta time{margin-left:auto}
 .team-memory-item p{font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}
 @media(max-width:760px){.team-layout{grid-template-columns:1fr}.team-agents{display:flex;overflow-x:auto;gap:4px}.team-list-heading{display:none}.team-agent{min-width:150px;width:auto}.team-agent>svg{display:none}.team-detail{padding:14px}}
+
+.team-section-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px}
+.team-section-toolbar h4{margin:0}
+.team-actions{display:flex;align-items:center;justify-content:flex-end;gap:7px;flex-wrap:wrap;margin-top:10px}
+.team-actions .secondary,.team-actions .primary{display:inline-flex;align-items:center;gap:6px}
+.team-editor{display:flex;flex-direction:column;gap:12px;margin:10px 0 12px}
+.team-editor label{display:flex;flex-direction:column;gap:7px;font-size:12px}
+.team-editor input,.team-editor textarea{box-sizing:border-box;width:100%;padding:10px 12px;border-radius:8px;font:inherit;background:var(--panel,#121820);color:inherit;border:1px solid var(--border,#303844)}
+.team-editor textarea{resize:vertical;min-height:105px;line-height:1.5}
+.team-history{border:1px solid var(--border,#303844);padding:12px;border-radius:9px;margin-top:12px;max-height:430px;overflow:auto}
+.team-history details{padding:10px 0;border-top:1px solid var(--border,#303844);font-size:12px}
+.team-history summary{cursor:pointer;margin-bottom:10px}
+.team-history strong{display:block;margin:10px 0 5px}
+.team-memory-item .team-actions{margin-top:10px}

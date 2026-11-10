@@ -4,7 +4,7 @@ import {deploymentDecision} from './deployment-stage.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
-import {registerProjectTeamRoutes} from './project-team.js';
+import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
 import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
@@ -1344,6 +1344,10 @@ app.post('/api/projects',async(req,reply)=>{
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
  for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent.name,agent.instructions]);}
  await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2) ON CONFLICT DO NOTHING",[id,'Отвечай за надежную и быструю выкатку, анализ GitHub Actions, экономию CI-ресурсов, устранение повторных сборок, кеширование, concurrency, rollback и безопасность секретов. Не отключай обязательные проверки. Не запускай деплой из консультационного чата без разрешенной интеграции. Подтверждай действия результатами инструментов.']);
+ await client.query(`INSERT INTO project_conversation_agents(project_id,role,agent_name,agent_instructions)
+  VALUES($1,'manager','Менеджер проекта','Помогай владельцу проекта ставить задачи и принимать решения. Координируй работу других агентов, уточняй только существенные вопросы, показывай реальные состояния задач и не объявляй действие выполненным без подтверждения инструментов.'),
+        ($1,'analyst','Бизнес-аналитик','Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.')
+  ON CONFLICT(project_id,role) DO NOTHING`,[id]);
  await client.query('INSERT INTO project_deployment_settings(project_id) VALUES($1) ON CONFLICT DO NOTHING',[id]);
  await client.query('COMMIT');return reply.code(201).send({id,name,description});}
  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
@@ -1732,7 +1736,7 @@ registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
 registerBusinessAnalystHandoff(app,{pool,uid,access});
-registerProjectTeamRoutes(app,{pool,access});
+registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
 registerKnowledgeDocumentUpdateRoutes(app,{pool,uid,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
@@ -1831,5 +1835,5 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAgentToolsSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});
