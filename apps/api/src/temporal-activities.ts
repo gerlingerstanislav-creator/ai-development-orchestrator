@@ -466,8 +466,9 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
   "SELECT id,role,body,status FROM manager_messages WHERE id=$1 AND project_id=$2 AND task_id=$3",
   [messageId,projectId,taskId]);
  if(!msg.rowCount||msg.rows[0].role!=='user')return;
- if(msg.rows[0].status==='completed')return;
- await pool.query("UPDATE manager_messages SET status='processing',updated_at=now() WHERE id=$1 AND status IN ('queued','processing','failed')",[messageId]);
+ if(msg.rows[0].status==='completed'||msg.rows[0].status==='cancelled')return;
+ const acquired=await pool.query("UPDATE manager_messages SET status='processing',updated_at=now() WHERE id=$1 AND status IN ('queued','processing','failed') RETURNING id",[messageId]);
+ if(!acquired.rowCount)return;
  try{
   let answer=args.continuation||'';
   if(!args.handled){
@@ -476,7 +477,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const settings=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
    if(!settings.rows[0]?.enabled)throw Error('AI отключён в настройках проекта');
    const rules=(await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at DESC LIMIT 12',[projectId])).rows.map(x=>x.body).join('\n').slice(0,3000);
-   const history=snapshot.messages.filter(m=>m.status!=='failed'&&m.id!==messageId).slice(-16).map(m=>({role:m.role,content:String(m.body).slice(0,1200)}));
+   const history=snapshot.messages.filter(m=>!['failed','cancelled'].includes(m.status)&&m.id!==messageId).slice(-16).map(m=>({role:m.role,content:String(m.body).slice(0,1200)}));
    const pending=snapshot.requests.filter(x=>x.status==='open').map(x=>({kind:x.kind,id:x.id,request:managerRequestSummary(x)}));
    const latest=snapshot.latestTest;
    const agentNotes=snapshot.internalNotes.slice(0,12).reverse().map(n=>({
@@ -534,7 +535,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  }catch(error){
-  await pool.query("UPDATE manager_messages SET status='failed',updated_at=now() WHERE id=$1 AND status<>'completed'",[messageId]);
+  await pool.query("UPDATE manager_messages SET status='failed',updated_at=now() WHERE id=$1 AND status IN ('queued','processing')",[messageId]);
   await event(projectId,messageId,'analysis','failed','Менеджер проекта не ответил: '+String(error).slice(0,300),'error');
   throw error;
  }

@@ -192,6 +192,9 @@ export async function rebuildProjectDocumentation(args:{
    const client=await pool.connect();
    try{
     await client.query('BEGIN');
+    // Serialise stop requests with any document changes from this checkpoint.
+    const jobState=(await client.query("SELECT status FROM document_import_jobs WHERE id=$1 FOR UPDATE",[jobId])).rows[0]?.status;
+    if(jobState!=='running')throw Error('Работа аналитика остановлена пользователем');
     const live=(await client.query(
      'SELECT cursor,page_id FROM document_import_topics WHERE job_id=$1 AND topic_key=$2 FOR UPDATE',
      [jobId,chapterKey])).rows[0];

@@ -166,6 +166,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const existing=(await client.query('SELECT status,result FROM document_import_jobs WHERE id=$1 AND project_id=$2 FOR UPDATE',[jobId,projectId])).rows[0];
    if(!existing)throw Error('Запуск аналитика не найден');
    if(existing.status==='completed'){await client.query('COMMIT');return existing.result;}
+   if(existing.status!=='running')throw Error('Процесс аналитика остановлен; сохранение результата отменено');
    const parent=(await client.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[projectId])).rows[0];
    if(!parent)throw Error('Не найден системный раздел ТЗ');
    const root=await client.query(
@@ -214,8 +215,32 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const {project_id:id,actor_id:actorId,request_text:message,source_key:sourceKey}=job;
   const {location,attachments,mode,documentId,questionId,structureOnly,rebuildSpec}=job.analyst_input as AnalystInput;
   const input={actorId,message:message+(attachments.length?'\n\nМатериалы: '+attachments.map(file=>file.name).join(', '):''),mode};
+  // All AI calls see the latest owner guidance, including instructions submitted while a call was running.
+  // A stale model response is discarded and regenerated rather than silently overriding a correction.
+  const running=async()=>{
+   const state=await pool.query("SELECT status FROM document_import_jobs WHERE id=$1",[jobId]);
+   if(state.rows[0]?.status!=='running')throw Error('Работа аналитика остановлена пользователем');
+  };
+  const liveInstructions=async()=>(
+   await pool.query('SELECT body FROM process_instructions WHERE project_id=$1 AND process_id=$2 ORDER BY created_at',[id,jobId])
+  ).rows as Array<{body:string}>;
+  const completeLive=async(prompt:string,config:any,options?:Parameters<typeof completion>[2])=>{
+   for(let revision=0;revision<5;revision++){
+    await running();
+    const current=await liveInstructions();
+    const instructionText=current.length?'\n\nНовые указания владельца во время работы (применить к текущему ответу):\n'+
+     current.slice(-20).map(x=>'- '+x.body).join('\n').slice(-9500):'';
+    const result=await completion(prompt+instructionText,config,options);
+    await running();
+    const latest=await liveInstructions();
+    if(latest.length===current.length&&latest.every((item,i)=>item.body===current[i].body))return result;
+    await processEvent(id,jobId,'instruction_updated','Аналитик получил уточнение во время ответа и пересчитывает результат');
+   }
+   throw Error('Поступают новые указания быстрее, чем аналитик завершает текущий шаг. Возобнови процесс после согласования уточнений.');
+  };
   const updateProgress=async(stage:string,message:string)=>{
-   await pool.query('UPDATE document_import_jobs SET message=$2,updated_at=now() WHERE id=$1',[jobId,message]);
+   const updated=await pool.query("UPDATE document_import_jobs SET message=$2,updated_at=now() WHERE id=$1 AND status='running' RETURNING id",[jobId,message]);
+   if(!updated.rowCount)throw Error('Работа аналитика остановлена пользователем');
    await processEvent(id,jobId,stage,message);
   };
   try{
@@ -228,7 +253,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     await applyOwnerAnswer(config);
    }else if(rebuildSpec){
     await rebuildProjectDocumentation({pool,job,
-     complete:async prompt=>completion(prompt,config,{maxAttempts:3}),
+     complete:async prompt=>completeLive(prompt,config,{maxAttempts:3}),
      recordUsage:async usage=>storeTokenUsage(id,null,config.model,usage),
      progress:updateProgress,
      agentInstructions:await businessAnalystContext(id)
@@ -236,7 +261,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    }else if(structureOnly){
     await organizeImportedDocumentation({
      pool,job,
-     complete:async prompt=>completion(prompt,config,{maxAttempts:3}),
+     complete:async prompt=>completeLive(prompt,config,{maxAttempts:3}),
      recordUsage:async usage=>storeTokenUsage(id,null,config.model,usage),
      progress:updateProgress
     });
@@ -271,7 +296,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      pool,job,files,sourceName,
      location:location&&commit?{owner:location.owner,repository:location.repository,commit}:undefined,
      instructions:message,rules,analystInstructions,getInstructions,progress:updateProgress,
-     complete:async prompt=>completion(prompt,config,{maxAttempts:3,
+     complete:async prompt=>completeLive(prompt,config,{maxAttempts:3,
       onRetry:async(attempt,maxAttempts,reason)=>updateProgress('retrying','Повтор анализа: '+(attempt+1)+'/'+maxAttempts+' · '+reason.slice(0,220))}),
      recordUsage:async usage=>storeTokenUsage(id,null,config.model,usage)
     });
@@ -279,8 +304,11 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     await updateProgress('analyzing','Аналитик уточняет требования');
     await applyDocumentationEdit(config);
    }
-   await processEvent(id,jobId,'completed','Работа аналитика завершена').catch(()=>{});
+   const finalStatus=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0]?.status;
+   if(finalStatus==='completed')await processEvent(id,jobId,'completed','Работа аналитика завершена').catch(()=>{});
   }catch(error){
+   const state=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0]?.status;
+   if(state==='cancelled')return; // Intentional user stop is not an agent failure.
    const reason=error instanceof Error?error.message:'Неизвестная ошибка';
    await processEvent(id,jobId,'failed',reason,'error').catch(()=>{});
    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2,updated_at=now() WHERE id=$1 AND status='running'",
@@ -309,7 +337,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Существующая страница, конец:\n'+String(current.body).slice(-4800),
     'Последние правила аналитика:\n'+(await businessAnalystContext(id)).slice(0,850)
    ].join('\n\n');
-   const response=await completion(prompt,config,{maxAttempts:3});
+   const response=await completeLive(prompt,config,{maxAttempts:3});
    await storeTokenUsage(id,null,config.model,response.usage);
    const parsed=z.object({addition:z.string().trim().min(15).max(3400),summary:z.string().trim().min(5).max(700)}).parse(jsonObject(response.text));
    const client=await pool.connect();
@@ -375,7 +403,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Последнее сообщение:\n'+message.slice(0,4000)
    ].join('\n\n');
     if(prompt.length>24000)throw Error('Выбери более узкий раздел ТЗ для обсуждения.');
-    const result=await completion(prompt,config,{maxAttempts:2});
+    const result=await completeLive(prompt,config,{maxAttempts:2});
     await storeTokenUsage(id,null,config.model,result.usage);
     const output=z.object({
      reply:z.string().trim().min(1).max(4000),

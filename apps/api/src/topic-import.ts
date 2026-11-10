@@ -191,6 +191,8 @@ async function diversifyCollapsedTopics(args:TopicImportArgs,classified:Classifi
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
+  const jobStatus=(await client.query("SELECT status FROM document_import_jobs WHERE id=$1 FOR UPDATE",[job.id])).rows[0]?.status;
+  if(jobStatus!=='running')throw Error('Работа аналитика остановлена пользователем');
   // All new assignments appear together; on crash a retry cannot see a half-remapped map.
   for(const fragment of pending){
    const topic=assignments.get(fragment.index)!;
@@ -372,6 +374,9 @@ export async function importByTopics(args:TopicImportArgs){
    const client=await pool.connect();
    try{
     await client.query('BEGIN');
+    // Serialise stop requests with any document changes from this checkpoint.
+    const jobState=(await client.query("SELECT status FROM document_import_jobs WHERE id=$1 FOR UPDATE",[jobId])).rows[0]?.status;
+    if(jobState!=='running')throw Error('Работа аналитика остановлена пользователем');
     const live=(await client.query("SELECT cursor FROM document_import_topics WHERE job_id=$1 AND topic_key=$2 FOR UPDATE",[jobId,key])).rows[0];
     if(live.cursor!==i){await client.query('COMMIT');continue;}
     const existing=(await client.query("SELECT id,title,body,parent_id,import_synced_hash FROM documents WHERE project_id=$1 AND import_source=$2 FOR UPDATE",[projectId,importSource])).rows[0];

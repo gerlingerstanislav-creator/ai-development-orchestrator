@@ -142,6 +142,7 @@ export type ManagerDeps={
  workerAuthorization:(actorId:string,email:string)=>Promise<string>;
  decideAction:(input:{projectId:string;taskId:string;message:string;snapshot:NonNullable<Awaited<ReturnType<typeof managerSnapshot>>>})=>Promise<unknown>;
  startManagerWorkflow:(arg:{projectId:string;taskId:string;messageId:string})=>Promise<void>;
+ stopManagerWorkflow?:(messageId:string)=>Promise<void>;
  recoverTask:(arg:{projectId:string;taskId:string;auth:string;cookie:string})=>Promise<{ok:boolean;status:number;message:string;details?:unknown}>
 };
 const scope=z.object({id:z.string().uuid(),taskId:z.string().uuid()});
@@ -159,6 +160,9 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    "SELECT m.actor_id,u.email,m.body,m.created_at FROM manager_messages m JOIN users u ON u.id=m.actor_id WHERE m.id=$1 AND m.project_id=$2 AND m.task_id=$3 AND m.role='user' AND m.status IN ('queued','processing')",
    [messageId,projectId,taskId])).rows[0];
   if(!actor)return reply.code(404).send({error:'Активное обращение менеджеру не найдено'});
+  const isTurnActive=async()=>Boolean((await pool.query(
+   "SELECT m.actor_id FROM manager_messages m JOIN users u ON u.id=m.actor_id WHERE m.id=$1 AND m.project_id=$2 AND m.task_id=$3 AND m.role='user' AND m.status IN ('queued','processing')",
+   [messageId,projectId,taskId])).rows.length);
   const caller={userId:actor.actor_id};
   if(!await access(caller,reply,projectId)||!await requireAdmin(caller,reply))return;
   let snapshot=await managerSnapshot(pool,projectId,taskId);
@@ -176,6 +180,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
     req.log.warn({err:error},'Task manager could not choose a workflow action');
     return handled('Не удалось обработать сообщение. Повтори запрос в чате задачи.');
    }
+   if(!await isTurnActive())return {message:'',handled:true};
    if(action==='reply')return {message:''};
    const startRequested=action==='start_development';
    const previousTask=snapshot.task;
@@ -202,6 +207,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
      const context=earlier.reverse().map(row=>String(row.body)).join('\n\n');
      if(context&&message.length<3998)answer=context.slice(-(3998-message.length))+'\n\n'+message;
     }
+    if(!await isTurnActive())return {message:'',handled:true};
     const refined=await call('/assistant',{message:answer,mode:'clarification'});
     const result=refined.json();
     if(refined.statusCode>=400)return handled(String(result.error||'Аналитик не смог обработать уточнение.'));
@@ -211,6 +217,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
     await syncManagerInbox(pool,projectId,taskId);
     if(result.questions?.length)return handled(analysisResult);
    }else if(!startRequested)return {message:''};
+   if(!await isTurnActive())return {message:'',handled:true};
    const started=await call('/approve-development',{});
    const result=started.json();
    if(started.statusCode>=400)return handled([analysisResult,String(result.error||'Не удалось запустить разработку.')].filter(Boolean).join('\n\n'));
@@ -221,6 +228,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
   if(snapshot.owner)return {message:'По задаче уже работает автоматический процесс.'};
   if(snapshot.task.stage==='testing'&&snapshot.latestTest?.status==='completed'&&snapshot.latestTest.verdict==='blocked')
    return {message:''};
+  if(!await isTurnActive())return {message:'',handled:true};
   const auth=await deps.workerAuthorization(actor.actor_id,actor.email);
   const result=await recoverTask({projectId,taskId,auth,cookie:''});
   return {message:result.ok?result.message:'Автоматическое продолжение пока невозможно. '+result.message};
@@ -257,6 +265,18 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    return reply.code(503).send({error:'Сообщение сохранено, но менеджер проекта пока недоступен. Повторить обработку можно из истории.',message_id:msgId});
   }
   return reply.code(202).send({id:msgId,status:'queued'});
+ });
+ // Cancel a single queued/processing PM turn without cancelling the task's
+ // development or QA workflow. The message remains in history.
+ app.post('/api/projects/:id/tasks/:taskId/manager/messages/:messageId/stop',async(req:any,reply)=>{
+  const {id,taskId,messageId}=z.object({...scope.shape,messageId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const stopped=await pool.query("UPDATE manager_messages SET status='cancelled',updated_at=now() WHERE id=$1 AND project_id=$2 AND task_id=$3 AND actor_id=$4 AND role='user' AND status IN ('queued','processing') RETURNING id",
+   [messageId,id,taskId,uid(req)]);
+  if(!stopped.rowCount)return reply.code(409).send({error:'Сообщение уже обработано или остановлено'});
+  try{await deps.stopManagerWorkflow?.(messageId);}
+  catch(error){req.log.warn({error},'PM workflow cancellation pending; message is already stopped');}
+  return {ok:true,status:'cancelled'};
  });
  app.post('/api/projects/:id/tasks/:taskId/manager/messages/:messageId/retry',async(req:any,reply)=>{
   const {id,taskId,messageId}=z.object({...scope.shape,messageId:z.string().uuid()}).parse(req.params);
