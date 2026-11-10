@@ -220,28 +220,77 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
  </div>;
 }
 
-export function TaskPlanningFields({task,summaries,save}:{
- task:{iteration_id?:string|null;tags?:string[]};summaries:IterationSummary[];
- save:(values:{iteration_id:string|null;tags:string[]})=>Promise<{iteration_id:string|null;tags:string[]}>;
+export type PlanningOptions={
+ sprints:{id:string;name:string;starts_on:string;ends_on:string}[];
+ versions:{id:string;name:string}[];
+};
+export function TaskPlanningFields({task,summaries,save,projectId,request,options,onOptionsChange}:{
+ task:{iteration_id?:string|null;tags?:string[];sprint_id?:string|null;version_id?:string|null};
+ summaries:IterationSummary[];projectId:string;request:Request;options:PlanningOptions;onOptionsChange:(options:PlanningOptions)=>void;
+ save:(values:{iteration_id:string|null;tags:string[];sprint_id:string|null;version_id:string|null})=>Promise<{iteration_id:string|null;tags:string[];sprint_id:string|null;version_id:string|null}>;
 }){
  const [iteration,setIteration]=useState(task.iteration_id??'');
  const [tags,setTags]=useState(task.tags?.join(', ')??'');
+ const [sprint,setSprint]=useState(task.sprint_id??'');
+ const [version,setVersion]=useState(task.version_id??'');
+ const [sprintName,setSprintName]=useState('');
+ const [from,setFrom]=useState('');
+ const [to,setTo]=useState('');
+ const [versionName,setVersionName]=useState('');
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState('');
- const changed=iteration!==(task.iteration_id??'')||tags!==(task.tags?.join(', ')??'');
+ const changed=iteration!==(task.iteration_id??'')||tags!==(task.tags?.join(', ')??'')||
+  sprint!==(task.sprint_id??'')||version!==(task.version_id??'');
+ async function createSprint(){
+  if(!sprintName.trim()||!from||!to)return;
+  setBusy(true);setError('');
+  try{
+   const saved=await request<PlanningOptions['sprints'][number]>('/projects/'+projectId+'/sprints',{
+    method:'POST',body:JSON.stringify({name:sprintName,starts_on:from,ends_on:to})});
+   onOptionsChange({...options,sprints:[saved,...options.sprints]});
+   setSprint(saved.id);setSprintName('');setFrom('');setTo('');
+  }catch(e){setError(problem(e));}finally{setBusy(false);}
+ }
+ async function createVersion(){
+  if(!versionName.trim())return;
+  setBusy(true);setError('');
+  try{
+   const saved=await request<PlanningOptions['versions'][number]>('/projects/'+projectId+'/versions',{method:'POST',body:JSON.stringify({name:versionName})});
+   onOptionsChange({...options,versions:[saved,...options.versions]});
+   setVersion(saved.id);setVersionName('');
+  }catch(e){setError(problem(e));}finally{setBusy(false);}
+ }
  async function submit(event:React.FormEvent){
   event.preventDefault();setBusy(true);setError('');
   try{
-   const saved=await save({iteration_id:iteration||null,tags:tags.split(',').map(tag=>tag.trim()).filter(Boolean)});
+   const saved=await save({iteration_id:iteration||null,tags:tags.split(',').map(tag=>tag.trim()).filter(Boolean),
+    sprint_id:sprint||null,version_id:version||null});
    setIteration(saved.iteration_id??'');setTags(saved.tags.join(', '));
-  }
-  catch(e){setError(problem(e));}
-  finally{setBusy(false);}
+   setSprint(saved.sprint_id??'');setVersion(saved.version_id??'');
+  }catch(e){setError(problem(e));}finally{setBusy(false);}
  }
  return <form className="task-planning-fields" onSubmit={submit}>
   <label>Итерация<select value={iteration} onChange={e=>setIteration(e.target.value)} disabled={busy}>
    <option value="">Без итерации</option>{summaries.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
   </select></label>
+  <label>Спринт<select value={sprint} onChange={e=>setSprint(e.target.value)} disabled={busy}>
+   <option value="">Без спринта</option>{options.sprints.map(item=><option key={item.id} value={item.id}>
+    {item.name} ({String(item.starts_on).slice(0,10)} — {String(item.ends_on).slice(0,10)})
+   </option>)}
+  </select></label>
+  <details><summary>Создать спринт</summary><div className="iteration-actions">
+   <input aria-label="Название спринта" placeholder="Спринт 1" value={sprintName} onChange={e=>setSprintName(e.target.value)} maxLength={180}/>
+   <input aria-label="Начало спринта" type="date" value={from} onChange={e=>setFrom(e.target.value)}/>
+   <input aria-label="Конец спринта" type="date" value={to} onChange={e=>setTo(e.target.value)}/>
+   <button type="button" className="secondary" disabled={busy||!sprintName.trim()||!from||!to||to<from} onClick={()=>void createSprint()}>Создать</button>
+  </div></details>
+  <label>Версия поставки<select value={version} onChange={e=>setVersion(e.target.value)} disabled={busy}>
+   <option value="">Без версии</option>{options.versions.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
+  </select></label>
+  <details><summary>Создать версию</summary><div className="iteration-actions">
+   <input aria-label="Название версии" placeholder="v1.0" value={versionName} onChange={e=>setVersionName(e.target.value)} maxLength={180}/>
+   <button type="button" className="secondary" disabled={busy||!versionName.trim()} onClick={()=>void createVersion()}>Создать</button>
+  </div></details>
   <label>Теги<input value={tags} onChange={e=>setTags(e.target.value)} maxLength={650} placeholder="Через запятую" disabled={busy}/></label>
   <button type="submit" className="secondary" disabled={busy||!changed}>Сохранить</button>
   {error&&<p className="error" role="alert">{error}</p>}
