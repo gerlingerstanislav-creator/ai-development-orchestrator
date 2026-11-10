@@ -36,7 +36,7 @@ function deletionBlocker(task:TaskForDeletion){
 }
 
 async function ownerQuestionTaskIds(db:Pick<Pool,'query'>,projectId:string){
- return (await tasksWithCustomerQuestions(db,projectId)).filter(task=>task.type==='question'&&['open','answered'].includes(task.question_status)).map(task=>String(task.id));
+ return (await tasksWithCustomerQuestions(db,projectId)).filter(task=>task.awaits_product_owner).map(task=>String(task.id));
 }
 
 export function registerSafeTaskDeletion(app:FastifyInstance,{pool,access,requireAdmin}:Dependencies){
