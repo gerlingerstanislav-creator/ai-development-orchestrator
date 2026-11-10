@@ -5,8 +5,9 @@ const steps=proxyActivities<typeof activities>({
  startToCloseTimeout:'4 minutes',
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
+const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
 export async function prepareIterationPlan(runId:string):Promise<void>{
- try{await steps.prepareIterationPlanDraft(runId);}
+ try{await planningSteps.prepareIterationPlanDraft(runId);}
  catch(error){
   let cause=error;
   while(cause instanceof Error&&cause.cause instanceof Error)cause=cause.cause;
