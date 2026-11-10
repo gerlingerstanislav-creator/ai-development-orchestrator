@@ -1278,7 +1278,6 @@ app.get('/api/projects/trash',async(req)=>{
 });
 app.post('/api/projects/:id/trash',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
- if(!await requireAdmin(req,reply))return;
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
@@ -1296,14 +1295,12 @@ app.post('/api/projects/:id/trash',async(req:any,reply)=>{
 });
 app.post('/api/projects/:id/restore',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
- if(!await requireAdmin(req,reply))return;
  const restored=await pool.query('UPDATE projects SET deleted_at=NULL WHERE id=$1 AND owner_id=$2 AND deleted_at IS NOT NULL RETURNING id,name,description',[id,uid(req)]);
  if(!restored.rowCount)return reply.code(404).send({error:'Проект не найден в корзине'});
  return restored.rows[0];
 });
 app.delete('/api/projects/:id/permanent',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
- if(!await requireAdmin(req,reply))return;
  const {confirmation}=parse(z.object({confirmation:z.string().max(120)}),req.body||{});
  const client=await pool.connect();
  try{
