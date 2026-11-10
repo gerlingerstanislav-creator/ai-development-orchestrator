@@ -3,8 +3,8 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 
 type DB=Pick<Pool,'query'>|Pick<PoolClient,'query'>;
-export type KnowledgeStage='analysis'|'development'|'testing'|'documentation'|'manager';
-const stages=['analysis','development','testing','documentation','manager'] as const;
+export type KnowledgeStage='analysis'|'business_analyst'|'development'|'testing'|'documentation'|'manager';
+const stages=['analysis','business_analyst','development','testing','documentation','manager'] as const;
 const uuid=z.string().uuid();
 const status=z.enum(['draft','approved','obsolete']);
 const moduleInput=z.object({
@@ -23,7 +23,7 @@ export async function initKnowledgeWorkflow(pool:Pool){
  CREATE TABLE IF NOT EXISTS knowledge_instruction_modules(
   id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id) ON DELETE CASCADE,
   title text NOT NULL,body text NOT NULL,
-  stage text CHECK(stage IS NULL OR stage IN ('analysis','development','testing','documentation','manager')),
+  stage text CHECK(stage IS NULL OR stage IN ('analysis','business_analyst','development','testing','documentation','manager')),
   tags text[] NOT NULL DEFAULT '{}',
   mandatory boolean NOT NULL DEFAULT false,
   status text NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','approved','obsolete')),
@@ -31,6 +31,8 @@ export async function initKnowledgeWorkflow(pool:Pool){
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(project_id,title,stage)
  );
+ ALTER TABLE knowledge_instruction_modules DROP CONSTRAINT IF EXISTS knowledge_instruction_modules_stage_check;
+ ALTER TABLE knowledge_instruction_modules ADD CONSTRAINT knowledge_instruction_modules_stage_check CHECK(stage IS NULL OR stage IN ('analysis','business_analyst','development','testing','documentation','manager'));
  CREATE INDEX IF NOT EXISTS idx_instruction_modules_project ON knowledge_instruction_modules(project_id,stage,status);
  CREATE TABLE IF NOT EXISTS knowledge_task_links(
   id uuid PRIMARY KEY,

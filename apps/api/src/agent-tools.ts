@@ -34,7 +34,17 @@ export const agentToolCatalog=[
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
  tool('memory.record','Сохранить опыт либо предложить улучшение инструкции. Опыт не становится автоматически обязательным правилом.',{kind:field('string','observation или instruction_suggestion'),text:str,evidence:str,idempotency_key:idem},['kind','text'])
 ];
-export type AgentRole='manager'|'analyst';
+export type AgentRole='manager'|'analyst'|'business_analyst';
+
+/** Business analysts own product knowledge, not the executable backlog. A handoff
+ * requires an explicit authenticated user action outside the model tool catalog. */
+const BA_DENIED=new Set(['tasks.create','questions.create']);
+export function toolsForRole(role:AgentRole){
+ return role==='analyst'||role==='business_analyst'?agentToolCatalog.filter(t=>!BA_DENIED.has(t.name)):agentToolCatalog;
+}
+export function toolAllowedForRole(role:AgentRole,name:string){
+ return toolsForRole(role).some(t=>t.name===name);
+}
 export type AgentSession={id:string;project_id:string;actor_id:string;role:AgentRole;status:string;expires_at:Date};
 
 export async function initAgentToolsSchema(pool:Pick<Pool,'query'>){

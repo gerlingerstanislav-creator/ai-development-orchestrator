@@ -79,6 +79,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
  const stage:KnowledgeStage=operation.includes('qa')||operation.includes('test')?'testing':operation.includes('documentation')?'documentation':'analysis';
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,stage));
+ if(stage==='analysis')prompt='Ты СИСТЕМНЫЙ аналитик (SA). Тебе передана только согласованная постановка для технической проработки. Анализируй API, состояния, данные, зависимости и критерии реализации. Не создавай задачи и вопросы по будущему функционалу вне переданного пула. Технические противоречия возвращай на согласование BA; только блокирующие продуктовые решения направляй владельцу.\n\n'+prompt;
  prompt+='\n\nУтверждённые тематические знания (не изменяй требования без согласования):\n'+knowledge.documents+'\n\nПрименимые инструкции:\n'+knowledge.modules+'\n\nНакопленный опыт этапа:\n'+await agentMemoryContext(pool,projectId,stage);
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},

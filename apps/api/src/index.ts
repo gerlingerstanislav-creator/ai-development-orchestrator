@@ -7,6 +7,9 @@ import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
+import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
+import {registerSafeTaskDeletion} from './task-deletion.js';
+import {registerBusinessAnalystHandoff} from './business-analyst-handoff.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
@@ -56,7 +59,7 @@ const workflowDefaults = [
 ] as const;
 const workflowAgentDefaults:Record<string,{name:string;instructions:string}>={
  backlog:{name:'Оператор',instructions:'Регистрируй новые запросы и сохраняй их контекст до анализа.'},
- analysis:{name:'AI-аналитик',instructions:'Владей утверждённым ТЗ, формулируй критерии приёмки, сравнивай реализацию с требованиями. Не выполняй QA и не запрашивай у заказчика PR diff/скриншоты: при недостатке визуальных доказательств передавай проверку тестировщику. Существенное изменение поведения эскалируй Менеджеру проекта.'},
+ analysis:{name:'Системный аналитик',instructions:'На основании согласованного бизнес-аналитиком пула анализируй технические требования, данные, API, интеграции, состояния, ограничения и зависимости. Уточняй только блокирующие вопросы по текущим задачам. Продуктовые решения возвращай бизнес-аналитику и владельцу продукта. Не создавай задачи и вопросы по невыбранному функционалу. Сверяй PR с утверждённым ТЗ; QA выполняет тестировщик.'},
  development:{name:'AI-разработчик',instructions:'Реализуй только утверждённое ТЗ в существующем репозитории/ветке, выполняй доступные проверки, исправляй воспроизводимые дефекты QA. Создай или обнови PR. Пиши тестировщику технические нюансы и вопросы, заказчику не обращайся. Не меняй секреты.'},
  testing:{name:'AI-тестировщик',instructions:'Независимо составь тест-план и проведи все доступные проверки на конкретном SHA. Сохраняй доказательства по каждому сценарию. Без реального браузера не засчитывай визуальное тестирование. Если инструментов нет — сообщи Менеджеру проекта непроверенные сценарии, не проси заказчика проводить тесты и не разрешай слияние самостоятельно.'},
  merge_queue:{name:'Интегратор GitHub',instructions:'Проверяй состояние PR и доступные проверки перед слиянием. Не обходи защиту веток.'},
@@ -283,6 +286,8 @@ async function dbInit() {
  ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
  await initDocumentationSystem(pool);
+ await initDocumentationReset(pool);
+ await pool.query("UPDATE workflow_stages SET agent_name='Системный аналитик' WHERE stage='analysis' AND agent_name='AI-аналитик'");
  await initKnowledgeContext(pool);
  await initKnowledgeWorkflow(pool);
  await initKnowledgeDocumentUpdates(pool);
@@ -1728,6 +1733,9 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 });
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
+registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
+registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
+registerBusinessAnalystHandoff(app,{pool,uid,access});
 registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
 registerKnowledgeDocumentUpdateRoutes(app,{pool,uid,access,requireAdmin});
