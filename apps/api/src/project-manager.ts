@@ -38,12 +38,7 @@ export function isPrEvidenceRequest(text:string):boolean{
   && /(?:нуж|не вид|пришл|предостав|доступ|провер|отсутств|получ|прочита|\bneed|\baccess|\bprovide)/i.test(text);
 }
 
-export function isDevelopmentCommand(text:string):boolean{
- const command=text.trim().replace(/^(?:(?:ну(?:\s+тогда)?|тогда|ок(?:ей)?|хорошо|пожалуйста)[,\s]+)+/iu,'');
- return /^(?:(?:отдай|отправь|отправляй|передай|передавай|переведи|переводи)\s+(?:задачу\s+в\s+разработку|в\s+разработку(?:\s+задачу)?)|(?:запусти|начни)\s+разработку)(?:,?\s+пожалуйста)?[.!]*$/iu.test(command);
-}
-
-const canBeClarificationAnswer=(text:string)=>!isDevelopmentCommand(text)&&!parseAgentMention(text);
+export const managerActionSchema=z.object({action:z.enum(['reply','clarify','start_development'])}).strict();
 
 function isCustomerQuestion(body:string){
  return !isPrEvidenceRequest(body)&&!(/(?:скриншот|браузер)/i.test(body)&&/(?:предостав|пришл|не вижу|нужен|отсутств)/i.test(body));
@@ -145,6 +140,7 @@ export type ManagerDeps={
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;
  workerSecret:string;
  workerAuthorization:(actorId:string,email:string)=>Promise<string>;
+ decideAction:(input:{projectId:string;taskId:string;message:string;snapshot:NonNullable<Awaited<ReturnType<typeof managerSnapshot>>>})=>Promise<unknown>;
  startManagerWorkflow:(arg:{projectId:string;taskId:string;messageId:string})=>Promise<void>;
  recoverTask:(arg:{projectId:string;taskId:string;auth:string;cookie:string})=>Promise<{ok:boolean;status:number;message:string;details?:unknown}>
 };
@@ -165,40 +161,52 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
   if(!actor)return reply.code(404).send({error:'Активное обращение менеджеру не найдено'});
   const caller={userId:actor.actor_id};
   if(!await access(caller,reply,projectId)||!await requireAdmin(caller,reply))return;
-  const snapshot=await managerSnapshot(pool,projectId,taskId);
+  let snapshot=await managerSnapshot(pool,projectId,taskId);
   if(!snapshot)return reply.code(404).send({error:'Задача не найдена'});
   // Direct specialist replies must never trigger manager-side analysis, approval or workflow actions.
   try{if(await resolveAgentMention(pool,projectId,String(actor.body||'')))return {message:'',handled:false};}
   catch(e){return reply.code((e as {statusCode?:number}).statusCode||422).send({error:(e as Error).message});}
-  const startRequested=analysisActions&&isDevelopmentCommand(String(actor.body||''));
-  if(analysisActions&&(snapshot.task.stage==='analysis'||startRequested)){
+  if(analysisActions&&['analysis','development'].includes(snapshot.task.stage)){
    const handled=(message:string)=>({message,handled:true});
+   const message=String(actor.body||'');
+   let action:z.infer<typeof managerActionSchema>['action'];
+   try{
+    action=managerActionSchema.parse(await deps.decideAction({projectId,taskId,message,snapshot})).action;
+   }catch(error){
+    req.log.warn({err:error},'Task manager could not choose a workflow action');
+    return handled('Не удалось обработать сообщение. Повтори запрос в чате задачи.');
+   }
+   if(action==='reply')return {message:''};
+   const startRequested=action==='start_development';
+   const previousTask=snapshot.task;
+   snapshot=await managerSnapshot(pool,projectId,taskId);
+   if(!snapshot)return reply.code(404).send({error:'Задача не найдена'});
+   if(previousTask.stage!==snapshot.task.stage||previousTask.spec_version!==snapshot.task.spec_version)
+    return handled('Задача изменилась во время обработки сообщения. Проверь текущий этап и повтори запрос.');
    const taskPath='/api/projects/'+projectId+'/tasks/'+taskId;
    const call=async(path:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url:taskPath+path,
     headers:{authorization:await deps.workerAuthorization(actor.actor_id,actor.email)},payload});
-   if(startRequested&&snapshot.task.stage!=='analysis'&&snapshot.task.stage!=='development')
-    return handled('Команда запуска относится к этапу анализа или разработки. Текущий этап задачи уже изменился.');
    if(startRequested&&snapshot.owner)return handled('Работа по задаче уже запущена. Статус виден в Центре процессов.');
    const clarification=snapshot.requests.find(request=>request.kind==='analysis_clarifications'&&request.status==='open');
    let analysisResult='';
    if(clarification){
-    let answer=String(actor.body||'');
+    let answer=message;
     if(startRequested){
      // Older clients sent answers to the manager as ordinary chat messages.
      // Recover the latest answer from the same person and question round.
-     if(snapshot.messages.some(m=>m.role==='user'&&m.reply_to==null&&(m.status==='processing'||m.status==='queued')&&m.id!==messageId&&m.created_at<actor.created_at&&canBeClarificationAnswer(m.body)))
-      return handled('Аналитик ещё проверяет предыдущий ответ. После завершения в чате появится кнопка «В разработку».');
-     const previous=await pool.query("SELECT body FROM manager_messages WHERE project_id=$1 AND task_id=$2 AND actor_id=$3 AND role='user' AND status='completed' AND created_at>=$4 AND created_at<$5 ORDER BY created_at DESC,id DESC LIMIT 8",
+     const previous=await pool.query("SELECT body,status FROM manager_messages WHERE project_id=$1 AND task_id=$2 AND actor_id=$3 AND role='user' AND status IN ('completed','queued','processing') AND created_at>=$4 AND created_at<$5 ORDER BY created_at DESC,id DESC LIMIT 8",
       [projectId,taskId,actor.actor_id,clarification.created_at,actor.created_at]);
-     // A later status question must not hide an earlier substantive reply.
-     answer=previous.rows.map(row=>String(row.body||'')).filter(canBeClarificationAnswer).reverse().join('\n\n').slice(-4000).trim();
-     if(!answer)return handled('Аналитик ждёт ответа на открытые вопросы. Ответь прямо в чате задачи.');
+     const earlier=previous.rows.filter(row=>!parseAgentMention(String(row.body||'')));
+     if(earlier.some(row=>row.status!=='completed'))return handled('Предыдущее сообщение ещё обрабатывается. Дождись ответа в чате задачи.');
+     // Preserve the latest message, which can include both answers and a launch request.
+     const context=earlier.reverse().map(row=>String(row.body)).join('\n\n');
+     if(context&&message.length<3998)answer=context.slice(-(3998-message.length))+'\n\n'+message;
     }
     const refined=await call('/assistant',{message:answer,mode:'clarification'});
     const result=refined.json();
     if(refined.statusCode>=400)return handled(String(result.error||'Аналитик не смог обработать уточнение.'));
     if(result.relevant===false)
-     return startRequested?handled('В предыдущих сообщениях аналитик не нашёл ответов на открытые вопросы. Ответь прямо в чате задачи.'):{message:''};
+     return startRequested?handled('Аналитик ждёт ответа на открытые вопросы. Ответь прямо в чате задачи.'):{message:''};
     analysisResult=String(result.message||'Аналитик обработал уточнение.');
     await syncManagerInbox(pool,projectId,taskId);
     if(result.questions?.length)return handled(analysisResult);

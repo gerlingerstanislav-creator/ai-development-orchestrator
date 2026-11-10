@@ -3,14 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {checkedWithActualCapabilities,isVisualAcceptanceCase} from '../dist/qa-evidence.js';
-import {isDevelopmentCommand,isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes,tasksWithCustomerQuestions} from '../dist/project-manager.js';
-
-test('task chat recognizes a colloquial start command without treating status questions as commands',()=>{
- for(const text of ['Ну тогда отправляй в разработку задачу','Хорошо, тогда отправь задачу в разработку!','Начни разработку'])
-  assert.equal(isDevelopmentCommand(text),true,text);
- for(const text of ['Когда отправишь задачу в разработку?','Не отправляй в разработку задачу','Отправь задачу в разработку?','Отправь в разработку задачу #5'])
-  assert.equal(isDevelopmentCommand(text),false,text);
-});
+import {isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes,tasksWithCustomerQuestions} from '../dist/project-manager.js';
 
 test('browserless QA cannot certify a visual circle layout by reading CSS',()=>{
  const planned=[{id:'circle',title:'Фигуры расположены по окружности и стрелки видны',
@@ -74,6 +67,7 @@ test('a durable manager turn continues idle development and respects open decisi
   return {rows:[]};
  }};
  registerProjectManagerRoutes(app,{pool,workerSecret:'worker-test-secret',uid:req=>req.userId,
+  decideAction:async()=>{throw Error('Legacy recovery does not interpret chat');},
   workerAuthorization:async actor=>{assert.equal(actor,actorId);return 'Bearer scoped-test';},
   access:async caller=>caller.userId===actorId,requireAdmin:async caller=>caller.userId===actorId,
   startManagerWorkflow:async()=>{},recoverTask:async input=>{
@@ -102,17 +96,17 @@ test('answers in task chat update analysis and an explicit start can recover an 
  const actorId='00000000-0000-4000-8000-000000000004';
  const answer='Внутренний круг внутри всей группы фигур.';
  const statusQuestion='Какой статус задачи?';
- const startCommand='Ну тогда отправляй в разработку задачу';
- let text=answer,questions=['Где должен быть внутренний круг?'],starts=0,analysisCalls=0,reviewed=false,allowLaunch=true;
+ const startCommand='Пусть разработчик возьмёт эту карточку прямо сейчас';
+ let text=answer,action='clarify',questions=['Где должен быть внутренний круг?'],starts=0,analysisCalls=0,reviewed=false,allowLaunch=true;
  let remaining=[];
  const pool={query:async(sql,params)=>{
   if(sql.startsWith('SELECT m.actor_id'))return {rows:[{actor_id:actorId,email:'admin@example.org',body:text,created_at:new Date('2026-11-09T20:00:00Z')}]};
   if(sql.startsWith('SELECT id,stage,spec_review_status'))return {rows:[{stage:'analysis',clarification_questions:questions}]};
   if(sql.startsWith('SELECT id,title,description,stage'))return {rowCount:1,rows:[{stage:'analysis'}]};
   if(sql.startsWith('SELECT id,kind,source_id'))return {rows:questions.length?[{kind:'analysis_clarifications',status:'open',created_at:new Date('2026-11-09T19:00:00Z')}]:[]};
-  if(sql.startsWith('SELECT body FROM manager_messages')){
+  if(sql.startsWith('SELECT body,status FROM manager_messages')){
    assert.equal(params[2],actorId);
-   return {rows:[{body:statusQuestion},{body:'@QA Какие есть сценарии?'},{body:startCommand},{body:answer}]};
+   return {rows:[{body:statusQuestion,status:'completed'},{body:'@QA Какие есть сценарии?',status:'completed'},{body:answer,status:'completed'}]};
   }
   return {rows:[]};
  }};
@@ -120,8 +114,7 @@ test('answers in task chat update analysis and an explicit start can recover an 
   analysisCalls++;
   assert.equal(req.headers.authorization,'Bearer scoped-test');
   assert.equal(req.body.mode,'clarification');
-  if(req.body.message===statusQuestion)return {relevant:false};
-  assert.equal(req.body.message,text===startCommand?answer+'\n\n'+statusQuestion:answer);
+  assert.equal(req.body.message,action==='start_development'?answer+'\n\n'+statusQuestion+'\n\n'+text:answer);
   reviewed=true;
   questions=remaining;
   return {message:'ТЗ уточнено.',questions};
@@ -132,14 +125,27 @@ test('answers in task chat update analysis and an explicit start can recover an 
   return allowLaunch?reply.code(202).send({status:'queued'}):reply.code(409).send({error:'Нет подключения GitHub'});
  });
  registerProjectManagerRoutes(app,{pool,workerSecret:'worker-test-secret',uid:req=>req.userId,
+  decideAction:async input=>{
+   assert.equal(input.message,text);
+   assert.equal(input.snapshot.task.stage,'analysis');
+   return {action};
+  },
   workerAuthorization:async()=>'Bearer scoped-test',access:async()=>true,requireAdmin:async()=>true,
   startManagerWorkflow:async()=>{},recoverTask:async()=>{throw Error('Analysis must use its own guarded transition');}
  });
  const turn=()=>app.inject({method:'POST',url:'/internal/manager/continue',
   headers:{'x-runner-secret':'worker-test-secret'},payload:{projectId,taskId,messageId,analysisActions:true}});
  text=statusQuestion;
+ action='reply';
  assert.deepEqual((await turn()).json(),{message:''});
+ assert.equal(analysisCalls,0);
+ text='Отправь задачу в разработку';
+ action='unknown';
+ assert.match((await turn()).json().message,/Не удалось обработать/);
+ assert.equal(starts,0);
+ assert.equal(analysisCalls,0);
  text=answer;
+ action='clarify';
  remaining=['Какого цвета должен быть круг?'];
  assert.deepEqual((await turn()).json(),{message:'ТЗ уточнено.',handled:true});
  assert.equal(starts,0,'A partial answer leaves the task waiting');
@@ -148,17 +154,18 @@ test('answers in task chat update analysis and an explicit start can recover an 
  const result=(await turn()).json();
  assert.match(result.message,/ТЗ уточнено.*запуск принят/si);
  assert.equal(result.handled,true);
- assert.equal(analysisCalls,3);
+ assert.equal(analysisCalls,2);
  assert.equal(starts,1);
 
  allowLaunch=false;
  text=startCommand;
+ action='start_development';
  assert.deepEqual((await turn()).json(),{message:'Нет подключения GitHub',handled:true});
- assert.equal(analysisCalls,3,'Launch on a ready task does not call the analyst again');
+ assert.equal(analysisCalls,2,'Launch on a ready task does not call the analyst again');
 
  questions=['Где должен быть внутренний круг?'];reviewed=false;allowLaunch=true;
  assert.match((await turn()).json().message,/ТЗ уточнено.*запуск принят/si);
- assert.equal(analysisCalls,4,'The explicit command can still recover an earlier answer');
+ assert.equal(analysisCalls,3,'An explicit launch can still recover an earlier answer');
 });
 
 

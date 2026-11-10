@@ -538,7 +538,7 @@ async function managerContinuation(args:{projectId:string;taskId:string;messageI
    method:'POST',
    headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
    body:JSON.stringify({...args,analysisActions}),
-   signal:AbortSignal.timeout(180000)
+   signal:AbortSignal.timeout(220000)
   });
   const result=await response.json() as {message?:string;error?:string;handled?:boolean};
   handled=result.handled===true;
