@@ -20,7 +20,7 @@ test('Knowledge Context migration is idempotent and retrieval is project scoped'
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
   "CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id),title text NOT NULL,body text NOT NULL DEFAULT '',parent_id uuid,updated_at timestamptz DEFAULT now(),import_source text)",
   'CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id))',
-  'CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id),title text,description text)',
+  'CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id),title text,description text,type text DEFAULT \'task\',stage text DEFAULT \'backlog\',position int DEFAULT 0,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now())',
   'CREATE TABLE document_versions(id uuid PRIMARY KEY,document_id uuid REFERENCES documents(id),body text NOT NULL,created_at timestamptz DEFAULT now())'
  ].join(';\n')+';');
  const p=randomUUID(),foreign=randomUUID();
