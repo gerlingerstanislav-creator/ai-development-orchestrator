@@ -161,8 +161,8 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    [messageId,projectId,taskId])).rows[0];
   if(!actor)return reply.code(404).send({error:'Активное обращение менеджеру не найдено'});
   const isTurnActive=async()=>Boolean((await pool.query(
-   "SELECT 1 FROM manager_messages WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status IN ('queued','processing')",
-   [messageId,projectId,taskId])).rowCount);
+   "SELECT m.actor_id FROM manager_messages m JOIN users u ON u.id=m.actor_id WHERE m.id=$1 AND m.project_id=$2 AND m.task_id=$3 AND m.role='user' AND m.status IN ('queued','processing')",
+   [messageId,projectId,taskId])).rows.length);
   const caller={userId:actor.actor_id};
   if(!await access(caller,reply,projectId)||!await requireAdmin(caller,reply))return;
   let snapshot=await managerSnapshot(pool,projectId,taskId);
