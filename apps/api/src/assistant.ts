@@ -509,10 +509,39 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     pool.query('SELECT name,description FROM projects WHERE id=$1',[id]),
     pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id])
    ]);
+   let devopsGitHubContext='';
+   if(mentionedAgent.stage==='devops'){
+    const linked=(await pool.query("SELECT g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2 AND c.provider='github_token'",[id,uid(req)])).rows[0];
+    if(linked){
+     const repository=String(linked.repository);
+     const targetBranch=String(linked.target_branch||linked.default_branch);
+     devopsGitHubContext='Репозиторий: '+repository+'; целевая ветка: '+targetBranch+'.';
+     try{
+      const token=decryptToken(linked.secret_encrypted);
+      const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'};
+      const [runsResponse,workflowsResponse]=await Promise.all([
+       fetch('https://api.github.com/repos/'+repository+'/actions/runs?per_page=15',{headers,signal:AbortSignal.timeout(10000)}),
+       fetch('https://api.github.com/repos/'+repository+'/actions/workflows?per_page=40',{headers,signal:AbortSignal.timeout(10000)})
+      ]);
+      const runs=runsResponse.ok?await runsResponse.json() as any:null;
+      const workflows=workflowsResponse.ok?await workflowsResponse.json() as any:null;
+      devopsGitHubContext+='\\nGitHub Actions: '+JSON.stringify({
+       runs_status:runsResponse.status,workflows_status:workflowsResponse.status,
+       runs:Array.isArray(runs?.workflow_runs)?runs.workflow_runs.map((r:any)=>({
+        id:r.id,name:r.name,event:r.event,status:r.status,conclusion:r.conclusion,
+        head_sha:r.head_sha,head_branch:r.head_branch,created_at:r.created_at,
+        run_started_at:r.run_started_at,updated_at:r.updated_at,html_url:r.html_url
+       })):[],
+       workflows:Array.isArray(workflows?.workflows)?workflows.workflows.map((w:any)=>({id:w.id,name:w.name,path:w.path,state:w.state})):[]
+      }).slice(0,12000);
+     }catch(error){devopsGitHubContext+='\\nНе удалось прочитать последние GitHub Actions: '+String(error instanceof Error?error.message:error).slice(0,180);}
+    }else devopsGitHubContext='Репозиторий GitHub не привязан к проекту или недоступен текущему пользователю.';
+   }
    const prompt=[
-    'Ты '+mentionedAgent.name+' — специалист этапа '+mentionedAgent.stage+'. Пользователь адресовал сообщение непосредственно тебе через @'+mentionedAgent.alias+'. Не представляйся менеджером.',
+    'Ты '+mentionedAgent.name+' — специалист '+(mentionedAgent.stage==='devops'?'DevOps и CI/CD':'этапа '+mentionedAgent.stage)+'. Пользователь адресовал сообщение непосредственно тебе через @'+mentionedAgent.alias+'. Не представляйся менеджером.',
     AGENT_MENTION_HINT,'Отвечай по-русски на основе реального контекста. Не утверждай о проведённых проверках или внесённых изменениях без фактических подтверждений.',
     'Инструкции специалиста:\n'+mentionedAgent.instructions.slice(0,7000),
+    mentionedAgent.stage==='devops'?'Актуальные метаданные GitHub Actions (без доступа к содержимому логов и конфигурации workflow):\\n'+devopsGitHubContext:'',
     'Проект:\n'+JSON.stringify(project.rows[0]||{}).slice(0,3000),
     'Правила проекта:\n'+(await rulesContext(id)).slice(0,5000),
     'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,11000),
