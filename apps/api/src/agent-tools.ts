@@ -17,6 +17,9 @@ const id=field('string','UUID'),str=field('string','Произвольный т�
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
+ tool('iterations.approve','Согласовать редакцию объёма итерации после явного подтверждения владельца. Нужна текущая revision.',{iteration_id:id,expected_revision:field('integer','Текущая ревизия объёма')},['iteration_id','expected_revision']),
+ tool('iterations.preview_plan','Посмотреть точные изменения черновика задач до утверждения и публикации.',{iteration_id:id,plan_id:id},['iteration_id','plan_id']),
+ tool('iterations.publish_plan','Опубликовать только явно подтверждённые изменения черновика задач. Требуются значения актуального предпросмотра и список выбранных ключей.',{iteration_id:id,plan_id:id,preview_revision:str,selected_changes:{type:'array',items:str}},['iteration_id','plan_id','preview_revision','selected_changes']),
  tool('iterations.list','Найти итерации в разделе «План разработки».',{}),
  tool('iterations.read','Прочитать объём итерации, ссылки на документы, текущие задачи и ревизии.',{iteration_id:id},['iteration_id']),
  tool('iterations.save','По явной просьбе сохрани согласованное в обсуждении описание как черновик итерации. Для обновления передай ID и текущую ревизию. Сохраняй цель, границы, критерии готовности и исходные страницы.',
@@ -47,9 +50,8 @@ export const agentToolCatalog=[
  tool('documentation.request_reset','Предложить пользователю открыть подтверждение полной очистки документации проекта. Вызывай только по явной просьбе пользователя удалить всю документацию. Вызов показывает кнопку и не изменяет документы.',{}),
  tool('documentation.rebuild','Запустить пересборку ТЗ с сохранением предыдущих документов.',{instructions:str,idempotency_key:idem}),
  tool('documentation.organize','Запустить улучшение структуры и расположения страниц.',{instructions:str,idempotency_key:idem}),
+ tool('approvals.answer_question','Передать конкретный ответ владельца на открытый вопрос агента, сохранив ответ и историю; аналитик должен перепроверить требования перед запуском разработки.',{task_id:id,note_id:id,answer:str},['task_id','note_id','answer']),
  tool('approvals.list','Прочитать ожидающие решения владельца согласования по задачам (требования, вопросы агентов, QA).',{}),
- tool('approvals.decide','Передать явно выраженное решение владельца на существующий запрос согласования. Проверки workflow обязательны; обход QA-проверок запрещён.',{task_id:id,request_id:id,choice:field('string','answer, approve_requirements, reject_requirements или wait_for_tools'),answer:field('string','Ответ владельца для choice=answer')},['task_id','request_id','choice']),
- tool('workflow.launch','По явному распоряжению владельца запустить подготовленную к разработке задачу через существующий API с проверкой условий.',{task_id:id},['task_id']),
  tool('discussions.list','Список тем ПМ проекта с открытыми и закрытыми обсуждениями.',{}),
  tool('discussions.open','Создать тему обсуждения с владельцем. Повторно используй уже открытую тему с тем же смыслом.',{title:str},['title']),
  tool('discussions.close','Закрыть обсуждение после ответа владельца и передачи решения. Можно открыть повторно через discussions.reopen.',{topic_id:id},['topic_id']),
