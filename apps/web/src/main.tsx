@@ -1279,6 +1279,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){fail(e);}finally{setMergeBusy(false);}
  }
  async function openTask(t:Task){if(selected)navigate(projectUrl(selected.id,'tasks')+'/'+t.id);}
+ async function deleteUnstartedTask(){
+  if(!selected||!activeTask||!['backlog','analysis'].includes(activeTask.stage))return;
+  const task=activeTask;
+  if(!window.confirm('Удалить задачу #'+task.display_number+' «'+task.title+'»? Удаляются вопросы и история этой задачи. Отменить действие нельзя.'))return;
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'DELETE',body:JSON.stringify({confirm_task_id:task.id})});
+   setTasks(current=>current.filter(x=>x.id!==task.id));
+   navigate(projectUrl(selected.id,'tasks'));
+  }catch(e){fail(e);}
+ }
+
  async function refreshCodex(){try{setCodex(await api<CodexState>('/codex/status'));}catch(e){setCodex({connected:false});fail(e);}}
  async function codexAction(action:'login'|'logout'|'test'){setCodexBusy(true);setCodexTest('');try{const res=await api<any>('/codex/'+action,{method:'POST'});if(action==='test')setCodexTest(res.message||'Подключение работает');await refreshCodex();if(action==='login'&&res.login)setCodex(old=>({...old,connected:false,login:res.login}));}catch(e){fail(e);}finally{setCodexBusy(false);}}
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
@@ -1887,6 +1898,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
     <div className="task-modal-actions">
      <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
+     {['backlog','analysis'].includes(activeTask.stage)&&<button type="button" className="secondary" title="Удалить ненужную задачу без результатов разработки" onClick={()=>void deleteUnstartedTask()}><Trash2 size={14}/> Удалить</button>}
      {!['documentation','done'].includes(activeTask.stage)&&
       <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
      <button className="task-close" type="button" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу" aria-label="Закрыть задачу"><X size={20}/></button>
