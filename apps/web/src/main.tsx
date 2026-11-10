@@ -8,7 +8,8 @@ import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
 import {KnowledgeAudit} from './KnowledgeAudit.js';
 
-type Project={id:string,name:string,description:string};
+type Project={id:string,name:string,description:string,is_owner?:boolean};
+type TrashedProject={id:string,name:string,description:string,deleted_at:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
@@ -223,6 +224,9 @@ function App(){
  const [login,setLogin]=useState(''); const [password,setPassword]=useState('');
  const [route,setRoute]=useState<AppRoute>(()=>parseAppRoute(window.location.pathname));
  const [projectsLoaded,setProjectsLoaded]=useState(false);
+ const [trashedProjects,setTrashedProjects]=useState<TrashedProject[]>([]);
+ const [showTrash,setShowTrash]=useState(false);
+ const [projectDeleteBusy,setProjectDeleteBusy]=useState(false);
  const [loadedProjectId,setLoadedProjectId]=useState<string|null>(null);
  function navigate(path:string,replace=false){
   const target=new URL(path,window.location.origin);
@@ -546,7 +550,44 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){if(e instanceof AuthExpiredError)return;setError(e instanceof Error?e.message:'Неизвестная ошибка');}
- async function loadProjects(){try{setProjects(await api('/projects'));setProjectsLoaded(true);}catch(e){fail(e);}}
+ async function loadProjects(){
+  try{
+   const [active,trashed]=await Promise.all([api<Project[]>('/projects'),api<TrashedProject[]>('/projects/trash')]);
+   setProjects(active);setTrashedProjects(trashed);setProjectsLoaded(true);
+  }catch(e){fail(e);}
+ }
+ async function moveProjectToTrash(project:Project){
+  if(!project.is_owner||projectDeleteBusy)return;
+  if(!window.confirm('Переместить проект «'+project.name+'» в корзину? Все задачи и документы сохранятся, но проект станет недоступен до восстановления.'))return;
+  setProjectDeleteBusy(true);
+  try{
+   await api('/projects/'+project.id+'/trash',{method:'POST'});
+   setProjectMenuOpen(false);
+   navigate('/projects');
+   setSelected(null);
+   setLoadedProjectId(null);
+   await loadProjects();
+  }catch(e){fail(e);}finally{setProjectDeleteBusy(false);}
+ }
+ async function restoreProject(project:TrashedProject){
+  if(projectDeleteBusy)return;
+  setProjectDeleteBusy(true);
+  try{
+   await api('/projects/'+project.id+'/restore',{method:'POST'});
+   await loadProjects();
+  }catch(e){fail(e);}finally{setProjectDeleteBusy(false);}
+ }
+ async function permanentlyDeleteProject(project:TrashedProject){
+  if(projectDeleteBusy)return;
+  const confirmation=window.prompt('Безвозвратное удаление проекта «'+project.name+'». Будут уничтожены задачи, документы, история процессов, данные агентов и связанные подключения платформы. Репозиторий GitHub не затрагивается.\n\nДля подтверждения введите точное название проекта:');
+  if(confirmation===null)return;
+  if(confirmation!==project.name){fail(new Error('Название проекта не совпадает. Удаление отменено.'));return;}
+  setProjectDeleteBusy(true);
+  try{
+   await api('/projects/'+project.id+'/permanent',{method:'DELETE',body:JSON.stringify({confirmation})});
+   await loadProjects();
+  }catch(e){fail(e);}finally{setProjectDeleteBusy(false);}
+ }
  async function loadProject(id:string){
   try{
    const deployment=await api<{mode:'skip'|'manual'}>('/projects/'+id+'/deployment/settings');
@@ -1497,8 +1538,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>
  {codexTest&&<div className="codex-test">{codexTest}</div>}
  </section>
- </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>Мои проекты</h1><p>Создавайте проекты и управляйте разработкой в одном месте.</p></div><button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button></div>
- <div className="project-grid">{projects.map(p=><a key={p.id} href={projectUrl(p.id)} className="project-card" onClick={e=>followLink(e,projectUrl(p.id))}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></a>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div></div>
+ </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>{showTrash?'Корзина проектов':'Мои проекты'}</h1><p>{showTrash?'Проекты можно восстановить или удалить безвозвратно. Репозитории GitHub не затрагиваются.':'Создавайте проекты и управляйте разработкой в одном месте.'}</p></div><div className="project-page-actions"><button className="secondary" type="button" onClick={()=>setShowTrash(v=>!v)}>{showTrash?<><ArrowLeft size={16}/> Мои проекты</>:<><Trash2 size={16}/> Корзина ({trashedProjects.length})</>}</button>{!showTrash&&<button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button>}</div></div>
+ {showTrash?<div className="project-grid">{trashedProjects.map(p=><div key={p.id} className="project-card project-card-trashed"><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><small className="muted">В корзине с {new Date(p.deleted_at).toLocaleString('ru-RU')}</small><div className="project-card-actions"><button type="button" className="secondary" disabled={projectDeleteBusy} onClick={()=>void restoreProject(p)}><RotateCcw size={15}/> Восстановить</button><button type="button" className="secondary project-danger-button" disabled={projectDeleteBusy} onClick={()=>void permanentlyDeleteProject(p)}><Trash2 size={15}/> Удалить навсегда</button></div></div>)}{trashedProjects.length===0&&<div className="empty">Корзина пуста.</div>}</div>
+ :<div className="project-grid">{projects.map(p=><div key={p.id} className="project-card project-card-active"><a href={projectUrl(p.id)} className="project-card-link" onClick={e=>followLink(e,projectUrl(p.id))}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></a>{p.is_owner&&<button type="button" className="secondary project-trash-button" title="Переместить проект в корзину" aria-label={'В корзину: '+p.name} disabled={projectDeleteBusy} onClick={()=>void moveProjectToTrash(p)}><Trash2 size={15}/></button>}</div>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div>}</div>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
  {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
  {section==='tasks'&&<><div className="toolbar"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>{setProjectInput(old=>old.trim()?old:'Создай задачу: ');setProjectChatOpen(true);}}><FileText size={17}/></button></div></div>
