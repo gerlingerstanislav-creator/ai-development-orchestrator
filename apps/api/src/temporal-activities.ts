@@ -11,6 +11,7 @@ import {managerSnapshot} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
+import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -63,9 +64,20 @@ async function dispatch(job:any){
  catch(e){if((e as any).statusCode!==409)throw e;}
 }
 
+function formatWorkflowKnowledge(ctx:Awaited<ReturnType<typeof buildKnowledgeContext>>){
+ const modules=ctx.instructions.modules.map(x=>x.title+': '+x.body).join('\n\n');
+ const documents=ctx.documents.map(x=>'Источник '+x.id+' ('+x.version+'): '+x.title+'\n'+(x.excerpt||x.summary)).join('\n\n');
+ return {modules,documents};
+}
+async function stageContext(projectId:string,taskId:string,stage:KnowledgeStage,processId?:string){
+ return buildKnowledgeContext(pool,{projectId,taskId,stage,processId,budgetChars:10000,includeBodies:true});
+}
 async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string):Promise<string>{
  const setup=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
+ const stage:KnowledgeStage=operation.includes('qa')||operation.includes('test')?'testing':operation.includes('documentation')?'documentation':'analysis';
+ const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,stage));
+ prompt+='\n\nУтверждённые тематические знания (не изменяй требования без согласования):\n'+knowledge.documents+'\n\nПрименимые инструкции:\n'+knowledge.modules;
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
   body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
@@ -198,9 +210,10 @@ export async function startDevelopment(args:TaskRef){
  const feedback=String(task.test_feedback||'').slice(0,10000);
  if(task.spec_review_status==='pending'||task.spec_review_status==='needs_approval')throw ApplicationFailure.nonRetryable('Требования ожидают проверки аналитиком или согласования');
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
+ const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
   model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,projectRules:rules,relatedTasks:[],handoffContext:await taskNotesContext(pool,projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions};
+  title:task.title,description,projectRules:rules,relatedTasks:[],handoffContext:'Утверждённые знания:\n'+knowledge.documents+'\n\nРабочие комментарии:\n'+await taskNotesContext(pool,projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
  await dispatch(job);
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -270,9 +283,10 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const id=record.rows[0].id;
  if(['running','completed','failed'].includes(record.rows[0].status))return id; // Activity retry must not enqueue the same Codex test twice.
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
+ const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,projectRules:rules,testPlan,handoffContext:await taskNotesContext(pool,projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions});
+  title:task.title,description:task.description,projectRules:rules,testPlan,handoffContext:'Утверждённые знания:\n'+knowledge.documents+'\n\nРабочие комментарии:\n'+await taskNotesContext(pool,projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
