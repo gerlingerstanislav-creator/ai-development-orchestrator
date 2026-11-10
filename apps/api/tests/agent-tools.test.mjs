@@ -68,6 +68,19 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   headers:{'x-agent-token':manager.secret},payload:{name:'tasks.request_owner_question_cleanup'}});
  assert.deepEqual(managerCleanup.json().result,{requires_user_confirmation:true});
  assert.equal((await agentSessionEffects(pool,manager.id)).owner_question_cleanup_requested,true);
+ const deletionCandidate=randomUUID();
+ await db.query("INSERT INTO tasks(id,project_id,title,description,type,stage) VALUES($1,$2,'Черновик аналитика','Вопрос владельцу','task','analysis')",[deletionCandidate,project]);
+ const selectedCleanup=await app.inject({method:'POST',url:'/internal/agent-tools/call',
+  headers:{'x-agent-token':manager.secret},payload:{name:'tasks.request_deletion_preview',arguments:{task_ids:[deletionCandidate]}}});
+ assert.equal(selectedCleanup.statusCode,200,selectedCleanup.body);
+ assert.deepEqual(selectedCleanup.json().result,{requires_user_confirmation:true,task_ids:[deletionCandidate]});
+ assert.deepEqual((await agentSessionEffects(pool,manager.id)).task_deletion_ids,[deletionCandidate]);
+ assert.equal((await call('tasks.request_deletion_preview',{task_ids:[deletionCandidate]})).statusCode,403,
+  'Business analyst cannot delete or prepare deletion of executable task cards');
+ const missingTask=await app.inject({method:'POST',url:'/internal/agent-tools/call',
+  headers:{'x-agent-token':manager.secret},payload:{name:'tasks.request_deletion_preview',arguments:{task_ids:[randomUUID()]}}});
+ assert.equal(missingTask.statusCode,409,'Only real project task IDs may be offered for deletion');
+
 
  const list=(await call('documents.list')).json().result.documents;
  assert.equal(list.length,1,'The agent only sees its own project');
