@@ -69,8 +69,8 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const request=z.object({task_id:z.string().uuid().optional()}).parse(req.body||{});
   const pending=request.task_id
-   ?await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND id=$2 AND stage='documentation' ORDER BY updated_at LIMIT 1",[id,request.task_id])
-   :await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND stage='documentation' ORDER BY updated_at LIMIT 15",[id]);
+   ?await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND id=$2 AND stage='documentation' AND documentation_updated_at IS NULL ORDER BY updated_at LIMIT 1",[id,request.task_id])
+   :await pool.query("SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND stage='documentation' AND documentation_updated_at IS NULL ORDER BY updated_at LIMIT 15",[id]);
   if(!pending.rowCount)return reply.code(409).send({error:'Нет слитых задач, ожидающих документации'});
   for(const task of pending.rows)if(await pendingAgentQuestions(pool,id,task.id))return reply.code(409).send({error:'Документация ожидает ответы на вопросы агентов по задаче '+task.title});
   const doc=(await pool.query("SELECT id,title,body FROM documents WHERE project_id=$1 AND title='Реализованные возможности' LIMIT 1",[id])).rows[0];
@@ -120,11 +120,15 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
      [randomUUID(),id,update.document_id,ids,base.updated_at,update.body,update.reason]);
     proposed+=result.rowCount||0;
    }
-   await client.query("UPDATE tasks SET stage='done',documentation_updated_at=now(),updated_at=now() WHERE project_id=$1 AND id=ANY($2::uuid[])",[id,ids]);
+   const remaining=await client.query("SELECT DISTINCT unnest(task_ids) AS task_id FROM knowledge_document_updates WHERE project_id=$1 AND status='pending' AND task_ids && $2::uuid[]",[id,ids]);
+   const awaiting=new Set(remaining.rows.map((r:any)=>String(r.task_id)));
+   await client.query("UPDATE tasks SET stage=CASE WHEN id=ANY($3::uuid[]) THEN 'documentation' ELSE 'done' END,documentation_updated_at=now(),updated_at=now() WHERE project_id=$1 AND id=ANY($2::uuid[])",[id,ids,Array.from(awaiting)]);
+   if(awaiting.size)await client.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level) VALUES($1,$2,$3,'documentation','review_pending',$4,'info')",
+    [randomUUID(),id,runId,'Ожидается согласование обновлений тематических документов: '+awaiting.size]);
    for(const taskId of ids)await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'documentation_updated','Документация обновлена после слияния')",[randomUUID(),taskId,uid(req)]);
-   await recordAgentActivity(client,id,ids,runId,'documentation','completed','Обновлён документ «Реализованные возможности».');
+   await recordAgentActivity(client,id,ids,runId,'documentation','completed',awaiting.size?'Обновлены реализованные возможности; тематическая документация ожидает согласования.':'Обновлён документ «Реализованные возможности».');
    await client.query('COMMIT');
-   return {ok:true,updated_tasks:ids.length,document_id:documentId,proposals:proposed};
+   return {ok:true,updated_tasks:ids.length-awaiting.size,awaiting_review:awaiting.size,document_id:documentId,proposals:proposed};
   }catch(e){
    await client.query('ROLLBACK');
    await recordAgentActivity(client,id,ids,runId,'documentation','failed','Не удалось сохранить изменения документации.');
