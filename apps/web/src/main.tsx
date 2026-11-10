@@ -86,7 +86,7 @@ const emptyProjectChat:ProjectChatState={
  messages:[],input:'',pendingId:null,jobId:null,progress:'',historyLoaded:false,files:[],documentId:null,error:''
 };
 const projectChatKey=(projectId:string,mode:ProjectChatMode)=>projectId+':'+mode;
-type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantResponse={task_deletion_ids?:string[]|null;message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ImportJob={id:string;status:'running'|'completed'|'failed'|'cancelled';message:string;result:AssistantResponse|null};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
