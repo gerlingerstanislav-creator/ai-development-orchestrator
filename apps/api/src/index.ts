@@ -568,6 +568,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const t=await pool.query('SELECT id,title,description,stage,type,iteration_id,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status,spec_version,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  const task=t.rows[0];
+ if(task.type==='question')return reply.code(409).send({error:'Вопрос к ПО не является задачей разработки'});
  const fromAnalysis=approveAnalysis&&task.stage==='analysis';
  if(iterationApproval&&(task.iteration_id!==iterationApproval.id||task.type==='epic'))
   return reply.code(409).send({error:'Задача не входит в выбранную итерацию'});
@@ -1554,6 +1555,9 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
   const old=await client.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id]);
   if(!old.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Задача не найдена'});}
   const t=old.rows[0];
+  if(t.type==='question'&&data.stage&&data.stage!==t.stage){
+   await client.query('ROLLBACK');return reply.code(409).send({error:'Этап вопроса изменяется после обработки ответа аналитиком'});
+  }
   if(data.stage&&data.stage!==t.stage&&(!['backlog','analysis'].includes(t.stage)||!['backlog','analysis'].includes(data.stage))){
    await client.query('ROLLBACK');return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
   }
