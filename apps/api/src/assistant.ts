@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
-import { randomUUID,createHash } from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import { z } from 'zod';
 import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,resolveGitHubDocumentCommit} from './github-document-import.js';
 import {importByTopics} from './topic-import.js';
