@@ -8,12 +8,12 @@ const uuid=z.string().uuid();
 const projectParams=z.object({id:uuid});
 const taskParams=projectParams.extend({taskId:uuid});
 const ownerQuestionsPath='/api/projects/:id/tasks/owner-questions/delete';
-type TaskForDeletion={id:string;title:string;display_number:number;stage:string;git_branch:string|null;pr_url:string|null;has_related_data:boolean};
+type TaskForDeletion={id:string;title:string;display_number:number;type:string;stage:string;git_branch:string|null;pr_url:string|null;has_related_data:boolean};
 
 async function tasksForDeletion(db:Pick<Pool,'query'>,projectId:string,taskIds:string[]){
  if(!taskIds.length)return [];
  const result=await db.query<TaskForDeletion>(`
-  SELECT t.id,t.title,t.display_number,t.stage,t.git_branch,t.pr_url,
+  SELECT t.id,t.title,t.display_number,t.type,t.stage,t.git_branch,t.pr_url,
    (EXISTS (SELECT 1 FROM tasks d WHERE d.project_id=t.project_id AND (d.parent_id=t.id OR d.depends_on_task_id=t.id))
    OR EXISTS (SELECT 1 FROM ai_task_runs r WHERE r.project_id=t.project_id AND r.task_id=t.id)
    OR EXISTS (SELECT 1 FROM ai_test_runs r WHERE r.project_id=t.project_id AND r.task_id=t.id)
@@ -27,6 +27,7 @@ async function tasksForDeletion(db:Pick<Pool,'query'>,projectId:string,taskIds:s
 }
 
 function deletionBlocker(task:TaskForDeletion){
+ if(task.type==='question')return null;
  if(!['backlog','analysis'].includes(task.stage)||task.pr_url||task.git_branch)
   return 'Задача уже связана с исполнением. Для неё используй отмену задачи';
  if(task.has_related_data)
@@ -35,7 +36,7 @@ function deletionBlocker(task:TaskForDeletion){
 }
 
 async function ownerQuestionTaskIds(db:Pick<Pool,'query'>,projectId:string){
- return (await tasksWithCustomerQuestions(db,projectId)).filter(task=>task.awaits_product_owner).map(task=>String(task.id));
+ return (await tasksWithCustomerQuestions(db,projectId)).filter(task=>task.type==='question'&&['open','answered'].includes(task.question_status)).map(task=>String(task.id));
 }
 
 export function registerSafeTaskDeletion(app:FastifyInstance,{pool,access,requireAdmin}:Dependencies){
