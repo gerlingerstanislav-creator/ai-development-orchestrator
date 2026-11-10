@@ -12,7 +12,7 @@ function problem(statusCode:number,message:string){return Object.assign(new Erro
 export function validateHealthUrl(value:string){
  let u:URL;
  try{u=new URL(value);}catch{throw problem(400,'Некорректный URL проверки');}
- if(u.protocol!=='https:'||!!u.username||!!u.password||(u.port!==''&&u.port!=='443')||isIP(u.hostname)!==0||
+ if(u.protocol!=='https:'||!!u.username||!!u.password||(u.port!==''&&u.port!=='443')||isIP(u.hostname.replace(/^\[|\]$/g,''))!==0||
   /(^localhost$|\.localhost$|\.local$|\.internal$)/i.test(u.hostname))
   throw problem(400,'Проверка доступности требует публичный HTTPS hostname');
  return u.toString();
