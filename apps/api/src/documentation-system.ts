@@ -136,15 +136,6 @@ export async function initDocumentationSystem(pool:Pool){
   status text NOT NULL DEFAULT 'open',created_at timestamptz NOT NULL DEFAULT now(),
   decided_at timestamptz,UNIQUE(job_id,topic_key)
  );
- CREATE TABLE IF NOT EXISTS documentation_questions(
-  id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  job_id uuid REFERENCES document_import_jobs(id) ON DELETE SET NULL,
-  topic_key text NOT NULL,question_key text NOT NULL,
-  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  question text NOT NULL,answer text,status text NOT NULL DEFAULT 'open',
-  created_at timestamptz NOT NULL DEFAULT now(),answered_at timestamptz,
-  UNIQUE(project_id,document_id,question_key)
- );
  `);
 
  await pool.query(String.raw`
@@ -157,7 +148,10 @@ export async function initDocumentationSystem(pool:Pool){
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_job_id uuid REFERENCES document_import_jobs(id) ON DELETE SET NULL;
  CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_document_questions
   ON tasks(project_id,document_id,question_key) WHERE type='question' AND document_id IS NOT NULL AND question_key IS NOT NULL;
- -- Preserve the original UUIDs: existing Temporal answer jobs reference these IDs.
+ -- Preserve UUIDs because existing Temporal answer jobs reference them.
+ DO $migrate_questions$
+ BEGIN
+ IF to_regclass('documentation_questions') IS NOT NULL THEN
  INSERT INTO tasks(id,project_id,title,description,type,stage,position,created_at,updated_at,document_id,question_key,question_topic,question_status,question_answer,question_answered_at,question_job_id)
  SELECT q.id,q.project_id,left(q.question,300),q.question,'question','backlog',
   COALESCE((SELECT max(t.position)+1 FROM tasks t WHERE t.project_id=q.project_id),0),
@@ -166,7 +160,8 @@ export async function initDocumentationSystem(pool:Pool){
  FROM documentation_questions q
  WHERE NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id=q.id)
  ON CONFLICT DO NOTHING;
- -- Keep the legacy table only during the upgrade transaction; runtime uses tasks.
  DROP TABLE documentation_questions;
+ END IF;
+ END $migrate_questions$;
  `);
 }
