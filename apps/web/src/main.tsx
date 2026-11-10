@@ -76,7 +76,7 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean;task_deletion_ids?:string[]|null};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
  messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
@@ -86,7 +86,7 @@ const emptyProjectChat:ProjectChatState={
  messages:[],input:'',pendingId:null,jobId:null,progress:'',historyLoaded:false,files:[],documentId:null,error:''
 };
 const projectChatKey=(projectId:string,mode:ProjectChatMode)=>projectId+':'+mode;
-type AssistantResponse={task_deletion_ids?:string[]|null;message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ImportJob={id:string;status:'running'|'completed'|'failed'|'cancelled';message:string;result:AssistantResponse|null};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
@@ -1274,7 +1274,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    }
    const reply:AssistantMessage={id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,
     created_task_id:response.created_task_id,created_document_id:response.created_document_id,
-    documentation_reset_requested:response.documentation_reset_requested,owner_question_cleanup_requested:response.owner_question_cleanup_requested,task_deletion_ids:response.task_deletion_ids,created_at:new Date().toISOString()};
+    documentation_reset_requested:response.documentation_reset_requested,owner_question_cleanup_requested:response.owner_question_cleanup_requested,created_at:new Date().toISOString()};
    updatePendingChat(chat=>({...chat,files:[],messages:[
     ...chat.messages.map(m=>m.id===optimisticId?{...m,pending:false}:m),reply
    ]}));
@@ -2072,8 +2072,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
       {selected&&m.documentation_reset_requested&&<DocumentationReset projectId={selected.id} request={api} onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
-      {selected&&!!m.task_deletion_ids?.length&&<OwnerQuestionCleanup key={m.id} taskIds={m.task_deletion_ids} projectId={selected.id} request={api}
-       onDeleted={()=>loadProject(selected.id)} onOpenTask={id=>navigate(projectUrl(selected.id,'tasks')+'/'+id)}/>}
       {selected&&m.owner_question_cleanup_requested&&<OwnerQuestionCleanup projectId={selected.id} request={api}
        onDeleted={()=>loadProject(selected.id)} onOpenTask={id=>navigate(projectUrl(selected.id,'tasks')+'/'+id)}/>}
       {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setOpenChatProjectId(null);}}>Открыть документ</button>}
