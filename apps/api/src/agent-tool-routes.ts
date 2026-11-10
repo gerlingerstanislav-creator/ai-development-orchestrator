@@ -40,8 +40,10 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    const duplicate=error instanceof Error&&
     (error.name==='WorkflowExecutionAlreadyStartedError'||error.name==='WorkflowAlreadyStartedError');
    if(!duplicate){
-    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2 WHERE id=$1 AND status='running'",
-     [jobId,'Temporal не запустился: '+String(error instanceof Error?error.message:error).slice(0,300)]);
+    // Keep the persisted job retryable when Temporal is temporarily offline.
+    // No new job ID or duplicate document import is created on subsequent starts.
+    await pool.query("UPDATE document_import_jobs SET status='queued',message=$2 WHERE id=$1 AND status='running' AND message='Temporal: запуск процесса'",
+     [jobId,'Ожидается повторный запуск Temporal: '+String(error instanceof Error?error.message:error).slice(0,250)]);
     throw error;
    }
   }
