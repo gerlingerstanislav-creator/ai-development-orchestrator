@@ -2,6 +2,7 @@ import {randomUUID,timingSafeEqual} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
+import {resolveAgentMention} from './agent-mentions.js';
 import {latestQaWaiver,qaWaiverAssessment,type QaRunRow} from './qa-waiver.js';
 
 /** One human-facing role; agents retain their own independent, private context. */
@@ -163,6 +164,9 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
   if(!await access(caller,reply,projectId)||!await requireAdmin(caller,reply))return;
   const snapshot=await managerSnapshot(pool,projectId,taskId);
   if(!snapshot)return reply.code(404).send({error:'Задача не найдена'});
+  // Direct specialist replies must never trigger manager-side analysis, approval or workflow actions.
+  try{if(await resolveAgentMention(pool,projectId,String(actor.body||'')))return {message:'',handled:false};}
+  catch(e){return reply.code((e as {statusCode?:number}).statusCode||422).send({error:(e as Error).message});}
   const startRequested=analysisActions&&isDevelopmentCommand(String(actor.body||''));
   if(analysisActions&&(snapshot.task.stage==='analysis'||startRequested)){
    const handled=(message:string)=>({message,handled:true});

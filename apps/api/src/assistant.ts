@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import {recordAgentActivity} from './task-agent-activity.js';
+import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import { randomUUID,createHash } from 'node:crypto';
 import { z } from 'zod';
 import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,resolveGitHubDocumentCommit} from './github-document-import.js';
@@ -494,6 +495,39 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const parsed=analystRequest.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:parsed.error.issues[0].message});
   const {message,mode,attachments,documentId:targetDocumentId}=parsed.data;
+  // Explicitly addressed specialists use the project's Workflow role and never fall
+  // through to the legacy intent heuristics or the manager's action-capable runtime.
+  let mentionedAgent;
+  try{mentionedAgent=await resolveAgentMention(pool,id,message);}
+  catch(e){return reply.code((e as {statusCode?:number}).statusCode||422).send({error:(e as Error).message});}
+  if(mentionedAgent){
+   if(attachments.length)return reply.code(400).send({error:'Вложения при прямом обращении к агенту пока не поддерживаются'});
+   const config=await configuration(id);
+   if(!config.enabled)return reply.code(409).send({error:'AI отключён в настройках проекта'});
+   const [project,docs]=await Promise.all([
+    pool.query('SELECT name,description FROM projects WHERE id=$1',[id]),
+    pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id])
+   ]);
+   const prompt=[
+    'Ты '+mentionedAgent.name+' — специалист этапа '+mentionedAgent.stage+'. Пользователь адресовал сообщение непосредственно тебе через @'+mentionedAgent.alias+'. Не представляйся менеджером.',
+    AGENT_MENTION_HINT,'Отвечай по-русски на основе реального контекста. Не утверждай о проведённых проверках или внесённых изменениях без фактических подтверждений.',
+    'Инструкции специалиста:\n'+mentionedAgent.instructions.slice(0,7000),
+    'Проект:\n'+JSON.stringify(project.rows[0]||{}).slice(0,3000),
+    'Правила проекта:\n'+(await rulesContext(id)).slice(0,5000),
+    'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,11000),
+    'История этого чата:\n'+(await history(id,null,mode)).slice(-5500),
+    'Сообщение пользователя:\n'+mentionedAgent.message
+   ].join('\n\n');
+   try{
+    const response=await completion(prompt,config);
+    await storeTokenUsage(id,null,config.model,response.usage);
+    const answer='@'+mentionedAgent.alias+' · '+response.text.trim();
+    await store(id,null,uid(req),'user',message,null,null,mode);
+    await store(id,null,null,'assistant',answer,null,null,mode);
+    await countCall(id,uid(req));
+    return {message:answer,created_task_id:null,created_document_id:null};
+   }catch(error){return reply.code(503).send({error:'Ошибка агента: '+String(error instanceof Error?error.message:error).slice(0,350)});}
+  }
   const documentationMode=mode==='documentation';
   if(process.env.AGENT_RUNTIME_ENABLED==='true'){
    const config=await configuration(id);
