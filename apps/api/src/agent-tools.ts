@@ -5,7 +5,7 @@ import {agentMemoryContext} from './project-team.js';
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
- 'tasks.list','tasks.read','tasks.request_owner_question_cleanup','tasks.request_deletion_preview','questions.list','processes.list','memory.list','documentation.request_reset',
+ 'tasks.list','tasks.read','tasks.request_owner_question_cleanup','questions.list','processes.list','memory.list','documentation.request_reset',
  'iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
@@ -39,8 +39,7 @@ export const agentToolCatalog=[
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('tasks.list','Получить задачи и этапы. Для колонки «Вопросы к ПО» передай product_owner_questions_only=true. Карточки вопросов по документам в этот список не входят.',{product_owner_questions_only:field('boolean','Показать только задачи из колонки «Вопросы к ПО»')}),
  tool('tasks.read','Прочитать задачу, недавние реплики и ответы на вопросы. Используй перед повторным обращением к пользователю по этой задаче.',{task_id:id},['task_id']),
- tool('tasks.request_owner_question_cleanup','Показать предпросмотр очистки колонки «Вопросы к ПО» по явной просьбе владельца. Колонка включает и задачи с ожиданием ответа, и отдельные вопросы аналитика по документации: tasks.list и questions.list показывают разные сущности. Вызов не удаляет ничего; фактическое удаление только после подтверждения в диалоге.',{}),
- tool('tasks.request_deletion_preview','Подготовить предпросмотр безопасного удаления явно выбранных задач по UUID. Ничего не удаляет, всегда требует подтверждения владельца. Сначала найди нужные задачи через tasks.list, не делай вывод о наличии задач по фильтру конкретной колонки.',{task_ids:{type:'array',items:id,minItems:1,maxItems:100}},['task_ids']),
+ tool('tasks.request_owner_question_cleanup','По запросу пользователя подготовь предпросмотр удаления задач из колонки «Вопросы к ПО». Вопросы аналитика тоже являются задачами типа question (после миграции). Не удаляй ничего до подтверждения владельца.',{}),
  tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
  tool('questions.list','Посмотреть открытые вопросы к владельцу продукта.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
@@ -57,7 +56,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','tasks.request_deletion_preview','questions.create','iterations.recommend_launch']);
+const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch']);
 export function toolsForRole(role:AgentRole){
  return agentToolCatalog.filter(t=>role==='manager'?t.name!=='documentation.request_reset':!BA_DENIED.has(t.name));
 }
@@ -96,7 +95,6 @@ export async function agentSessionEffects(pool:Pick<Pool,'query'>,id:string){
  const value=(name:string,key:string)=>rows.filter(r=>r.success&&r.tool===name).map(r=>r.result?.[key]).filter(Boolean).at(-1)||null;
  return {events:rows,created_document_id:value('documents.create','id'),created_task_id:value('tasks.create','id'),
   owner_question_cleanup_requested:value('tasks.request_owner_question_cleanup','requires_user_confirmation')===true,
-  task_deletion_ids:value('tasks.request_deletion_preview','task_ids')||null,
   documentation_reset_requested:value('documentation.request_reset','requires_user_confirmation')===true,
   import_job_id:value('documentation.import','import_job_id')||value('documentation.rebuild','import_job_id')||value('documentation.organize','import_job_id')};
 }
