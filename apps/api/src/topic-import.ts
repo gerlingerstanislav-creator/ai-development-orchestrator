@@ -419,9 +419,10 @@ export async function importByTopics(args:TopicImportArgs){
  const exclusions=classified.filter(x=>!x.topics.length&&x.exclusion).map(x=>({file:x.path,heading:x.heading,reason:x.exclusion}));
  // Fragments not included in synthesized ТЗ remain accessible verbatim.
  const archived=await archiveSourceDocuments({pool,jobId,projectId,sourceKey,files,location,progress});
+ const firstTopic=(await pool.query("SELECT page_id FROM document_import_topics WHERE job_id=$1 AND page_id IS NOT NULL ORDER BY updated_at ASC LIMIT 1",[jobId])).rows[0]?.page_id||specId;
  const result={message:'Подготовлено тематических страниц: '+done+'. Исходных файлов сохранено: '+files.length+
   '. Ручных конфликтов в темах: '+conflicts+'. Фрагментов вне ТЗ (доступны в исходниках): '+exclusions.length+'.',
-  created_task_id:null,created_document_id:specId,generated_documents:done,archived_documents:files.length,source_conflicts:archived.conflicts,exclusions,commit:location?.commit||null};
+  created_task_id:null,created_document_id:firstTopic,generated_documents:done,archived_documents:files.length,source_conflicts:archived.conflicts,exclusions,commit:location?.commit||null};
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
@@ -431,7 +432,7 @@ export async function importByTopics(args:TopicImportArgs){
    await client.query("INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,channel,created_at) VALUES($1,$2,NULL,$3,'user',$4,'documentation',clock_timestamp())",
     [randomUUID(),projectId,job.actor_id,job.request_text]);
    await client.query("INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_document_id,channel,created_at) VALUES($1,$2,NULL,NULL,'assistant',$3,$4,'documentation',clock_timestamp())",
-    [randomUUID(),projectId,result.message,specId]);
+    [randomUUID(),projectId,result.message,firstTopic]);
   }
   await client.query('COMMIT');
  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
