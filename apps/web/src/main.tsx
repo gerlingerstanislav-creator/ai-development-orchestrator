@@ -5,6 +5,7 @@ import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import {KnowledgeTraceability} from './KnowledgeTraceability.js';
+import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
 
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
@@ -1611,6 +1612,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </>}
       </div>
      </header>
+     {selected&&<KnowledgeUpdateProposals projectId={selected.id} documentId={doc.id} request={api} onApplied={async()=>{await loadProject(selected.id);}}/>}
      {docProposals.filter(proposal=>proposal.document_id===doc.id).map(proposal=><div className="docs-proposal" key={proposal.id}>
        <strong>Аналитик предложил изменение, сохранена ручная версия</strong>
        <p>Тема: {proposal.title}. Перед применением проверь обновлённый Markdown.</p>
