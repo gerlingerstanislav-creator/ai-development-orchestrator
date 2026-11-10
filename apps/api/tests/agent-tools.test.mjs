@@ -77,7 +77,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   'A failed changeset must roll back all pages');
  // Database writes AND their success audit must be one transaction.
  // If the success event cannot be persisted, the new document must roll back.
- await db.query("CREATE FUNCTION reject_audit_success() RETURNS trigger AS $ BEGIN RAISE EXCEPTION 'simulated audit storage failure'; END $ LANGUAGE plpgsql");
+ await db.query("CREATE FUNCTION reject_audit_success() RETURNS trigger AS $agentfn$ BEGIN RAISE EXCEPTION 'simulated audit storage failure'; RETURN NEW; END; $agentfn$ LANGUAGE plpgsql");
  await db.query("CREATE TRIGGER reject_audit_success BEFORE INSERT ON agent_tool_events FOR EACH ROW WHEN (NEW.success AND NEW.tool='documents.create') EXECUTE FUNCTION reject_audit_success()");
  const auditFailure=await call('documents.create',{
   title:'Нельзя сохранить без аудита',body:'Текст',parent_id:root,idempotency_key:'audit-failure-atomic'
