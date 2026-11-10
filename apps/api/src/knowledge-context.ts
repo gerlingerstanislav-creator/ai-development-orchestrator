@@ -145,4 +145,43 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
   const {task_id}=z.object({task_id:uuid}).parse(req.query);
   const r=await pool.query('SELECT document_id,document_version,agent_stage,created_at FROM knowledge_context_reads WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 200',[id,task_id]);return {results:r.rows};
  });
+ app.delete('/api/projects/:id/knowledge/links/:linkId',async(req:any,reply)=>{
+  const {id,linkId}=z.object({id:uuid,linkId:uuid}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const r=await pool.query('DELETE FROM knowledge_links WHERE id=$1 AND project_id=$2 RETURNING id',[linkId,id]);
+  if(!r.rowCount)return reply.code(404).send({error:'Связь не найдена'});
+  return {ok:true};
+ });
+ app.get('/api/projects/:id/knowledge/documents/:documentId/versions',async(req:any,reply)=>{
+  const {id,documentId}=z.object({id:uuid,documentId:uuid}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const r=await pool.query('SELECT v.id,v.created_at,v.task_ids,left(v.body,260) AS excerpt FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.project_id=$1 AND d.id=$2 ORDER BY v.created_at DESC LIMIT 100',[id,documentId]);
+  return {versions:r.rows};
+ });
+ app.get('/api/projects/:id/knowledge/documents/:documentId/sections',async(req:any,reply)=>{
+  const {id,documentId}=z.object({id:uuid,documentId:uuid}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const r=await pool.query('SELECT body,updated_at FROM documents WHERE project_id=$1 AND id=$2',[id,documentId]);
+  if(!r.rowCount)return reply.code(404).send({error:'Документ не найден'});
+  const lines=String(r.rows[0].body).split(/\r?\n/);
+  const headings:{index:number;level:number;title:string}[]=[];
+  lines.forEach((line,index)=>{const match=/^(#{1,6})\s+(.+)$/.exec(line);if(match)headings.push({index,level:match[1].length,title:match[2]});});
+  return {sections:headings.map((h,i)=>({id:String(h.index),title:h.title,level:h.level,excerpt:lines.slice(h.index,Math.min(lines.length,headings[i+1]?.index??lines.length)).join('\n').slice(0,240)})),version:r.rows[0].updated_at};
+ });
+ app.get('/api/projects/:id/knowledge/documents/:documentId/sections/:sectionId',async(req:any,reply)=>{
+  const {id,documentId,sectionId}=z.object({id:uuid,documentId:uuid,sectionId:z.coerce.number().int().min(0)}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const r=await pool.query('SELECT body,updated_at FROM documents WHERE project_id=$1 AND id=$2',[id,documentId]);
+  if(!r.rowCount)return reply.code(404).send({error:'Документ не найден'});
+  const lines=String(r.rows[0].body).split(/\r?\n/);
+  const heading=/^(#{1,6})\s+(.+)$/.exec(lines[sectionId]||'');
+  if(!heading)return reply.code(404).send({error:'Раздел не найден'});
+  let end=lines.length;
+  for(let i=sectionId+1;i<lines.length;i++){
+   const next=/^(#{1,6})\s+/.exec(lines[i]);
+   if(next&&next[1].length<=heading[1].length){end=i;break;}
+  }
+  return {document_id:documentId,section_id:String(sectionId),title:heading[2],body:lines.slice(sectionId,end).join('\n'),version:r.rows[0].updated_at};
+ });
+
 }
