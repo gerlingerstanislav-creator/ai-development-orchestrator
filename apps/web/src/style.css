@@ -456,12 +456,15 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 /* The documentation sidebar and reading pane use all available space. */
 .compact-project-page:has(>.docs){padding:var(--page-gutter)}
 .compact-project-page .docs{grid-template-columns:minmax(220px,280px) minmax(0,1fr);align-items:stretch;gap:var(--section-gap)}
-.compact-project-page .docs .panel{height:calc(100vh - 45px - 2*var(--page-gutter));min-height:0}
-.docs .docs-list{position:sticky;top:calc(45px + var(--page-gutter));display:flex;flex-direction:column;overflow:hidden;padding:12px 9px;max-height:calc(100vh - 45px - 2*var(--page-gutter))}
-.docs .docs-list-heading{flex:0 0 auto}
+.compact-project-page .docs > .panel{height:calc(100vh - 45px - 2*var(--page-gutter));min-height:0}
+.docs .docs-list{position:sticky;top:calc(45px + var(--page-gutter));display:flex;flex-direction:column;gap:5px;overflow:hidden;padding:8px 9px;max-height:calc(100vh - 45px - 2*var(--page-gutter))}
+.docs .docs-list-heading{flex:0 0 auto;padding:0 5px}
+.docs .docs-list-heading button{min-width:30px;min-height:30px;align-items:center;justify-content:center}
 .docs .doc-tree{flex:1 1 auto;min-height:0;max-height:none;overflow:auto}
 .docs-tree-empty{padding:8px}
-.docs-list-footer{flex:0 0 auto;margin-top:auto;padding:10px 4px 2px;border-top:1px solid #e8ebf1}
+.docs-list-footer{flex:0 0 auto;display:grid;grid-template-columns:1fr 1fr;gap:6px;padding-top:6px;border-top:1px solid #e8ebf1}
+.docs .docs-list-footer .secondary{justify-content:center;gap:6px;min-width:0;min-height:34px;padding:5px;font-size:12px;white-space:nowrap}
+.docs-list-footer .task-action-error{grid-column:1/-1;margin:0}
 .docs-list-footer .docs-discuss-button{width:100%;justify-content:center;white-space:normal;min-height:36px}
 .docs-reading{min-height:0;max-height:none;overflow:hidden}
 .docs-content{max-height:none;flex:1;min-height:0;overflow:auto;padding:18px 20px 24px}
@@ -469,10 +472,9 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .docs-empty{flex:1;min-height:0}
 @media(max-width:800px){
  .compact-project-page .docs{grid-template-columns:1fr}
- .compact-project-page .docs .panel{height:auto;min-height:0}
+ .compact-project-page .docs > .panel{height:auto;min-height:0}
  .docs .docs-list{position:static;max-height:320px;min-height:210px}
  .docs .doc-tree{min-height:60px}
- .docs .docs-list-footer{margin-top:8px}
  .docs-reading{min-height:320px}
  .docs-content{max-height:calc(100vh - 170px)}
 }
@@ -1016,8 +1018,8 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .assistant-composer .agent-mention-menu{order:-1}
 
 /* Knowledge Management: compact contextual controls within existing documentation layout. */
-.docs-search-field{width:calc(100% - 20px);margin:7px 10px 8px;min-height:33px;border-radius:7px;}
-.knowledge-document-panel{margin:10px 16px;padding:12px 14px;display:block;}
+.docs-search-field{flex:0 0 auto;width:100%;min-height:33px;padding:6px 9px;border-radius:7px}
+.knowledge-document-panel{flex:0 0 auto;margin:10px 16px;padding:12px 14px;max-height:45%;overflow:auto;}
 .knowledge-document-panel>summary{font-size:13px;font-weight:600;cursor:pointer;}
 .knowledge-document-panel h4{margin:12px 0 6px;font-size:13px;}
 .knowledge-document-panel .doc-metadata-editor{margin:9px 0;display:flex;flex-wrap:wrap;align-items:end;gap:8px;}
@@ -1028,7 +1030,7 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .knowledge-link button{flex:none;padding:4px;}
 
 /* Knowledge and instructions: compact editing within the established documentation layout. */
-.knowledge-instructions-panel{margin:8px 10px;padding:9px;border:1px solid var(--border,rgba(150,150,150,.25));border-radius:8px;max-height:430px;overflow:auto;font-size:12px}
+.knowledge-instructions-panel{padding:12px 14px;background:#fff;border:1px solid #e7eaf0;border-radius:12px;font-size:12px}
 .knowledge-instructions-panel summary,.knowledge-traceability summary{cursor:pointer;font-weight:600}
 .knowledge-instructions-panel p,.knowledge-traceability p{margin:6px 0}
 .knowledge-instruction-item{padding:7px 0;border-bottom:1px solid var(--border,rgba(150,150,150,.2));display:flex;justify-content:space-between;gap:5px}

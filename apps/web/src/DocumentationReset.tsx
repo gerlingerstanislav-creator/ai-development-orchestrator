@@ -7,8 +7,8 @@ type Preview={
  intent_id:string;project_name:string;pages:number;imports:number;roots_preserved:number;
  confirmation_phrase:string;warning:string;
 };
-export function DocumentationReset({projectId,request,onReset}:{
- projectId:string;request:Request;onReset:()=>Promise<void>;
+export function DocumentationReset({projectId,request,onReset,compact=false}:{
+ projectId:string;request:Request;onReset:()=>Promise<void>;compact?:boolean;
 }){
  const [preview,setPreview]=useState<Preview|null>(null);
  const [phrase,setPhrase]=useState('');
@@ -35,7 +35,8 @@ export function DocumentationReset({projectId,request,onReset}:{
   finally{setBusy(false);}
  }
  return <>
-  <button type="button" className="secondary docs-reset-action" disabled={busy} onClick={()=>void open()}><Trash2 size={15}/> Очистить документацию</button>
+  <button type="button" className={compact?'secondary':'secondary docs-reset-action'} disabled={busy} onClick={()=>void open()}
+   title="Очистить документацию" aria-label="Очистить документацию"><Trash2 size={16}/> {compact?'Очистить':'Очистить документацию'}</button>
   {error&&!preview&&<p className="task-action-error" role="alert">{error}</p>}
   {preview&&createPortal(<div className="overlay documentation-reset-overlay" onMouseDown={()=>{if(!busy)setPreview(null);}}>
    <div className="dialog documentation-reset-dialog" role="dialog" aria-modal="true" aria-label="Полная очистка документации" onMouseDown={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();if(!busy)setPreview(null);}}}>

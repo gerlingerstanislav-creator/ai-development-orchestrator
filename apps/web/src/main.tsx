@@ -1,10 +1,10 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {ProjectTeam} from './ProjectTeam.js';
-import {KnowledgeInstructions} from './KnowledgeInstructions.js';
+import {aiAgentName,serviceStages} from './agent-labels.js';
 import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
 import {KnowledgeAudit} from './KnowledgeAudit.js';
@@ -1698,13 +1698,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
    <div className="docs-list-heading"><b>Страницы проекта</b><div className="docs-actions">
-     <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);openProjectChat('documentation','Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');}}><LayoutGrid size={17}/></button>
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
-   {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}
    <div className="docs-list-footer">
-    <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
-    {selected&&<DocumentationReset key={selected.id} projectId={selected.id} request={api} onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
+    <button className="secondary" type="button" title="Скачать ТЗ (Markdown)" aria-label="Скачать ТЗ (Markdown)" onClick={()=>void exportSpecification()}><FileDown size={16}/> ТЗ</button>
+    {selected&&<DocumentationReset key={selected.id} projectId={selected.id} request={api} compact onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
    </div>
   </aside>
   <section className="panel docs-reading">
@@ -1795,7 +1793,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {section==='team'&&<ProjectTeam projectId={selected.id} request={api}/>}
  {section==='settings'&&<section className="panel workflow-settings-panel">
   <div className="row-line">
-   <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы настроить исполнителя, режим работы и инструкции.</p></div>
+   <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы посмотреть его назначение или настроить агента.</p></div>
    <span className="workflow-key"><span className="workflow-key-line"/> Переходы</span>
   </div>
   <div className="workflow-diagram-scroll">
@@ -1811,7 +1809,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <button type="button" className={'workflow-stage-card workflow-stage-'+stage.stage} onClick={()=>{setWorkflowModal({...stage});setWorkflowEditing(null);}}
        title={'Настройки этапа «'+stage.label+'»'}>
        <span className="workflow-stage-label">{stage.label}</span>
-       <span className="workflow-stage-agent">{stage.agent_name||'Исполнитель не указан'}</span>
+       <span className="workflow-stage-agent">{serviceStages[stage.stage]?'Служебный этап':stage.agent_name?aiAgentName(stage.agent_name):'Исполнитель не указан'}</span>
        <span className="workflow-stage-mode">{stage.stage==='deployment'?(deploymentMode==='skip'?'Пропуск без окружения':'Ручное подтверждение'):stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
        <Settings2 size={14} className="workflow-stage-icon"/>
       </button>
@@ -1897,7 +1895,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </main>
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
-   <header className="project-chat-heading"><div><strong>{projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)'}</strong><small>{aiSettings.model}</small></div>
+   <header className="project-chat-heading"><div><strong>{aiAgentName(projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)')}</strong><small>{aiSettings.model}</small></div>
     <div className="docs-actions">{projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').slice(-1)[0]?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
     <button onClick={()=>setOpenChatProjectId(null)} title="Свернуть чат" aria-label="Свернуть чат"><X size={17}/></button></div>
    </header>
@@ -1939,7 +1937,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     </>}
     {mentionMatches(projectInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
       {mentionMatches(projectInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>{setProjectInput(addMention(projectInput,option.alias));projectInputRef.current?.focus();}}>
-       <strong>@{option.alias}</strong><small>{stages.find(s=>s.stage===option.stage)?.agent_name||option.alias}</small></button>)}
+       <strong>@{option.alias}</strong><small>{aiAgentName(stages.find(s=>s.stage===option.stage)?.agent_name||option.alias)}</small></button>)}
      </div>}
      <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Обсудить продукт, сценарии и требования…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение бизнес-аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
     <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||(!projectInput.trim()&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
@@ -1955,14 +1953,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <div className="dialog workflow-stage-dialog" role="dialog" aria-modal="true" aria-label={'Настройки этапа '+workflowModal.label} onMouseDown={e=>e.stopPropagation()}>
    <div className="modal-heading"><h2>{workflowModal.label}</h2><button className="task-close" type="button" onClick={()=>setWorkflowModal(null)} aria-label="Закрыть"><X size={19}/></button></div>
    <p className="muted workflow-modal-subtitle">Этап <code>{workflowModal.stage}</code> · Порядок в процессе: {workflowModal.position+1}</p>
+   {serviceStages[workflowModal.stage]?<p className="workflow-transition-description">{serviceStages[workflowModal.stage]}</p>:<>
    <div className="workflow-detail-field">
-    <div className="workflow-field-heading"><strong>Исполнитель / имя агента</strong>
+    <div className="workflow-field-heading"><strong>Имя агента</strong>
      <button type="button" className="workflow-field-pencil" onClick={()=>setWorkflowEditing(workflowEditing==='agent'?null:'agent')}
       aria-label="Редактировать имя агента" title="Редактировать имя агента"><Pencil size={15}/></button>
     </div>
     {workflowEditing==='agent'?<input autoFocus value={workflowModal.agent_name} maxLength={100}
       onChange={e=>setWorkflowModal({...workflowModal,agent_name:e.target.value})} placeholder="Например: AI-тестировщик"/>:
-      <div className="workflow-field-value">{workflowModal.agent_name||'Не назначен'}</div>}
+      <div className="workflow-field-value">{workflowModal.agent_name?aiAgentName(workflowModal.agent_name):'Не назначен'}</div>}
    </div>
    <div className="workflow-detail-field">
     <div className="workflow-field-heading"><strong>Режим выполнения</strong>
@@ -1985,10 +1984,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>
    {workflowModal.stage==='deployment'&&<div className="workflow-detail-field"><div className="workflow-field-heading"><strong>Порядок выкладки</strong></div><select value={deploymentMode} onChange={e=>setDeploymentMode(e.target.value as 'skip'|'manual')}><option value="skip">Пропускать, пока нет окружения</option><option value="manual">Ожидать ручную выкладку или явный пропуск</option></select><small className="muted">GitHub Actions для реального деплоя будут подключены позже. Пока система не выполняет выкладку автоматически и не сообщает ложный успех.</small></div>}
    <small className="muted workflow-agent-notice">Инструкции используются соответствующим AI-агентом. Системные ограничения имеют приоритет.</small>
+   </>}
    {workflowModal.stage==='testing'&&<p className="workflow-transition-description"><RotateCcw size={14}/> Если обнаружены ошибки, задача вернётся в разработку с замечаниями. Затем тесты выполнятся повторно.</p>}
    {workflowModal.stage==='development'&&<p className="workflow-transition-description">После успешной разработки задача передаётся на тестирование.</p>}
    <footer><button className="secondary" type="button" onClick={()=>setWorkflowModal(null)}>Закрыть</button>
-    <button className="primary" type="button" disabled={workflowSaving||!workflowModal.agent_name.trim()} onClick={()=>void saveWorkflowStage()}>{workflowSaving?'Сохранение…':'Сохранить'}</button></footer>
+    {!serviceStages[workflowModal.stage]&&<button className="primary" type="button" disabled={workflowSaving||!workflowModal.agent_name.trim()} onClick={()=>void saveWorkflowStage()}>{workflowSaving?'Сохранение…':'Сохранить'}</button>}</footer>
   </div>
  </div>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
@@ -2134,7 +2134,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
       {mentionMatches(taskInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
         {mentionMatches(taskInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>setTaskInput(addMention(taskInput,option.alias))}>
-         <strong>@{option.alias}</strong><small>{stages.find(s=>s.stage===option.stage)?.agent_name||option.alias}</small></button>)}
+         <strong>@{option.alias}</strong><small>{aiAgentName(stages.find(s=>s.stage===option.stage)?.agent_name||option.alias)}</small></button>)}
        </div>}
        <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}

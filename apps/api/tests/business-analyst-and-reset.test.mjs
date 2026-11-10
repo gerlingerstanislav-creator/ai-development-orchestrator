@@ -5,6 +5,7 @@ import pg from 'pg';
 import Fastify from 'fastify';
 import {initDocumentationReset,registerDocumentationResetRoutes} from '../dist/documentation-reset.js';
 import {registerSafeTaskDeletion} from '../dist/task-deletion.js';
+import {registerProjectTeamRoutes} from '../dist/project-team.js';
 import {registerBusinessAnalystHandoff} from '../dist/business-analyst-handoff.js';
 import {toolsForRole,toolAllowedForRole} from '../dist/agent-tools.js';
 
@@ -176,4 +177,34 @@ test('BA-to-SA handoff requires explicit approval and creates an analysis task o
  assert.equal(task.stage,'analysis');
  assert.equal(task.analysis_state,'new');
  await db.query('ROLLBACK');opened=false;
+});
+
+test('the team excludes platform stages and keeps configured AI agents',async t=>{
+ const db=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await db.connect();
+ const app=Fastify();
+ t.after(async()=>{await app.close();await db.end();});
+ await db.query(`
+  CREATE TEMP TABLE workflow_stages(project_id uuid,stage text,label text,position int,agent_name text,agent_instructions text);
+  CREATE TEMP TABLE project_specialist_agents(project_id uuid,role text,agent_name text,agent_instructions text);
+  CREATE TEMP TABLE project_conversation_agents(project_id uuid,role text,agent_name text,agent_instructions text);
+  CREATE TEMP TABLE users(id uuid,email text);
+  CREATE TEMP TABLE agent_memory(id uuid,project_id uuid,role text,kind text,body text,evidence text,status text,origin text,author_id uuid,created_at timestamptz,reviewed_at timestamptz);
+ `);
+ const project=randomUUID(),actor=randomUUID();
+ await db.query(`
+  INSERT INTO workflow_stages VALUES
+  ($1,'backlog','Бэклог',0,'Оператор','Инструкция ПМ для бэклога'),
+  ($1,'analysis','Анализ',1,'Системный аналитик','Проверяй требования'),
+  ($1,'merge_queue','Ожидает слияния',2,'Интегратор GitHub','Проверь PR'),
+  ($1,'done','Готово',3,'Система','Завершение')
+ `,[project]);
+ await db.query("INSERT INTO project_conversation_agents VALUES($1,'manager','Менеджер проекта','Координируй работу')",[project]);
+ registerProjectTeamRoutes(app,{pool:db,uid:()=>actor,access:async()=>true,requireAdmin:async()=>true});
+ const response=await app.inject({url:'/api/projects/'+project+'/team'});
+ assert.equal(response.statusCode,200,response.body);
+ assert.deepEqual(response.json().agents.map(({role,instructions})=>[role,instructions]),[
+  ['manager','Координируй работу'],['analysis','Проверяй требования']
+ ]);
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM workflow_stages WHERE project_id=$1',[project])).rows[0].n,4);
 });
