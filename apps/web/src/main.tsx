@@ -805,7 +805,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    try{
     const messages=await api<AssistantMessage[]>('/projects/'+selectedProjectId+'/assistant/messages?mode='+projectChatMode,{signal:controller.signal});
     if(controller.signal.aborted)return;
-    updateProjectChat(chatKey,chat=>chat.pendingId?chat:{
+    updateProjectChat(chatKey,chat=>chat.pendingId||chat.jobId?chat:{
      ...chat,historyLoaded:true,messages:[...messages,...chat.messages.filter(message=>message.failed)]
     });
    }catch(e){if(!controller.signal.aborted&&!projectHistoryLoaded)fail(e);}
