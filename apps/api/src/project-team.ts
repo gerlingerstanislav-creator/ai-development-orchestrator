@@ -5,7 +5,7 @@ import {z} from 'zod';
 
 const uuid=z.string().uuid();
 const conversationalRoles=['manager','analyst'] as const;
-const stageRoles=['analysis','development','testing','deployment','documentation'] as const;
+const stageRoles=['analysis','development','testing','documentation'] as const;
 const specialistRoles=['devops'] as const;
 const roleSchema=z.enum([...conversationalRoles,...stageRoles,...specialistRoles]);
 const memoryStatus=z.enum(['approved','rejected']);
@@ -45,6 +45,12 @@ export async function initProjectTeamSchema(pool:Pool){
  ('analyst','Бизнес-аналитик','Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.')
  ) AS r(role,agent_name,agent_instructions)
  ON CONFLICT(project_id,role) DO NOTHING;
+ -- Deployment is a workflow stage, not a second AI persona. The specialist
+ -- profile is authoritative; stage configuration remains for compatibility.
+ UPDATE workflow_stages w SET agent_name=s.agent_name,agent_instructions=s.agent_instructions
+ FROM project_specialist_agents s
+ WHERE w.project_id=s.project_id AND w.stage='deployment' AND s.role='devops'
+   AND (w.agent_name IS DISTINCT FROM s.agent_name OR w.agent_instructions IS DISTINCT FROM s.agent_instructions);
  `);
 }
 export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId:string,role:'manager'|'analyst'){
@@ -93,7 +99,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
   const agents=[
    ...conversations.rows.map(r=>({id:'conversation:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='manager'?'Коммуникации':'Бизнес-анализ',type:'conversation',instructions:r.agent_instructions})),
    ...stages.rows.map(r=>({id:'stage:'+r.stage,role:r.stage,name:r.agent_name,stage:r.label,type:'workflow',instructions:r.agent_instructions})),
-   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:'Специалист',type:'specialist',instructions:r.agent_instructions}))
+   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:'CI/CD · выкладка · инфраструктура',type:'specialist',instructions:r.agent_instructions}))
   ];
   return {agents,memory:memory.rows};
  });
@@ -109,6 +115,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
    if(!row){await client.query('ROLLBACK');return reply.code(404).send({error:'Роль не найдена'});}
    if(row.agent_name!==data.name||row.agent_instructions!==data.instructions){
     await client.query(`UPDATE ${table} SET agent_name=$3,agent_instructions=$4${table==='workflow_stages'?'':',updated_at=now()'} WHERE project_id=$1 AND ${key}=$2`,[id,role,data.name,data.instructions]);
+    if(role==='devops')await client.query("UPDATE workflow_stages SET agent_name=$2,agent_instructions=$3 WHERE project_id=$1 AND stage='deployment'",[id,data.name,data.instructions]);
     await client.query(`INSERT INTO agent_instruction_history(id,project_id,role,previous_name,previous_instructions,next_name,next_instructions,actor_id)
      VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[randomUUID(),id,role,row.agent_name,row.agent_instructions,data.name,data.instructions,uid(req)]);
    }
