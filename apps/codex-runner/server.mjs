@@ -603,6 +603,41 @@ http.createServer(async(req,res)=>{
    try{await execFileAsync('codex',['logout'],{timeout:10000,env:cliEnv});}catch{}
    return reply(res,200,{connected:false});
   }
+  if(req.url==='/agent'&&req.method==='POST'){
+   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
+   if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
+   const data=await readJson(req);
+   if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
+      !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
+      !['low','medium'].includes(data.reasoning)||
+      typeof data.session_token!=='string'||!/^[a-f0-9]{64}$/.test(data.session_token))
+     return reply(res,400,{error:'Неверный агентный запрос'});
+   activeChatRequests++;
+   try{
+    if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
+    // Token is supplied only in the child process environment; it is never
+    // embedded into the instruction, Codex configuration or CLI argv.
+    const result=await command('codex',[
+     'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
+     '-c','mcp_servers.orchestrator.command="node"',
+     '-c','mcp_servers.orchestrator.args=["/opt/codex-runner/agent-mcp.mjs"]',
+     '-c','mcp_servers.orchestrator.env_vars=["ADO_AGENT_SESSION_TOKEN","ADO_AGENT_API_URL"]',
+     '-c','mcp_servers.orchestrator.startup_timeout_sec=15',
+     '-c','mcp_servers.orchestrator.tool_timeout_sec=90',
+     '--json','--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
+    ],{cwd:'/opt/codex-runner',
+     env:{...cliEnv,ADO_AGENT_SESSION_TOKEN:data.session_token,
+      ADO_AGENT_API_URL:process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools'},
+     timeout:240000,maxOutputChars:500000});
+    const parsed=codexJsonResult(result.stdout);
+    const message=parsed.message.trim();
+    if(!message)return reply(res,502,{error:'Агент не вернул итоговое сообщение'});
+    if(message.length>120000)return reply(res,413,{error:'Итоговый ответ агента превышает размер'});
+    return reply(res,200,{message,usage:parsed.usage});
+   }catch(error){
+    return reply(res,503,{error:'Агент Codex: '+String(error?.message||error).slice(0,900)});
+   }finally{activeChatRequests--;}
+  }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});

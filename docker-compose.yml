@@ -22,6 +22,7 @@ services:
       CREDENTIALS_KEY: ${CREDENTIALS_KEY:?set CREDENTIALS_KEY}
       PORT: 3001
       CODEX_RUNNER_URL: http://codex:4300
+      AGENT_RUNTIME_ENABLED: ${AGENT_RUNTIME_ENABLED:-false}
       RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       TEMPORAL_ADDRESS: temporal:7233
     depends_on:
@@ -62,6 +63,7 @@ services:
     environment:
       CODEX_HOME: /home/node/.codex
       RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ADO_AGENT_API_URL: http://api:3001/internal/agent-tools
     volumes:
       - codex_auth:/home/node/.codex
     restart: unless-stopped
