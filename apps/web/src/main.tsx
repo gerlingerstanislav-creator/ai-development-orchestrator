@@ -1458,9 +1458,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
  function renderTaskPlanningLabels(task:Task){
   const iteration=iterations.find(item=>item.id===task.iteration_id);
-  if(!iteration&&!task.tags?.length)return null;
+  const sprint=planningOptions.sprints.find(item=>item.id===task.sprint_id);
+  const version=planningOptions.versions.find(item=>item.id===task.version_id);
+  if(!iteration&&!sprint&&!version&&!task.tags?.length)return null;
   return <span className="task-planning-labels">
    {iteration&&<span className="task-iteration-label">{iteration.title}</span>}
+   {sprint&&<span title={'Спринт: '+sprint.name}>{sprint.name}</span>}
+   {version&&<span title={'Версия: '+version.name}>{version.name}</span>}
    {task.tags?.slice(0,3).map(tag=><span key={tag}>{tag}</span>)}
    {(task.tags?.length??0)>3&&<span title={task.tags?.join(', ')}>+{task.tags!.length-3}</span>}
   </span>;
