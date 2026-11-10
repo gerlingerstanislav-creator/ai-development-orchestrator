@@ -229,7 +229,12 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 30',[run.project_id]),
   pool.query("SELECT agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='analysis'",[run.project_id]),
   pool.query("SELECT question,answer,created_at FROM iteration_owner_decisions WHERE iteration_id=$1 ORDER BY created_at DESC LIMIT 70",[run.iteration_id]),
-  pool.query("SELECT role,body,created_at FROM assistant_messages WHERE project_id=$1 AND channel='project' AND task_id IS NULL AND status='completed' ORDER BY created_at DESC LIMIT 50",[run.project_id])
+  pool.query("SELECT role,body,created_at FROM assistant_messages WHERE project_id=$1 AND channel='project' AND task_id IS NULL ORDER BY created_at DESC LIMIT 50",[run.project_id]).catch(error=>{
+   // Isolated integration tests initialize only the iteration schema.
+   // The PM inbox is optional in those environments; production creates it at boot.
+   if((error as {code?:string}).code==='42P01')return {rows:[]};
+   throw error;
+  })
  ]);
  const prompt=[
   'Ты системный аналитик. Декомпозируй согласованную итерацию по результатам, которые можно проверить. Раздели работу на эпики и задачи. Для разработки добавляй проверяемые критерии. Противоречия и открытые вопросы выноси в задачи kind=analysis, остальную работу в kind=development. Не выходи за границы согласованной итерации.',
