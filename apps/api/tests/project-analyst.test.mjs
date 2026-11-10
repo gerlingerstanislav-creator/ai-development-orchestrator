@@ -20,7 +20,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   CREATE TEMP TABLE assistant_usage (id uuid,project_id uuid,actor_id uuid);
   CREATE TEMP TABLE documents (id uuid,project_id uuid,title text,body text,parent_id uuid,import_source text,system_key text,import_synced_hash text,source_refs jsonb DEFAULT '[]'::jsonb,document_kind text,implementation_status text,updated_at timestamptz DEFAULT now());
   CREATE UNIQUE INDEX ON documents(project_id,import_source) WHERE import_source IS NOT NULL;
-  CREATE TEMP TABLE assistant_messages (id uuid,project_id uuid,task_id uuid,actor_id uuid,role text,body text,created_task_id uuid,created_document_id uuid,channel text,created_at timestamptz DEFAULT now(),documentation_reset_requested boolean DEFAULT false,owner_question_cleanup_requested boolean DEFAULT false);
+  CREATE TEMP TABLE assistant_messages (id uuid,project_id uuid,task_id uuid,actor_id uuid,role text,body text,created_task_id uuid,created_document_id uuid,channel text,created_at timestamptz DEFAULT now(),documentation_reset_requested boolean DEFAULT false,owner_question_cleanup_requested boolean DEFAULT false,task_deletion_ids uuid[]);
   CREATE TEMP TABLE project_ai_settings (project_id uuid,enabled boolean,model text,reasoning text);
   CREATE TEMP TABLE workflow_stages (project_id uuid,stage text,agent_name text,agent_instructions text);
   CREATE TEMP TABLE project_conversation_agents (project_id uuid,role text,agent_name text,agent_instructions text);
