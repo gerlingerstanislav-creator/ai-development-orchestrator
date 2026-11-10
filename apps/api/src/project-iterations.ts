@@ -220,7 +220,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   const started=await db.query("UPDATE iteration_planning_runs SET status='running',message='СА изучает объём, документы и задачи',updated_at=now() WHERE id=$1 AND status='queued'",[runId]);
   if(started.rowCount)await planningEvent(db,run.project_id,runId,'running','СА изучает объём, документы и задачи');
  });
- const [linked,common,rules,profile,ownerDecisions]=await Promise.all([
+ const [linked,common,rules,profile,ownerDecisions,pmConversation]=await Promise.all([
   pool.query(`SELECT d.title,left(d.body,4500) AS body FROM iteration_documents l JOIN documents d ON d.id=l.document_id
    WHERE l.iteration_id=$1 ORDER BY d.title,d.id`,[run.iteration_id]),
   pool.query(`SELECT d.title,left(d.body,1500) AS body FROM documents d
@@ -228,7 +228,8 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
    ORDER BY (d.system_key='spec') DESC,d.updated_at DESC LIMIT 12`,[run.project_id,run.iteration_id]),
   pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 30',[run.project_id]),
   pool.query("SELECT agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='analysis'",[run.project_id]),
-  pool.query("SELECT question,answer,created_at FROM iteration_owner_decisions WHERE iteration_id=$1 ORDER BY created_at DESC LIMIT 70",[run.iteration_id])
+  pool.query("SELECT question,answer,created_at FROM iteration_owner_decisions WHERE iteration_id=$1 ORDER BY created_at DESC LIMIT 70",[run.iteration_id]),
+  pool.query("SELECT role,body,created_at FROM assistant_messages WHERE project_id=$1 AND channel='project' AND task_id IS NULL AND status='completed' ORDER BY created_at DESC LIMIT 50",[run.project_id])
  ]);
  const prompt=[
   'Ты системный аналитик. Декомпозируй согласованную итерацию по результатам, которые можно проверить. Раздели работу на эпики и задачи. Для разработки добавляй проверяемые критерии. Противоречия и открытые вопросы выноси в задачи kind=analysis, остальную работу в kind=development. Не выходи за границы согласованной итерации.',
@@ -237,6 +238,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Итерация «'+details.title+'»:\n'+details.body.slice(0,8000),
   'Уточнение пользователя:\n'+run.request_text,
   'Подтверждённые ответы владельца через ПМ (сначала новые):\n'+JSON.stringify(ownerDecisions.rows).slice(0,9000),
+  'Предыдущие сообщения владельца и ответы ПМ для восстановления решений (история может содержать устаревшие предположения):\\n'+JSON.stringify(pmConversation.rows).slice(0,11500),
   'Не запрашивай повторно сведения, которые однозначно содержатся в ответах владельца. В случае противоречия решений обозначь его в задаче анализа; не останавливай всю декомпозицию.',
   'Существующие задачи:\n'+JSON.stringify(details.tasks.map(({id,title,type,parent_id,iteration_item_key})=>({id,title,type,parent_id,iteration_item_key}))).slice(0,2200),
   'Связанные страницы:\n'+JSON.stringify(linked.rows).slice(0,6800),
