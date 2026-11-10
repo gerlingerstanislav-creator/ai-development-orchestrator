@@ -12,6 +12,7 @@ import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
+import {agentMemoryContext,conversationInstructions} from './project-team.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -51,7 +52,8 @@ async function jobSettings(projectId:string,taskId:string){
  if(!task.rowCount||!repo.rowCount||!settings.rowCount||!settings.rows[0].enabled)
   throw ApplicationFailure.nonRetryable('Задача, подключение GitHub или настройки AI недоступны');
  const t=task.rows[0],g=repo.rows[0],ai=settings.rows[0];
- return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),agentSettings:workflow.rows};
+ const agentSettings=await Promise.all(workflow.rows.map(async row=>({...row,agent_instructions:String(row.agent_instructions||'')+'\n\nНакопленный опыт и утверждённые дополнения:\n'+await agentMemoryContext(pool,projectId,row.stage)})));
+  return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),agentSettings};
 }
 async function dispatch(job:any){
  try{
@@ -77,7 +79,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
  const stage:KnowledgeStage=operation.includes('qa')||operation.includes('test')?'testing':operation.includes('documentation')?'documentation':'analysis';
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,stage));
- prompt+='\n\nУтверждённые тематические знания (не изменяй требования без согласования):\n'+knowledge.documents+'\n\nПрименимые инструкции:\n'+knowledge.modules;
+ prompt+='\n\nУтверждённые тематические знания (не изменяй требования без согласования):\n'+knowledge.documents+'\n\nПрименимые инструкции:\n'+knowledge.modules+'\n\nНакопленный опыт этапа:\n'+await agentMemoryContext(pool,projectId,stage);
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
   body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
@@ -178,7 +180,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
    throw new Error('Код PR изменился после сверки аналитиком. Требуется повторная проверка требований.');
   const qaKnowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',runId));
   const count=await prepareQaDocumentation(pool,{...args,implementationEvidence:evidence.patch},async(prompt)=>{
-   prompt+='\\n\\nУтверждённые знания:\\n'+qaKnowledge.documents+'\\n\\nПрименимые инструкции:\\n'+qaKnowledge.modules;
+   prompt+='\\n\\nУтверждённые знания:\\n'+qaKnowledge.documents+'\\n\\nПрименимые инструкции:\\n'+qaKnowledge.modules+'\\n\\nПамять QA:\\n'+await agentMemoryContext(pool,projectId,'testing');
    const response=await fetch(codexUrl+'/assistant',{method:'POST',
     headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
     body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
