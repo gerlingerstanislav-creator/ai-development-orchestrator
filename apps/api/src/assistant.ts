@@ -304,8 +304,11 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     await updateProgress('analyzing','Аналитик уточняет требования');
     await applyDocumentationEdit(config);
    }
-   await processEvent(id,jobId,'completed','Работа аналитика завершена').catch(()=>{});
+   const finalStatus=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0]?.status;
+   if(finalStatus==='completed')await processEvent(id,jobId,'completed','Работа аналитика завершена').catch(()=>{});
   }catch(error){
+   const state=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0]?.status;
+   if(state==='cancelled')return; // Intentional user stop is not an agent failure.
    const reason=error instanceof Error?error.message:'Неизвестная ошибка';
    await processEvent(id,jobId,'failed',reason,'error').catch(()=>{});
    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2,updated_at=now() WHERE id=$1 AND status='running'",
