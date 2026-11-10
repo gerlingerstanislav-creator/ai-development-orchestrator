@@ -3,6 +3,7 @@ import {createPortal} from 'react-dom';
 import {Trash2,X} from 'lucide-react';
 
 type Candidate={id:string;display_number:number;title:string;blocked_reason:string|null};
+type QuestionCandidate={id:string;question:string;document_title:string;blocked_reason:string|null};
 
 export function OwnerQuestionCleanup({projectId,taskIds,request,onDeleted,onOpenTask}:{
  projectId:string;
@@ -14,26 +15,32 @@ export function OwnerQuestionCleanup({projectId,taskIds,request,onDeleted,onOpen
  const selectedIds=taskIds?.length?[...new Set(taskIds)]:null;
  const path='/projects/'+projectId+'/tasks/'+(selectedIds?'delete':'owner-questions/delete');
  const [tasks,setTasks]=useState<Candidate[]|null>(null);
+ const [questions,setQuestions]=useState<QuestionCandidate[]>([]);
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState('');
  const [deleted,setDeleted]=useState<number|null>(null);
  const eligible=tasks?.filter(task=>!task.blocked_reason)??[];
+ const eligibleQuestions=questions.filter(question=>!question.blocked_reason);
+ const blockedQuestions=questions.filter(question=>!!question.blocked_reason);
  const blocked=tasks?.filter(task=>task.blocked_reason)??[];
- function close(){if(!busy){setTasks(null);setError('');}}
+ function close(){if(!busy){setTasks(null);setQuestions([]);setError('');}}
  async function preview(){
   setBusy(true);setError('');setDeleted(null);
-  try{setTasks((await request<{tasks:Candidate[]}>(path+'/preview'+(selectedIds?'?ids='+encodeURIComponent(selectedIds.join(',')):''))).tasks);}
+  try{
+   const result=await request<{tasks:Candidate[];questions?:QuestionCandidate[]}>(path+'/preview'+(selectedIds?'?ids='+encodeURIComponent(selectedIds.join(',')):''));
+   setTasks(result.tasks);setQuestions(result.questions||[]);
+  }
   catch(e){setError(e instanceof Error?e.message:String(e));}
   finally{setBusy(false);}
  }
  async function confirm(){
-  if(!eligible.length||busy)return;
+  if((!eligible.length&&!eligibleQuestions.length)||busy)return;
   setBusy(true);setError('');
   try{
-   const result=await request<{deleted_task_ids:string[]}>(path+'/confirm',{
-    method:'POST',body:JSON.stringify({confirm:true,task_ids:eligible.map(task=>task.id)})
+   const result=await request<{deleted_task_ids:string[];deleted_question_ids?:string[]}>(path+'/confirm',{
+    method:'POST',body:JSON.stringify({confirm:true,task_ids:eligible.map(task=>task.id),question_ids:eligibleQuestions.map(q=>q.id)})
    });
-   setTasks(null);setDeleted(result.deleted_task_ids.length);
+   setTasks(null);setQuestions([]);setDeleted(result.deleted_task_ids.length+(result.deleted_question_ids?.length||0));
    await onDeleted();
   }catch(e){setError(e instanceof Error?e.message:String(e));}
   finally{setBusy(false);}
@@ -50,24 +57,25 @@ export function OwnerQuestionCleanup({projectId,taskIds,request,onDeleted,onOpen
     <div className="modal-heading"><h2>{selectedIds?'Удаление выбранных задач':'Удаление задач из «Вопросов к ПО»'}</h2>
      <button type="button" className="task-close" disabled={busy} onClick={close} aria-label="Закрыть"><X size={18}/></button>
     </div>
-    {!tasks.length&&<p>В колонке нет задач.</p>}
-    {eligible.length>0&&<>
-     <p>Эти задачи и их вопросы будут удалены. Отменить действие будет невозможно.</p>
-     <ul>{eligible.map(task=><li key={task.id}>#{task.display_number} {task.title}</li>)}</ul>
+    {!tasks.length&&!questions.length&&<p>В колонке нет задач и вопросов.</p>}
+    {(eligible.length>0||eligibleQuestions.length>0)&&<>
+     <p>Будут удалены только перечисленные задачи и вопросы. Документы сохранятся. Отменить удаление нельзя.</p>
+     <ul>{eligible.map(task=><li key={task.id}>Задача #{task.display_number}: {task.title}</li>)}
+      {eligibleQuestions.map(q=><li key={q.id}>Вопрос к документу «{q.document_title}»: {q.question}</li>)}</ul>
     </>}
-    {blocked.length>0&&<>
+    {(blocked.length>0||blockedQuestions.length>0)&&<>
      <p><strong>Защищённые задачи</strong></p>
      <ul>{blocked.map(task=><li key={task.id}>
       #{task.display_number} {task.title}. {task.blocked_reason}{' '}
       <button type="button" className="textbtn" disabled={busy} onClick={()=>{close();onOpenTask(task.id);}}>Открыть задачу</button>
-     </li>)}</ul>
+     </li>)}{blockedQuestions.map(q=><li key={q.id}>{q.question}. {q.blocked_reason}</li>)}</ul>
     </>}
     {error&&<p className="task-action-error" role="alert">{error}</p>}
     <div className="docs-actions">
      <button type="button" className="secondary" autoFocus disabled={busy} onClick={close}>Закрыть</button>
      {error&&<button type="button" className="secondary" disabled={busy} onClick={()=>void preview()}>Обновить список</button>}
-     {eligible.length>0&&<button type="button" className="task-action-danger" disabled={busy||!!error} onClick={()=>void confirm()}>
-      Удалить задачи ({eligible.length})
+     {(eligible.length>0||eligibleQuestions.length>0)&&<button type="button" className="task-action-danger" disabled={busy||!!error} onClick={()=>void confirm()}>
+      Удалить элементы ({eligible.length+eligibleQuestions.length})
      </button>}
     </div>
    </div>
