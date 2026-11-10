@@ -1046,3 +1046,9 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .knowledge-proposals details{padding:7px 0}
 .knowledge-proposals summary{cursor:pointer;font-size:12px}
 .knowledge-proposals pre{max-height:330px;overflow:auto;white-space:pre-wrap;font-size:12px}
+
+.knowledge-audit{margin:10px 0;padding:9px 12px;border:1px solid var(--border,rgba(150,150,150,.25));border-radius:7px;font-size:12px}
+.knowledge-audit summary{cursor:pointer;font-weight:600}
+.knowledge-audit-snapshot{padding:8px 0;border-bottom:1px solid var(--border,rgba(150,150,150,.2))}
+.knowledge-audit-snapshot>small{display:block;margin:3px 0}
+.knowledge-audit-snapshot a{word-break:break-word}
