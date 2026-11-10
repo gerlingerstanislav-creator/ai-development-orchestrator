@@ -5,7 +5,7 @@ const ALIASES={analyst:'analysis',qa:'testing',devops:'devops'} as const;
 
 /** Only an explicit leading @address selects a specialist. */
 export function parseAgentMention(message:string):{alias:'Analyst'|'QA'|'DevOps';stage:'analysis'|'testing'|'devops';message:string}|null{
- const match=/^\\s*@(Analyst|QA|DevOps)(?=\\s|[:,.!?]|$)[\\s,:.!?]*/i.exec(message);
+ const match=/^\s*@(Analyst|QA|DevOps)(?=\s|[:,.!?]|$)[\s,:.!?]*/i.exec(message);
  if(!match)return null;
  const key=match[1].toLowerCase() as keyof typeof ALIASES;
  const alias=key==='qa'?'QA':key==='devops'?'DevOps':'Analyst';
