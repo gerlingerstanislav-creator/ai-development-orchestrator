@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import {findActiveProjectOperation,projectDeletionConfirmation} from './project-lifecycle.js';
 import {deploymentDecision} from './deployment-stage.js';
+import {initAutomaticDeployment,registerAutomaticDeploymentRoutes,validateHealthUrl} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
 import {initAgentToolsSchema} from './agent-tools.js';
@@ -1382,13 +1383,19 @@ app.put('/api/projects/:id/specialist-agents/devops',async(req:any,reply)=>{
 app.get('/api/projects/:id/deployment/settings',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- return (await pool.query("SELECT mode,updated_at FROM project_deployment_settings WHERE project_id=$1",[id])).rows[0]||{mode:'skip'};
+ return (await pool.query("SELECT mode,health_url,environment,updated_at FROM project_deployment_settings WHERE project_id=$1",[id])).rows[0]||{mode:'skip'};
 });
 app.put('/api/projects/:id/deployment/settings',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const {mode}=parse(z.object({mode:z.enum(['skip','manual'])}),req.body);
- const updated=await pool.query("INSERT INTO project_deployment_settings(project_id,mode) VALUES($1,$2) ON CONFLICT(project_id) DO UPDATE SET mode=$2,updated_at=now() RETURNING mode,updated_at",[id,mode]);
+ const {mode,health_url,environment}=parse(z.object({
+  mode:z.enum(['skip','manual','automatic']),
+  health_url:z.string().max(300).default(''),
+  environment:z.string().regex(/^[a-zA-Z0-9_-]{1,50}$/).default('production')
+ }),req.body);
+ if(mode==='automatic'&&!health_url)return reply.code(400).send({error:'Настрой HTTPS URL проверки окружения'});
+ if(health_url)validateHealthUrl(health_url);
+ const updated=await pool.query("INSERT INTO project_deployment_settings(project_id,mode,health_url,environment) VALUES($1,$2,$3,$4) ON CONFLICT(project_id) DO UPDATE SET mode=$2,health_url=$3,environment=$4,updated_at=now() RETURNING mode,health_url,environment,updated_at",[id,mode,health_url,environment]);
  return updated.rows[0];
 });
 app.post('/api/projects/:id/tasks/:taskId/deployment/resolve',async(req:any,reply)=>{
@@ -1761,6 +1768,11 @@ registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
 registerProjectIterationRoutes(app,{pool,uid,access,requireAdmin,startPlanning:startIterationPlanning});
+registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,start:async runId=>{
+ const client=await temporal();
+ await client.workflow.start('automaticDeployment',{taskQueue:'agent-pipeline',workflowId:'deployment-'+runId,
+  workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
+}});
 registerBusinessAnalystHandoff(app,{pool,uid,access});
 registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
@@ -1862,5 +1874,5 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});
