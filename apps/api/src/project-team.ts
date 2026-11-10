@@ -22,7 +22,7 @@ export function mergeDevopsInstructions(specialist:string,stage:string,historica
  for(const text of additions){
   if(combined.includes(text))continue;
   // Avoid a merge that truncates custom instructions or breaks editor validation.
-  const next=combined+'\\n\\nДополнительные инструкции прежнего этапа выкладки:\\n'+text;
+  const next=combined+'\u005cn\u005cnДополнительные инструкции прежнего этапа выкладки:\u005cn'+text;
   if(next.length>12000)throw Error('DevOps: объединение инструкций превысило 12000 символов; исходные настройки сохранены для ручного согласования');
   combined=next;
  }
