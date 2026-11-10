@@ -260,6 +260,7 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
     [randomUUID(),projectId,taskId,runId,run.rows[0].model,Number(u.input_tokens)||0,Number(u.cached_input_tokens)||0,Number(u.output_tokens)||0]);
   }
   if(status==='completed'){
+    await recordAgentLearning(pool,{projectId,role:'development',runId,body:remote.learningSuggestion,evidence:'Запуск разработки '+runId+'; '+String(remote.prUrl||'')});
    if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'development',authorName:'AI-разработчик',targetStage:'all',kind:'handoff',body:String(remote.handoffNote),sourceKey:'developer:'+runId,sourceRunId:runId});
    const match=/\/pull\/(\d+)$/.exec(String(remote.prUrl));
    if(remote.prUrl)await pool.query("INSERT INTO knowledge_artifact_links(id,project_id,document_id,artifact_kind,artifact_ref,relation) SELECT gen_random_uuid(),$1,l.document_id,'pr',$3,'implemented_by' FROM knowledge_task_links l WHERE l.project_id=$1 AND l.task_id=$2 ON CONFLICT DO NOTHING",[projectId,taskId,String(remote.prUrl)]);
@@ -318,6 +319,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  }
  const status=String(remote.status||'running'),message=String(remote.message||'').slice(0,2500);
  if(status==='completed'||status==='failed'){
+   if(status==='completed')await recordAgentLearning(pool,{projectId,role:'testing',runId:testId,body:remote.learningSuggestion,evidence:'QA-прогон '+testId+'; вердикт '+String(remote.verdict||'')});
   const expected:Array<{id:string}>=Array.isArray(row.rows[0].qa_plan_snapshot?.cases)?row.rows[0].qa_plan_snapshot.cases:[];
   const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
   const providedMap=new Map<string,{result:string;evidence:string;reason:string}>();
