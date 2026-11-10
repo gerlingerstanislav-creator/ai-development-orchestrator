@@ -153,7 +153,30 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.deepEqual(start.json().results.map(item=>[item.id,item.started]),[[form.id,true],[order.id,false]]);
  assert.deepEqual(launchCalls,[{id:form.id,approveAnalysis:true,iterationApproval:{id,revision:1}}]);
  const tagUpdate=await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{iteration_id:id,tags:['Миграция','миграция']});
- assert.deepEqual(tagUpdate.json(),{iteration_id:id,tags:['миграция']});
+ assert.deepEqual(tagUpdate.json(),{iteration_id:id,tags:['миграция'],sprint_id:null,version_id:null});
+ const sprint=await request('POST','/api/projects/'+project+'/sprints',{name:'Спринт 1',starts_on:'2026-11-16',ends_on:'2026-11-27'});
+ assert.equal(sprint.statusCode,200,sprint.body);
+ const version=await request('POST','/api/projects/'+project+'/versions',{name:'v1.0'});
+ assert.equal(version.statusCode,200,version.body);
+ const invalidDates=await request('POST','/api/projects/'+project+'/sprints',{name:'Неверный',starts_on:'2026-11-27',ends_on:'2026-11-16'});
+ assert.equal(invalidDates.statusCode,400);
+ const opts=(await request('GET','/api/projects/'+project+'/planning-options')).json();
+ assert.equal(opts.sprints[0].name,'Спринт 1');
+ assert.equal(opts.versions[0].name,'v1.0');
+ const assigned=await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{
+  iteration_id:id,tags:['migration'],sprint_id:sprint.json().id,version_id:version.json().id});
+ assert.equal(assigned.statusCode,200,assigned.body);
+ assert.equal(assigned.json().sprint_id,sprint.json().id);
+ assert.equal(assigned.json().version_id,version.json().id);
+ const oldClient=await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{iteration_id:id,tags:[]});
+ assert.equal(oldClient.json().sprint_id,sprint.json().id,'Legacy clients must not reset sprint');
+ assert.equal(oldClient.json().version_id,version.json().id,'Legacy clients must not reset version');
+ const clear=await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{iteration_id:id,tags:[],sprint_id:null,version_id:null});
+ assert.equal(clear.json().sprint_id,null);
+ assert.equal(clear.json().version_id,null);
+ const foreignSprint=await request('POST','/api/projects/'+other+'/sprints',{name:'Чужой',starts_on:'2026-11-16',ends_on:'2026-11-27'});
+ assert.equal((await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{
+  iteration_id:id,tags:[],sprint_id:foreignSprint.json().id,version_id:null})).statusCode,400);
  const change=await request('PUT',url,{title:'MVP 1',body:scope.body,document_ids:[source],expected_revision:1});
  assert.deepEqual(change.json(),{id,revision:2});
  assert.equal((await request('POST',url+'/approve',{expected_revision:2})).statusCode,200);
