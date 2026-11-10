@@ -20,7 +20,6 @@ export async function initDocumentationReset(pool:Pick<Pool,'query'>){
   expires_at timestamptz NOT NULL DEFAULT now()+interval '10 minutes',
   consumed_at timestamptz
  );
- ALTER TABLE documentation_reset_audit ADD COLUMN IF NOT EXISTS deleted_questions int NOT NULL DEFAULT 0;
  CREATE INDEX IF NOT EXISTS idx_documentation_reset_intents_project
   ON documentation_reset_intents(project_id,created_at DESC);
  CREATE TABLE IF NOT EXISTS documentation_reset_audit(
@@ -29,6 +28,7 @@ export async function initDocumentationReset(pool:Pick<Pool,'query'>){
   deleted_pages int NOT NULL,deleted_imports int NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
  );
+ ALTER TABLE documentation_reset_audit ADD COLUMN IF NOT EXISTS deleted_questions int NOT NULL DEFAULT 0;
  `);
 }
 
