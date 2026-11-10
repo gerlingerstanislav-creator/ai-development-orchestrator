@@ -176,6 +176,7 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
      onClick={()=>openPlan(plan.id)}>{plan.published_at?'Опубликован':'Предпросмотр'} · {new Date(plan.created_at).toLocaleString('ru-RU')}</button>)}</div>
     {preview&&<div className="iteration-preview">
      <h4>{preview.published_at?'Опубликованный план':'Предпросмотр плана'}</h4>
+     {!preview.published_at&&<p>Задачи на разработку будут готовы к отдельному запуску. Задачи на доанализ появятся в колонке «Анализ».</p>}
      {preview.stale&&!preview.published_at&&<p className="error">Объём или исходные документы изменились. Подготовь новый черновик.</p>}
      {preview.result&&<p>Создано карточек: {preview.result.created.length}. Уже существовало: {preview.result.existing.length}.</p>}
      {preview.items.map(item=><details key={item.key} className={item.parent?'iteration-child':''}>

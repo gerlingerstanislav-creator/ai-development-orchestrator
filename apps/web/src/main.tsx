@@ -475,6 +475,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const managerMessages=managerState?.messages;
  const decisions=managerState?.requests.filter(request=>request.status==='open')||[];
  const analysisClarification=decisions.find(request=>request.kind==='analysis_clarifications');
+ const plannedAnalysis=!!activeTask?.iteration_id&&activeTask.type!=='epic'&&activeTask.stage==='analysis'&&activeTask.analysis_state==='new';
  const readyForDevelopment=activeTask?.stage==='analysis'&&activeTask.analysis_state==='ready_for_development'
   &&(!activeTask.spec_review_status||activeTask.spec_review_status==='current')&&!decisions.length;
  const deferredQa=managerState?.requests.filter(request=>request.status==='waiting'&&request.kind==='qa_visual')||[];
@@ -1331,19 +1332,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось повторить запрос');}
   finally{setManagerBusy(false);}
  }
- async function executeTask(){if(!selected||!activeTask||taskChatBusy||aiBusy)return;
-  const taskId=activeTask.id;
-  try{await api('/projects/'+selected.id+'/tasks/'+taskId,{method:'PATCH',body:JSON.stringify({title:activeTask.title,description:activeTask.description,stage:activeTask.stage})});}
-  catch(e){fail(e);return;}
-  if(activeTask.stage==='analysis'){
-   setTaskChatBusy(true);try{const instruction='Выполни анализ задачи и составь техническое задание с критериями приёмки.';
-    const response=await api<AssistantResponse>('/projects/'+selected.id+'/tasks/'+taskId+'/assistant',{method:'POST',body:JSON.stringify({message:instruction,mode:'analyze'})});
-    setTaskMessages(old=>[...old,{id:'u-'+Date.now(),role:'user' as const,body:instruction},{id:'a-'+Date.now(),role:'assistant' as const,body:response.message}]);
-    if(response.summary){setActiveTask(old=>old?.id===taskId?{...old,description:response.summary||old.description}:old);setTasks(old=>old.map(t=>t.id===taskId?{...t,description:response.summary||t.description}:t));}
-   }catch(e){fail(e);}finally{setTaskChatBusy(false);}
-  }else if(activeTask.stage==='development'){await runAiTask();}
+ async function analyzePlannedTask(){
+  if(!selected||!activeTask||taskChatBusy||managerWorking)return;
+  const projectId=selected.id,taskId=activeTask.id;
+  setTaskChatBusy(true);setManagerFeedback('');
+  try{
+   await api('/projects/'+projectId+'/tasks/'+taskId+'/assistant',{method:'POST',body:JSON.stringify({
+    message:'Выполни системный анализ задачи в рамках итерации и составь ТЗ с критериями приёмки.',mode:'analyze'
+   })});
+   if(selectedProjectRef.current===projectId)await refreshTaskActivity(projectId,taskId);
+  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось запустить анализ задачи');}
+  finally{setTaskChatBusy(false);}
  }
-
  async function setDependency(task:Task,parent:string|null){
   if(!selected)return;
   try{
@@ -2168,7 +2168,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        {run.status==='queued'?'В очереди · '+agentRunLabels[run.kind].name:agentRunLabels[run.kind].active}</li>)}
       {managerWorking&&<li><LoaderCircle size={14} aria-hidden="true"/>Менеджер обрабатывает сообщение</li>}
      </ul>}
-     {(decisions.length>0||readyForDevelopment)&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
+     {(decisions.length>0||readyForDevelopment||plannedAnalysis)&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
       <div className="manager-action-row">
        {readyForDevelopment&&<>
         <button className="primary" type="button" disabled={taskChatBusy||managerWorking||!gitLink||!aiSettings.enabled}

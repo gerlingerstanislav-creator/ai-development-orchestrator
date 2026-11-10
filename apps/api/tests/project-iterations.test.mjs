@@ -28,6 +28,7 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
   CREATE TABLE workflow_stages(project_id uuid,stage text,agent_instructions text);
   CREATE TABLE project_rules(project_id uuid,body text,created_at timestamptz DEFAULT now());
   CREATE TABLE process_events(id uuid PRIMARY KEY,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
+  CREATE TABLE task_spec_versions(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),version int,title text,description text,origin text,actor_id uuid,reason text);
   CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid REFERENCES tasks(id),actor_id uuid,event text,detail text);
   CREATE TABLE knowledge_task_links(id uuid PRIMARY KEY,project_id uuid,document_id uuid,task_id uuid,relation text,UNIQUE(project_id,document_id,task_id,relation));
  `);
@@ -104,13 +105,15 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.deepEqual(form.tags,['ui']);
  assert.equal(order.depends_on_task_id,form.id);
  assert.equal(order.stage,'analysis');
+ assert.equal(order.analysis_state,'new');
+ assert.equal(form.analysis_state,'ready_for_development');
+ assert.equal((await db.query('SELECT count(*)::int n FROM task_spec_versions')).rows[0].n,2);
  assert.equal((await db.query('SELECT count(*)::int n FROM knowledge_task_links')).rows[0].n,2);
  const rerun=await propose(),rerunUrl=url+'/plans/'+rerun.id;
  const rerunPreview=(await request('GET',rerunUrl)).json();
  assert.equal(rerunPreview.items.filter(item=>item.existing).length,3);
  assert.deepEqual((await request('POST',rerunUrl+'/publish',{confirm:true,preview_revision:rerunPreview.preview_revision})).json().created,[]);
  assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[epic.id]})).statusCode,409);
- await db.query("UPDATE tasks SET analysis_state='ready_for_development' WHERE id=$1",[form.id]);
  const start=await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id,order.id]});
  assert.equal(start.statusCode,200,start.body);
  assert.deepEqual(start.json().results.map(item=>[item.id,item.started]),[[form.id,true],[order.id,false]]);
