@@ -184,4 +184,18 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
   return {document_id:documentId,section_id:String(sectionId),title:heading[2],body:lines.slice(sectionId,end).join('\n'),version:r.rows[0].updated_at};
  });
 
+ app.get('/api/projects/:id/knowledge/spec/export',async(req:any,reply)=>{
+  const {id}=z.object({id:uuid}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const r=await pool.query(
+   "WITH RECURSIVE tree AS (SELECT d.id,d.parent_id,d.title,d.body,0 AS depth,ARRAY[d.title]::text[] AS path FROM documents d WHERE d.project_id=$1 AND d.system_key='spec' UNION ALL SELECT child.id,child.parent_id,child.title,child.body,tree.depth+1,tree.path||child.title FROM documents child JOIN tree ON child.parent_id=tree.id WHERE child.project_id=$1 AND tree.depth<30) SELECT id,title,body,depth FROM tree ORDER BY path",
+   [id]);
+  if(!r.rowCount)return reply.code(404).send({error:'Структура ТЗ не найдена'});
+  const markdown=r.rows.map((d:any)=>{
+   const heading='#'.repeat(Math.min(6,Math.max(1,Number(d.depth)+1)))+' '+d.title;
+   return heading+'\n\n'+(String(d.body||'').trim()||'_Содержание не заполнено_');
+  }).join('\n\n');
+  return {filename:'technical-specification.md',markdown,documents:r.rows.length};
+ });
+
 }
