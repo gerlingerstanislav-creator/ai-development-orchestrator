@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import {recordAgentActivity} from './task-agent-activity.js';
+import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import { randomUUID,createHash } from 'node:crypto';
 import { z } from 'zod';
 import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,resolveGitHubDocumentCommit} from './github-document-import.js';
@@ -493,6 +494,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const parsed=analystRequest.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:parsed.error.issues[0].message});
   const {message,mode,attachments,documentId:targetDocumentId}=parsed.data;
+  let mentionedAgent;
+  try{mentionedAgent=await resolveAgentMention(pool,id,message);}catch(e){return reply.code((e as {statusCode?:number}).statusCode||422).send({error:(e as Error).message});}
+  if(mentionedAgent&&attachments.length)return reply.code(400).send({error:'Обращение к агенту с вложениями пока не поддерживается'});
   const documentationMode=mode==='documentation';
   const conversation=await history(id,null,mode);
   // Explicit project-document actions always outrank references to GitHub in older messages.
@@ -595,8 +599,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const taskIntent=/(создай|создать|добавь|заведи|оформи)\s+.{0,100}(задач[уаи]|таск)|(задач[уаи]|таск)\s+.{0,100}(создай|создать|добавь|заведи|оформи)/i.test(message);
   // Document commands take priority over task detection. Mentioning documentation
   // in a task request alone must NOT create a document.
-  const createTask=create||!documentationMode&&!localDocumentIntent&&taskIntent;
-  const createDocument=!createTask&&localDocumentIntent;
+  const createTask=!mentionedAgent&&(create||!documentationMode&&!localDocumentIntent&&taskIntent);
+  const createDocument=!mentionedAgent&&!createTask&&localDocumentIntent;
 
   const project=await pool.query('SELECT name,description FROM projects WHERE id=$1',[id]);
   const rules=await rulesContext(id);
@@ -608,7 +612,15 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    : 'GitHub-репозиторий ещё не привязан к проекту. Если для исполнения потребуется репозиторий, сообщи об этом как о настройке, не предлагай GitHub Pages без явного запроса.';
   let prompt:string;
   let existingIds:string[]=[];
-  if(createDocument){
+  if(mentionedAgent){
+   const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id]);
+   prompt=['Ты специалист проекта, напрямую вызванный пользователем через @'+mentionedAgent.alias+'. Твоё имя: '+mentionedAgent.name+'. Профессиональный этап: '+mentionedAgent.stage+'.',
+    AGENT_MENTION_HINT,'Отвечай как выбранный специалист по существу запроса, на русском. Не представляйся менеджером проекта. Не утверждай, что действия выполнены без подтверждения. Не изменяй данные и не запускай процессы: этот канал консультационный.',
+    'Инструкции этапа:\n'+mentionedAgent.instructions.slice(0,7000),'Правила проекта:\n'+rules,
+    'Проект: '+project.rows[0].name,'Описание: '+project.rows[0].description.slice(0,2000),
+    'GitHub:\n'+repoContext,'Документация:\n'+JSON.stringify(docs.rows).slice(0,11000),
+    'История чата:\n'+conversation,'Запрос пользователя:\n'+mentionedAgent.message].join('\n\n');
+  }else if(createDocument){
    const existingDocs=await pool.query('SELECT id,title,body,parent_id FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40',[id]);
    prompt=['Ты технический писатель проекта. Пользователь явно попросил СОЗДАТЬ страницу документации. Верни ТОЛЬКО JSON без Markdown-обёртки.',
     'Формат: {"title":"название документа","body":"полноценное содержимое Markdown","parent_id":"UUID существующей родительской страницы или null"}.',
