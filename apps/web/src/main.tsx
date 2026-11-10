@@ -1308,7 +1308,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const chatKey=projectChatKey(projectId,mode);
   const sentAt=new Date().toISOString();
   setProjectReplyTo(null);
-  updateProjectChat(chatKey,chat=>({...chat,input:'',pendingId:optimisticId,error:'',messages:[
+  updateProjectChat(chatKey,chat=>({...chat,input:'',pendingId:mode==='documentation'?optimisticId:chat.pendingId,error:'',messages:[
    ...chat.messages,{id:optimisticId,role:'user',reply_to:replyTo,topic_id:topicId,body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:sentAt}
   ]}));
   function updatePendingChat(update:(chat:ProjectChatState)=>ProjectChatState){
@@ -1320,7 +1320,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    if(currentJobId&&attachments.length)throw Error('Новые файлы можно прикрепить после завершения текущей работы аналитика.');
    if(mode==='project'){
     const posted=await api<{id:string;status:string}>('/projects/'+projectId+'/manager/inbox',{method:'POST',body:JSON.stringify({message,replyTo,topicId})});
-    updatePendingChat(chat=>({...chat,pendingId:null,messages:chat.messages.map(m=>m.id===optimisticId?{...m,id:posted.id,pending:false,status:'queued'}:m)}));
+    updateProjectChat(chatKey,chat=>({...chat,messages:chat.messages.map(m=>m.id===optimisticId?{...m,id:posted.id,pending:false,status:'queued'}:m)}));
     return;
    }
    const response=currentJobId
@@ -1344,9 +1344,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    if(selectedProjectRef.current===projectId&&(response.created_task_id||response.created_document_id))await loadProject(projectId);
   }catch(e){
    setProjectReplyTo(replyTo);
-   updatePendingChat(chat=>({...chat,error:e instanceof Error?e.message:String(e),
-    messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m)
-   }));
+   const applyError=(chat:ProjectChatState)=>({...chat,error:e instanceof Error?e.message:String(e),
+    messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m)});
+   if(mode==='project')updateProjectChat(chatKey,applyError);
+   else updatePendingChat(applyError);
   }finally{updatePendingChat(chat=>({...chat,pendingId:null}));}
  }
  // The active documentation run is independent of message submission: the owner can
