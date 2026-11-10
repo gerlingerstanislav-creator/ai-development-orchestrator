@@ -58,7 +58,7 @@ export async function initKnowledgeWorkflow(pool:Pool){
  `);
 }
 
-export type ContextArgs={projectId:string;taskId:string;stage:KnowledgeStage;processId?:string;sessionId?:string;budgetChars?:number;tags?:string[]};
+export type ContextArgs={projectId:string;taskId:string;stage:KnowledgeStage;processId?:string;sessionId?:string;budgetChars?:number;tags?:string[];includeBodies?:boolean};
 export async function buildKnowledgeContext(db:DB,args:ContextArgs){
  const budget=Math.min(24000,Math.max(1000,args.budgetChars??10000));
  const task=(await db.query('SELECT id,title,description,pr_url FROM tasks WHERE project_id=$1 AND id=$2',[args.projectId,args.taskId])).rows[0];
@@ -67,7 +67,7 @@ export async function buildKnowledgeContext(db:DB,args:ContextArgs){
   db.query('SELECT id,body FROM project_rules WHERE project_id=$1 ORDER BY created_at',[args.projectId]),
   db.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[args.projectId,args.stage]),
   db.query("SELECT id,title,body,tags,mandatory,priority,revision FROM knowledge_instruction_modules WHERE (project_id=$1 OR project_id IS NULL) AND status='approved' AND (stage IS NULL OR stage=$2) ORDER BY mandatory DESC,priority DESC,updated_at DESC",[args.projectId,args.stage]),
-  db.query("SELECT d.id,d.title,d.knowledge_summary AS summary,d.updated_at AS version,d.knowledge_key,COUNT(l.id)::int AS task_links,ts_rank_cd(to_tsvector('simple',d.title||' '||d.body),plainto_tsquery('simple',$3)) AS relevance FROM documents d LEFT JOIN knowledge_task_links l ON l.document_id=d.id AND l.project_id=$1 AND l.task_id=$2 WHERE d.project_id=$1 AND d.knowledge_status='approved' AND (l.id IS NOT NULL OR to_tsvector('simple',d.title||' '||d.body) @@ plainto_tsquery('simple',$3) OR d.title ILIKE '%'||$3||'%') GROUP BY d.id ORDER BY task_links DESC,relevance DESC,d.updated_at DESC LIMIT 30",[args.projectId,args.taskId,task.title])
+  db.query("SELECT d.id,d.title,d.knowledge_summary AS summary,left(d.body,1700) AS excerpt,d.updated_at AS version,d.knowledge_key,COUNT(l.id)::int AS task_links,ts_rank_cd(to_tsvector('simple',d.title||' '||d.body),plainto_tsquery('simple',$3)) AS relevance FROM documents d LEFT JOIN knowledge_task_links l ON l.document_id=d.id AND l.project_id=$1 AND l.task_id=$2 WHERE d.project_id=$1 AND d.knowledge_status='approved' AND (l.id IS NOT NULL OR to_tsvector('simple',d.title||' '||d.body) @@ plainto_tsquery('simple',$3) OR d.title ILIKE '%'||$3||'%') GROUP BY d.id ORDER BY task_links DESC,relevance DESC,d.updated_at DESC LIMIT 30",[args.projectId,args.taskId,task.title])
  ]);
  const explicitTags=new Set((args.tags||[]).map(t=>t.trim().toLowerCase()));
  const matched=modules.rows.filter(row=>row.mandatory || !row.tags?.length || row.tags.some((t:string)=>explicitTags.has(t.toLowerCase())));
@@ -80,9 +80,9 @@ export async function buildKnowledgeContext(db:DB,args:ContextArgs){
  const requiredSize=JSON.stringify(instructions).length;
  const available=Math.max(0,budget-requiredSize);
  let used=0;
- const sources:{id:string;title:string;summary:string;version:string;reason:string}[]=[];
+ const sources:{id:string;title:string;summary:string;version:string;reason:string;excerpt?:string}[]=[];
  for(const doc of docs.rows){
-  const entry={id:doc.id,title:doc.title,summary:String(doc.summary||'').slice(0,320),version:new Date(doc.version).toISOString(),reason:doc.task_links?'Прямая связь с задачей':'Совпадение по тексту'};
+  const entry={id:doc.id,title:doc.title,summary:String(doc.summary||'').slice(0,320),version:new Date(doc.version).toISOString(),reason:doc.task_links?'Прямая связь с задачей':'Совпадение по тексту',...(args.includeBodies?{excerpt:String(doc.excerpt||'').slice(0,1600)}:{})};
   const size=JSON.stringify(entry).length;
   if(used+size>available)continue;
   sources.push(entry);used+=size;
