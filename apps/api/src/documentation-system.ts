@@ -146,4 +146,27 @@ export async function initDocumentationSystem(pool:Pool){
   UNIQUE(project_id,document_id,question_key)
  );
  `);
+
+ await pool.query(String.raw`
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS document_id uuid REFERENCES documents(id) ON DELETE SET NULL;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_key text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_topic text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_status text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_answer text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_answered_at timestamptz;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_job_id uuid REFERENCES document_import_jobs(id) ON DELETE SET NULL;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_document_questions
+  ON tasks(project_id,document_id,question_key) WHERE type='question' AND document_id IS NOT NULL AND question_key IS NOT NULL;
+ -- Preserve the original UUIDs: existing Temporal answer jobs reference these IDs.
+ INSERT INTO tasks(id,project_id,title,description,type,stage,position,created_at,updated_at,document_id,question_key,question_topic,question_status,question_answer,question_answered_at,question_job_id)
+ SELECT q.id,q.project_id,left(q.question,300),q.question,'question','backlog',
+  COALESCE((SELECT max(t.position)+1 FROM tasks t WHERE t.project_id=q.project_id),0),
+  q.created_at,COALESCE(q.answered_at,q.created_at),q.document_id,q.question_key,q.topic_key,
+  q.status,q.answer,q.answered_at,q.job_id
+ FROM documentation_questions q
+ WHERE NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id=q.id)
+ ON CONFLICT DO NOTHING;
+ -- Keep the legacy table only during the upgrade transaction; runtime uses tasks.
+ DROP TABLE documentation_questions;
+ `);
 }
