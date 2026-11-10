@@ -6,6 +6,7 @@ import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
+import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
 import {fingerprint} from './topic-import.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
@@ -1576,6 +1577,7 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 });
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
+registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
 registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 async function recoverTask({projectId,taskId,auth,cookie}:Parameters<ManagerDeps['recoverTask']>[0]):ReturnType<ManagerDeps['recoverTask']>{
