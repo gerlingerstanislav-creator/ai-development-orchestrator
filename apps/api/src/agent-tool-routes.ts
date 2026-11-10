@@ -24,6 +24,29 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  startDocumentationWorkflow:(jobId:string)=>Promise<void>
 }){
  const {pool,access,requireAdmin,startDocumentationWorkflow}=deps;
+ const readonlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
+  'tasks.list','tasks.read','questions.list','processes.list','memory.list']);
+ async function startQueuedJob(jobId:string){
+  const row=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0];
+  if(!row)throw Object.assign(Error('Процесс не найден'),{statusCode:404});
+  if(row.status==='completed')return 'completed';
+  if(row.status==='failed')return 'failed';
+  await pool.query("UPDATE document_import_jobs SET status='running',message='Temporal: запуск процесса' WHERE id=$1 AND status='queued'",[jobId]);
+  try{
+   await startDocumentationWorkflow(jobId);
+  }catch(error){
+   // Replaying a committed idempotent operation is allowed to find
+   // the same Temporal workflow already executing, not to start a duplicate.
+   const duplicate=error instanceof Error&&
+    (error.name==='WorkflowExecutionAlreadyStartedError'||error.name==='WorkflowAlreadyStartedError');
+   if(!duplicate){
+    await pool.query("UPDATE document_import_jobs SET status='failed',message=$2 WHERE id=$1 AND status='running'",
+     [jobId,'Temporal не запустился: '+String(error instanceof Error?error.message:error).slice(0,300)]);
+    throw error;
+   }
+  }
+  return 'running';
+ }
  const authenticate=async(req:any,reply:any)=>{
   const session=await readAgentSession(pool,String(req.headers['x-agent-token']||''));
   if(!session){reply.code(403).send({error:'Сессия агента недоступна или истекла'});return null;}
@@ -41,35 +64,55 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   if(!agentToolCatalog.some(tool=>tool.name===name))return reply.code(404).send({error:'Неизвестный инструмент'});
   const key=typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
   const digest=hashSecret(JSON.stringify({name,args}));
-  // A project-level advisory lock prevents a repeated, simultaneous tool request
-  // from executing twice when Codex retries after a network timeout.
-  const locker=key?await pool.connect():null;
+  const mutating=!readonlyTools.has(name);
+  // All PostgreSQL changes and their success evidence use the SAME
+  // transaction, including document changesets, task creation and memories.
+  const connection=mutating?await pool.connect():null;
+  let txOpen=false;
   try{
-   if(locker){
-    await locker.query('SELECT pg_advisory_lock(hashtextextended($1,0))',[session.project_id+':'+name+':'+key]);
-    const previous=await locker.query(
+   if(connection){await connection.query('BEGIN');txOpen=true;}
+   const db=connection||pool;
+   if(connection&&key)
+    await connection.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+     [session.project_id+':'+name+':'+key]);
+   if(connection&&name.startsWith('documentation.'))
+    await connection.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
+     [session.project_id+':documentation']);
+   if(key){
+    const previous=await db.query(
      'SELECT result,arguments FROM agent_tool_events WHERE project_id=$1 AND tool=$2 AND idempotency_key=$3 AND success=true LIMIT 1',
      [session.project_id,name,key]);
     if(previous.rowCount){
      const previousDigest=previous.rows[0].arguments?.request_digest;
-     if(previousDigest!==digest)return reply.code(409).send({error:'Ключ идемпотентности уже используется с другими аргументами'});
-     return {result:previous.rows[0].result,cached:true};
+     if(previousDigest!==digest){
+      if(connection){await connection.query('ROLLBACK');txOpen=false;}
+      return reply.code(409).send({error:'Ключ идемпотентности уже используется с другими аргументами'});
+     }
+     if(connection){await connection.query('COMMIT');txOpen=false;}
+     const result=previous.rows[0].result;
+     if(name.startsWith('documentation.')&&result?.import_job_id)
+      return {result:{...result,status:await startQueuedJob(result.import_job_id)},cached:true};
+     return {result,cached:true};
     }
    }
-   const result=await executeAgentTool(pool,session,name,args,startDocumentationWorkflow);
-   await pool.query(
+   const result=await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow);
+   await db.query(
     'INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,true,$7)',
     [randomUUID(),session.id,session.project_id,name,JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify(result),key]);
+   if(connection){await connection.query('COMMIT');txOpen=false;}
+   if(name.startsWith('documentation.')&&(result as any)?.import_job_id){
+    const state=await startQueuedJob((result as any).import_job_id);
+    return {result:{...(result as object),status:state}};
+   }
    return {result};
   }catch(error){
+   if(txOpen&&connection)await connection.query('ROLLBACK').catch(()=>{});
    const message=error instanceof Error?error.message:String(error);
    await pool.query(
     'INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success) VALUES($1,$2,$3,$4,$5,$6,false)',
     [randomUUID(),session.id,session.project_id,name,JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify({error:message.slice(0,400)})]).catch(()=>{});
    return reply.code(Math.min(599,Math.max(400,Number((error as any).statusCode)||400))).send({error:message.slice(0,650)});
-  }finally{
-   if(locker){await locker.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[session.project_id+':'+name+':'+key]).catch(()=>{});locker.release();}
-  }
+  }finally{connection?.release();}
  });
  app.get('/api/projects/:id/agent-memory',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
