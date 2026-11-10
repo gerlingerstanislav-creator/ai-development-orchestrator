@@ -12,6 +12,7 @@ import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning} from './project-team.js';
 
 type Dependencies={
  pool:Pool; uid:(req:any)=>string;
@@ -81,7 +82,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const record=await pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[id,stage]);
   const row=record.rows[0];
   if(!row)return '';
-  return 'Роль исполнителя: '+String(row.agent_name||'')+'\nДополнительные инструкции этапа (не отменяют системные правила):\n'+String(row.agent_instructions||'').slice(0,7000);
+  const memory=await agentMemoryContext(pool,id,stage);
+  return 'Роль исполнителя: '+String(row.agent_name||'')+'\nДополнительные инструкции этапа (не отменяют системные правила):\n'+String(row.agent_instructions||'').slice(0,7000)+(memory?'\n\nПроверенный опыт агента:\n'+memory:'');
  }
  async function rulesContext(id:string){
   const r=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
@@ -541,17 +543,22 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Ты '+mentionedAgent.name+' — специалист '+(mentionedAgent.stage==='devops'?'DevOps и CI/CD':'этапа '+mentionedAgent.stage)+'. Пользователь адресовал сообщение непосредственно тебе через @'+mentionedAgent.alias+'. Не представляйся менеджером.',
     AGENT_MENTION_HINT,'Отвечай по-русски на основе реального контекста. Не утверждай о проведённых проверках или внесённых изменениях без фактических подтверждений.',
     'Инструкции специалиста:\n'+mentionedAgent.instructions.slice(0,7000),
+    'Память специалиста:\n'+await agentMemoryContext(pool,id,mentionedAgent.stage),
     mentionedAgent.stage==='devops'?'Актуальные метаданные GitHub Actions (без доступа к содержимому логов и конфигурации workflow):\\n'+devopsGitHubContext:'',
     'Проект:\n'+JSON.stringify(project.rows[0]||{}).slice(0,3000),
     'Правила проекта:\n'+(await rulesContext(id)).slice(0,5000),
     'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,11000),
     'История этого чата:\n'+(await history(id,null,mode)).slice(-5500),
+     'Если есть один повторно применимый урок на основе проверенных фактов, добавь в конце ответа отдельную строку LEARNING_SUGGESTION: <урок>; иначе LEARNING_SUGGESTION: none. Не включай секреты или персональные данные.',
     'Сообщение пользователя:\n'+mentionedAgent.message
    ].join('\n\n');
    try{
     const response=await completion(prompt,config);
     await storeTokenUsage(id,null,config.model,response.usage);
-    const answer='@'+mentionedAgent.alias+' · '+response.text.trim();
+     const raw=response.text.trim();
+     const lesson=raw.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim();
+     await recordAgentLearning(pool,{projectId:id,role:mentionedAgent.stage,runId:randomUUID(),body:lesson,evidence:'Прямой диалог с @'+mentionedAgent.alias});
+     const answer='@'+mentionedAgent.alias+' · '+raw.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
     await store(id,null,uid(req),'user',message,null,null,mode);
     await store(id,null,null,'assistant',answer,null,null,mode);
     await countCall(id,uid(req));
@@ -568,9 +575,11 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const instructions=await stageAgentContext(id,documentationMode?'analysis':'backlog');
    const rules=await rulesContext(id);
    const memory=await agentLearnedContext(pool,id,role);
+   const conversationRole=await conversationInstructions(pool,id,role);
    const {id:sessionId,secret}=await createAgentSession(pool,id,uid(req),role);
    const prompt=[
     'Ты '+(documentationMode?'аналитик':'менеджер проекта')+' AI Development Orchestrator.',
+    conversationRole,
     'Пользователь пишет своими словами. Самостоятельно определяй смысл и выбирай реальные действия, не классифицируй текст по ключевым словам.',
     'У тебя подключён MCP-сервер orchestrator с инструментами чтения и изменения проекта. Ты вправе вызывать инструменты.',
     'Сначала изучи соответствующие страницы, если задание требует знания текущей документации.',
