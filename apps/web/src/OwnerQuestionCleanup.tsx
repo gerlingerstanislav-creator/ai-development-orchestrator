@@ -4,13 +4,15 @@ import {Trash2,X} from 'lucide-react';
 
 type Candidate={id:string;display_number:number;title:string;blocked_reason:string|null};
 
-export function OwnerQuestionCleanup({projectId,request,onDeleted,onOpenTask}:{
+export function OwnerQuestionCleanup({projectId,taskIds,request,onDeleted,onOpenTask}:{
  projectId:string;
+ taskIds?:string[];
  request:<T>(path:string,options?:RequestInit)=>Promise<T>;
  onDeleted:()=>Promise<void>;
  onOpenTask:(id:string)=>void;
 }){
- const path='/projects/'+projectId+'/tasks/owner-questions/delete';
+ const selectedIds=taskIds?.length?[...new Set(taskIds)]:null;
+ const path='/projects/'+projectId+'/tasks/'+(selectedIds?'delete':'owner-questions/delete');
  const [tasks,setTasks]=useState<Candidate[]|null>(null);
  const [busy,setBusy]=useState(false);
  const [error,setError]=useState('');
@@ -20,7 +22,7 @@ export function OwnerQuestionCleanup({projectId,request,onDeleted,onOpenTask}:{
  function close(){if(!busy){setTasks(null);setError('');}}
  async function preview(){
   setBusy(true);setError('');setDeleted(null);
-  try{setTasks((await request<{tasks:Candidate[]}>(path+'/preview')).tasks);}
+  try{setTasks((await request<{tasks:Candidate[]}>(path+'/preview'+(selectedIds?'?ids='+encodeURIComponent(selectedIds.join(',')):''))).tasks);}
   catch(e){setError(e instanceof Error?e.message:String(e));}
   finally{setBusy(false);}
  }
@@ -38,14 +40,14 @@ export function OwnerQuestionCleanup({projectId,request,onDeleted,onOpenTask}:{
  }
  return <>
   <button type="button" className="secondary docs-reset-action" disabled={busy} onClick={()=>void preview()}>
-   <Trash2 size={15}/> Проверить задачи к удалению
+   <Trash2 size={15}/> {selectedIds?'Проверить выбранные задачи':'Проверить задачи к удалению'}
   </button>
   {deleted!==null&&<p role="status">Удалено задач: {deleted}</p>}
   {error&&!tasks&&<p className="task-action-error" role="alert">{error}</p>}
   {tasks&&createPortal(<div className="overlay documentation-reset-overlay" onMouseDown={close}>
-   <div className="dialog documentation-reset-dialog" role="dialog" aria-modal="true" aria-label="Удаление задач из «Вопросов к ПО»"
+   <div className="dialog documentation-reset-dialog" role="dialog" aria-modal="true" aria-label={selectedIds?'Подтверждение удаления выбранных задач':'Удаление задач из «Вопросов к ПО»'}
     onMouseDown={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();close();}}}>
-    <div className="modal-heading"><h2>Удаление задач из «Вопросов к ПО»</h2>
+    <div className="modal-heading"><h2>{selectedIds?'Удаление выбранных задач':'Удаление задач из «Вопросов к ПО»'}</h2>
      <button type="button" className="task-close" disabled={busy} onClick={close} aria-label="Закрыть"><X size={18}/></button>
     </div>
     {!tasks.length&&<p>В колонке нет задач.</p>}
