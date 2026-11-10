@@ -4,7 +4,7 @@ import {deploymentDecision} from './deployment-stage.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
-import {registerProjectTeamRoutes} from './project-team.js';
+import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
@@ -1724,7 +1724,7 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
 });
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
-registerProjectTeamRoutes(app,{pool,access});
+registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
 registerKnowledgeDocumentUpdateRoutes(app,{pool,uid,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
@@ -1823,5 +1823,5 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAgentToolsSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
 main().catch(e=>{console.error(e);process.exit(1);});
