@@ -1269,7 +1269,7 @@ app.get('/api/projects/:id/merge-ready/:batchId',async(req:any,reply)=>{
 
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
 app.get('/api/projects',async(req)=>{
- const r=await pool.query('SELECT p.id,p.name,p.description,p.created_at FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 AND p.deleted_at IS NULL ORDER BY p.created_at DESC',[uid(req)]);
+ const r=await pool.query('SELECT p.id,p.name,p.description,p.created_at,(p.owner_id=$1) AS is_owner FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 AND p.deleted_at IS NULL ORDER BY p.created_at DESC',[uid(req)]);
  return r.rows;
 });
 app.get('/api/projects/trash',async(req)=>{
