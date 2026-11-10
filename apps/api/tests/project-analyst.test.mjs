@@ -105,7 +105,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(first.statusCode,202,first.body);
  const jobId=first.json().import_job_id;
  assert.deepEqual(started,[jobId]);
- assert.equal((await send({mode:'documentation',message:'Ещё запрос'})).statusCode,409);
+ assert.equal((await send({mode:'documentation',message:'Составь ТЗ ещё раз'})).statusCode,409,'A second editing job must be blocked; ordinary chat questions remain available');
  await service.runDocumentationJob(jobId);
  assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0].status,'failed');
  const saved=(await db.query("SELECT id,body FROM documents WHERE import_source LIKE 'topic:%'")).rows;
