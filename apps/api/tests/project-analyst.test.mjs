@@ -24,6 +24,8 @@ test('analyst distinguishes questions, critique and explicit structural edits',(
  assert.equal(isDocumentationRebuildCommand('Перепиши ТЗ по согласованной структуре'),true);
  assert.equal(isDocumentationRebuildCommand('Тебя устраивает структура нашего ТЗ?'),false);
  assert.equal(isDocumentationRebuildCommand('Улучши структуру документации'),false);
+ assert.equal(isDocumentationRebuildCommand('Переделай структуру документации'),false);
+ assert.equal(isDocumentationRebuildCommand('Давай пересоберём ТЗ'),true);
 });
 
 test('analyst writes topic drafts, resolves PO questions, resumes and preserves manual edits',async t=>{
