@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {deploymentDecision} from './deployment-stage.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
@@ -934,10 +935,11 @@ async function registerMergedDeployment(projectId:string,taskId:string,userId:st
    return task.rows[0].stage as string;
   }
   const mode=(await client.query("SELECT mode FROM project_deployment_settings WHERE project_id=$1",[projectId])).rows[0]?.mode||'skip';
-  const skipped=mode==='skip';
-  const destination=skipped?'documentation':'deployment';
+  const decision=deploymentDecision(mode);
+  const skipped=decision.status==='skipped';
+  const destination=decision.stage;
   await client.query("INSERT INTO task_deployment_records(task_id,project_id,status,reason,merge_sha,actor_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id) DO UPDATE SET status=EXCLUDED.status,reason=EXCLUDED.reason,merge_sha=COALESCE(EXCLUDED.merge_sha,task_deployment_records.merge_sha),actor_id=EXCLUDED.actor_id,updated_at=now()",
-   [taskId,projectId,skipped?'skipped':'pending',skipped?'Нет настроенного окружения: этап выкладки пропущен согласно настройкам проекта':'Ожидание подтверждённой ручной выкладки',mergeSha,userId]);
+   [taskId,projectId,decision.status,decision.reason,mergeSha,userId]);
   await client.query('UPDATE tasks SET stage=$3,updated_at=now() WHERE id=$1 AND project_id=$2',[taskId,projectId,destination]);
   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)",
    [randomUUID(),taskId,userId,skipped?'deployment_skipped':'deployment_pending',skipped?'Выкладка пропущена: окружение не настроено':'Нужно подтвердить ручную выкладку или указать причину пропуска']);
