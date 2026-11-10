@@ -1218,10 +1218,24 @@ app.post('/api/projects',async(req,reply)=>{
  await client.query('INSERT INTO projects(id,name,description,owner_id) VALUES($1,$2,$3,$4)',[id,name,description,uid(req)]);
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
  for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent.name,agent.instructions]);}
+ await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2) ON CONFLICT DO NOTHING",[id,'Отвечай за надежную и быструю выкатку, анализ GitHub Actions, экономию CI-ресурсов, устранение повторных сборок, кеширование, concurrency, rollback и безопасность секретов. Не отключай обязательные проверки. Не запускай деплой из консультационного чата без разрешенной интеграции. Подтверждай действия результатами инструментов.']);
  await client.query('COMMIT');return reply.code(201).send({id,name,description});}
  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 });
 app.get('/api/projects/:id',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;const r=await pool.query('SELECT * FROM projects WHERE id=$1',[id]);return r.rows[0];});
+app.get('/api/projects/:id/specialist-agents/devops',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const r=await pool.query("SELECT role,agent_name,agent_instructions,updated_at FROM project_specialist_agents WHERE project_id=$1 AND role='devops'",[id]);
+ return r.rows[0]||reply.code(404).send({error:'DevOps-агент не настроен'});
+});
+app.put('/api/projects/:id/specialist-agents/devops',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const p=parse(z.object({agent_name:z.string().trim().min(1).max(120),agent_instructions:z.string().trim().min(1).max(12000)}),req.body);
+ const r=await pool.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops',$2,$3) ON CONFLICT(project_id,role) DO UPDATE SET agent_name=EXCLUDED.agent_name,agent_instructions=EXCLUDED.agent_instructions,updated_at=now() RETURNING role,agent_name,agent_instructions,updated_at",[id,p.agent_name,p.agent_instructions]);
+ return r.rows[0];
+});
 app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows;});
 app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
  const {id,stage}=parse(z.object({id:z.string().uuid(),stage:validStages}),req.params);
