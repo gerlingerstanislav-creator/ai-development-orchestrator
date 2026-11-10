@@ -4,7 +4,15 @@ import {agentMemoryContext} from './project-team.js';
 
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
-const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}});
+const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
+ 'tasks.list','tasks.read','questions.list','processes.list','memory.list','documentation.request_reset',
+ 'knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
+const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
+ name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
+ annotations:readOnlyTools.has(name)
+  ?{readOnlyHint:true,openWorldHint:false,destructiveHint:false}
+  :{readOnlyHint:false}
+});
 const id=field('string','UUID'),str=field('string','Произвольный текст');
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
@@ -21,12 +29,13 @@ export const agentToolCatalog=[
  tool('knowledge.section','Читать один Markdown-раздел по стабильному UUID из knowledge.sections; экономит контекст.',{document_id:id,section_id:field('string','UUID раздела из knowledge.sections'),task_id:id},['document_id','section_id']),
  tool('knowledge.related','Найти связанные требования и архитектурные документы.',{document_id:id},['document_id']),
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
- tool('tasks.list','Получить задачи и их реальные этапы.',{}),
+ tool('tasks.list','Получить задачи и этапы. Для колонки «Вопросы к ПО» передай product_owner_questions_only=true. Карточки вопросов по документам в этот список не входят.',{product_owner_questions_only:field('boolean','Показать только задачи из колонки «Вопросы к ПО»')}),
  tool('tasks.read','Прочитать задачу по UUID.',{task_id:id},['task_id']),
  tool('tasks.create','Создать задачу в аналитике с конкретными требованиями.',{title:str,description:str,idempotency_key:idem},['title','description']),
  tool('questions.list','Посмотреть открытые вопросы к владельцу продукта.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
  tool('documentation.import','Запустить через Temporal импорт Markdown из GitHub. Источники будут закреплены на SHA.',{source_url:str,instructions:str,idempotency_key:idem},['source_url']),
+ tool('documentation.request_reset','Предложить пользователю открыть подтверждение полной очистки документации проекта. Вызывай только по явной просьбе пользователя удалить всю документацию. Вызов показывает кнопку и не изменяет документы.',{}),
  tool('documentation.rebuild','Запустить пересборку ТЗ с сохранением предыдущих документов.',{instructions:str,idempotency_key:idem}),
  tool('documentation.organize','Запустить улучшение структуры и расположения страниц.',{instructions:str,idempotency_key:idem}),
  tool('processes.list','Получить текущие и завершённые процессы проекта.',{}),
@@ -40,7 +49,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['tasks.create','questions.create']);
 export function toolsForRole(role:AgentRole){
- return role==='analyst'||role==='business_analyst'?agentToolCatalog.filter(t=>!BA_DENIED.has(t.name)):agentToolCatalog;
+ return agentToolCatalog.filter(t=>role==='manager'?t.name!=='documentation.request_reset':!BA_DENIED.has(t.name));
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);
@@ -76,6 +85,7 @@ export async function agentSessionEffects(pool:Pick<Pool,'query'>,id:string){
  const rows=(await pool.query('SELECT tool,result,success,created_at FROM agent_tool_events WHERE session_id=$1 ORDER BY created_at,id',[id])).rows;
  const value=(name:string,key:string)=>rows.filter(r=>r.success&&r.tool===name).map(r=>r.result?.[key]).filter(Boolean).at(-1)||null;
  return {events:rows,created_document_id:value('documents.create','id'),created_task_id:value('tasks.create','id'),
+  documentation_reset_requested:value('documentation.request_reset','requires_user_confirmation')===true,
   import_job_id:value('documentation.import','import_job_id')||value('documentation.rebuild','import_job_id')||value('documentation.organize','import_job_id')};
 }
 export async function agentLearnedContext(pool:Pick<Pool,'query'>,projectId:string,role:AgentRole){

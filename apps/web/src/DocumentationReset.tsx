@@ -1,4 +1,5 @@
 import React,{useState} from 'react';
+import {createPortal} from 'react-dom';
 import {Trash2,X} from 'lucide-react';
 
 type Request=(path:string,options?:RequestInit)=>Promise<any>;
@@ -36,8 +37,8 @@ export function DocumentationReset({projectId,request,onReset}:{
  return <>
   <button type="button" className="secondary docs-reset-action" disabled={busy} onClick={()=>void open()}><Trash2 size={15}/> Очистить документацию</button>
   {error&&!preview&&<p className="task-action-error" role="alert">{error}</p>}
-  {preview&&<div className="overlay documentation-reset-overlay" onMouseDown={()=>{if(!busy)setPreview(null);}}>
-   <div className="dialog documentation-reset-dialog" role="dialog" aria-modal="true" aria-label="Полная очистка документации" onMouseDown={e=>e.stopPropagation()}>
+  {preview&&createPortal(<div className="overlay documentation-reset-overlay" onMouseDown={()=>{if(!busy)setPreview(null);}}>
+   <div className="dialog documentation-reset-dialog" role="dialog" aria-modal="true" aria-label="Полная очистка документации" onMouseDown={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();if(!busy)setPreview(null);}}}>
     <div className="modal-heading"><h2>Очистить документацию проекта?</h2><button type="button" className="task-close" onClick={()=>setPreview(null)} disabled={busy} aria-label="Закрыть"><X size={18}/></button></div>
     <p>{preview.warning}</p>
     <p>Будут удалены <strong>{preview.pages}</strong> страниц и <strong>{preview.imports}</strong> прежних импортов. Системные разделы останутся.</p>
@@ -54,6 +55,6 @@ export function DocumentationReset({projectId,request,onReset}:{
      <button type="button" className="task-action-danger" disabled={busy||projectName!==preview.project_name||phrase!==preview.confirmation_phrase} onClick={()=>void confirm()}>Удалить все документы</button>
     </div>
    </div>
-  </div>}
+  </div>,document.body)}
  </>;
 }

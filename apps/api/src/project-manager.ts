@@ -47,7 +47,7 @@ function isCustomerQuestion(body:string){
 }
 
 /** Read the live sources, even if nobody has opened the task chat yet. */
-export async function tasksWithCustomerQuestions(pool:Pool,projectId:string){
+export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,projectId:string){
  const result=await pool.query(`
   SELECT t.*,
    ARRAY(SELECT n.body FROM task_agent_notes n

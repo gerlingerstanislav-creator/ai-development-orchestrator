@@ -2,7 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,toolAllowedForRole} from './agent-tools.js';
+import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
 
 const uuid=z.string().uuid();
@@ -24,9 +24,6 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  startDocumentationWorkflow:(jobId:string)=>Promise<void>
 }){
  const {pool,access,requireAdmin,startDocumentationWorkflow}=deps;
- const readonlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
-  'tasks.list','tasks.read','questions.list','processes.list','memory.list',
-  'knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
  async function startQueuedJob(jobId:string){
   const row=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0];
   if(!row)throw Object.assign(Error('Процесс не найден'),{statusCode:404});
@@ -89,10 +86,11 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   const parsed=callSchema.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:'Неверные параметры вызова инструмента'});
   const {name,arguments:args}=parsed.data;
-  if(!toolAllowedForRole(session.role,name))return reply.code(403).send({error:'Инструмент недоступен для роли '+session.role});
+  const tool=toolsForRole(session.role).find(tool=>tool.name===name);
+  if(!tool)return reply.code(403).send({error:'Инструмент недоступен для роли '+session.role});
   const key=typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
   const digest=hashSecret(JSON.stringify({name,args}));
-  const mutating=!readonlyTools.has(name);
+  const mutating=!tool.annotations.readOnlyHint;
   // All PostgreSQL changes and their success evidence use the SAME
   // transaction, including document changesets, task creation and memories.
   const connection=mutating?await pool.connect():null;

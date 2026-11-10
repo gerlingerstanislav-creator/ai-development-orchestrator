@@ -173,9 +173,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const r=await pool.query('SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NOT DISTINCT FROM $2 AND channel=$3 ORDER BY created_at DESC,role ASC,id DESC LIMIT 10',[id,taskId,channel]);
   return r.rows.reverse().map(x=>x.role+': '+x.body.slice(0,1600)).join('\n\n');
  }
- async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null,channel:'project'|'documentation'='project',db:Pick<Pool,'query'>=pool){
-  await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp())',
-   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel]);
+ async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null,channel:'project'|'documentation'='project',db:Pick<Pool,'query'>=pool,documentationResetRequested=false){
+  await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10)',
+   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,documentationResetRequested]);
  }
  async function storeTokenUsage(id:string,taskId:string|null,model:string,usage:{input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined){
   if(!usage)return;
@@ -428,7 +428,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
   const {mode}=z.object({mode:z.enum(['project','documentation']).default('project')}).parse(req.query);
-  return (await pool.query('SELECT id,role,body,created_task_id,created_document_id,created_at FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at DESC,role ASC,id DESC LIMIT 100',[id,mode])).rows.reverse();
+  return (await pool.query('SELECT id,role,body,created_task_id,created_document_id,created_at,documentation_reset_requested FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at DESC,role ASC,id DESC LIMIT 100',[id,mode])).rows.reverse();
  });
  app.get('/api/projects/:id/document-import/:jobId',async(req:any,reply)=>{
   const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);
@@ -597,6 +597,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Сначала изучи соответствующие страницы, если задание требует знания текущей документации.',
     documentationMode?'Ты отвечаешь за ЧТО и ЗАЧЕМ: концепцию, бизнес-правила, пользовательские сценарии, функциональные требования. Свободно обсуждай идеи без создания задач и вопросов. Гипотезы не становятся утверждёнными требованиями без решения владельца.':'Ты координируешь исполнение задач и процессы разработки. Используй доступные инструменты для нужных действий.',
     documentationMode?'Только владелец проекта может явно передать согласованный пакет системному аналитику через действие «Передать СА». Сам не создавай задачи в Kanban и не открывай вопросы по ещё не выбранному функционалу. Системный аналитик отвечает за технические постановки, API, модели данных и зависимости.':'Не подменяй решения бизнес-аналитика техническими догадками.',
+    documentationMode?'Если пользователь явно просит полностью очистить документацию, вызови documentation.request_reset. Чтение дерева для этого не требуется. После успешного вызова предложи открыть подтверждение кнопкой под ответом. Пересборку или импорт запускай только после очистки и по отдельному запросу.':'Для колонки «Вопросы к ПО» используй tasks.list с product_owner_questions_only=true. При запросе на удаление перечисли найденные задачи и объясни, что безопасное удаление доступно в карточках ещё не запущенных задач.',
     'Долгие импорты и пересборки запускай через documentation.import/rebuild/organize: сервер создаёт наблюдаемый Temporal-процесс.',
     'Для подтверждённого владельцем переписывания ТЗ запускай documentation.rebuild, но предварительно проверь источники и цель; это отдельный контролируемый процесс.',
     'Обычный вопрос пользователя требует разговора, а не побочных изменений; при неоднозначности прочитай контекст.',
@@ -624,11 +625,11 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     const effects=await agentSessionEffects(pool,sessionId);
     await storeTokenUsage(id,null,config.model,data.usage);
     await store(id,null,uid(req),'user',message,null,null,mode);
-    await store(id,null,null,'assistant',data.message,effects.created_task_id,effects.created_document_id,mode);
+    await store(id,null,null,'assistant',data.message,effects.created_task_id,effects.created_document_id,mode,pool,effects.documentation_reset_requested);
     await countCall(id,uid(req));
     return {message:data.message,created_task_id:effects.created_task_id,
      created_document_id:effects.created_document_id,import_job_id:effects.import_job_id,
-     agent_session_id:sessionId};
+     documentation_reset_requested:effects.documentation_reset_requested,agent_session_id:sessionId};
    }catch(error){
     req.log.error(error,'Agent runtime call failed');
     return reply.code((error as any)?.statusCode||503).send({error:'Ошибка агента: '+String(error instanceof Error?error.message:error).slice(0,450)});
