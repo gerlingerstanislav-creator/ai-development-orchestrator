@@ -1,6 +1,5 @@
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
-import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 type Dependencies={pool:Pool;uid:(req:any)=>string;access:(req:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(req:any,reply:any)=>Promise<boolean>};
 const uuid=z.string().uuid();
@@ -21,14 +20,15 @@ export function registerSafeTaskDeletion(app:FastifyInstance,{pool,uid,access,re
    if(!['backlog','analysis'].includes(task.stage)||task.pr_url||task.git_branch){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Задача уже связана с исполнением. Для неё используй отмену задачи, а не удаление'});
    }
-   const [children,development,testing,plans,caseCount]=await Promise.all([
-    client.query('SELECT 1 FROM tasks WHERE project_id=$1 AND (parent_id=$2 OR depends_on_task_id=$2) LIMIT 1',[id,taskId]),
-    client.query('SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]),
-    client.query('SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]),
-    client.query('SELECT 1 FROM qa_test_plans WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]),
-    client.query('SELECT 1 FROM qa_test_cases WHERE project_id=$1 AND source_task_id=$2 LIMIT 1',[id,taskId])
-   ]);
-   if([children,development,testing,plans,caseCount].some(r=>r.rowCount)){
+   const related=[];
+   for(const [sql,params] of [
+    ['SELECT 1 FROM tasks WHERE project_id=$1 AND (parent_id=$2 OR depends_on_task_id=$2) LIMIT 1',[id,taskId]],
+    ['SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]],
+    ['SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]],
+    ['SELECT 1 FROM qa_test_plans WHERE project_id=$1 AND task_id=$2 LIMIT 1',[id,taskId]],
+    ['SELECT 1 FROM qa_test_cases WHERE project_id=$1 AND source_task_id=$2 LIMIT 1',[id,taskId]]
+   ] as Array<[string,string[]]>)related.push(await client.query(sql,params));
+   if(related.some(r=>r.rowCount)){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Задача имеет связанные задачи или результаты выполнения. Удаление заблокировано'});
    }
    const deleted=await client.query('DELETE FROM tasks WHERE project_id=$1 AND id=$2 RETURNING id',[id,taskId]);
