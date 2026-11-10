@@ -248,6 +248,11 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS created_document_id uuid REFERENCES documents(id) ON DELETE SET NULL;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT 'project';
+ ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS reply_to uuid REFERENCES assistant_messages(id) ON DELETE SET NULL;
+ ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS topic_id uuid;
+ CREATE TABLE IF NOT EXISTS project_chat_topics (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title text NOT NULL, status text NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')), created_at timestamptz NOT NULL DEFAULT now(), closed_at timestamptz);
+ CREATE INDEX IF NOT EXISTS idx_project_chat_topics_project ON project_chat_topics(project_id,status,created_at);
+ CREATE INDEX IF NOT EXISTS idx_assistant_reply ON assistant_messages(project_id,reply_to);
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS documentation_reset_requested boolean NOT NULL DEFAULT false;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS owner_question_cleanup_requested boolean NOT NULL DEFAULT false;
  CREATE INDEX IF NOT EXISTS idx_assistant_channel ON assistant_messages(project_id,channel,created_at);
