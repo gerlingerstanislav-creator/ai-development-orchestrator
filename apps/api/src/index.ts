@@ -4,6 +4,7 @@ import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {initDocumentationSystem} from './documentation-system.js';
+import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {fingerprint} from './topic-import.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
@@ -238,6 +239,7 @@ async function dbInit() {
  ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
  await initDocumentationSystem(pool);
+ await initKnowledgeContext(pool);
  const email=configuredAdminEmail();
  const password=process.env.ADMIN_PASSWORD;
  if (!email || !password || password.length < 12) throw Error('Set ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters)');
@@ -1511,7 +1513,7 @@ app.patch('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
  if(old.rows[0].system_key && (data.title!==old.rows[0].title || parentId!==null))return reply.code(409).send({error:'Название и расположение системного раздела нельзя менять'});
   if(!old.rows[0].system_key&&!parentId)return reply.code(409).send({error:'Страницу нельзя переместить за пределы системных разделов'});
   if(!await validDocParent(id,docId,parentId))return reply.code(400).send({error:'Нельзя переместить страницу в себя, своего потомка или другой проект'});
- await pool.query('UPDATE documents SET title=$1,body=$2,parent_id=$3,document_kind=COALESCE($6,document_kind),implementation_status=COALESCE($7,implementation_status),implementation_evidence=COALESCE($8,implementation_evidence),updated_at=now() WHERE id=$4 AND project_id=$5',[data.title,data.body,parentId,docId,id,data.document_kind||null,data.implementation_status||null,data.implementation_evidence??null]);
+ await pool.query("WITH updated AS (UPDATE documents SET title=$1,body=$2,parent_id=$3,document_kind=COALESCE($6,document_kind),implementation_status=COALESCE($7,implementation_status),implementation_evidence=COALESCE($8,implementation_evidence),updated_at=clock_timestamp() WHERE id=$4 AND project_id=$5 RETURNING id,body) INSERT INTO document_versions(id,document_id,body) SELECT gen_random_uuid(),id,body FROM updated",[data.title,data.body,parentId,docId,id,data.document_kind||null,data.implementation_status||null,data.implementation_evidence??null]);
  return {ok:true};
 });
 app.delete('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
@@ -1545,6 +1547,7 @@ registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,dec
  }
 });
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
+registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});
 registerQaWaiverRoutes(app,{pool,uid,access,requireAdmin,decryptToken});
 async function recoverTask({projectId,taskId,auth,cookie}:Parameters<ManagerDeps['recoverTask']>[0]):ReturnType<ManagerDeps['recoverTask']>{

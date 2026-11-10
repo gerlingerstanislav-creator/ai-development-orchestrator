@@ -293,6 +293,12 @@ function App(){
  const [processInstruction,setProcessInstruction]=useState('');
 
  const [docs,setDocs]=useState<Doc[]>([]);
+ const [docSearch,setDocSearch]=useState('');
+ const [knowledgeMeta,setKnowledgeMeta]=useState<{status:'approved'|'draft'|'review'|'obsolete';summary:string;tags:string[]} | null>(null);
+ const [knowledgeRelated,setKnowledgeRelated]=useState<Array<{id:string;relation:string;related_document_id:string;title:string}>>([]);
+ const [knowledgeTarget,setKnowledgeTarget]=useState('');
+ const [knowledgeRelation,setKnowledgeRelation]=useState('related_to');
+ const [knowledgeVersions,setKnowledgeVersions]=useState<Array<{id:string;created_at:string;excerpt:string}>>([]);
  const [rules,setRules]=useState<ProjectRule[]>([]);const [ruleSuggestions,setRuleSuggestions]=useState<RuleSuggestion[]>([]);
  const [ruleDraft,setRuleDraft]=useState('');const [knowledgeBusy,setKnowledgeBusy]=useState(false);
  const [documentVersions,setDocumentVersions]=useState<DocVersion[]>([]);const [documentationNotice,setDocumentationNotice]=useState('');
@@ -713,6 +719,59 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setStages(old=>old.map(stage=>stage.stage===updated.stage?updated:stage));
    setWorkflowModal(null);
   }catch(e){fail(e);}finally{setWorkflowSaving(false);}
+ }
+
+ async function loadKnowledgeDetails(projectId:string,documentId:string){
+  const [document,related,versions]=await Promise.all([
+   api<{status:string;summary:string;tags:string[]}>('/projects/'+projectId+'/knowledge/documents/'+documentId+'?mode=summary'),
+   api<{results:Array<{id:string;relation:string;related_document_id:string;title:string}>}>('/projects/'+projectId+'/knowledge/documents/'+documentId+'/related'),
+   api<{versions:Array<{id:string;created_at:string;excerpt:string}>}>('/projects/'+projectId+'/knowledge/documents/'+documentId+'/versions').catch(()=>({versions:[]}))
+  ]);
+  setKnowledgeMeta({status:(document.status||'approved') as 'approved'|'draft'|'review'|'obsolete',summary:document.summary||'',tags:document.tags||[]});
+  setKnowledgeRelated(related.results);setKnowledgeVersions(versions.versions);
+ }
+ useEffect(()=>{
+  if(!selected?.id||!selectedDocId){setKnowledgeMeta(null);setKnowledgeRelated([]);return;}
+  let active=true;const project=selected.id,doc=selectedDocId;
+  Promise.all([
+   api<{status:string;summary:string;tags:string[]}>('/projects/'+project+'/knowledge/documents/'+doc+'?mode=summary'),
+   api<{results:Array<{id:string;relation:string;related_document_id:string;title:string}>}>('/projects/'+project+'/knowledge/documents/'+doc+'/related'),
+   api<{versions:Array<{id:string;created_at:string;excerpt:string}>}>('/projects/'+project+'/knowledge/documents/'+doc+'/versions').catch(()=>({versions:[]}))
+  ]).then(([d,links,versions])=>{if(active){setKnowledgeMeta({status:d.status as 'approved'|'draft'|'review'|'obsolete',summary:d.summary||'',tags:d.tags||[]});setKnowledgeRelated(links.results);setKnowledgeVersions(versions.versions);}}).catch(fail);
+  return()=>{active=false;};
+ },[selected?.id,selectedDocId]);
+ async function exportSpecification(){
+  if(!selected)return;
+  try{
+   const data=await api<{filename:string;markdown:string}>('/projects/'+selected.id+'/knowledge/spec/export');
+   const url=URL.createObjectURL(new Blob([data.markdown],{type:'text/markdown;charset=utf-8'}));
+   const link=document.createElement('a');link.href=url;link.download=data.filename;document.body.appendChild(link);link.click();link.remove();
+   URL.revokeObjectURL(url);
+  }catch(e){fail(e);}
+ }
+ async function saveKnowledgeMetadata(){
+  if(!selected||!selectedDocId||!knowledgeMeta)return;
+  setDocBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/knowledge/documents/'+selectedDocId+'/metadata',{method:'PATCH',body:JSON.stringify(knowledgeMeta)});
+   await loadKnowledgeDetails(selected.id,selectedDocId);
+  }catch(e){fail(e);}finally{setDocBusy(false);}
+ }
+ async function linkKnowledgeDocument(){
+  if(!selected||!selectedDocId||!knowledgeTarget)return;
+  setDocBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/knowledge/links',{method:'POST',body:JSON.stringify({source_document_id:selectedDocId,target_document_id:knowledgeTarget,relation:knowledgeRelation})});
+   setKnowledgeTarget('');await loadKnowledgeDetails(selected.id,selectedDocId);
+  }catch(e){fail(e);}finally{setDocBusy(false);}
+ }
+ async function unlinkKnowledgeDocument(linkId:string){
+  if(!selected||!selectedDocId)return;
+  setDocBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/knowledge/links/'+linkId,{method:'DELETE'});
+   await loadKnowledgeDetails(selected.id,selectedDocId);
+  }catch(e){fail(e);}finally{setDocBusy(false);}
  }
 
  async function addDoc(parentId:string|null=null){
@@ -1169,8 +1228,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{if(token&&accountSettings){void refreshCodex();}},[token,accountSettings]);
  useEffect(()=>{if(!token||!accountSettings||!codex?.login||codex.login.state!=='waiting')return;const interval=setInterval(()=>void refreshCodex(),3500);return ()=>clearInterval(interval);},[token,accountSettings,codex?.login?.state]);
  function logout(){void fetch('/api/auth/logout',{method:'POST',credentials:'same-origin'}).catch(()=>{});sessionStorage.removeItem(key);setToken('');setSelected(null);setAccountSettings(false);setProjects([]);setProjectsLoaded(false);setLoadedProjectId(null);setCodex(null);navigate('/projects',true);}
+ function docTreeMatches(d:Doc):boolean {const q=docSearch.trim().toLowerCase();return !q||d.title.toLowerCase().includes(q)||docs.some(child=>child.parent_id===d.id&&docTreeMatches(child));}
  function renderDocTree(parentId:string|null,depth=0):React.ReactNode {
-  return docs.filter(d=>d.parent_id===parentId).sort((a,b)=>parentId===null?(['spec','architecture','operations','design','research'].indexOf(a.system_key||'')-['spec','architecture','operations','design','research'].indexOf(b.system_key||'')):a.title.localeCompare(b.title,'ru')).map(d=>{
+  return docs.filter(d=>d.parent_id===parentId&&docTreeMatches(d)).sort((a,b)=>parentId===null?(['spec','architecture','operations','design','research'].indexOf(a.system_key||'')-['spec','architecture','operations','design','research'].indexOf(b.system_key||'')):a.title.localeCompare(b.title,'ru')).map(d=>{
    const hasChildren=docs.some(c=>c.parent_id===d.id),collapsed=collapsedDocs.includes(d.id);
    return <div key={d.id}>
     <div className="doc-node" style={{paddingLeft:8+Math.min(depth,8)*18}}>
@@ -1477,8 +1537,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="docs-list-heading"><b>Страницы проекта</b><div className="docs-actions">
      <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);setProjectChatMode('documentation');setProjectInput('Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');setProjectChatOpen(true);}}><LayoutGrid size={17}/></button>
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
-   <div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
+   <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    <div className="docs-list-footer">
+    <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
     <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
    </div>
   </aside>
@@ -1486,6 +1547,35 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {selectedDocId&&docs.some(d=>d.id===selectedDocId)?(()=>{
     const doc=docs.find(d=>d.id===selectedDocId)!;
     return <>
+     {knowledgeMeta&&<details className="panel knowledge-document-panel">
+      <summary>Контекст и связи документа · {({approved:'Утверждён',draft:'Черновик',review:'На согласовании',obsolete:'Устарел'} as Record<string,string>)[knowledgeMeta.status]}</summary>
+      <div className="doc-metadata-editor">
+       <label>Статус знаний<select value={knowledgeMeta.status} onChange={e=>setKnowledgeMeta({...knowledgeMeta,status:e.target.value as typeof knowledgeMeta.status})}>
+        <option value="approved">Утверждён</option><option value="draft">Черновик</option><option value="review">На согласовании</option><option value="obsolete">Устарел</option>
+       </select></label>
+       <label>Краткое описание<input value={knowledgeMeta.summary} maxLength={1500} onChange={e=>setKnowledgeMeta({...knowledgeMeta,summary:e.target.value})} placeholder="Что агент найдёт в документе"/></label>
+       <label>Теги через запятую<input defaultValue={knowledgeMeta.tags.join(', ')} onBlur={e=>setKnowledgeMeta({...knowledgeMeta,tags:e.target.value.split(',').map(x=>x.trim()).filter(Boolean).slice(0,30)})}/></label>
+       <button className="secondary" disabled={docBusy} onClick={()=>void saveKnowledgeMetadata()}>Сохранить метаданные</button>
+      </div>
+      <h4>Связанные документы</h4>
+      {knowledgeRelated.map(link=><div className="knowledge-link" key={link.id}>
+       <span>{link.relation}: </span><a href={selected?projectUrl(selected.id,'docs')+'/'+link.related_document_id:'#'} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+link.related_document_id)}>{link.title}</a>
+       <button type="button" disabled={docBusy} title="Удалить связь" onClick={()=>void unlinkKnowledgeDocument(link.id)}><X size={14}/></button>
+      </div>)}
+      <div className="doc-metadata-editor">
+       <select aria-label="Тип связи" value={knowledgeRelation} onChange={e=>setKnowledgeRelation(e.target.value)}>
+        {['related_to','depends_on','implements','describes','supersedes','tested_by'].map(v=><option key={v} value={v}>{v}</option>)}
+       </select>
+       <select aria-label="Связанный документ" value={knowledgeTarget} onChange={e=>setKnowledgeTarget(e.target.value)}>
+        <option value="">Выбрать документ</option>
+        {docs.filter(x=>x.id!==doc.id).map(x=><option value={x.id} key={x.id}>{x.title}</option>)}
+       </select>
+       <button className="secondary" disabled={!knowledgeTarget||docBusy} onClick={()=>void linkKnowledgeDocument()}>Добавить связь</button>
+      </div>
+      <details><summary>История версий ({knowledgeVersions.length})</summary>
+       {knowledgeVersions.map(v=><p key={v.id}><small>{new Date(v.created_at).toLocaleString('ru-RU')} · {v.excerpt}</small></p>)}
+      </details>
+     </details>}
      <header className="docs-reading-header">
       <div>{editingDoc?.id===doc.id&&!doc.system_key?
        <input className="docs-title-input" aria-label="Название документа" value={editingDoc.title} onChange={e=>setEditingDoc({...editingDoc,title:e.target.value})}/>:
