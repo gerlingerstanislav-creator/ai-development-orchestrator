@@ -67,43 +67,30 @@ export function registerSafeTaskDeletion(app:FastifyInstance,{pool,access,requir
   const {id}=projectParams.parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const tasks=await tasksForDeletion(pool,id,await ownerQuestionTaskIds(pool,id));
-  const questions=await pool.query(
-   "SELECT q.id,q.question,d.title AS document_title,CASE WHEN EXISTS(SELECT 1 FROM document_import_jobs j WHERE j.project_id=q.project_id AND j.status IN ('running','queued') AND (j.id=q.job_id OR j.analyst_input->>'questionId'=q.id::text)) THEN 'Вопрос используется активным процессом аналитика' ELSE NULL END AS blocked_reason FROM documentation_questions q JOIN documents d ON d.id=q.document_id AND d.project_id=q.project_id WHERE q.project_id=$1 AND q.status IN ('open','answered') ORDER BY q.created_at,q.id",
-   [id]);
   return {tasks:tasks.map(task=>({
    id:task.id,title:task.title,display_number:task.display_number,blocked_reason:deletionBlocker(task)
-  })),questions:questions.rows};
+  }))};
  });
 
  app.post(ownerQuestionsPath+'/confirm',async(req:any,reply)=>{
   const {id}=projectParams.parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {task_ids,question_ids,confirm}=z.object({
-   task_ids:z.array(uuid).max(100).default([]),
-   question_ids:z.array(uuid).max(100).default([]),
-   confirm:z.literal(true)
-  }).parse(req.body||{});
-  const taskIds=[...new Set(task_ids)],questionIds=[...new Set(question_ids)];
-  if(!taskIds.length&&!questionIds.length)return reply.code(400).send({error:'Нет выбранных задач или вопросов'});
+  const {task_ids,confirm}=z.object({task_ids:z.array(uuid).min(1),confirm:z.boolean()}).parse(req.body||{});
+  if(!confirm)return reply.code(409).send({error:'Подтверди удаление выбранных задач'});
+  const taskIds=[...new Set(task_ids)];
   const client=await pool.connect();
   try{
    await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-   if(taskIds.length)await client.query('SELECT id FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[id,taskIds]);
-   if(questionIds.length)await client.query('SELECT id FROM documentation_questions WHERE project_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[id,questionIds]);
+   await client.query('SELECT id FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[id,taskIds]);
    const currentOwnerQuestions=new Set(await ownerQuestionTaskIds(client,id));
    const tasks=await tasksForDeletion(client,id,taskIds);
-   const questions=questionIds.length?(await client.query(
-    "SELECT q.id FROM documentation_questions q WHERE q.project_id=$1 AND q.id=ANY($2::uuid[]) AND q.status IN ('open','answered') AND NOT EXISTS(SELECT 1 FROM document_import_jobs j WHERE j.project_id=q.project_id AND j.status IN ('running','queued') AND (j.id=q.job_id OR j.analyst_input->>'questionId'=q.id::text))",
-    [id,questionIds])).rows:[];
-   if(tasks.length!==taskIds.length||questions.length!==questionIds.length||
-      tasks.some(task=>!currentOwnerQuestions.has(task.id)||deletionBlocker(task))){
+   if(tasks.length!==taskIds.length||tasks.some(task=>!currentOwnerQuestions.has(task.id)||deletionBlocker(task))){
     await client.query('ROLLBACK');
-    return reply.code(409).send({error:'Состав колонки или состояние задач/вопросов изменилось. Открой предпросмотр заново.'});
+    return reply.code(409).send({error:'Состав колонки или состояние задач изменилось. Открой предпросмотр заново.'});
    }
-   const deleted=taskIds.length?await client.query('DELETE FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) RETURNING id',[id,taskIds]):{rows:[]};
-   const deletedQuestions=questionIds.length?await client.query('DELETE FROM documentation_questions WHERE project_id=$1 AND id=ANY($2::uuid[]) RETURNING id',[id,questionIds]):{rows:[]};
+   const deleted=await client.query('DELETE FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) RETURNING id',[id,taskIds]);
    await client.query('COMMIT');
-   return {ok:true,deleted_task_ids:deleted.rows.map(task=>task.id),deleted_question_ids:deletedQuestions.rows.map(q=>q.id)};
+   return {ok:true,deleted_task_ids:deleted.rows.map(task=>task.id)};
   }catch(error){
    await client.query('ROLLBACK').catch(()=>{});
    if(['23503','40001'].includes((error as any)?.code))
@@ -111,41 +98,4 @@ export function registerSafeTaskDeletion(app:FastifyInstance,{pool,access,requir
    throw error;
   }finally{client.release();}
  });
- // Generic deletion preview is scoped to exactly the IDs selected by PM.
- // The owner must explicitly confirm after reviewing all dependent-data blockers.
- app.get('/api/projects/:id/tasks/delete/preview',async(req:any,reply)=>{
-  const {id}=projectParams.parse(req.params);
-  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {ids}=z.object({ids:z.string().min(1).max(3900)}).parse(req.query);
-  const taskIds=[...new Set(ids.split(',').map(value=>uuid.parse(value)))];
-  if(!taskIds.length||taskIds.length>100)return reply.code(400).send({error:'Выбери от 1 до 100 задач'});
-  const tasks=await tasksForDeletion(pool,id,taskIds);
-  if(tasks.length!==taskIds.length)return reply.code(409).send({error:'Часть выбранных задач больше не существует. Обнови список'});
-  return {tasks:tasks.map(task=>({id:task.id,title:task.title,display_number:task.display_number,blocked_reason:deletionBlocker(task)}))};
- });
- app.post('/api/projects/:id/tasks/delete/confirm',async(req:any,reply)=>{
-  const {id}=projectParams.parse(req.params);
-  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {task_ids,confirm}=z.object({task_ids:z.array(uuid).min(1).max(100),confirm:z.literal(true)}).parse(req.body||{});
-  const taskIds=[...new Set(task_ids)];
-  const client=await pool.connect();
-  try{
-   await client.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
-   await client.query('SELECT id FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE',[id,taskIds]);
-   const tasks=await tasksForDeletion(client,id,taskIds);
-   if(tasks.length!==taskIds.length||tasks.some(task=>deletionBlocker(task))){
-    await client.query('ROLLBACK');
-    return reply.code(409).send({error:'Выбранные задачи изменились или содержат связанные данные. Открой предпросмотр заново.'});
-   }
-   const removed=await client.query('DELETE FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[]) RETURNING id',[id,taskIds]);
-   await client.query('COMMIT');
-   return {ok:true,deleted_task_ids:removed.rows.map(row=>row.id)};
-  }catch(error){
-   await client.query('ROLLBACK').catch(()=>{});
-   if(['23503','40001'].includes((error as any)?.code))
-    return reply.code(409).send({error:'Задачи изменились или защищены связанными данными. Открой предпросмотр заново.'});
-   throw error;
-  }finally{client.release();}
- });
-
 }
