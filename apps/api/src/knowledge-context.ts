@@ -31,6 +31,15 @@ export async function initKnowledgeContext(pool:Pool){
    created_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE INDEX IF NOT EXISTS idx_knowledge_reads_task ON knowledge_context_reads(project_id,task_id,created_at DESC);
+  CREATE TABLE IF NOT EXISTS knowledge_context_snapshots(
+   id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+   task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+   agent_stage text NOT NULL,agent_session_id uuid,
+   sources jsonb NOT NULL DEFAULT '[]'::jsonb,
+   instructions jsonb NOT NULL DEFAULT '{}'::jsonb,
+   created_at timestamptz NOT NULL DEFAULT now()
+  );
+  CREATE INDEX IF NOT EXISTS idx_knowledge_snapshots_task ON knowledge_context_snapshots(project_id,task_id,created_at DESC);
  `);
  // Adopt pre-existing specification sections instead of creating duplicate pages.
  await pool.query(`
@@ -196,6 +205,39 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
    return heading+'\n\n'+(String(d.body||'').trim()||'_Содержание не заполнено_');
   }).join('\n\n');
   return {filename:'technical-specification.md',markdown,documents:r.rows.length};
+ });
+
+ app.post('/api/projects/:id/knowledge/documents/:documentId/versions/:versionId/restore',async(req:any,reply)=>{
+  const {id,documentId,versionId}=z.object({id:uuid,documentId:uuid,versionId:uuid}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const {expected_version}=z.object({expected_version:z.string().datetime({offset:true})}).parse(req.body);
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const current=(await client.query('SELECT id,body,updated_at FROM documents WHERE project_id=$1 AND id=$2 FOR UPDATE',[id,documentId])).rows[0];
+   if(!current){await client.query('ROLLBACK');return reply.code(404).send({error:'Документ не найден'});}
+   if(new Date(current.updated_at).toISOString()!==new Date(expected_version).toISOString()){
+    await client.query('ROLLBACK');return reply.code(409).send({error:'Документ изменился. Обнови страницу перед восстановлением.'});
+   }
+   const saved=(await client.query('SELECT body FROM document_versions WHERE id=$1 AND document_id=$2',[versionId,documentId])).rows[0];
+   if(!saved){await client.query('ROLLBACK');return reply.code(404).send({error:'Версия не найдена'});}
+   if(saved.body===current.body){
+    await client.query('ROLLBACK');return {ok:true,changed:false,version:current.updated_at};
+   }
+   await client.query('INSERT INTO document_versions(id,document_id,body) VALUES($1,$2,$3)',[randomUUID(),documentId,current.body]);
+   const updated=await client.query('UPDATE documents SET body=$1,updated_at=clock_timestamp() WHERE id=$2 AND project_id=$3 RETURNING updated_at',[saved.body,documentId,id]);
+   await client.query('INSERT INTO document_versions(id,document_id,body) VALUES($1,$2,$3)',[randomUUID(),documentId,saved.body]);
+   await client.query('COMMIT');
+   return {ok:true,changed:true,version:updated.rows[0].updated_at};
+  }catch(error){await client.query('ROLLBACK');throw error;}
+  finally{client.release();}
+ });
+
+ app.get('/api/projects/:id/knowledge/context-snapshots',async(req:any,reply)=>{
+  const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id))return;
+  const {task_id}=z.object({task_id:uuid}).parse(req.query);
+  const rows=await pool.query('SELECT id,task_id,agent_stage,agent_session_id,sources,instructions,created_at FROM knowledge_context_snapshots WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 100',[id,task_id]);
+  return {snapshots:rows.rows};
  });
 
 }

@@ -740,6 +740,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   ]).then(([d,links,versions])=>{if(active){setKnowledgeMeta({status:d.status as 'approved'|'draft'|'review'|'obsolete',summary:d.summary||'',tags:d.tags||[]});setKnowledgeRelated(links.results);setKnowledgeVersions(versions.versions);}}).catch(fail);
   return()=>{active=false;};
  },[selected?.id,selectedDocId]);
+ async function restoreKnowledgeVersion(versionId:string){
+  if(!selected||!selectedDocId||docBusy)return;
+  const doc=docs.find(x=>x.id===selectedDocId);
+  if(!doc||!window.confirm('Восстановить содержимое выбранной версии? Текущая версия останется в истории.'))return;
+  setDocBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/knowledge/documents/'+doc.id+'/versions/'+versionId+'/restore',{method:'POST',body:JSON.stringify({expected_version:new Date(doc.updated_at).toISOString()})});
+   const actual=await api<{body:string;version:string}>('/projects/'+selected.id+'/knowledge/documents/'+doc.id+'?mode=full');
+   setDocs(old=>old.map(item=>item.id===doc.id?{...item,body:actual.body,updated_at:actual.version}:item));
+   await loadKnowledgeDetails(selected.id,doc.id);
+  }catch(e){fail(e);}finally{setDocBusy(false);}
+ }
  async function exportSpecification(){
   if(!selected)return;
   try{
@@ -754,6 +766,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setDocBusy(true);
   try{
    await api('/projects/'+selected.id+'/knowledge/documents/'+selectedDocId+'/metadata',{method:'PATCH',body:JSON.stringify(knowledgeMeta)});
+   const current=await api<{version:string}>('/projects/'+selected.id+'/knowledge/documents/'+selectedDocId+'?mode=summary');
+   setDocs(old=>old.map(d=>d.id===selectedDocId?{...d,updated_at:current.version}:d));
    await loadKnowledgeDetails(selected.id,selectedDocId);
   }catch(e){fail(e);}finally{setDocBusy(false);}
  }
@@ -1573,7 +1587,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <button className="secondary" disabled={!knowledgeTarget||docBusy} onClick={()=>void linkKnowledgeDocument()}>Добавить связь</button>
       </div>
       <details><summary>История версий ({knowledgeVersions.length})</summary>
-       {knowledgeVersions.map(v=><p key={v.id}><small>{new Date(v.created_at).toLocaleString('ru-RU')} · {v.excerpt}</small></p>)}
+       {knowledgeVersions.map(v=><p key={v.id}><small>{new Date(v.created_at).toLocaleString('ru-RU')} · {v.excerpt}</small> <button className="secondary" type="button" disabled={docBusy} onClick={()=>void restoreKnowledgeVersion(v.id)}>Восстановить</button></p>)}
       </details>
      </details>}
      <header className="docs-reading-header">

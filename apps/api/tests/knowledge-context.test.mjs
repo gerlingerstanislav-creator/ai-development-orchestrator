@@ -25,7 +25,12 @@ test('Knowledge Context migration is idempotent and retrieval is project scoped'
  ].join(';\n')+';');
  const p=randomUUID(),foreign=randomUUID();
  await db.query('INSERT INTO projects(id) VALUES($1),($2)',[p,foreign]);
- const pool={query:(...args)=>db.query(...args)};
+ const pool={query:(...args)=>db.query(...args),connect:async()=>({
+  query:(sql,...args)=>sql==='BEGIN'?db.query('SAVEPOINT restore_knowledge'):
+    sql==='COMMIT'?db.query('RELEASE SAVEPOINT restore_knowledge'):
+    sql==='ROLLBACK'?db.query('ROLLBACK TO SAVEPOINT restore_knowledge'):db.query(sql,...args),
+  release(){}
+ })};
  await initDocumentationSystem(pool);
  const spec=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[p])).rows[0];
  const docId=randomUUID();
@@ -58,6 +63,21 @@ test('Knowledge Context migration is idempotent and retrieval is project scoped'
  assert.equal(good.statusCode,201,good.body);
  const related=await app.inject({url:'/api/projects/'+p+'/knowledge/documents/'+docId+'/related'});
  assert.equal(related.json().results.length,1);
+
+ const before=(await db.query('SELECT updated_at,body FROM documents WHERE id=$1',[docId])).rows[0];
+ const revision=randomUUID();
+ await db.query('INSERT INTO document_versions(id,document_id,body) VALUES($1,$2,$3)',
+  [revision,docId,'## Предыдущая редакция\nПервоначальное правило']);
+ const restore=await app.inject({method:'POST',url:'/api/projects/'+p+'/knowledge/documents/'+docId+'/versions/'+revision+'/restore',
+  payload:{expected_version:new Date(before.updated_at).toISOString()}});
+ assert.equal(restore.statusCode,200,restore.body);
+ assert.equal(restore.json().changed,true);
+ assert.match((await db.query('SELECT body FROM documents WHERE id=$1',[docId])).rows[0].body,/Первоначальное/);
+ assert.ok((await db.query('SELECT count(*)::int n FROM document_versions WHERE document_id=$1',[docId])).rows[0].n>=3);
+ const conflict=await app.inject({method:'POST',url:'/api/projects/'+p+'/knowledge/documents/'+docId+'/versions/'+revision+'/restore',
+  payload:{expected_version:new Date(before.updated_at).toISOString()}});
+ assert.equal(conflict.statusCode,409,conflict.body);
+
  const deleted=await app.inject({method:'DELETE',url:'/api/projects/'+p+'/knowledge/links/'+good.json().id});
  assert.equal(deleted.statusCode,200,deleted.body);
  await db.query('ROLLBACK');opened=false;

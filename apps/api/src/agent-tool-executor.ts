@@ -156,8 +156,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,stage]),
    pool.query("SELECT id,title,knowledge_summary AS summary,updated_at AS version,knowledge_key FROM documents WHERE project_id=$1 AND knowledge_status='approved' AND (knowledge_key IS NOT NULL OR to_tsvector('simple',title||' '||body) @@ plainto_tsquery('simple',$2)) ORDER BY (knowledge_key IS NOT NULL) DESC,updated_at DESC LIMIT 12",[projectId,task.title])
   ]);
-  return {task,stage,agent:agent.rows[0]||null,mandatory_rules:rules.rows,documents:docs.rows,
+  const context={task,stage,agent:agent.rows[0]||null,mandatory_rules:rules.rows,documents:docs.rows,
    instruction:'Дополнительные документы читай через knowledge.read. Поиск не гарантирует полноту; проверяй связанные требования.'};
+  await pool.query('INSERT INTO knowledge_context_snapshots(id,project_id,task_id,agent_stage,agent_session_id,sources,instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',
+   [randomUUID(),projectId,task_id,stage,session.id,JSON.stringify(docs.rows.map(d=>({id:d.id,version:d.version,knowledge_key:d.knowledge_key}))),JSON.stringify({agent:agent.rows[0]||null,mandatory_rules:rules.rows})]);
+  return context;
  }
 
  case 'tasks.list':{
