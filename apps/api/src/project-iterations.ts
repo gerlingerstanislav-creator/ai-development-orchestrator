@@ -552,3 +552,24 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
   return {results};
  });
 }
+
+/** Validated PM delegation entry points. Approval and publication use the
+ * same revision locks and preview checks as the authenticated UI routes. */
+export async function approveIterationViaManager(db:Db,projectId:string,iterationId:string,expectedRevision:number){
+ const result=await db.query('UPDATE project_iterations SET approved_revision=revision WHERE project_id=$1 AND id=$2 AND revision=$3 RETURNING id,revision',[projectId,iterationId,expectedRevision]);
+ if(!result.rowCount)throw problem(409,'Итерация изменилась. Перечитай актуальное описание перед согласованием.');
+ return {approved:true,iteration_id:iterationId,revision:result.rows[0].revision};
+}
+export async function previewIterationPlanViaManager(db:Db,projectId:string,iterationId:string,planId:string){
+ const current=await iteration(db,projectId,iterationId);
+ const record=await readPlan(db,iterationId,planId);
+ const plan=planInput.parse(record.content);
+ const tasks=await currentPlanItems(db,projectId,iterationId);
+ const {items,unmentioned}=planItems(plan,tasks);
+ const stale=current.revision!==plan.expected_revision||current.approved_revision!==plan.expected_revision||
+  sourceRevision(await sourceDocuments(db,iterationId))!==plan.source_revision;
+ return {plan_id:planId,items:planDiff(items),unmentioned,stale,preview_revision:sourceRevision(tasks),published_at:record.published_at};
+}
+export async function publishIterationPlanViaManager(pool:Pool,projectId:string,iterationId:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
+ return transaction(pool,db=>publishPlan(db,projectId,iterationId,planId,actorId,previewRevision,selectedChanges));
+}
