@@ -10,6 +10,7 @@ RUN apt-get update \
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
+COPY apps/codex-runner/agent-mcp.mjs ./agent-mcp.mjs
 USER node
 EXPOSE 4300
 CMD ["node","server.mjs"]
