@@ -42,6 +42,36 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
   }
   return reply.code(202).send({id:messageId,status:'queued'});
  });
+ app.post('/api/projects/:id/manager/inbox/:messageId/retry',async(req:any,reply)=>{
+  const {id,messageId}=z.object({id:z.string().uuid(),messageId:z.string().uuid()}).parse(req.params);
+  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+  const changed=await pool.query("UPDATE assistant_messages SET status='queued' WHERE project_id=$1 AND id=$2 AND channel='project' AND role='user' AND status='failed' RETURNING id",[id,messageId]);
+  if(!changed.rowCount)return reply.code(409).send({error:'Повторить можно только сообщение с ошибкой'});
+  await start(id,messageId).catch(error=>req.log.warn({error,messageId},'PM retry will be recovered'));
+  return reply.code(202).send({id:messageId,status:'queued'});
+ });
+ // Crash recovery: persisted turns must not depend on the browser or a single
+ // successful dispatch attempt. Temporal workflow IDs are deterministic.
+ let timer:ReturnType<typeof setInterval>|null=null,recovering=false;
+ const recover=async()=>{
+  if(recovering)return;recovering=true;
+  try{
+   const rows=await pool.query("SELECT id,project_id FROM assistant_messages WHERE channel='project' AND role='user' AND status='queued' AND created_at>now()-interval '30 days' ORDER BY created_at LIMIT 15");
+   for(const row of rows.rows){
+    try{await start(row.project_id,row.id);}
+    catch(error){
+     if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error)?.name))
+      app.log.warn({error,messageId:row.id},'Could not dispatch queued PM message');
+    }
+   }
+  }finally{recovering=false;}
+ };
+ app.addHook('onReady',async()=>{
+  await recover().catch(error=>app.log.error({error},'PM inbox recovery failed'));
+  timer=setInterval(()=>void recover().catch(error=>app.log.error({error},'PM inbox recovery failed')),20000);
+  timer.unref?.();
+ });
+ app.addHook('onClose',async()=>{if(timer)clearInterval(timer);});
 }
 
 export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string):Promise<void>{
