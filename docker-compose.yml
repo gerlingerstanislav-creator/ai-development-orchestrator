@@ -62,6 +62,7 @@ services:
     environment:
       CODEX_HOME: /home/node/.codex
       RUNNER_SHARED_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      ADO_AGENT_API_URL: http://api:3001/internal/agent-tools
     volumes:
       - codex_auth:/home/node/.codex
     restart: unless-stopped
