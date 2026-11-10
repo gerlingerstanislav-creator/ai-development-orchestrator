@@ -35,6 +35,8 @@ export async function initProjectTeamSchema(pool:Pool){
  CREATE INDEX IF NOT EXISTS idx_agent_instruction_history ON agent_instruction_history(project_id,role,created_at DESC);
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS author_id uuid REFERENCES users(id) ON DELETE SET NULL;
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent';
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source_run_id uuid;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memory_run_learning ON agent_memory(project_id,role,source_run_id) WHERE source_run_id IS NOT NULL;
  CREATE INDEX IF NOT EXISTS idx_agent_memory_role_status ON agent_memory(project_id,role,status,created_at DESC);
  INSERT INTO project_conversation_agents(project_id,role,agent_name,agent_instructions)
  SELECT p.id,r.role,r.agent_name,r.agent_instructions FROM projects p
@@ -55,6 +57,15 @@ export async function agentMemoryContext(pool:Pick<Pool,'query'>,projectId:strin
  WHERE project_id=$1 AND role=$2 AND ((kind='observation' AND status IN ('recorded','approved')) OR (kind='instruction_suggestion' AND status='approved'))
  ORDER BY created_at DESC,id DESC LIMIT 20`,[projectId,role])).rows;
  return rows.reverse().map(r=>'- '+String(r.body).slice(0,800)+(r.evidence?' (основание: '+String(r.evidence).slice(0,160)+')':'')).join('\n').slice(0,12500);
+}
+/** One suggested reusable lesson per completed execution, never auto-approved. */
+export async function recordAgentLearning(pool:Pool,args:{projectId:string;role:string;runId:string;body:unknown;evidence:string}){
+ if(typeof args.body!=='string')return;
+ const clean=args.body.trim().replace(/(?:gh[pousr]_|github_pat_|sk-[A-Za-z0-9_-]{10,})[A-Za-z0-9_-]{8,}/g,'[REDACTED]');
+ if(clean.length<20||clean.length>1600||/^(none|нет|отсутствует|не выявлено)[.!]?$/i.test(clean))return;
+ await pool.query(`INSERT INTO agent_memory(id,project_id,role,kind,body,evidence,status,origin,source_run_id)
+  VALUES($1,$2,$3,'instruction_suggestion',$4,$5,'proposed','agent',$6)
+  ON CONFLICT DO NOTHING`,[randomUUID(),args.projectId,args.role,clean,args.evidence.slice(0,600),args.runId]);
 }
 async function roleExists(pool:Pool,projectId:string,role:string){
  if(conversationalRoles.includes(role as typeof conversationalRoles[number]))return !!(await pool.query('SELECT 1 FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role])).rowCount;
