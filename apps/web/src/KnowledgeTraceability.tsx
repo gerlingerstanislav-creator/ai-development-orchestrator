@@ -13,28 +13,21 @@ export function KnowledgeTraceability({projectId,documentId,tasks,request}:{proj
  const [artifactRelation,setArtifactRelation]=useState('describes');
  const [error,setError]=useState('');
  const [busy,setBusy]=useState(false);
- async function reload(){
-  const [t,a]=await Promise.all([
-   ...[...[]],
+ async function refresh(){
+  const [taskLinks,artifactLinks]=await Promise.all([
+   request('/projects/'+projectId+'/knowledge/task-links?document_id='+documentId),
    request('/projects/'+projectId+'/knowledge/artifact-links?document_id='+documentId)
   ]);
+  setLinks(taskLinks.links||[]);setArtifacts(artifactLinks.links||[]);
  }
- // Fetch all task links via individual task-scoped queries; project tasks are bounded by board pagination.
- async function refresh(){
-  const responses=await Promise.all(tasks.map(task=>request('/projects/'+projectId+'/knowledge/task-links?task_id='+task.id)));
-  const current=responses.flatMap(x=>x.links||[]).filter(x=>x.document_id===documentId);
-  const artifactsResult=await request('/projects/'+projectId+'/knowledge/artifact-links?document_id='+documentId);
-  setLinks(current);setArtifacts(artifactsResult.links||[]);
- }
- useEffect(()=>{let live=true;
+ useEffect(()=>{let active=true;
   Promise.all([
-   Promise.all(tasks.map(task=>request('/projects/'+projectId+'/knowledge/task-links?task_id='+task.id))),
+   request('/projects/'+projectId+'/knowledge/task-links?document_id='+documentId),
    request('/projects/'+projectId+'/knowledge/artifact-links?document_id='+documentId)
-  ]).then(([t,a])=>{
-   if(live){setLinks(t.flatMap(x=>x.links||[]).filter(x=>x.document_id===documentId));setArtifacts(a.links||[]);}
-  }).catch(e=>{if(live)setError(e instanceof Error?e.message:String(e));});
-  return()=>{live=false;};
- },[projectId,documentId,tasks,request]);
+  ]).then(([t,a])=>{if(active){setLinks(t.links||[]);setArtifacts(a.links||[]);}})
+   .catch(e=>{if(active)setError(e instanceof Error?e.message:String(e));});
+  return()=>{active=false;};
+ },[projectId,documentId,request]);
  async function post(path:string,body:any){
   setError('');setBusy(true);
   try{await request(path,{method:'POST',body:JSON.stringify(body)});await refresh();}
