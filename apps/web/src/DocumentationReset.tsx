@@ -4,7 +4,7 @@ import {Trash2,X} from 'lucide-react';
 
 type Request=(path:string,options?:RequestInit)=>Promise<any>;
 type Preview={
- intent_id:string;project_name:string;pages:number;imports:number;roots_preserved:number;
+ intent_id:string;project_name:string;pages:number;imports:number;questions:number;roots_preserved:number;
  confirmation_phrase:string;warning:string;
 };
 export function DocumentationReset({projectId,request,onReset,compact=false}:{
@@ -42,7 +42,7 @@ export function DocumentationReset({projectId,request,onReset,compact=false}:{
    <div className="dialog documentation-reset-dialog" role="dialog" aria-modal="true" aria-label="Полная очистка документации" onMouseDown={e=>e.stopPropagation()} onKeyDown={e=>{if(e.key==='Escape'){e.stopPropagation();if(!busy)setPreview(null);}}}>
     <div className="modal-heading"><h2>Очистить документацию проекта?</h2><button type="button" className="task-close" onClick={()=>setPreview(null)} disabled={busy} aria-label="Закрыть"><X size={18}/></button></div>
     <p>{preview.warning}</p>
-    <p>Будут удалены <strong>{preview.pages}</strong> страниц и <strong>{preview.imports}</strong> прежних импортов. Системные разделы останутся.</p>
+    <p>Будут удалены <strong>{preview.pages}</strong> страниц, <strong>{preview.questions}</strong> вопросов аналитика и <strong>{preview.imports}</strong> прежних импортов. Системные разделы останутся.</p>
     <p className="task-action-error"><strong>Отменить операцию будет невозможно.</strong> Первоначальный репозиторий GitHub не изменяется.</p>
     <label>Введи название проекта: <strong>{preview.project_name}</strong>
      <input autoFocus value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder={preview.project_name}/>
