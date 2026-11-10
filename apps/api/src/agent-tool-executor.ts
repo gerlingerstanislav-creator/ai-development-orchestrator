@@ -100,9 +100,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  case 'tasks.create':{
   const {title,description}=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(10).max(12000)}).parse(params);
   const id=randomUUID();
-  await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state) VALUES($1,$2,$3,$4,'task','analysis','ready_for_development')",[id,projectId,title,description]);
+  // Same initial state as the public task-creation API: the agent can create
+  // work, but cannot bypass analysis or requirement acceptance by creating it.
+  await pool.query("INSERT INTO tasks(id,project_id,title,description,type,position) VALUES($1,$2,$3,$4,'task',(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2))",[id,projectId,title,description]);
   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'created','Создано агентом через инструменты сервиса')",[randomUUID(),id,actorId]);
-  return {id,stage:'analysis'};
+  return {id,stage:'backlog'};
  }
  case 'questions.list':{
   const r=await pool.query("SELECT q.id,q.question,q.answer,q.status,q.document_id,d.title AS document_title FROM documentation_questions q JOIN documents d ON d.id=q.document_id WHERE q.project_id=$1 AND q.status IN ('open','answered') ORDER BY q.created_at DESC LIMIT 100",[projectId]);
