@@ -600,6 +600,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     documentationMode?'Ты отвечаешь за ЧТО и ЗАЧЕМ: концепцию, бизнес-правила, пользовательские сценарии, функциональные требования. Свободно обсуждай идеи без создания задач и вопросов. Гипотезы не становятся утверждёнными требованиями без решения владельца.':'Ты координируешь исполнение задач и процессы разработки. Используй доступные инструменты для нужных действий.',
     documentationMode?'Только владелец проекта может явно передать согласованный пакет системному аналитику через действие «Передать СА». Сам не создавай задачи в Kanban и не открывай вопросы по ещё не выбранному функционалу. Системный аналитик отвечает за технические постановки, API, модели данных и зависимости.':'Не подменяй решения бизнес-аналитика техническими догадками.',
     documentationMode?'Если пользователь явно просит полностью очистить документацию, вызови documentation.request_reset. Чтение дерева для этого не требуется. После успешного вызова предложи открыть подтверждение кнопкой под ответом. Пересборку или импорт запускай только после очистки и по отдельному запросу.':'Для колонки «Вопросы к ПО» используй tasks.list с product_owner_questions_only=true. Если пользователь явно просит удалить задачи из этой колонки, вызови tasks.request_owner_question_cleanup и предложи открыть предпросмотр кнопкой под ответом. Предпросмотр показывает задачи и ограничения. Сами задачи удаляются только после подтверждения пользователя.',
+    'Для MVP и других итераций используй iterations.list/read. По явной просьбе зафиксируй цель, границы, критерии готовности и ссылки на общие документы через iterations.save. Утверждение выполняет владелец в разделе «Документация → План разработки».',
+    'По просьбе создать пул задач прочитай итерацию и передай СА согласованный объём и уточнения владельца через iterations.prepare_plan. Сообщи о процессе подготовки и предложи открыть предпросмотр в «Плане разработки», когда он будет готов. Отдельные задачи итерации не создавай через tasks.create.',
+    documentationMode?'Декомпозиция итерации — черновик для проверки системным аналитиком и владельцем.':'По просьбе взять пакет в работу проверь готовность и зависимости через iterations.read и предложи порядок через iterations.recommend_launch. Попроси владельца подтвердить запуск выбранных задач в карточке итерации.',
     'Долгие импорты и пересборки запускай через documentation.import/rebuild/organize: сервер создаёт наблюдаемый Temporal-процесс.',
     'Для подтверждённого владельцем переписывания ТЗ запускай documentation.rebuild, но предварительно проверь источники и цель; это отдельный контролируемый процесс.',
     'Обычный вопрос пользователя требует разговора, а не побочных изменений; при неоднозначности прочитай контекст.',
@@ -871,7 +874,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const {message,mode}=messageSchema.extend({mode:z.enum(['chat','analyze','clarification']).default('chat')}).parse(req.body);
-  const result=await pool.query('SELECT title,description,stage,analysis_state,spec_version,clarification_questions,depends_on_task_id,dependency_source,git_branch FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
+  const result=await pool.query('SELECT title,description,stage,analysis_state,spec_version,clarification_questions,depends_on_task_id,dependency_source,git_branch,iteration_id FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId]);
   if(!result.rowCount)return reply.code(404).send({error:'Задача не найдена'});
   const task=result.rows[0];
   if(mode!=='chat'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
@@ -882,8 +885,10 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const repoContext=link?'Подключённый репозиторий: '+link.repository+'; целевая ветка: '+(link.target_branch||link.default_branch)+'. НЕ задавай вопросы о репозитории, выборе GitHub Pages и целевой ветке без прямого запроса пользователя.':'GitHub-репозиторий не подключён.';
   const rules=await rulesContext(id);
   const analystInstructions=await stageAgentContext(id,'analysis');
-  const docs=await pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id]);
-  const context=['Инструкции аналитика: '+analystInstructions.slice(0,1200),'Утверждённые правила проекта:\n'+rules.slice(0,1000),'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,1500),'Название: '+task.title,'Описание:\n'+(task.stage==='analysis'?task.description:task.description.slice(0,5500)),
+  const docs=await pool.query(`SELECT d.title,d.body FROM documents d
+   WHERE d.project_id=$1 ORDER BY EXISTS(SELECT 1 FROM knowledge_task_links l WHERE l.project_id=$1 AND l.task_id=$2 AND l.document_id=d.id) DESC,d.updated_at DESC LIMIT 8`,[id,taskId]);
+  const scope=task.iteration_id?(await pool.query('SELECT title,body FROM project_iterations WHERE project_id=$1 AND id=$2',[id,task.iteration_id])).rows[0]:null;
+  const context=[scope?'Итерация «'+scope.title+'»:\n'+String(scope.body).slice(0,1200):'','Инструкции аналитика: '+analystInstructions.slice(0,1200),'Утверждённые правила проекта:\n'+rules.slice(0,1000),'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,1500),'Название: '+task.title,'Описание:\n'+(task.stage==='analysis'?task.description:task.description.slice(0,5500)),
    'Открытые вопросы: '+JSON.stringify(task.clarification_questions).slice(0,2800),
    'Текущая кодовая зависимость: '+String(task.depends_on_task_id||'нет'),
    'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,1000),

@@ -54,7 +54,7 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    [intentId,id,uid(req),inventory.digest,inventory.pages,inventory.imports]);
   return {intent_id:intentId,project_name:project.name,pages:inventory.pages,imports:inventory.imports,
    roots_preserved:inventory.roots,confirmation_phrase:CONFIRM,
-   warning:'Будут безвозвратно удалены пользовательские и импортированные страницы, вопросы документации, история версий и прежние записи импорта. Системные корни и пустая структура ТЗ будут созданы заново. Задачи и проектные правила не удаляются.'};
+   warning:'Будут безвозвратно удалены пользовательские и импортированные страницы, вопросы документации, история версий и прежние записи импорта. Системные корни и пустая структура ТЗ будут созданы заново. Задачи, план разработки и проектные правила не удаляются.'};
  });
  app.post('/api/projects/:id/documentation/reset/confirm',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
