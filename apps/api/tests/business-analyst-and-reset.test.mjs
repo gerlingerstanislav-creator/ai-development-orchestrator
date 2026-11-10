@@ -34,7 +34,8 @@ test('documentation reset is previewed, project-scoped, one-time and removes onl
   'CREATE TABLE users(id uuid PRIMARY KEY)',
   'CREATE TABLE projects(id uuid PRIMARY KEY,name text NOT NULL)',
   "CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),parent_id uuid REFERENCES documents(id) ON DELETE SET NULL,title text NOT NULL,body text DEFAULT '',updated_at timestamptz DEFAULT now(),system_key text,knowledge_summary text DEFAULT '',knowledge_tags text[] DEFAULT ARRAY[]::text[],knowledge_key text,knowledge_status text DEFAULT 'approved')",
-  "CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),updated_at timestamptz DEFAULT now(),status text DEFAULT 'completed')"
+  "CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),updated_at timestamptz DEFAULT now(),status text DEFAULT 'completed')",
+  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),type text DEFAULT 'task',document_id uuid REFERENCES documents(id),title text,description text,question_status text)"
  ].join(';\n')+';');
  const pool={query:(...args)=>db.query(...args),connect:async()=>({
   query:(sql,...args)=>sql==='BEGIN ISOLATION LEVEL SERIALIZABLE'?db.query('SAVEPOINT test_reset'):
@@ -88,7 +89,9 @@ test('task deletion protects execution history and removes unstarted analyst tas
  await db.query('SET LOCAL search_path TO '+schema+',public');
  await db.query([
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
-  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,stage text,display_number int,git_branch text,pr_url text,parent_id uuid REFERENCES tasks(id),depends_on_task_id uuid REFERENCES tasks(id),clarification_questions jsonb DEFAULT '[]',spec_review_status text,spec_version int,position int,created_at timestamptz)",
+  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,type text NOT NULL DEFAULT 'task',stage text,display_number int,git_branch text,pr_url text,parent_id uuid REFERENCES tasks(id),depends_on_task_id uuid REFERENCES tasks(id),clarification_questions jsonb DEFAULT '[]',spec_review_status text,spec_version int,position int,created_at timestamptz,question_status text,document_id uuid)",
+  'CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text)',
+  'CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),source_key text,status text)',
   'CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id))',
   'CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),status text,verdict text,qa_spec_version int,qa_plan_snapshot jsonb,report jsonb,created_at timestamptz)',
   'CREATE TABLE task_agent_notes(project_id uuid,task_id uuid,body text,kind text,status text,target_stage text,requires_customer boolean,created_at timestamptz)',
