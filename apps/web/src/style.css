@@ -1020,7 +1020,8 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 
 /* Knowledge Management: compact contextual controls within existing documentation layout. */
 .docs-search-field{flex:0 0 auto;width:100%;min-height:33px;padding:6px 9px;border-radius:7px}
-.knowledge-document-panel{flex:0 0 auto;margin:10px 16px;padding:12px 14px;max-height:45%;overflow:auto;}
+/* Nested knowledge details must not inherit the viewport-sized document panel. */
+.compact-project-page .docs .knowledge-document-panel{min-height:0;height:auto;flex:0 0 auto;margin:10px 16px;padding:12px 14px;max-height:45%;overflow:auto;}
 .knowledge-document-panel>summary{font-size:13px;font-weight:600;cursor:pointer;}
 .knowledge-document-panel h4{margin:12px 0 6px;font-size:13px;}
 .knowledge-document-panel .doc-metadata-editor{margin:9px 0;display:flex;flex-wrap:wrap;align-items:end;gap:8px;}
