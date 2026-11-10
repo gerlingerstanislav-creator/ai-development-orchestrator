@@ -1650,17 +1650,27 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
 app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,reply)=>{
  const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const {message}=parse(z.object({message:z.string().trim().min(3).max(2000)}),req.body);
- const job=await pool.query("SELECT status,message FROM document_import_jobs WHERE project_id=$1 AND id=$2 AND actor_id=$3",[id,processId,uid(req)]);
- if(!job.rowCount)return reply.code(404).send({error:'Процесс импорта не найден'});
- if(job.rows[0].status!=='running')return reply.code(409).send({error:'Уточнения можно отправлять, пока импорт выполняется'});
- if(/Формирование итоговой структуры|Сохранение документов/.test(String(job.rows[0].message)))
-  return reply.code(409).send({error:'Агент уже формирует или сохраняет итоговый результат. Уточнение на этой стадии не успеет примениться.'});
- await pool.query('INSERT INTO process_instructions(id,project_id,process_id,actor_id,body) VALUES($1,$2,$3,$4,$5)',
-  [randomUUID(),id,processId,uid(req),message]);
- await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','user_instruction',$4)",
-  [randomUUID(),id,processId,message]);
- return {ok:true,message:'Уточнение принято и будет учтено на следующем этапе анализа или формирования документации.'};
+ const {message}=parse(z.object({message:z.string().trim().min(1).max(2000)}),req.body);
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const job=await client.query("SELECT status,message FROM document_import_jobs WHERE project_id=$1 AND id=$2 AND actor_id=$3 FOR UPDATE",[id,processId,uid(req)]);
+  if(!job.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Процесс импорта не найден'});}
+  if(job.rows[0].status!=='running'){await client.query('ROLLBACK');return reply.code(409).send({error:'Аналитик уже завершил или остановил этот процесс'});}
+  if(/Формирование итоговой структуры|Сохранение документов/.test(String(job.rows[0].message))){
+   await client.query('ROLLBACK');
+   return reply.code(409).send({error:'Аналитик уже сохраняет результат. Уточнение на этой стадии не успеет примениться.'});
+  }
+  await client.query('INSERT INTO process_instructions(id,project_id,process_id,actor_id,body) VALUES($1,$2,$3,$4,$5)',
+   [randomUUID(),id,processId,uid(req),message]);
+  await client.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','user_instruction',$4)",
+   [randomUUID(),id,processId,message]);
+  const acknowledgement='Уточнение принято и передано аналитику. Оно будет учтено на текущем или следующем этапе.';
+  await client.query("INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,channel,created_at) VALUES($1,$2,NULL,$3,'user',$4,'documentation',clock_timestamp()),($5,$2,NULL,NULL,'assistant',$6,'documentation',clock_timestamp())",
+   [randomUUID(),id,uid(req),message,randomUUID(),acknowledgement]);
+  await client.query('COMMIT');
+  return {ok:true,message:acknowledgement};
+ }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
 });
 // Stop an active analyst run without rolling back previously committed checkpoints.
  // Locking the job row also serializes the request with document-writing checkpoints.
