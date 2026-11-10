@@ -281,7 +281,9 @@ function App(){
  const [workflowModal,setWorkflowModal]=useState<Stage|null>(null);
  const [workflowEditing,setWorkflowEditing]=useState<'agent'|'mode'|'instructions'|null>(null);
  const [workflowSaving,setWorkflowSaving]=useState(false);
- const [deploymentMode,setDeploymentMode]=useState<'skip'|'manual'>('skip');
+ const [deploymentMode,setDeploymentMode]=useState<'skip'|'manual'|'automatic'>('skip');
+ const [deploymentHealthUrl,setDeploymentHealthUrl]=useState('');
+ const [deploymentEnvironment,setDeploymentEnvironment]=useState('production');
  const [accountSettings,setAccountSettings]=useState(false);
  const [projectMenuOpen,setProjectMenuOpen]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
@@ -642,8 +644,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function loadProject(id:string){
   try{
-   const deployment=await api<{mode:'skip'|'manual'}>('/projects/'+id+'/deployment/settings');
+   const deployment=await api<{mode:'skip'|'manual'|'automatic';health_url:string;environment:string}>('/projects/'+id+'/deployment/settings');
    setDeploymentMode(deployment.mode);
+   setDeploymentHealthUrl(deployment.health_url??'');
+   setDeploymentEnvironment(deployment.environment??'production');
    const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
    setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
   }catch(e){fail(e);}
@@ -852,7 +856,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!selected||!workflowModal)return;
   setWorkflowSaving(true);
   try{
-   if(workflowModal.stage==='deployment')await api('/projects/'+selected.id+'/deployment/settings',{method:'PUT',body:JSON.stringify({mode:deploymentMode})});
+   if(workflowModal.stage==='deployment')await api('/projects/'+selected.id+'/deployment/settings',{method:'PUT',body:JSON.stringify({mode:deploymentMode,health_url:deploymentHealthUrl,environment:deploymentEnvironment})});
    const updated=await api<Stage>('/projects/'+selected.id+'/workflow/'+workflowModal.stage,{
     method:'PATCH',body:JSON.stringify({
      mode:workflowModal.mode,agent_name:workflowModal.agent_name.trim(),agent_instructions:workflowModal.agent_instructions
@@ -1897,7 +1901,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        title={'Настройки этапа «'+stage.label+'»'}>
        <span className="workflow-stage-label">{stage.label}</span>
        <span className="workflow-stage-agent">{serviceStages[stage.stage]?'Служебный этап':stage.agent_name?aiAgentName(stage.agent_name):'Исполнитель не указан'}</span>
-       <span className="workflow-stage-mode">{stage.stage==='deployment'?(deploymentMode==='skip'?'Пропуск без окружения':'Ручное подтверждение'):stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
+       <span className="workflow-stage-mode">{stage.stage==='deployment'?(deploymentMode==='skip'?'Пропуск без окружения':deploymentMode==='automatic'?'GitHub Actions + проверка':'Ручное подтверждение'):stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
        <Settings2 size={14} className="workflow-stage-icon"/>
       </button>
      </React.Fragment>)}
@@ -2069,7 +2073,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      placeholder="Цели, критерии качества, обязательные проверки и правила этапа…"/>:
      <div className="workflow-field-value workflow-instructions-readonly">{workflowModal.agent_instructions||'Инструкции пока не указаны'}</div>}
    </div>
-   {workflowModal.stage==='deployment'&&<div className="workflow-detail-field"><div className="workflow-field-heading"><strong>Порядок выкладки</strong></div><select value={deploymentMode} onChange={e=>setDeploymentMode(e.target.value as 'skip'|'manual')}><option value="skip">Пропускать, пока нет окружения</option><option value="manual">Ожидать ручную выкладку или явный пропуск</option></select><small className="muted">GitHub Actions для реального деплоя будут подключены позже. Пока система не выполняет выкладку автоматически и не сообщает ложный успех.</small></div>}
+   {workflowModal.stage==='deployment'&&<div className="workflow-detail-field"><div className="workflow-field-heading"><strong>Порядок выкладки</strong></div><select value={deploymentMode} onChange={e=>setDeploymentMode(e.target.value as 'skip'|'manual'|'automatic')}><option value="skip">Пропускать, пока нет окружения</option><option value="manual">Ожидать ручную выкладку или явный пропуск</option><option value="automatic">Автоматически через GitHub Actions и Temporal</option></select>
+    {deploymentMode==='automatic'&&<><label>HTTPS-проверка приложения<input type="url" placeholder="https://example.com/health" value={deploymentHealthUrl} onChange={e=>setDeploymentHealthUrl(e.target.value)}/></label>
+    <label>GitHub environment<input value={deploymentEnvironment} onChange={e=>setDeploymentEnvironment(e.target.value)} maxLength={50}/></label>
+    <button className="secondary" type="button" onClick={()=>{if(selected)void api<{pr_url:string}>('/projects/'+selected.id+'/deployment/prepare-workflow',{method:'POST'}).then(data=>window.open(data.pr_url,'_blank','noopener,noreferrer')).catch(fail);}}>Подготовить GitHub Actions PR</button></>}
+    <small className="muted">Успешная выкладка фиксируется только после завершения workflow и проверки URL. Без окружения доступен пропуск.</small></div>}
    <small className="muted workflow-agent-notice">Инструкции используются соответствующим AI-агентом. Системные ограничения имеют приоритет.</small>
    </>}
    {workflowModal.stage==='testing'&&<p className="workflow-transition-description"><RotateCcw size={14}/> Если обнаружены ошибки, задача вернётся в разработку с замечаниями. Затем тесты выполнятся повторно.</p>}
@@ -2143,7 +2151,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.pr_base_branch&&<div className="task-git-ref"><span>База PR</span><code>{activeTask.pr_base_branch}</code></div>}
      {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
-     {activeTask.stage==='deployment'&&<div><p className="muted">PR уже слит. Подтвердите ручную выкладку или явно пропустите её с указанием причины.</p><div className="row-line"><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'skipped')}>Пропустить выкладку</button><button type="button" className="primary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'manual_confirmed')}>Подтвердить ручную выкладку</button></div></div>}
+     {activeTask.stage==='deployment'&&<div><p className="muted">PR слит. Выберите выкладку или явно пропустите этап.</p><div className="row-line"><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'skipped')}>Пропустить выкладку</button><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'manual_confirmed')}>Подтвердить ручную выкладку</button>
+    {deploymentMode==='automatic'&&<button type="button" className="primary" disabled={mergeBusy} onClick={()=>{if(!selected)return;const commit=window.prompt('Точный SHA слитого PR:');if(!commit)return;setMergeBusy(true);void api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/deployment/start',{method:'POST',body:JSON.stringify({confirm:true,commit_sha:commit.trim()})}).then(()=>{setMergeReport('Запрос поставлен в Temporal. Статус доступен в Центре процессов.');}).catch(fail).finally(()=>setMergeBusy(false));}}>Запустить GitHub Actions</button>}</div></div>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
     <aside className="task-conversation manager-conversation">
