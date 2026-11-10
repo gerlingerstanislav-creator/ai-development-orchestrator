@@ -3,7 +3,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {checkedWithActualCapabilities,isVisualAcceptanceCase} from '../dist/qa-evidence.js';
-import {isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes,tasksWithCustomerQuestions} from '../dist/project-manager.js';
+import {isDevelopmentCommand,isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes,tasksWithCustomerQuestions} from '../dist/project-manager.js';
+
+test('task chat recognizes a colloquial start command without treating status questions as commands',()=>{
+ for(const text of ['Ну тогда отправляй в разработку задачу','Хорошо, тогда отправь задачу в разработку!','Начни разработку'])
+  assert.equal(isDevelopmentCommand(text),true,text);
+ for(const text of ['Когда отправишь задачу в разработку?','Не отправляй в разработку задачу','Отправь задачу в разработку?','Отправь в разработку задачу #5'])
+  assert.equal(isDevelopmentCommand(text),false,text);
+});
 
 test('browserless QA cannot certify a visual circle layout by reading CSS',()=>{
  const planned=[{id:'circle',title:'Фигуры расположены по окружности и стрелки видны',
@@ -94,6 +101,8 @@ test('answers in task chat update analysis and an explicit start can recover an 
  const messageId='00000000-0000-4000-8000-000000000003';
  const actorId='00000000-0000-4000-8000-000000000004';
  const answer='Внутренний круг внутри всей группы фигур.';
+ const statusQuestion='Какой статус задачи?';
+ const startCommand='Ну тогда отправляй в разработку задачу';
  let text=answer,questions=['Где должен быть внутренний круг?'],starts=0,analysisCalls=0,reviewed=false,allowLaunch=true;
  let remaining=[];
  const pool={query:async(sql,params)=>{
@@ -103,7 +112,7 @@ test('answers in task chat update analysis and an explicit start can recover an 
   if(sql.startsWith('SELECT id,kind,source_id'))return {rows:questions.length?[{kind:'analysis_clarifications',status:'open',created_at:new Date('2026-11-09T19:00:00Z')}]:[]};
   if(sql.startsWith('SELECT body FROM manager_messages')){
    assert.equal(params[2],actorId);
-   return {rows:[{body:answer}]};
+   return {rows:[{body:statusQuestion},{body:'@QA Какие есть сценарии?'},{body:startCommand},{body:answer}]};
   }
   return {rows:[]};
  }};
@@ -111,8 +120,8 @@ test('answers in task chat update analysis and an explicit start can recover an 
   analysisCalls++;
   assert.equal(req.headers.authorization,'Bearer scoped-test');
   assert.equal(req.body.mode,'clarification');
-  if(req.body.message==='Какой статус задачи?')return {relevant:false};
-  assert.equal(req.body.message,answer);
+  if(req.body.message===statusQuestion)return {relevant:false};
+  assert.equal(req.body.message,text===startCommand?answer+'\n\n'+statusQuestion:answer);
   reviewed=true;
   questions=remaining;
   return {message:'ТЗ уточнено.',questions};
@@ -128,7 +137,7 @@ test('answers in task chat update analysis and an explicit start can recover an 
  });
  const turn=()=>app.inject({method:'POST',url:'/internal/manager/continue',
   headers:{'x-runner-secret':'worker-test-secret'},payload:{projectId,taskId,messageId,analysisActions:true}});
- text='Какой статус задачи?';
+ text=statusQuestion;
  assert.deepEqual((await turn()).json(),{message:''});
  text=answer;
  remaining=['Какого цвета должен быть круг?'];
@@ -143,7 +152,7 @@ test('answers in task chat update analysis and an explicit start can recover an 
  assert.equal(starts,1);
 
  allowLaunch=false;
- text='Отдай задачу в разработку';
+ text=startCommand;
  assert.deepEqual((await turn()).json(),{message:'Нет подключения GitHub',handled:true});
  assert.equal(analysisCalls,3,'Launch on a ready task does not call the analyst again');
 

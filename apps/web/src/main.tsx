@@ -467,7 +467,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [managerSending,setManagerSending]=useState(false);
  const managerMessages=managerState?.messages;
  const decisions=managerState?.requests.filter(request=>request.status==='open')||[];
- const awaitingAnalysisAnswer=decisions.some(request=>request.kind==='analysis_clarifications');
+ const analysisClarification=decisions.find(request=>request.kind==='analysis_clarifications');
  const readyForDevelopment=activeTask?.stage==='analysis'&&activeTask.analysis_state==='ready_for_development'
   &&(!activeTask.spec_review_status||activeTask.spec_review_status==='current')&&!decisions.length;
  const deferredQa=managerState?.requests.filter(request=>request.status==='waiting'&&request.kind==='qa_visual')||[];
@@ -837,7 +837,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function restoreKnowledgeVersion(versionId:string){
   if(!selected||!selectedDocId||docBusy)return;
   const doc=docs.find(x=>x.id===selectedDocId);
-  if(!doc||!window.confirm('Восстановить содержимое выбранной версии? Текущая версия останется в истории.'))return;
+  if(!doc)return;
   setDocBusy(true);
   try{
    await api('/projects/'+selected.id+'/knowledge/documents/'+doc.id+'/versions/'+versionId+'/restore',{method:'POST',body:JSON.stringify({expected_version:new Date(doc.updated_at).toISOString()})});
@@ -1736,7 +1736,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <button className="secondary" disabled={!knowledgeTarget||docBusy} onClick={()=>void linkKnowledgeDocument()}>Добавить связь</button>
       </div>
       <details><summary>История версий ({knowledgeVersions.length})</summary>
-       {knowledgeVersions.map(v=><p key={v.id}><small>{new Date(v.created_at).toLocaleString('ru-RU')} · {v.excerpt}</small> <button className="secondary" type="button" disabled={docBusy} onClick={()=>void restoreKnowledgeVersion(v.id)}>Восстановить</button></p>)}
+       {knowledgeVersions.map(v=><p key={v.id}><small>{new Date(v.created_at).toLocaleString('ru-RU')} · {v.excerpt}</small> <button className="secondary" type="button" title="Текущая версия останется в истории" disabled={docBusy} onClick={()=>void restoreKnowledgeVersion(v.id)}>Восстановить</button></p>)}
       </details>
      </details>}
      <header className="docs-reading-header">
@@ -2101,7 +2101,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        {run.status==='queued'?'В очереди · '+agentRunLabels[run.kind].name:agentRunLabels[run.kind].active}</li>)}
       {managerWorking&&<li><LoaderCircle size={14} aria-hidden="true"/>Менеджер обрабатывает сообщение</li>}
      </ul>}
-     {(decisions.some(request=>request.kind!=='analysis_clarifications')||readyForDevelopment)&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
+     {(decisions.length>0||readyForDevelopment)&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
       <div className="manager-action-row">
        {readyForDevelopment&&<>
         <button className="primary" type="button" disabled={taskChatBusy||managerWorking||!gitLink||!aiSettings.enabled}
@@ -2109,6 +2109,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         {!gitLink&&<small>Подключи GitHub-репозиторий в настройках проекта.</small>}
         {gitLink&&!aiSettings.enabled&&<small>Включи AI в настройках проекта.</small>}
        </>}
+       {analysisClarification&&<details className="manager-answer-popover">
+        <summary>Открытые вопросы аналитика</summary>
+        <div className="manager-answer-body">
+         <ol className="manager-clarification-questions">
+          {(analysisClarification.payload.questions as string[]).map((question,index)=><li key={index}>{question}</li>)}
+         </ol>
+         <p>Ответь в чате задачи. Аналитик проверит ответы перед запуском разработки.</p>
+        </div>
+       </details>}
        {decisions.map(request=><React.Fragment key={request.id}>
         {request.kind==='qa_visual'&&<>
          <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить без визуальных проверок</button>
@@ -2138,7 +2147,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>}
        <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
-       placeholder={awaitingAnalysisAnswer?'Ответьте на вопросы аналитика…':'Напишите Менеджеру проекта… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" />
+       placeholder={analysisClarification?'Ответьте на вопросы аналитика…':'Напишите Менеджеру проекта… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" />
       <button className="primary" type="submit" disabled={managerSending||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
      </form>
     </aside>

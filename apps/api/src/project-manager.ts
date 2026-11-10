@@ -2,7 +2,7 @@ import {randomUUID,timingSafeEqual} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
-import {resolveAgentMention} from './agent-mentions.js';
+import {parseAgentMention,resolveAgentMention} from './agent-mentions.js';
 import {latestQaWaiver,qaWaiverAssessment,type QaRunRow} from './qa-waiver.js';
 
 /** One human-facing role; agents retain their own independent, private context. */
@@ -39,8 +39,11 @@ export function isPrEvidenceRequest(text:string):boolean{
 }
 
 export function isDevelopmentCommand(text:string):boolean{
- return /^(?:пожалуйста,?\s+)?(?:(?:отдай|отправь|передай|переведи)\s+(?:задачу\s+)?в\s+разработку|(?:запусти|начни)\s+разработку)(?:,?\s+пожалуйста)?[.!?]*$/iu.test(text.trim());
+ const command=text.trim().replace(/^(?:(?:ну(?:\s+тогда)?|тогда|ок(?:ей)?|хорошо|пожалуйста)[,\s]+)+/iu,'');
+ return /^(?:(?:отдай|отправь|отправляй|передай|передавай|переведи|переводи)\s+(?:задачу\s+в\s+разработку|в\s+разработку(?:\s+задачу)?)|(?:запусти|начни)\s+разработку)(?:,?\s+пожалуйста)?[.!]*$/iu.test(command);
 }
+
+const canBeClarificationAnswer=(text:string)=>!isDevelopmentCommand(text)&&!parseAgentMention(text);
 
 function isCustomerQuestion(body:string){
  return !isPrEvidenceRequest(body)&&!(/(?:скриншот|браузер)/i.test(body)&&/(?:предостав|пришл|не вижу|нужен|отсутств)/i.test(body));
@@ -183,18 +186,19 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
     if(startRequested){
      // Older clients sent answers to the manager as ordinary chat messages.
      // Recover the latest answer from the same person and question round.
-     if(snapshot.messages.some(m=>m.role==='user'&&m.reply_to==null&&(m.status==='processing'||m.status==='queued')&&m.id!==messageId&&m.created_at<actor.created_at&&!isDevelopmentCommand(m.body)))
+     if(snapshot.messages.some(m=>m.role==='user'&&m.reply_to==null&&(m.status==='processing'||m.status==='queued')&&m.id!==messageId&&m.created_at<actor.created_at&&canBeClarificationAnswer(m.body)))
       return handled('Аналитик ещё проверяет предыдущий ответ. После завершения в чате появится кнопка «В разработку».');
      const previous=await pool.query("SELECT body FROM manager_messages WHERE project_id=$1 AND task_id=$2 AND actor_id=$3 AND role='user' AND status='completed' AND created_at>=$4 AND created_at<$5 ORDER BY created_at DESC,id DESC LIMIT 8",
       [projectId,taskId,actor.actor_id,clarification.created_at,actor.created_at]);
-     answer=String(previous.rows.find(row=>!isDevelopmentCommand(row.body))?.body||'');
+     // A later status question must not hide an earlier substantive reply.
+     answer=previous.rows.map(row=>String(row.body||'')).filter(canBeClarificationAnswer).reverse().join('\n\n').slice(-4000).trim();
      if(!answer)return handled('Аналитик ждёт ответа на открытые вопросы. Ответь прямо в чате задачи.');
     }
     const refined=await call('/assistant',{message:answer,mode:'clarification'});
     const result=refined.json();
     if(refined.statusCode>=400)return handled(String(result.error||'Аналитик не смог обработать уточнение.'));
     if(result.relevant===false)
-     return startRequested?handled('В предыдущем сообщении аналитик не нашёл ответа на открытые вопросы. Ответь прямо в чате задачи.'):{message:''};
+     return startRequested?handled('В предыдущих сообщениях аналитик не нашёл ответов на открытые вопросы. Ответь прямо в чате задачи.'):{message:''};
     analysisResult=String(result.message||'Аналитик обработал уточнение.');
     await syncManagerInbox(pool,projectId,taskId);
     if(result.questions?.length)return handled(analysisResult);
