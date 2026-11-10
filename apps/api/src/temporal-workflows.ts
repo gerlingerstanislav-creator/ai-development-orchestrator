@@ -1,4 +1,4 @@
-import {patched,proxyActivities,sleep} from '@temporalio/workflow';
+import {patched,proxyActivities,sleep,startChild} from '@temporalio/workflow';
 import type * as activities from './temporal-activities.js';
 
 const steps=proxyActivities<typeof activities>({
@@ -9,8 +9,21 @@ const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'
  startToCloseTimeout:'6 minutes',scheduleToCloseTimeout:'20 minutes',
  retry:{maximumAttempts:2,initialInterval:'5 seconds'}
 });
+const watchSteps=proxyActivities<Pick<typeof activities,'readProjectManagerWatch'>>({
+ startToCloseTimeout:'30 seconds',retry:{maximumAttempts:3,initialInterval:'2 seconds'}
+});
+export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'}):Promise<void>{
+ for(let count=0;count<20160;count++){
+  const status=await watchSteps.readProjectManagerWatch(watch);
+  if(status==='completed')return;
+  await sleep('30 seconds');
+ }
+}
 export async function processProjectManagerInbox(projectId:string,messageId:string):Promise<void>{
- await inboxSteps.runProjectManagerInbox(projectId,messageId);
+ const watched=await inboxSteps.runProjectManagerInbox(projectId,messageId);
+ for(const watch of watched){
+  await startChild(watchProjectManagerDelegation,{workflowId:'pm-followup-'+watch.processId,args:[watch]});
+ }
 }
 const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
 const deploymentSteps=proxyActivities<typeof activities>({startToCloseTimeout:'30 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
