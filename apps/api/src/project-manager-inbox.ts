@@ -146,7 +146,10 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  }catch(error){
-  await pool.query("UPDATE assistant_messages SET status='failed' WHERE id=$1 AND status='processing'",[messageId]);
+  const message=String(error instanceof Error?error.message:error);
+  const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
+  await pool.query("UPDATE assistant_messages SET status=$2 WHERE id=$1 AND status='processing'",[messageId,retryable?'queued':'failed']);
+  if(!retryable)throw Object.assign(new Error(message.slice(0,650)),{nonRetryable:true});
   throw error;
  }finally{
   if(sessionId)await finishAgentSession(pool,sessionId).catch(()=>{});
