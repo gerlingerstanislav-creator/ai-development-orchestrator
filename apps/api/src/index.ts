@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import {findActiveProjectOperation,projectDeletionConfirmation} from './project-lifecycle.js';
 import {deploymentDecision} from './deployment-stage.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initAgentToolsSchema} from './agent-tools.js';
@@ -74,6 +75,8 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS auth_sessions (token_hash text primary key, user_id uuid not null references users(id) on delete cascade, expires_at timestamptz not null, created_at timestamptz not null default now());
  CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
  CREATE TABLE IF NOT EXISTS projects (id uuid primary key, name text not null, description text not null default '', owner_id uuid not null references users(id), created_at timestamptz not null default now());
+ ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ CREATE INDEX IF NOT EXISTS idx_projects_owner_trash ON projects(owner_id,deleted_at,created_at DESC);
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
  ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS agent_name text NOT NULL DEFAULT '';
@@ -351,7 +354,7 @@ app.addHook('preHandler',async(req,reply)=>{
 });
 const uid=(req:any):string=>req.userId;
 async function canAccess(projectId:string,userId:string) {
- const r=await pool.query('SELECT 1 FROM memberships WHERE project_id=$1 AND user_id=$2',[projectId,userId]);
+ const r=await pool.query('SELECT 1 FROM memberships m JOIN projects p ON p.id=m.project_id WHERE m.project_id=$1 AND m.user_id=$2 AND p.deleted_at IS NULL',[projectId,userId]);
  return !!r.rowCount;
 }
 async function access(req:any,reply:any,projectId:string) {
@@ -1265,7 +1268,71 @@ app.get('/api/projects/:id/merge-ready/:batchId',async(req:any,reply)=>{
 });
 
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
-app.get('/api/projects',async(req)=>{const r=await pool.query('SELECT p.* FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 ORDER BY p.created_at DESC',[uid(req)]);return r.rows;});
+app.get('/api/projects',async(req)=>{
+ const r=await pool.query('SELECT p.id,p.name,p.description,p.created_at FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 AND p.deleted_at IS NULL ORDER BY p.created_at DESC',[uid(req)]);
+ return r.rows;
+});
+app.get('/api/projects/trash',async(req)=>{
+ const r=await pool.query('SELECT id,name,description,deleted_at FROM projects WHERE owner_id=$1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC',[uid(req)]);
+ return r.rows;
+});
+app.post('/api/projects/:id/trash',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await requireAdmin(req,reply))return;
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const result=await client.query('SELECT id,name,owner_id,deleted_at FROM projects WHERE id=$1 FOR UPDATE',[id]);
+  const project=result.rows[0];
+  if(!project||project.owner_id!==uid(req)){await client.query('ROLLBACK');return reply.code(404).send({error:'Проект не найден или не принадлежит вам'});}
+  if(project.deleted_at){await client.query('ROLLBACK');return reply.code(409).send({error:'Проект уже находится в корзине'});}
+  if(await findActiveProjectOperation(client,id)){
+   await client.query('ROLLBACK');
+   return reply.code(409).send({error:'В проекте есть незавершённые процессы. Завершите или отмените их перед переносом в корзину.'});
+  }
+  const moved=await client.query('UPDATE projects SET deleted_at=now() WHERE id=$1 RETURNING id,name,deleted_at',[id]);
+  await client.query('COMMIT');return moved.rows[0];
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+});
+app.post('/api/projects/:id/restore',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await requireAdmin(req,reply))return;
+ const restored=await pool.query('UPDATE projects SET deleted_at=NULL WHERE id=$1 AND owner_id=$2 AND deleted_at IS NOT NULL RETURNING id,name,description',[id,uid(req)]);
+ if(!restored.rowCount)return reply.code(404).send({error:'Проект не найден в корзине'});
+ return restored.rows[0];
+});
+app.delete('/api/projects/:id/permanent',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await requireAdmin(req,reply))return;
+ const {confirmation}=parse(z.object({confirmation:z.string().max(120)}),req.body||{});
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const found=await client.query('SELECT id,name,owner_id,deleted_at FROM projects WHERE id=$1 FOR UPDATE',[id]);
+  const project=found.rows[0];
+  if(!project||project.owner_id!==uid(req)||!project.deleted_at){
+   await client.query('ROLLBACK');return reply.code(404).send({error:'Проект отсутствует в корзине'});
+  }
+  if(!projectDeletionConfirmation(project.name,confirmation)){
+   await client.query('ROLLBACK');return reply.code(400).send({error:'Для окончательного удаления введите точное название проекта'});
+  }
+  if(await findActiveProjectOperation(client,id)){
+   await client.query('ROLLBACK');
+   return reply.code(409).send({error:'Найдены незавершённые процессы. Удаление остановлено без потери данных.'});
+  }
+  const connections=await client.query('SELECT connection_id AS id FROM project_connections WHERE project_id=$1 UNION SELECT connection_id AS id FROM project_git_repositories WHERE project_id=$1',[id]);
+  // Database FK cascades remove all scoped records atomically. No GitHub API calls are made.
+  await client.query('DELETE FROM projects WHERE id=$1',[id]);
+  const connectionIds=connections.rows.map((x:any)=>x.id);
+  if(connectionIds.length){
+   await client.query(`DELETE FROM connections c WHERE c.id=ANY($1::uuid[]) AND c.owner_id=$2
+     AND NOT EXISTS(SELECT 1 FROM project_connections pc WHERE pc.connection_id=c.id)
+     AND NOT EXISTS(SELECT 1 FROM project_git_repositories gr WHERE gr.connection_id=c.id)`,[connectionIds,uid(req)]);
+  }
+  await client.query('COMMIT');
+  return {deleted:true,project_id:id,github_untouched:true};
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+});
 app.post('/api/projects',async(req,reply)=>{
  const {name,description}=parse(z.object({name:z.string().trim().min(1).max(120),description:z.string().max(5000).default('')}),req.body);
  const id=randomUUID(),client=await pool.connect();
