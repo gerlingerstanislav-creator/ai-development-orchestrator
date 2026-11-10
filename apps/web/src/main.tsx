@@ -79,15 +79,15 @@ type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{
 type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
- messages:AssistantMessage[];input:string;pendingId:string|null;progress:string;historyLoaded:boolean;
+ messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
  files:File[];documentId:string|null;error:string;
 };
 const emptyProjectChat:ProjectChatState={
- messages:[],input:'',pendingId:null,progress:'',historyLoaded:false,files:[],documentId:null,error:''
+ messages:[],input:'',pendingId:null,jobId:null,progress:'',historyLoaded:false,files:[],documentId:null,error:''
 };
 const projectChatKey=(projectId:string,mode:ProjectChatMode)=>projectId+':'+mode;
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
-type ImportJob={id:string;status:'running'|'completed'|'failed';message:string;result:AssistantResponse|null};
+type ImportJob={id:string;status:'running'|'completed'|'failed'|'cancelled';message:string;result:AssistantResponse|null};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const key='ado-token';
@@ -448,7 +448,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    return next===current?previous:{...previous,[chatKey]:next};
   });
  }
- const {messages:projectMessages,pendingId:projectPendingId,input:projectInput,progress:projectImportProgress,
+ const {messages:projectMessages,pendingId:projectPendingId,jobId:projectImportJobId,input:projectInput,progress:projectImportProgress,
   historyLoaded:projectHistoryLoaded,error:projectChatError}=getProjectChat(projectChatMode);
  const projectChatBusy=projectPendingId!==null;
  const {files:analystFiles,documentId:analystDocumentId}=getProjectChat('documentation');
@@ -1248,23 +1248,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }
   try{
    const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
-   let completedJob=false;
-   let response=await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
-    message,mode,attachments,documentId:mode==='documentation'?analystDocumentId:null
-   })});
+   const currentJobId=mode==='documentation'?getProjectChat('documentation').jobId:null;
+   if(currentJobId&&attachments.length)throw Error('Новые файлы можно прикрепить после завершения текущей работы аналитика.');
+   const response=currentJobId
+    ?await api<AssistantResponse>('/projects/'+projectId+'/processes/'+currentJobId+'/instructions',
+      {method:'POST',body:JSON.stringify({message})})
+    :await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
+       message,mode,attachments,documentId:mode==='documentation'?analystDocumentId:null
+      })});
    if(response.import_job_id){
     const jobId=response.import_job_id;
-    updatePendingChat(chat=>({...chat,progress:'Аналитик начал работу…'}));
-    for(;;){
-     await new Promise(resolve=>setTimeout(resolve,2500));
-     const job=await api<ImportJob>('/projects/'+projectId+'/document-import/'+jobId);
-     updatePendingChat(chat=>({...chat,progress:job.message||'Аналитик готовит ответ…'}));
-     if(job.status==='failed')throw new Error(job.message||'Не удалось импортировать документацию');
-     if(job.status==='completed'){
-      if(!job.result)throw new Error('Импорт завершился без результата');
-      response=job.result;completedJob=true;break;
-     }
-    }
+    updatePendingChat(chat=>({...chat,pendingId:null,jobId,progress:'Аналитик начал работу…',
+     files:[],messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false}:m)}));
+    return;
    }
    const reply:AssistantMessage={id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,
     created_task_id:response.created_task_id,created_document_id:response.created_document_id,
@@ -1272,12 +1268,55 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    updatePendingChat(chat=>({...chat,files:[],messages:[
     ...chat.messages.map(m=>m.id===optimisticId?{...m,pending:false}:m),reply
    ]}));
-   if(selectedProjectRef.current===projectId&&(completedJob||response.created_task_id||response.created_document_id))await loadProject(projectId);
+   if(selectedProjectRef.current===projectId&&(response.created_task_id||response.created_document_id))await loadProject(projectId);
   }catch(e){
    updatePendingChat(chat=>({...chat,error:e instanceof Error?e.message:String(e),
     messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m)
    }));
-  }finally{updatePendingChat(chat=>({...chat,pendingId:null,progress:''}));}
+  }finally{updatePendingChat(chat=>({...chat,pendingId:null}));}
+ }
+ // The active documentation run is independent of message submission: the owner can
+ // keep chatting while Temporal processes the original request.
+ const activeDocumentJob=projectChats[projectChatKey(selectedProjectId,'documentation')]?.jobId;
+ useEffect(()=>{
+  if(!selectedProjectId||!activeDocumentJob)return;
+  const projectId=selectedProjectId,jobId=activeDocumentJob,chatKey=projectChatKey(projectId,'documentation');
+  let active=true,inFlight=false;
+  const poll=async()=>{
+   if(!active||inFlight)return;
+   inFlight=true;
+   try{
+    const job=await api<ImportJob>('/projects/'+projectId+'/document-import/'+jobId);
+    if(!active)return;
+    const done=['completed','failed','cancelled'].includes(job.status);
+    updateProjectChat(chatKey,chat=>{
+     if(chat.jobId!==jobId)return chat;
+     if(!done)return {...chat,progress:job.message||'Аналитик готовит ответ…'};
+     const reply=job.status==='completed'?job.result?.message:
+      job.status==='cancelled'?'Работа аналитика прервана. Уже сохранённые документы остались в проекте.':null;
+     return {...chat,jobId:null,progress:'',error:job.status==='failed'?job.message||'Ошибка аналитика':'',
+      messages:reply?[...chat.messages,{id:'job-'+jobId,role:'assistant',body:reply,
+       created_document_id:job.result?.created_document_id,created_task_id:job.result?.created_task_id,created_at:new Date().toISOString()}]:chat.messages};
+    });
+    if(job.status==='completed'&&selectedProjectRef.current===projectId)void loadProject(projectId);
+   }catch(error){
+    if(!active)return;
+    updateProjectChat(chatKey,chat=>chat.jobId===jobId?{...chat,jobId:null,progress:'',
+     error:error instanceof Error?error.message:'Не удалось получить результат аналитика'}:chat);
+   }finally{inFlight=false;}
+  };
+  void poll();
+  const timer=setInterval(()=>void poll(),2500);
+  return ()=>{active=false;clearInterval(timer);};
+ },[selectedProjectId,activeDocumentJob]);
+ async function stopActiveAnalystJob(){
+  if(!selected||!projectImportJobId||projectChatMode!=='documentation'||processActionBusy)return;
+  const projectId=selected.id,jobId=projectImportJobId;
+  setProcessActionBusy(true);
+  try{await api('/projects/'+projectId+'/processes/'+jobId+'/stop',{method:'POST',body:'{}'});}
+  catch(error){updateProjectChat(projectChatKey(projectId,'documentation'),chat=>({...chat,
+   error:error instanceof Error?error.message:'Не удалось остановить аналитика'}));}
+  finally{setProcessActionBusy(false);}
  }
  async function sendTaskMessage(e:React.FormEvent){
   e.preventDefault();
@@ -1977,7 +2016,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>{aiAgentName(projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)')}</strong><small>{aiSettings.model}</small></div>
-    <div className="docs-actions">{projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').slice(-1)[0]?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
+    <div className="docs-actions">{projectChatMode==='documentation'&&projectImportJobId&&<button className="secondary" type="button" disabled={processActionBusy} onClick={()=>void stopActiveAnalystJob()}>Прервать</button>}
+    {projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').slice(-1)[0]?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
     <button onClick={()=>setOpenChatProjectId(null)} title="Свернуть чат" aria-label="Свернуть чат"><X size={17}/></button></div>
    </header>
    {projectChatMode==='documentation'&&baHandoffOpen&&<div className="ba-handoff-form">
@@ -2002,7 +2042,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        onDeleted={()=>loadProject(selected.id)} onOpenTask={id=>navigate(projectUrl(selected.id,'tasks')+'/'+id)}/>}
       {m.created_document_id&&<button className="textbtn" onClick={()=>{if(selected&&m.created_document_id)navigate(projectUrl(selected.id,'docs')+'/'+m.created_document_id);setOpenChatProjectId(null);}}>Открыть документ</button>}
     </div>)}
-    {projectChatBusy&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
+    {(projectChatBusy||projectImportJobId)&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
     {projectChatError&&<p className="task-action-error" role="alert">{projectChatError}</p>}
    </div>
    {projectChatMode==='documentation'&&(analystDocumentId||analystFiles.length>0)&&<div className="analyst-materials">
@@ -2014,7 +2054,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
     {projectChatMode==='documentation'&&<>
      <input hidden type="file" ref={analystFileInput} multiple accept=".md,.txt,.csv,.json,.yaml,.yml" onChange={e=>{attachAnalystFiles(e.currentTarget.files);e.currentTarget.value='';}}/>
-     <button className="secondary" type="button" aria-label="Прикрепить материалы" title="Прикрепить материалы" disabled={projectChatBusy} onClick={()=>analystFileInput.current?.click()}><Paperclip size={16}/></button>
+     <button className="secondary" type="button" aria-label="Прикрепить материалы" title="Прикрепить материалы" disabled={projectChatBusy||!!projectImportJobId} onClick={()=>analystFileInput.current?.click()}><Paperclip size={16}/></button>
     </>}
     {mentionMatches(projectInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
       {mentionMatches(projectInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>{setProjectInput(addMention(projectInput,option.alias));projectInputRef.current?.focus();}}>
