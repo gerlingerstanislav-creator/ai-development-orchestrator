@@ -1,3 +1,16 @@
+
+test('DevOps unification retains custom stage instructions and is idempotent',()=>{
+ const own='Проверяй отдельные корпоративные секреты CI перед выкаткой';
+ const specialist='Управляй версиями артефактов GitHub Actions';
+ const merged=mergeDevopsInstructions(specialist,own);
+ assert.match(merged,/Управляй версиями артефактов/);
+ assert.match(merged,/корпоративные секреты/);
+ assert.equal(mergeDevopsInstructions(merged,own),merged);
+ const recovered=mergeDevopsInstructions(specialist,specialist,own);
+ assert.match(recovered,/корпоративные секреты/);
+ assert.throws(()=>mergeDevopsInstructions('a'.repeat(11990),own),/12000/);
+});
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -5,7 +18,7 @@ import pg from 'pg';
 import Fastify from 'fastify';
 import {initDocumentationReset,registerDocumentationResetRoutes} from '../dist/documentation-reset.js';
 import {registerSafeTaskDeletion} from '../dist/task-deletion.js';
-import {registerProjectTeamRoutes} from '../dist/project-team.js';
+import {registerProjectTeamRoutes,initProjectTeamSchema,mergeDevopsInstructions} from '../dist/project-team.js';
 import {registerBusinessAnalystHandoff} from '../dist/business-analyst-handoff.js';
 import {toolsForRole,toolAllowedForRole} from '../dist/agent-tools.js';
 
@@ -210,4 +223,45 @@ test('the team excludes platform stages and keeps configured AI agents',async t=
   ['manager','Координируй работу'],['analysis','Проверяй требования']
  ]);
  assert.equal((await db.query('SELECT count(*)::int AS n FROM workflow_stages WHERE project_id=$1',[project])).rows[0].n,4);
+});
+
+
+test('legacy DevOps workflow instructions survive Team schema initialization',async t=>{
+ const db=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await db.connect();
+ let opened=false;
+ t.after(async()=>{if(opened)await db.query('ROLLBACK');await db.end();});
+ await db.query('BEGIN');opened=true;
+ const schema='devopsmerge_'+randomUUID().replaceAll('-','');
+ await db.query('CREATE SCHEMA '+schema);
+ await db.query('SET LOCAL search_path TO '+schema+',public');
+ await db.query([
+  'CREATE TABLE users(id uuid PRIMARY KEY)',
+  'CREATE TABLE projects(id uuid PRIMARY KEY)',
+  "CREATE TABLE agent_memory(id uuid PRIMARY KEY,project_id uuid,role text,kind text,body text,evidence text,status text,created_at timestamptz DEFAULT now())",
+  'CREATE TABLE workflow_stages(project_id uuid,stage text,label text,position int,agent_name text,agent_instructions text)',
+  'CREATE TABLE project_specialist_agents(project_id uuid,role text,agent_name text,agent_instructions text,updated_at timestamptz DEFAULT now(),PRIMARY KEY(project_id,role))'
+ ].join(';\n')+';');
+ const project=randomUUID(),stageText='Проверяй требования корпоративного VPN перед каждой выкладкой',specialistText='Контролируй GitHub Actions и блокировки CI';
+ await db.query('INSERT INTO projects(id) VALUES($1)',[project]);
+ await db.query("INSERT INTO workflow_stages VALUES($1,'deployment','Выкладка',5,'Release Steward',$2)",[project,stageText]);
+ await db.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2)",[project,specialistText]);
+ const pool={query:(...args)=>db.query(...args),connect:async()=>({
+  query:(sql,...args)=>sql==='BEGIN'?db.query('SAVEPOINT devops_update'):
+   sql==='COMMIT'?db.query('RELEASE SAVEPOINT devops_update'):
+   sql==='ROLLBACK'?db.query('ROLLBACK TO SAVEPOINT devops_update'):db.query(sql,...args),
+  release(){}
+ })};
+ await initProjectTeamSchema(pool);
+ const spec=(await db.query("SELECT agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 AND role='devops'",[project])).rows[0];
+ const stage=(await db.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='deployment'",[project])).rows[0];
+ assert.equal(spec.agent_name,'Release Steward');
+ assert.equal(stage.agent_name,spec.agent_name);
+ assert.equal(stage.agent_instructions,spec.agent_instructions);
+ assert.match(spec.agent_instructions,/корпоративного VPN/);
+ assert.match(spec.agent_instructions,/блокировки CI/);
+ assert.equal((await db.query("SELECT count(*)::int n FROM agent_instruction_history WHERE project_id=$1 AND role='devops'",[project])).rows[0].n,1);
+ await initProjectTeamSchema(pool);
+ assert.equal((await db.query("SELECT count(*)::int n FROM agent_instruction_history WHERE project_id=$1 AND role='devops'",[project])).rows[0].n,1,'Repeated startup must not duplicate instruction merges');
+ await db.query('ROLLBACK');opened=false;
 });
