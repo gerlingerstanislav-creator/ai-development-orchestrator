@@ -45,6 +45,10 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Сверка ТЗ не завершена: '+String(error),stage:'requirements'});
    return 'requirements_review_failed';
   }
+  if(patched('resolve-handoff-questions')&&status==='needs_approval'){
+   await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
+   status=await steps.checkRequirementStatus({projectId:input.projectId,taskId:input.taskId});
+  }
   while(status==='pending'||status==='needs_approval'){
    await sleep('20 seconds'); // Persistent Temporal wait, no active Codex billing.
    status=await steps.checkRequirementStatus({projectId:input.projectId,taskId:input.taskId});
@@ -93,6 +97,10 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
  try {
  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
  let status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
+ if(patched('resolve-manual-testing-questions')&&status==='needs_approval'){
+  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
+  status=await steps.checkRequirementStatus({projectId:input.projectId,taskId:input.taskId});
+ }
  while(status==='pending'||status==='needs_approval'){
   await sleep('20 seconds');
   status=await steps.checkRequirementStatus({projectId:input.projectId,taskId:input.taskId});
@@ -133,7 +141,15 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
 /** An independently started review for user edits at any stage (including completed tasks). */
 export async function requirementsReview(input:{projectId:string;taskId:string;runId:string}):Promise<string>{
  try{
-  return await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.runId,mode:'edit'});
+  const args={...input,mode:'edit' as const};
+  const status=await steps.reconcileRequirements(args);
+  if(patched('resolve-edit-questions')&&status==='needs_approval'){
+   await steps.resolvePeerQuestions(input);
+   const next=await steps.checkRequirementStatus(input);
+   if(next==='pending')return steps.reconcileRequirements(args);
+   return next;
+  }
+  return status;
  }catch(error){
   await steps.noteReviewFailure({projectId:input.projectId,taskId:input.taskId,runId:input.runId,message:String(error)});
   return 'failed';
@@ -144,6 +160,13 @@ export async function requirementsReview(input:{projectId:string;taskId:string;r
 /** Each user turn is a durable Temporal workflow. Failure leaves a retryable
  *  persisted message, not an invisible discarded request. */
 export async function projectManagerReply(input:{projectId:string;taskId:string;messageId:string}):Promise<string>{
+ if(patched('manager-resolves-task-answers-first')){
+  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
+  const result=await steps.handleManagerTurn(input);
+  const continuation=result.message||(!result.handled?await steps.continueManagedTask(input):'');
+  await steps.completeManagerMessage({...input,continuation,handled:result.handled});
+  return 'responded';
+ }
  if(patched('manager-handles-analysis-turn')){
   const result=await steps.handleManagerTurn(input);
   let continuation=result.message;

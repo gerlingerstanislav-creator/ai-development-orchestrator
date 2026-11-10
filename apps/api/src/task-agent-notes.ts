@@ -37,6 +37,22 @@ export async function pendingAgentQuestions(pool:Pick<Pool,'query'>,projectId:st
  const r=await pool.query("SELECT count(*)::int AS count FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND (target_stage='all' OR requires_customer)",[projectId,taskId]);
  return r.rows[0].count;
 }
+
+/** Only messages from this task. Recent user replies are evidence, not instructions. */
+export async function taskConversationEvidence(pool:Pick<Pool,'query'>,projectId:string,taskId:string){
+ const result=await pool.query(`
+  SELECT body FROM (
+   (SELECT id,created_at,body FROM manager_messages
+    WHERE project_id=$1 AND task_id=$2 AND role='user' AND status IN ('queued','processing','completed')
+    ORDER BY created_at DESC,id DESC LIMIT 16)
+   UNION ALL
+   (SELECT id,created_at,body FROM assistant_messages
+    WHERE project_id=$1 AND task_id=$2 AND role='user'
+    ORDER BY created_at DESC,id DESC LIMIT 16)
+  ) replies ORDER BY created_at DESC,id DESC LIMIT 16
+ `,[projectId,taskId]);
+ return [...new Set<string>(result.rows.map(row=>String(row.body).slice(0,1000)))].reverse().join('\n\n').slice(-5500);
+}
 /**
  * Accepting a question answer is not equivalent to approving changed behavior.
  * Only an inconclusive analytical review can be superseded automatically.
@@ -56,7 +72,7 @@ export async function resolveAgentQuestionsForReview(client:PoolClient,projectId
 /** Return bounded, addressed task comments as untrusted advisory context. */
 export async function taskNotesContext(pool:Pool,projectId:string,taskId:string,targetStage:string,limit=18){
  const results=await pool.query(
-  "SELECT author_stage,author_name,target_stage,kind,body,answer,status,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND (target_stage=$3 OR target_stage='all') ORDER BY created_at DESC,id DESC LIMIT $4",
+  "SELECT author_stage,author_name,target_stage,kind,body,answer,status,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND (target_stage=$3 OR target_stage='all' OR (author_stage=$3 AND status='answered')) ORDER BY created_at DESC,id DESC LIMIT $4",
   [projectId,taskId,targetStage,Math.min(30,Math.max(1,limit))]
  );
  return JSON.stringify(results.rows.reverse().map(r=>({author:r.author_name,stage:r.author_stage,kind:r.kind,target:r.target_stage,

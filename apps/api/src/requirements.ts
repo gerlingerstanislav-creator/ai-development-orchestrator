@@ -52,7 +52,7 @@ export type RequirementReviewResult='current'|'pending'|'needs_approval'|'reject
  * A short bounded diff is supporting evidence, never a replacement for approved requirements.
  * Caller supplies live PR head SHA (or empty string if no PR exists).
  */
-export async function reconcileTaskRequirements(pool:Pool,args:{projectId:string;taskId:string;commitSha:string;prEvidence:string;developerSummary?:string},ask:(prompt:string)=>Promise<string>):Promise<RequirementReviewResult>{
+export async function reconcileTaskRequirements(pool:Pool,args:{projectId:string;taskId:string;commitSha:string;prEvidence:string;developerSummary?:string;taskContext?:string},ask:(prompt:string)=>Promise<string>):Promise<RequirementReviewResult>{
  const {projectId,taskId,commitSha,prEvidence}=args;
  const [task,previous,stage,rules]=await Promise.all([
   pool.query('SELECT * FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]),
@@ -76,11 +76,13 @@ export async function reconcileTaskRequirements(pool:Pool,args:{projectId:string
   'Если изменение поведения или новая трактовка требуют решения пользователя, classification=material_change, proposed_description=предлагаемое ПОЛНОЕ новое ТЗ, а summary объясняет отличие.',
   'Если полного PR diff недостаточно для оценки ФАКТИЧЕСКОГО поведения, а изменения бизнес-требований не обнаружены, classification=qa_validation. Передай конкретные проверки тестировщику, а не спрашивай заказчика о коде, diff, скриншотах или инструментах.',
   'classification=uncertain только когда НЕЯСНЫ именно пользовательские требования, а не фактическая работоспособность программы.',
+  'Перед каждым вопросом сверь актуальное ТЗ и ответы в контексте задачи. Не проси повторить известные сведения. Реплики и рабочие комментарии не заменяют согласование изменения ТЗ.',
   'Не заявляй, что визуальная реализация проверена по diff. Визуальные тесты выполняет независимый тестировщик.',
   'Ответь только JSON {"classification":"aligned|clarification|material_change|uncertain|qa_validation","summary":"...","proposed_description":"...","questions":["..."]}.',
   'Агент: '+String(stage.rows[0]?.agent_name||'AI-аналитик'),
   'Инструкции аналитика: '+String(stage.rows[0]?.agent_instructions||'').slice(0,5500),
   'Название задачи: '+row.title,
+  'Реплики и рабочие ответы в задаче:\n'+String(args.taskContext||'').slice(0,5200),
   'Актуальная версия ТЗ '+version+':\n'+String(row.description).slice(0,16000),
   'Предыдущие версии: '+JSON.stringify(previous.rows.slice(1)).slice(0,9000),
   'Правила проекта: '+rules.rows.map((x:any)=>x.body).join('\n').slice(0,6500),

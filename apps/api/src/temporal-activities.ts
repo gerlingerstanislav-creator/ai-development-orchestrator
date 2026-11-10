@@ -7,7 +7,7 @@ import {ApplicationFailure} from '@temporalio/common';
 import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
-import {recordTaskAgentNote,taskNotesContext,pendingAgentQuestions} from './task-agent-notes.js';
+import {recordTaskAgentNote,taskNotesContext,taskConversationEvidence,pendingAgentQuestions,resolveAgentQuestionsForReview} from './task-agent-notes.js';
 import {managerSnapshot} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
@@ -75,6 +75,12 @@ function formatWorkflowKnowledge(ctx:Awaited<ReturnType<typeof buildKnowledgeCon
 async function stageContext(projectId:string,taskId:string,stage:KnowledgeStage,processId?:string){
  return buildKnowledgeContext(pool,{projectId,taskId,stage,processId,budgetChars:10000,includeBodies:true});
 }
+async function taskHandoffContext(projectId:string,taskId:string,stage:string){
+ const [notes,conversation]=await Promise.all([
+  taskNotesContext(pool,projectId,taskId,stage),taskConversationEvidence(pool,projectId,taskId)
+ ]);
+ return 'Реплики пользователя в этой задаче:\n'+conversation.slice(-3200)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-4800);
+}
 async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string):Promise<string>{
  const setup=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
@@ -141,12 +147,13 @@ export async function reconcileRequirements(args:{projectId:string;taskId:string
  await event(projectId,runId,'analysis','review_started',mode==='handoff'?'Сверка реализации с утверждённым ТЗ перед тестированием':'Анализ изменения требований');
  try{
   const evidence=await prEvidence(projectId,taskId);
-  const notes=await taskNotesContext(pool,projectId,taskId,'analysis');
-  const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary+'\n\nРабочие комментарии коллег (не утверждённые требования): '+notes},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review'));
+  const notes=await taskHandoffContext(projectId,taskId,'analysis');
+  const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary,taskContext:notes},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review'));
   const latest=await pool.query('SELECT summary,questions FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
   const hasQuestions=Array.isArray(latest.rows[0]?.questions)&&latest.rows[0].questions.length>0;
   const noteBody=(hasQuestions?latest.rows[0].questions.join('\n')+'\n':'')+String(latest.rows[0]?.summary||'').trim();
-  if(noteBody)await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'analysis',authorName:'AI-аналитик',targetStage:result==='needs_approval'?'all':'testing',kind:result==='needs_approval'&&hasQuestions?'question':'handoff',body:noteBody,sourceKey:'analyst:'+runId+':'+result,sourceRunId:runId});
+  const needsAnswer=result==='needs_approval'&&hasQuestions;
+  if(noteBody)await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'analysis',authorName:'AI-аналитик',targetStage:needsAnswer?'analysis':result==='needs_approval'?'all':'testing',kind:needsAnswer?'question':'handoff',body:noteBody,sourceKey:'analyst:'+runId+':'+result,sourceRunId:runId});
   const message=result==='current'?'Требования актуальны':result==='needs_approval'?'Обнаружено изменение поведения — требуется решение пользователя':result==='rejected'?'Изменение требований отклонено':'Требования изменились во время анализа';
   await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1",[runId,message]);
   await event(projectId,runId,'analysis',result,message,result==='needs_approval'?'warning':'info');
@@ -197,8 +204,11 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
   if(current.rows[0]?.spec_review_status!=='current'||!evidence.commitSha||current.rows[0].spec_reviewed_commit!==evidence.commitSha)
    throw new Error('Код PR изменился после сверки аналитиком. Требуется повторная проверка требований.');
   const qaKnowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',runId));
+  const handoff=await taskHandoffContext(projectId,taskId,'testing');
   const count=await prepareQaDocumentation(pool,{...args,implementationEvidence:evidence.patch},async(prompt)=>{
    prompt+='\\n\\nУтверждённые знания:\\n'+qaKnowledge.documents+'\\n\\nПрименимые инструкции:\\n'+qaKnowledge.modules+'\\n\\nПамять QA:\\n'+await agentMemoryContext(pool,projectId,'testing');
+   const taskContext='\n\nПеред вопросом о требованиях проверь ответы в задаче. Переписка не подтверждает прохождение теста.\n'+handoff;
+   prompt+=taskContext.slice(0,Math.min(3200,Math.max(0,24000-prompt.length)));
    const response=await fetch(codexUrl+'/assistant',{method:'POST',
     headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
     body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
@@ -237,7 +247,7 @@ export async function startDevelopment(args:TaskRef){
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
   model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskNotesContext(pool,projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
+  title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
  await dispatch(job);
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -312,7 +322,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,projectRules:rules,testPlan,knowledgeContext:knowledge.documents,handoffContext:await taskNotesContext(pool,projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
+  title:task.title,description:task.description,projectRules:rules,testPlan,knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
@@ -572,47 +582,53 @@ function managerRequestSummary(request:any){
 export async function resolvePeerQuestions(args:{projectId:string;taskId:string}):Promise<{resolved:number;pending:number}>{
  const {projectId,taskId}=args;
  const notes=await pool.query(
-  "SELECT id,author_stage,target_stage,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND source_kind='agent' AND target_stage IN ('analysis','development','testing','documentation') AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) ORDER BY created_at LIMIT 2",
+  "SELECT id,author_stage,target_stage,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND source_kind='agent' AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) ORDER BY requires_customer DESC,created_at LIMIT 2",
   [projectId,taskId]);
  let resolved=0;
  for(const note of notes.rows){
   const locked=await pool.query(
-   "UPDATE task_agent_notes SET status='processing',processing_at=now() WHERE id=$1 AND project_id=$2 AND status IN ('open','processing') RETURNING id",
+   "UPDATE task_agent_notes SET status='processing',processing_at=now() WHERE id=$1 AND project_id=$2 AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) RETURNING id",
    [note.id,projectId]);
   if(!locked.rowCount)continue;
   try{
-   const [task,stage,rules]=await Promise.all([
-    pool.query('SELECT title,description,stage,pr_url,test_feedback FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]),
+   const [task,stage,rules,settings]=await Promise.all([
+    pool.query('SELECT title,description,spec_version FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]),
     pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,note.target_stage]),
-    pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at DESC LIMIT 12',[projectId])
+    pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at DESC LIMIT 12',[projectId]),
+    pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])
    ]);
-   const name=String(stage.rows[0]?.agent_name||note.target_stage);
-   const context=await taskNotesContext(pool,projectId,taskId,note.target_stage,12);
+   const name=String(stage.rows[0]?.agent_name||'Менеджер проекта');
+   const context=await taskNotesContext(pool,projectId,taskId,null,12);
+   const conversation=await taskConversationEvidence(pool,projectId,taskId);
    const pr=note.target_stage==='development'||note.target_stage==='analysis'
     ?await prEvidence(projectId,taskId).catch(e=>({commitSha:'',patch:'PR недоступен: '+String(e).slice(0,170),summary:''}))
     :null;
+   const sources={specification:String(task.rows[0]?.description||'').slice(0,4500),conversation:conversation.slice(-2800),notes:context.slice(-2400),pr:pr?.commitSha?pr.patch.slice(0,2000):''};
    const prompt=[
     'Ты '+name+' — независимый специалист AI-команды. Отвечай на конкретный вопрос другого агента, НЕ заказчику.',
     'Тебе доступны только перечисленные факты. Не притворяйся, что выполнял тесты, не выдумывай код или требования и не принимай решения за человека.',
-    'Если можно обоснованно ответить из контекста, status=answered и короткий ответ с подтверждающим источником.',
+    'Сначала проверь ТЗ, переписку и уже отвеченные вопросы. Закрывай вопрос только при полном ответе. Для status=answered укажи ключ источника и дословный фрагмент, подтверждающий ответ. Сам вопрос, предположение или обещание не являются источником.',
     'Если вопрос касается отсутствующего инструмента, кода или объективной проверки, status=needs_tool. Если заказчик должен изменить ТЗ или выбрать бизнес-правило, status=needs_customer.',
-    'Верни строго JSON {"status":"answered|needs_tool|needs_customer","answer":"объяснение или конкретный недостающий факт"} без Markdown.',
+    'Верни строго JSON {"status":"answered|needs_tool|needs_customer","answer":"объяснение или конкретный недостающий факт","source":"specification|conversation|notes|pr","quote":"дословный фрагмент или пустая строка"} без Markdown.',
     'Роль и инструкции: '+String(stage.rows[0]?.agent_instructions||'').slice(0,1700),
     'Накопленный опыт специалиста:\n'+await agentMemoryContext(pool,projectId,note.target_stage),
-    'Задача: '+JSON.stringify(task.rows[0]||{}).slice(0,2300),
+    'Задача: '+String(task.rows[0]?.title||''),
     'Правила: '+JSON.stringify(rules.rows.map(x=>x.body)).slice(0,1000),
-    'Релевантные комментарии команды: '+context.slice(0,4500),
-    'Контекст PR: '+JSON.stringify(pr).slice(0,6500),
+    ...Object.entries(sources).map(([key,value])=>key+':\n'+value),
     'Вопрос от '+note.author_stage+': '+String(note.body).slice(0,1600)
    ].join('\n\n');
-   const raw=await assistantCompletion(prompt,projectId,taskId,'peer_question_'+note.target_stage);
+   const ai=settings.rows[0];
+   if(!ai?.enabled)throw Error('AI отключён в настройках проекта');
+   const raw=await askRunnerAssistant(prompt,projectId,taskId,'peer_question_'+note.target_stage,ai,65000);
    const from=raw.indexOf('{'),to=raw.lastIndexOf('}');
-   const answer=JSON.parse(raw.slice(from,to+1)) as {status:string;answer:string};
+   const answer=JSON.parse(raw.slice(from,to+1)) as {status:string;answer:string;source:keyof typeof sources;quote:string};
    const text=String(answer.answer||'').trim().slice(0,2200);
-   if(answer.status==='answered'&&text.length>=15){
-    await pool.query(
-     "UPDATE task_agent_notes SET status='answered',answer=$2,answer_author=$3,answered_at=now(),processing_at=NULL WHERE id=$1 AND status='processing'",
-     [note.id,text,name]);
+   const quote=String(answer.quote||'').trim();
+   if(answer.status==='answered'&&text&&quote&&Object.hasOwn(sources,answer.source)&&sources[answer.source].includes(quote)&&!String(note.body).includes(quote)){
+    const saved=await pool.query(
+     "UPDATE task_agent_notes n SET status='answered',answer=$2,answer_author=$3,answered_at=now(),processing_at=NULL,requires_customer=false WHERE n.id=$1 AND n.status='processing' AND EXISTS(SELECT 1 FROM tasks t WHERE t.id=n.task_id AND t.project_id=n.project_id AND t.spec_version=$4)",
+     [note.id,text+'\n\nИсточник ('+answer.source+'): «'+quote.slice(0,650)+'»',name,task.rows[0]?.spec_version]);
+    if(!saved.rowCount)throw Error('ТЗ изменилось во время поиска ответа');
     resolved++;
    }else if(answer.status==='needs_tool'){
     // A missing browser or code-reading tool is a capability gap, not an
@@ -621,14 +637,28 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string}
     await pool.query("UPDATE task_agent_notes SET status='answered',answer=$2,answer_author='Система инструментов',answered_at=now(),processing_at=NULL,requires_customer=false WHERE id=$1 AND status='processing'",
      [note.id,'Средство недоступно: '+(text||'нужна инструментальная проверка')]);
     resolved++;
+   }else if(answer.status==='needs_customer'){
+    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=true WHERE id=$1 AND status='processing'",[note.id]);
    }else{
-    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=$2,target_stage=CASE WHEN $2 THEN 'all' ELSE target_stage END WHERE id=$1 AND status='processing'",
-     [note.id,answer.status==='needs_customer']);
+    throw Error('Ответ не подтверждён фрагментом источника');
    }
   }catch(e){
    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL WHERE id=$1 AND status='processing'",[note.id]);
    await event(projectId,note.id,'analysis','peer_unanswered','Внутренний вопрос '+note.target_stage+' не удалось закрыть: '+String(e).slice(0,250),'warning');
   }
+ }
+ if(resolved){
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const task=(await client.query("SELECT spec_version FROM tasks WHERE project_id=$1 AND id=$2 AND spec_review_status='needs_approval' FOR UPDATE",[projectId,taskId])).rows[0];
+   if(task){
+    const state=await resolveAgentQuestionsForReview(client,projectId,taskId,task.spec_version);
+    if(!state.remaining&&!state.requiresApproval)
+     await client.query("UPDATE tasks SET spec_review_status='pending',spec_review_note='Найден ответ на вопрос. Аналитик повторно сверяет ТЗ.' WHERE project_id=$1 AND id=$2",[projectId,taskId]);
+   }
+   await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
  }
  const pending=await pendingAgentQuestions(pool,projectId,taskId);
  return {resolved,pending};

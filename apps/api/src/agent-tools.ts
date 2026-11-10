@@ -38,7 +38,7 @@ export const agentToolCatalog=[
  tool('knowledge.related','Найти связанные требования и архитектурные документы.',{document_id:id},['document_id']),
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('tasks.list','Получить задачи и этапы. Для колонки «Вопросы к ПО» передай product_owner_questions_only=true. Карточки вопросов по документам в этот список не входят.',{product_owner_questions_only:field('boolean','Показать только задачи из колонки «Вопросы к ПО»')}),
- tool('tasks.read','Прочитать задачу по UUID.',{task_id:id},['task_id']),
+ tool('tasks.read','Прочитать задачу, недавние реплики и ответы на вопросы. Используй перед повторным обращением к пользователю по этой задаче.',{task_id:id},['task_id']),
  tool('tasks.request_owner_question_cleanup','По явному запросу пользователя удалить задачи из «Вопросов к ПО» покажи кнопку предпросмотра и подтверждения. Вызов не удаляет задачи.',{}),
  tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
  tool('questions.list','Посмотреть открытые вопросы к владельцу продукта.',{}),

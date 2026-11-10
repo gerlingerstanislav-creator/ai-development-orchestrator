@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {initRequirementsSchema,saveSpecRevision,reconcileTaskRequirements} from '../dist/requirements.js';
 import {initQaWaiverSchema} from '../dist/qa-waiver.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from '../dist/task-orchestration.js';
-import {initTaskAgentNotesSchema,recordTaskAgentNote,taskNotesContext,pendingAgentQuestions,resolveAgentQuestionsForReview} from '../dist/task-agent-notes.js';
+import {initTaskAgentNotesSchema,recordTaskAgentNote,taskNotesContext,taskConversationEvidence,pendingAgentQuestions,resolveAgentQuestionsForReview} from '../dist/task-agent-notes.js';
 import {initTaskCancellationSchema,needsGitHubCleanup} from '../dist/task-cancellation.js';
 import {initProjectManagerSchema} from '../dist/project-manager.js';
 
@@ -35,10 +35,17 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   await initTaskAgentNotesSchema(pool);
   await initProjectManagerSchema(pool);
   await initProjectManagerSchema(pool); // Idempotent migration on existing projects
+  await pool.query('CREATE TABLE assistant_messages (id uuid PRIMARY KEY,project_id uuid,task_id uuid,role text,body text,created_at timestamptz DEFAULT now())');
   const managerMessageId=randomUUID(),managerRequestId=randomUUID();
   await pool.query("INSERT INTO manager_messages(id,project_id,task_id,actor_id,role,body,status) VALUES($1,$2,$3,$4,'user','Проверить окружность','queued')",[managerMessageId,projectId,taskId,userId]);
   assert.equal((await pool.query('SELECT status FROM manager_messages WHERE id=$1',[managerMessageId])).rows[0].status,'queued','User input is persisted before model invocation');
   await pool.query("UPDATE manager_messages SET status='completed' WHERE id=$1",[managerMessageId]);
+  await pool.query("INSERT INTO assistant_messages(id,project_id,task_id,role,body) VALUES($1,$2,$3,'user','Первую и последнюю фигуры соединить'),($4,$2,$3,'assistant','Предположение агента'),($5,$2,$6,'user','Ответ из другой задачи')",
+   [randomUUID(),projectId,taskId,randomUUID(),randomUUID(),randomUUID()]);
+  const conversation=await taskConversationEvidence(pool,projectId,taskId);
+  assert.match(conversation,/Проверить окружность/);
+  assert.match(conversation,/Первую и последнюю фигуры соединить/);
+  assert.doesNotMatch(conversation,/Предположение агента|Ответ из другой задачи/);
   await pool.query("INSERT INTO manager_requests(id,project_id,task_id,source_key,kind,source_id) VALUES($1,$2,$3,'qa:test:original','qa_visual',$4)",[managerRequestId,projectId,taskId,randomUUID()]);
   const duplicate=await pool.query("INSERT INTO manager_requests(id,project_id,task_id,source_key,kind,source_id) VALUES($1,$2,$3,'qa:test:original','qa_visual',$4) ON CONFLICT(task_id,source_key) DO NOTHING RETURNING id",[randomUUID(),projectId,taskId,randomUUID()]);
   assert.equal(duplicate.rowCount,0,'Replayed workflow cannot send duplicate risk request');
@@ -57,7 +64,8 @@ test('spec revisions, analyst reconciliation and human-approval gate persist in 
   assert.equal(await recordTaskAgentNote(pool,note),false,'Retried Temporal activity must not duplicate comment');
   assert.match(await taskNotesContext(pool,projectId,taskId,'testing'),/360px/);
   assert.equal(await taskNotesContext(pool,projectId,taskId,'analysis'),'[]','Notes addressed only to QA must not leak to analyst');
-  await recordTaskAgentNote(pool,{...note,sourceKey:'question:'+noteRun,kind:'question',targetStage:'all',body:'Нужна ли стрелка между последней и первой фигурой?'});
+  await recordTaskAgentNote(pool,{...note,sourceKey:'question:'+noteRun,kind:'question',targetStage:'analysis',body:'Нужна ли стрелка между последней и первой фигурой?'});
+  await pool.query("UPDATE task_agent_notes SET requires_customer=true WHERE project_id=$1 AND task_id=$2 AND kind='question'",[projectId,taskId]);
   assert.equal(await pendingAgentQuestions(pool,projectId,taskId),1);
   await pool.query("UPDATE task_agent_notes SET status='answered',answer='Да, окружность замкнута' WHERE project_id=$1 AND task_id=$2 AND kind='question'",[projectId,taskId]);
   assert.equal(await pendingAgentQuestions(pool,projectId,taskId),0);
