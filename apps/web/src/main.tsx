@@ -76,7 +76,7 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
  messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
@@ -478,7 +478,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const {messages:projectMessages,pendingId:projectPendingId,jobId:projectImportJobId,input:projectInput,progress:projectImportProgress,
   historyLoaded:projectHistoryLoaded,error:projectChatError}=getProjectChat(projectChatMode);
- const projectChatBusy=projectPendingId!==null;
+ const projectChatBusy=projectPendingId!==null && projectChatMode==='documentation';
  const {files:analystFiles,documentId:analystDocumentId}=getProjectChat('documentation');
  function setProjectInput(input:string){
   updateProjectChat(projectChatKey(selectedProjectId,projectChatMode),chat=>({...chat,input}));
@@ -842,14 +842,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    try{
     const messages=await api<AssistantMessage[]>('/projects/'+selectedProjectId+'/assistant/messages?mode='+projectChatMode,{signal:controller.signal});
     if(controller.signal.aborted)return;
-    updateProjectChat(chatKey,chat=>chat.pendingId||chat.jobId?chat:{
+    updateProjectChat(chatKey,chat=>chat.pendingId&&projectChatMode==='documentation'||chat.jobId?chat:{
      ...chat,historyLoaded:true,messages:[...messages,...chat.messages.filter(message=>message.failed)]
     });
    }catch(e){if(!controller.signal.aborted&&!projectHistoryLoaded)fail(e);}
    finally{refreshing=false;}
   };
   if(!projectHistoryLoaded)void refresh();
-  const timer=projectChatMode==='documentation'?window.setInterval(()=>void refresh(),4000):null;
+  const timer=window.setInterval(()=>void refresh(),4000);
   return()=>{controller.abort();if(timer!==null)window.clearInterval(timer);};
  },[selectedProjectId,projectChatOpen,projectChatMode,projectChatBusy,projectHistoryLoaded]);
  useEffect(()=>{
@@ -1318,6 +1318,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
    const currentJobId=mode==='documentation'?getProjectChat('documentation').jobId:null;
    if(currentJobId&&attachments.length)throw Error('Новые файлы можно прикрепить после завершения текущей работы аналитика.');
+   if(mode==='project'){
+    const posted=await api<{id:string;status:string}>('/projects/'+projectId+'/manager/inbox',{method:'POST',body:JSON.stringify({message,replyTo,topicId})});
+    updatePendingChat(chat=>({...chat,pendingId:null,messages:chat.messages.map(m=>m.id===optimisticId?{...m,id:posted.id,pending:false,status:'queued'}:m)}));
+    return;
+   }
    const response=currentJobId
     ?await api<AssistantResponse>('/projects/'+projectId+'/processes/'+currentJobId+'/instructions',
       {method:'POST',body:JSON.stringify({message})})
@@ -2142,6 +2147,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       <div>{m.body}</div>
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
+      {m.status==='queued'&&<small className="chat-message-status">В очереди ПМ</small>}
+      {m.status==='processing'&&<small className="chat-message-status">ПМ распределяет поручение…</small>}
+      {m.status==='failed'&&<small className="chat-message-status chat-message-failed">Обработка не завершена. Скопируй сообщение и отправь повторно.</small>}
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
