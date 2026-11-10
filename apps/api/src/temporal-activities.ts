@@ -8,6 +8,7 @@ import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
 import {recordTaskAgentNote,taskNotesContext,pendingAgentQuestions} from './task-agent-notes.js';
 import {managerSnapshot} from './project-manager.js';
+import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 
@@ -452,8 +453,18 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     'Последняя переписка Менеджера с пользователем: '+JSON.stringify(history).slice(0,5500),
     'Сообщение пользователя: '+String(msg.rows[0].body).slice(0,4000)
    ].join('\n\n');
-   const generated=String(await assistantCompletion(prompt,projectId,taskId,'project_manager')).trim();
-   answer=[args.continuation,generated].filter(Boolean).join('\n\n');
+   const mentionedAgent=await resolveAgentMention(pool,projectId,String(msg.rows[0].body));
+   const directPrompt=mentionedAgent?[
+    'Ты '+mentionedAgent.name+' — специалист этапа '+mentionedAgent.stage+' проекта. Пользователь обратился непосредственно к @'+mentionedAgent.alias+'. Говори от имени специалиста, а не менеджера.',
+    AGENT_MENTION_HINT,'Не изменяй ТЗ, не запускай процессы и не утверждай о выполненных проверках без фактических подтверждений.',
+    'Инструкции специалиста:\n'+mentionedAgent.instructions.slice(0,7000),
+    'Задача:\n'+JSON.stringify({title:snapshot.task.title,stage:snapshot.task.stage,description:snapshot.task.description}).slice(0,6000),
+    'Правила проекта:\n'+rules,'История общения:\n'+JSON.stringify(history).slice(0,5500),
+    'Данные о QA:\n'+JSON.stringify(latest).slice(0,2000),
+    'Комментарии специалистов:\n'+JSON.stringify(agentNotes).slice(0,4800),
+    'Вопрос пользователя:\n'+mentionedAgent.message].join('\n\n'):prompt;
+   const generated=String(await assistantCompletion(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager')).trim();
+   answer=mentionedAgent?'@'+mentionedAgent.alias+' · '+generated:[args.continuation,generated].filter(Boolean).join('\n\n');
   }
   answer=answer.slice(0,10000);
   if(!answer)throw Error('Менеджер проекта не сформировал ответ');
