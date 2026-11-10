@@ -11,6 +11,7 @@ import {saveSpecRevision} from './requirements.js';
 import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
+import {agentRuntimeEnabled} from './agent-runtime-config.js';
 
 type Dependencies={
  pool:Pool; uid:(req:any)=>string;
@@ -529,7 +530,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    }catch(error){return reply.code(503).send({error:'Ошибка агента: '+String(error instanceof Error?error.message:error).slice(0,350)});}
   }
   const documentationMode=mode==='documentation';
-  if(process.env.AGENT_RUNTIME_ENABLED==='true'){
+  if(agentRuntimeEnabled()){
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'AI отключён в настройках проекта'});
    const role:AgentRole=documentationMode?'analyst':'manager';
