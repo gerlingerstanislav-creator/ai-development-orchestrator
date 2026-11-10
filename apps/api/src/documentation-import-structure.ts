@@ -32,6 +32,16 @@ export async function archiveSourceDocuments(args:{
  const root=(await pool.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='research'",[projectId])).rows[0];
  if(!root)throw Error('Нет системного раздела исходных материалов');
  let created=0,updated=0,conflicts=0;
+ // A stable source folder keeps the navigation usable even for many original files.
+ const folderSource='source-group:'+sourceKey;
+ const folderTitle='Импорт · '+(sourceKey.split(':').pop()||'Материалы').slice(0,130);
+ const folderBody='# Исходные материалы\n\nОригиналы документов, использованных при тематическом импорте. Не являются автоматически утверждёнными требованиями.';
+ const folderId=randomUUID();
+ await pool.query(
+  "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,document_kind,implementation_status,import_synced_hash) VALUES($1,$2,$3,$4,$5,$6,'technical','unverified',$7) ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO NOTHING",
+  [folderId,projectId,folderTitle,folderBody,root.id,folderSource,sourceFingerprint(folderTitle,folderBody)]);
+ const group=(await pool.query("SELECT id FROM documents WHERE project_id=$1 AND import_source=$2",[projectId,folderSource])).rows[0];
+ if(!group)throw Error('Не удалось сохранить группу исходных материалов');
  for(const file of files){
   const fileName=file.path.split('/').pop()||file.path;
   const title='Источник · '+fileName;
@@ -64,7 +74,7 @@ export async function archiveSourceDocuments(args:{
    }else{
     await client.query(
      "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,document_kind,implementation_status,source_refs,import_synced_hash) VALUES($1,$2,$3,$4,$5,$6,'technical','unverified',$7,$8)",
-     [randomUUID(),projectId,title,body,root.id,source,JSON.stringify(refs),fingerprint]);created++;
+     [randomUUID(),projectId,title,body,group.id,source,JSON.stringify(refs),fingerprint]);created++;
    }
    await client.query('COMMIT');
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
