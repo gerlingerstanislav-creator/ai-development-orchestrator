@@ -32,7 +32,19 @@ export async function initKnowledgeContext(pool:Pool){
   );
   CREATE INDEX IF NOT EXISTS idx_knowledge_reads_task ON knowledge_context_reads(project_id,task_id,created_at DESC);
  `);
- // Seed only headings, leaving existing TЗ and user-authored content intact.
+ // Adopt pre-existing specification sections instead of creating duplicate pages.
+ await pool.query(`
+  UPDATE documents d SET knowledge_key=sections.key
+  FROM documents root,
+  (VALUES ('overview','01. Общие сведения'),('goals','02. Назначение и цели'),
+  ('scope','03. Границы и состав системы'),('functional','04. Функциональные требования'),
+  ('nonfunctional','05. Нефункциональные требования'),('integrations','06. Данные и интеграции'),
+  ('constraints','07. Ограничения и допущения'),('acceptance','08. Критерии приёмки')) AS sections(key,title)
+  WHERE root.project_id=d.project_id AND root.system_key='spec' AND d.parent_id=root.id
+    AND d.title=sections.title AND d.knowledge_key IS NULL
+    AND NOT EXISTS (SELECT 1 FROM documents existing WHERE existing.project_id=d.project_id AND existing.knowledge_key=sections.key)
+ `);
+ // Seed only missing headings, leaving existing ТЗ and user-authored content intact.
  await pool.query(`
   INSERT INTO documents(id,project_id,parent_id,title,body,knowledge_key,knowledge_status)
   SELECT gen_random_uuid(),p.id,root.id,section.title,'',section.key,'approved'
@@ -46,6 +58,23 @@ export async function initKnowledgeContext(pool:Pool){
   ) AS section(key,title)
   WHERE NOT EXISTS(SELECT 1 FROM documents d WHERE d.project_id=p.id AND d.knowledge_key=section.key)
   ON CONFLICT DO NOTHING
+ `);
+ // The existing project trigger creates the system roots. Populate their specification children on creation.
+ await pool.query(`
+  CREATE OR REPLACE FUNCTION seed_knowledge_spec_sections() RETURNS trigger AS $seed$
+  BEGIN
+   INSERT INTO documents(id,project_id,parent_id,title,body,knowledge_key,knowledge_status)
+   SELECT gen_random_uuid(),NEW.project_id,NEW.id,s.title,'',s.key,'approved'
+   FROM (VALUES ('overview','01. Общие сведения'),('goals','02. Назначение и цели'),
+    ('scope','03. Границы и состав системы'),('functional','04. Функциональные требования'),
+    ('nonfunctional','05. Нефункциональные требования'),('integrations','06. Данные и интеграции'),
+    ('constraints','07. Ограничения и допущения'),('acceptance','08. Критерии приёмки')) AS s(key,title)
+   ON CONFLICT DO NOTHING;
+   RETURN NEW;
+  END $seed$ LANGUAGE plpgsql;
+  DROP TRIGGER IF EXISTS trg_seed_knowledge_spec_sections ON documents;
+  CREATE TRIGGER trg_seed_knowledge_spec_sections AFTER INSERT ON documents
+  FOR EACH ROW WHEN (NEW.system_key='spec') EXECUTE FUNCTION seed_knowledge_spec_sections();
  `);
 }
 type Dependencies={pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(req:any,reply:any)=>Promise<boolean>};
