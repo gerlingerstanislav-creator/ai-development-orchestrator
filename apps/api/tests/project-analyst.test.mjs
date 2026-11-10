@@ -3,13 +3,23 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import pg from 'pg';
-import {createAssistantService,isExplicitTaskCreation} from '../dist/assistant.js';
+import {createAssistantService,isExplicitTaskCreation,isExplicitDocumentationChange,isDocumentationStructureCommand} from '../dist/assistant.js';
 
 test('task commands are explicit even in the analyst chat',()=>{
  assert.equal(isExplicitTaskCreation('Создай задачу, а в ней уже спроси'),true);
  assert.equal(isExplicitTaskCreation('Пожалуйста, создай новую задачу: обновить документацию'),true);
  assert.equal(isExplicitTaskCreation('Как создать задачу из документации?'),false);
  assert.equal(isExplicitTaskCreation('Создай документ, в котором есть список задач'),false);
+});
+
+test('analyst distinguishes questions, critique and explicit structural edits',()=>{
+ assert.equal(isExplicitDocumentationChange('Тебя устраивает структура нашего ТЗ?'),false);
+ assert.equal(isDocumentationStructureCommand('Тебя устраивает структура нашего ТЗ?'),false);
+ assert.equal(isExplicitDocumentationChange('Как бы ты улучшил структуру документации?'),false);
+ assert.equal(isDocumentationStructureCommand('Улучши структуру нашей документации'),true);
+ assert.equal(isDocumentationStructureCommand('Перестрой структуру ТЗ'),true);
+ assert.equal(isExplicitDocumentationChange('Добавь в ТЗ критерии приёмки'),true);
+ assert.equal(isExplicitDocumentationChange('Давай обсудим риски проекта'),false);
 });
 
 test('analyst writes topic drafts, resolves PO questions, resumes and preserves manual edits',async t=>{
@@ -54,6 +64,14 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   assert.equal(url,'http://codex.test/assistant','Imported sources must not be requested again during follow-up');
   modelCalls++;
   const {prompt}=JSON.parse(options.body);
+  if(prompt.includes('Ты системный аналитик проекта и собеседник владельца продукта.')){
+   assert.ok(prompt.includes('Предзаказ'),'Analyst must see current project documentation for a reasoned critique');
+   return Response.json({message:'Структура пока недостаточно подробная: два сценария нужно сгруппировать по подсистемам. Предлагаю разделить функциональные требования, UX и исходные материалы.'});
+  }
+  if(prompt.includes('Улучши НАВИГАЦИОННУЮ структуру')){
+   const found=await db.query("SELECT id FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%'",[projectId]);
+   return Response.json({message:JSON.stringify({items:found.rows.map(d=>({id:d.id,section:'spec',group:'Заказы покупателя'}))})});
+  }
   let output;
   if(prompt.includes('Выдели факты')){
    const second=prompt.includes('Выдача заказа');
@@ -101,6 +119,24 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(completed.status,'completed');
  assert.equal(completed.result.generated_documents,2);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'topic:%'")).rows[0].n,2);
+ const beforeDialogue=(await db.query('SELECT count(*)::int n FROM document_import_jobs')).rows[0].n;
+ const dialogue=await send({mode:'documentation',message:'Тебя устраивает структура нашего ТЗ?'});
+ assert.equal(dialogue.statusCode,200,dialogue.body);
+ assert.match(dialogue.json().message,/Структура пока недостаточно подробная/);
+ assert.equal((await db.query('SELECT count(*)::int n FROM document_import_jobs')).rows[0].n,beforeDialogue,'Questions must never enqueue editing jobs');
+ const savedConversation=(await app.inject('/api/projects/'+projectId+'/assistant/messages?mode=documentation')).json();
+ assert.ok(savedConversation.some(m=>m.role==='assistant'&&m.body.includes('Структура пока недостаточно')),'Critical response is persisted');
+
+ const reorganize=await send({mode:'documentation',message:'Улучши структуру документации: сгруппируй наши страницы по системным разделам'});
+ assert.equal(reorganize.statusCode,202,reorganize.body);
+ const restructuringJob=reorganize.json().import_job_id;
+ await service.runDocumentationJob(restructuringJob);
+ const organized=(await db.query('SELECT id,body,parent_id FROM documents WHERE import_source LIKE $1',['topic:%'])).rows;
+ assert.equal(organized.length,2);
+ assert.equal(organized.find(x=>x.id===pageId).id,pageId,'Document ID survives reorganization');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'structure:%'")).rows[0].n,1);
+ assert.equal(organized[0].parent_id,organized[1].parent_id,'Related pages are grouped under the same navigation node');
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
  const checkpointCalls=modelCalls;
  await service.runDocumentationJob(jobId);
  assert.equal(modelCalls,checkpointCalls,'Completed jobs must not replay');
