@@ -6,6 +6,7 @@ import {QaPanel} from './QaPanel.js';
 import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
+import {KnowledgeAudit} from './KnowledgeAudit.js';
 
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
@@ -1542,6 +1543,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <textarea rows={3} value={processInstruction} onChange={e=>setProcessInstruction(e.target.value)} placeholder="Добавить требование или уточнить решение…"/>
       <button className="secondary" disabled={processActionBusy||!processInstruction.trim()} onClick={()=>void sendProcessInstruction(process)}>Отправить уточнение</button>
      </div>}
+     {selected&&process.taskId&&<KnowledgeAudit projectId={selected.id} taskId={process.taskId} processId={process.id} request={api}/>}
      <h4>Журнал событий</h4>
      {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{processEvents.map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
       <p className="muted">Для этого процесса подробный журнал пока отсутствует или загружается.</p>}
