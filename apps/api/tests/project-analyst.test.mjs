@@ -191,7 +191,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  await service.runDocumentationJob(rewriteId);
  assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0].status,'failed');
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'rebuild:%'",[projectId])).rows[0].n,1,
-  'The first completed rewritten page must already be persisted');
+  'The first completed rewritten page must already be persisted. Job: '+JSON.stringify((await db.query('SELECT status,message,rebuild_plan FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0]));
  for(const oldDoc of oldVersions){
   const current=(await db.query('SELECT body,parent_id FROM documents WHERE id=$1',[oldDoc.id])).rows[0];
   assert.equal(current.body,oldDoc.body);
