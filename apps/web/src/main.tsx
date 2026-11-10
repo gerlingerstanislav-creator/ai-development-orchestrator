@@ -9,7 +9,7 @@ type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
- const tail=/(?:^|\\s)@([a-z]*)$/i.exec(value);
+ const tail=/(?:^|\s)@([a-z]*)$/i.exec(value);
  if(!tail)return [];
  return mentionOptions.filter(item=>item.alias.toLowerCase().startsWith(tail[1].toLowerCase())&&stages.some(s=>s.stage===item.stage));
 }
