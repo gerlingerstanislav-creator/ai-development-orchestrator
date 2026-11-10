@@ -488,8 +488,12 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     'Правила проекта:\n'+rules,'История общения:\n'+JSON.stringify(history).slice(0,5500),
     'Данные о QA:\n'+JSON.stringify(latest).slice(0,2000),
     'Комментарии специалистов:\n'+JSON.stringify(agentNotes).slice(0,4800),
+     'Если ты прямо адресованный специалист и по проверенным фактам появился универсальный урок, заверши ответ строкой LEARNING_SUGGESTION: <урок>; иначе LEARNING_SUGGESTION: none. Не включай секреты и личные данные.',
     'Вопрос пользователя:\n'+mentionedAgent.message].join('\n\n'):prompt;
-   const generated=String(await assistantCompletion(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager')).trim();
+    const rawReply=String(await assistantCompletion(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager')).trim();
+    const suggestion=mentionedAgent?rawReply.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim():undefined;
+    if(mentionedAgent)await recordAgentLearning(pool,{projectId,role:mentionedAgent.stage,runId:messageId,body:suggestion,evidence:'Прямой диалог в задаче '+taskId});
+    const generated=rawReply.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
    answer=mentionedAgent?'@'+mentionedAgent.alias+' · '+generated:[args.continuation,generated].filter(Boolean).join('\n\n');
   }
   answer=answer.slice(0,10000);
