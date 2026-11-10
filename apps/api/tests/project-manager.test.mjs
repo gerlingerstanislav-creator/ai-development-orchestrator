@@ -193,3 +193,35 @@ test('owner questions project onto the board without changing task stages',async
   ['new','analysis'],['later','testing'],['review','merge_queue']
  ]);
 });
+
+test('a pending manager reply can be interrupted without cancelling the task workflow',async t=>{
+ const app=Fastify();
+ t.after(()=>app.close());
+ const projectId='00000000-0000-4000-8000-000000000001';
+ const taskId='00000000-0000-4000-8000-000000000002';
+ const messageId='00000000-0000-4000-8000-000000000003';
+ const actorId='00000000-0000-4000-8000-000000000004';
+ let status='processing',cancelled=0;
+ const pool={query:async(sql,params)=>{
+  if(sql.startsWith("UPDATE manager_messages SET status='cancelled'")){
+   if(status!=='processing')return {rowCount:0,rows:[]};
+   assert.deepEqual(params,[messageId,projectId,taskId,actorId]);
+   status='cancelled';
+   return {rowCount:1,rows:[{id:messageId}]};
+  }
+  return {rows:[],rowCount:0};
+ }};
+ registerProjectManagerRoutes(app,{pool,workerSecret:'worker-test-secret',uid:()=>actorId,
+  access:async()=>true,requireAdmin:async()=>true,workerAuthorization:async()=>'',decideAction:async()=>({action:'reply'}),
+  startManagerWorkflow:async()=>{},stopManagerWorkflow:async id=>{assert.equal(id,messageId);cancelled++;},
+  recoverTask:async()=>{throw Error('Stopping a PM reply must not resume or cancel task execution');}
+ });
+ const url='/api/projects/'+projectId+'/tasks/'+taskId+'/manager/messages/'+messageId+'/stop';
+ const first=await app.inject({method:'POST',url,payload:{}});
+ assert.equal(first.statusCode,200,first.body);
+ assert.equal(first.json().status,'cancelled');
+ assert.equal(cancelled,1);
+ const duplicate=await app.inject({method:'POST',url,payload:{}});
+ assert.equal(duplicate.statusCode,409,duplicate.body);
+ assert.equal(cancelled,1);
+});
