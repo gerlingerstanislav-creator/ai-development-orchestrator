@@ -29,6 +29,14 @@ test('analyst distinguishes questions, critique and explicit structural edits',(
 });
 
 test('analyst writes topic drafts, resolves PO questions, resumes and preserves manual edits',async t=>{
+ // This suite intentionally exercises the legacy fallback behavior; the
+ // default-on agent runtime has dedicated MCP + tool tests.
+ const previousRuntime=process.env.AGENT_RUNTIME_ENABLED;
+ process.env.AGENT_RUNTIME_ENABLED='false';
+ t.after(()=>{
+  if(previousRuntime===undefined)delete process.env.AGENT_RUNTIME_ENABLED;
+  else process.env.AGENT_RUNTIME_ENABLED=previousRuntime;
+ });
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
  await db.connect();
  t.after(()=>db.end());
