@@ -80,7 +80,7 @@ export async function rebuildProjectDocumentation(args:{
   sources=job.rebuild_sources as Source[];
  }else{
   sources=(await pool.query(
-   "SELECT id,title,body,parent_id,import_source,source_refs FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%' ORDER BY title,id LIMIT 100",
+   "SELECT id,title,body,parent_id,import_source,source_refs FROM documents WHERE project_id=$1 AND (import_source LIKE 'topic:%' OR import_source LIKE 'rebuild:%') ORDER BY title,id LIMIT 100",
    [id])).rows;
   if(!sources.length)throw Error('Нет импортированных тематических страниц ТЗ для пересборки. Сначала импортируй материалы в документацию.');
   await pool.query('UPDATE document_import_jobs SET rebuild_sources=$2,updated_at=now() WHERE id=$1 AND rebuild_sources IS NULL',
@@ -98,7 +98,7 @@ export async function rebuildProjectDocumentation(args:{
   const previous=(await pool.query(
    "SELECT body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='documentation' AND role='assistant' ORDER BY created_at DESC LIMIT 8",[id])).rows
    .map((row:any)=>String(row.body||'')).filter((body:string)=>/структур|раздел|тз|техническ/i.test(body)&&!/^Не могу (?:переписать|создать)/i.test(body));
-  const proposal=previous[0]?.slice(0,7500)||'';
+  const proposal=(previous.find((text:string)=>/предлагаю|рекомендую|предложенн|структур[ауы]:|^\s*\d+\./im.test(text))||previous[0]||'').slice(0,7500);
   const outline=sources.map(s=>({
    id:s.id,title:s.title,length:s.body.length,
    headings:s.body.split('\n').filter((l:string)=>/^#{1,4}\s/.test(l)).slice(0,70),
