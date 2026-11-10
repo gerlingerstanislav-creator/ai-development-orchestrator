@@ -101,12 +101,12 @@ function splitBatches(items:ClassifiedFragment[]):ClassifiedFragment[][]{
  * using a project-specific topic catalog plus bounded multi-fragment assignment.
  * Commit remapping atomically; a resumed import reuses the already-saved pages.
  */
-async function diversifyCollapsedTopics(args:TopicImportArgs,classified:ClassifiedFragment[],sourceName:string,location?:{owner:string;repository:string;commit:string}){
- const active=classified.filter(f=>f.topics.length>0);
+async function diversifyCollapsedTopics(args:TopicImportArgs,classified:ClassifiedFragment[],sourceName:string,location?:{owner:string;repository:string;commit:string},focusedKey?:string){
+ const active=classified.filter(f=>focusedKey?f.topics.some(t=>t.key===focusedKey):f.topics.length>0);
  const keys=new Set(active.flatMap(f=>f.topics.map(t=>t.key)));
  const paths=[...new Set(active.map(f=>f.path))];
- if(keys.size!==1||active.length<18||paths.length<3)return;
- const oldKey=[...keys][0];
+ if((!focusedKey&&keys.size!==1)||active.length<18||paths.length<3)return;
+ const oldKey=focusedKey||[...keys][0];
  const {pool,job,complete,progress,recordUsage}=args;
  const persisted=(await pool.query(
   "SELECT cursor,page_id,draft_body,title FROM document_import_topics WHERE job_id=$1 AND topic_key=$2",
@@ -308,9 +308,9 @@ export async function importByTopics(args:TopicImportArgs){
  for(const fragment of classified)for(const topic of fragment.topics){
   const bucket=counts.get(topic.key)||[];bucket.push(fragment);counts.set(topic.key,bucket);
  }
- for(const items of counts.values()){
+ for(const [key,items] of counts){
   if(items.length>=18&&new Set(items.map(x=>x.path)).size>=3&&splitBatches(items).length>=7)
-   await diversifyCollapsedTopics(args,items,sourceName,location);
+   await diversifyCollapsedTopics(args,items,sourceName,location,key);
  }
  // Remapping may introduce new stable keys after the initial classifier pass.
  for(const fragment of classified)for(const topic of fragment.topics)knownTopics.set(topic.key,knownTopics.get(topic.key)||topic.title);
