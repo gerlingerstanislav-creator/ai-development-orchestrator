@@ -568,6 +568,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const instructions=await stageAgentContext(id,documentationMode?'analysis':'backlog');
    const rules=await rulesContext(id);
    const memory=await agentLearnedContext(pool,id,role);
+   const baModules=documentationMode?(await pool.query("SELECT title,body,mandatory FROM knowledge_instruction_modules WHERE (project_id=$1 OR project_id IS NULL) AND status='approved' AND (stage='business_analyst' OR stage IS NULL) ORDER BY mandatory DESC,priority DESC LIMIT 30",[id])).rows:[];
    const {id:sessionId,secret}=await createAgentSession(pool,id,uid(req),role);
    const prompt=[
     'Ты '+(documentationMode?'бизнес-аналитик (BA)':'менеджер проекта (PM)')+' AI Development Orchestrator.',
@@ -585,7 +586,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'По завершении объясни по-русски, что именно выполнено и какие факты подтверждены результатами инструментов.',
     'Проект: '+JSON.stringify({name:project?.name||'',description:String(project?.description||'').slice(0,1200)}),
     'Правила проекта:\n'+rules.slice(0,3600),
-    'Роль и дополнительные инструкции (существующие инструкции этапа analysis относятся к СИСТЕМНОМУ аналитику и не имеют приоритета над границами BA):\n'+(documentationMode?'Следуй ограничениям роли BA, а не техническим инструкциям SA.':instructions.slice(0,4300)),
+    'Роль и дополнительные инструкции (технические инструкции SA не применяются к BA):\n'+(documentationMode?'Следуй ограничениям роли BA, а не техническим инструкциям SA.\n'+baModules.map(x=>x.title+': '+x.body).join('\n\n').slice(0,5400):instructions.slice(0,4300)),
     'Накопленный опыт (как контекст, не обязательная инструкция):\n'+memory.slice(0,2800),
     'История переписки:\n'+priorHistory.slice(-4400),
     'Открытая страница: '+(targetDocumentId||'не выбрана'),
