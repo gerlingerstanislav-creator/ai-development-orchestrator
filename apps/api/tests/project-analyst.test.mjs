@@ -3,40 +3,10 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import pg from 'pg';
-import {createAssistantService,isExplicitTaskCreation,isExplicitDocumentationChange,isDocumentationStructureCommand,isDocumentationRebuildCommand} from '../dist/assistant.js';
-
-test('explicit task commands are distinguished from questions and documentation edits',()=>{
- assert.equal(isExplicitTaskCreation('Создай задачу, а в ней уже спроси'),true);
- assert.equal(isExplicitTaskCreation('Пожалуйста, создай новую задачу: обновить документацию'),true);
- assert.equal(isExplicitTaskCreation('Как создать задачу из документации?'),false);
- assert.equal(isExplicitTaskCreation('Создай документ, в котором есть список задач'),false);
-});
-
-test('analyst distinguishes questions, critique and explicit structural edits',()=>{
- assert.equal(isExplicitDocumentationChange('Тебя устраивает структура нашего ТЗ?'),false);
- assert.equal(isDocumentationStructureCommand('Тебя устраивает структура нашего ТЗ?'),false);
- assert.equal(isExplicitDocumentationChange('Как бы ты улучшил структуру документации?'),false);
- assert.equal(isDocumentationStructureCommand('Улучши структуру нашей документации'),true);
- assert.equal(isDocumentationStructureCommand('Перестрой структуру ТЗ'),true);
- assert.equal(isExplicitDocumentationChange('Добавь в ТЗ критерии приёмки'),true);
- assert.equal(isExplicitDocumentationChange('Давай обсудим риски проекта'),false);
- assert.equal(isDocumentationRebuildCommand('Ок, давай перепиши текущее ТЗ в соответствии с предложенной тобой структурой, а текущие материалы можешь перенести в исходники'),true);
- assert.equal(isDocumentationRebuildCommand('Перепиши ТЗ по согласованной структуре'),true);
- assert.equal(isDocumentationRebuildCommand('Тебя устраивает структура нашего ТЗ?'),false);
- assert.equal(isDocumentationRebuildCommand('Улучши структуру документации'),false);
- assert.equal(isDocumentationRebuildCommand('Переделай структуру документации'),false);
- assert.equal(isDocumentationRebuildCommand('Давай пересоберём ТЗ'),true);
-});
+import {createAssistantService} from '../dist/assistant.js';
 
 test('analyst writes topic drafts, resolves PO questions, resumes and preserves manual edits',async t=>{
- // This suite intentionally exercises the legacy fallback behavior; the
- // default-on agent runtime has dedicated MCP + tool tests.
- const previousRuntime=process.env.AGENT_RUNTIME_ENABLED;
- process.env.AGENT_RUNTIME_ENABLED='false';
- t.after(()=>{
-  if(previousRuntime===undefined)delete process.env.AGENT_RUNTIME_ENABLED;
-  else process.env.AGENT_RUNTIME_ENABLED=previousRuntime;
- });
+ // Verify durable analysis jobs directly; natural-language routing is covered by MCP agent tests.
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
  await db.connect();
  t.after(()=>db.end());
@@ -44,14 +14,13 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  t.after(()=>app.close());
  await db.query(String.raw`
   CREATE TEMP TABLE projects (id uuid, name text, description text);
-  CREATE TEMP TABLE tasks (id uuid PRIMARY KEY,project_id uuid,title text,description text,type text,stage text,position int DEFAULT 0,analysis_state text,clarification_questions jsonb,related_task_ids jsonb,depends_on_task_id uuid,dependency_source text,document_id uuid,question_key text,question_topic text,question_status text,question_answer text,question_answered_at timestamptz,question_job_id uuid,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
-  CREATE UNIQUE INDEX ON tasks(project_id,document_id,question_key) WHERE type='question';
+  CREATE TEMP TABLE tasks (id uuid,project_id uuid,title text,description text,type text,stage text,analysis_state text,clarification_questions jsonb,related_task_ids jsonb,depends_on_task_id uuid,dependency_source text,created_at timestamptz DEFAULT now());
   CREATE TEMP TABLE task_events (id uuid,task_id uuid,actor_id uuid,event text,detail text);
   CREATE TEMP TABLE project_git_repositories (project_id uuid,repository text,default_branch text,target_branch text);
   CREATE TEMP TABLE assistant_usage (id uuid,project_id uuid,actor_id uuid);
   CREATE TEMP TABLE documents (id uuid,project_id uuid,title text,body text,parent_id uuid,import_source text,system_key text,import_synced_hash text,source_refs jsonb DEFAULT '[]'::jsonb,document_kind text,implementation_status text,updated_at timestamptz DEFAULT now());
   CREATE UNIQUE INDEX ON documents(project_id,import_source) WHERE import_source IS NOT NULL;
-  CREATE TEMP TABLE assistant_messages (id uuid,project_id uuid,task_id uuid,actor_id uuid,role text,body text,created_task_id uuid,created_document_id uuid,channel text,created_at timestamptz DEFAULT now(),documentation_reset_requested boolean DEFAULT false,owner_question_cleanup_requested boolean DEFAULT false);
+  CREATE TEMP TABLE assistant_messages (id uuid,project_id uuid,task_id uuid,actor_id uuid,role text,body text,created_task_id uuid,created_document_id uuid,channel text,created_at timestamptz DEFAULT now(),documentation_reset_requested boolean DEFAULT false,owner_question_cleanup_requested boolean DEFAULT false,task_deletion_ids uuid[]);
   CREATE TEMP TABLE project_ai_settings (project_id uuid,enabled boolean,model text,reasoning text);
   CREATE TEMP TABLE workflow_stages (project_id uuid,stage text,agent_name text,agent_instructions text);
   CREATE TEMP TABLE project_conversation_agents (project_id uuid,role text,agent_name text,agent_instructions text);
@@ -66,7 +35,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   CREATE TEMP TABLE document_import_fragments (job_id uuid,fragment_index int,file_path text,heading text,content_sha text,notes text,topics jsonb,exclusion_reason text,PRIMARY KEY(job_id,fragment_index));
   CREATE TEMP TABLE document_import_topics (job_id uuid,topic_key text,title text,status text DEFAULT 'pending',cursor int DEFAULT 0,page_id uuid,draft_body text DEFAULT '',source_refs jsonb DEFAULT '[]'::jsonb,review_suggestion text,rebuild_questions jsonb NOT NULL DEFAULT '[]'::jsonb,updated_at timestamptz DEFAULT now(),PRIMARY KEY(job_id,topic_key));
   CREATE TEMP TABLE document_import_proposals (id uuid,project_id uuid,job_id uuid,topic_key text,document_id uuid,title text,proposed_body text,base_hash text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),decided_at timestamptz,UNIQUE(job_id,topic_key));
-
+  CREATE TEMP TABLE documentation_questions (id uuid,project_id uuid,job_id uuid,topic_key text,question_key text,document_id uuid,question text,answer text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),answered_at timestamptz,UNIQUE(project_id,document_id,question_key));
  `.replaceAll('\\`','`'));
  const pool={query:(...args)=>db.query(...args),connect:async()=>({query:(...args)=>db.query(...args),release(){}})};
  const projectId=randomUUID(),actorId=randomUUID(),rootId=randomUUID();
@@ -93,7 +62,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   }
   if(prompt.includes('Составь план НОВЫХ содержательных тематических страниц')){
    rebuildPlanCalls++;
-   assert.match(prompt,/Структура пока недостаточно подробная/,'Reuse actual previously proposed structure');
+   assert.match(prompt,/Структура пока недостаточно подробная/,'Reuse actual previously proposed structure; prompt='+prompt.slice(0,2100));
    const old=(await db.query("SELECT id,import_source FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%' ORDER BY title,id",[projectId])).rows;
    assert.equal(old.length,2);
    return Response.json({message:JSON.stringify({chapters:[
@@ -142,19 +111,18 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  const service=createAssistantService({pool,codexUrl:'http://codex.test',runnerKey:'test',decryptToken:()=>''});
  const started=[];
  service.registerRoutes(app,{pool,uid:()=>actorId,access:async()=>true,requireAdmin:async()=>true,startDocumentationWorkflow:async id=>started.push(id)});
- const send=(payload)=>app.inject({method:'POST',url:'/api/projects/'+projectId+'/assistant',payload});
- const directTask=await send({mode:'documentation',message:'Создай задачу на обновление документации'});
- assert.equal(directTask.statusCode,200,directTask.body);
- assert.match(directTask.json().message,/Передать СА/);
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type IS DISTINCT FROM \'question\'')).rows[0].n,0);
- assert.deepEqual(started,[]);
+ const queueJob=async({message,attachments=[],structureOnly=false,rebuildSpec=false,sourceKey}={})=>{
+  const jobId=randomUUID();
+  await db.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_key,request_text,analyst_input) VALUES($1,$2,$3,'running','Запуск аналитика',$4,$5,$6)",
+   [jobId,projectId,actorId,sourceKey||'analyst:'+jobId,message||'Подготовь документацию',JSON.stringify({
+    location:null,attachments,mode:'documentation',documentId:null,structureOnly,rebuildSpec
+   })]);
+  return jobId;
+ };
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
  const attachments=[{name:'coffee.md',body:'# Предзаказ\nПокупатель оформляет заказ.'},{name:'barista.md',body:'# Выдача заказа\nБариста выдаёт заказ.'}];
  failOnce=true;
- const first=await send({mode:'documentation',message:'Составь ТЗ по темам',attachments});
- assert.equal(first.statusCode,202,first.body);
- const jobId=first.json().import_job_id;
- assert.deepEqual(started,[jobId]);
- assert.equal((await send({mode:'documentation',message:'Составь ТЗ ещё раз'})).statusCode,409,'A second editing job must be blocked; ordinary chat questions remain available');
+ const jobId=await queueJob({message:'Составь ТЗ по темам',attachments,sourceKey:'attachments:coffee-source'});
  await service.runDocumentationJob(jobId);
  assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0].status,'failed');
  const saved=(await db.query("SELECT id,body FROM documents WHERE import_source LIKE 'topic:%'")).rows;
@@ -168,21 +136,15 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(completed.status,'completed');
  assert.equal(completed.result.generated_documents,2);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'topic:%'")).rows[0].n,2);
- const beforeDialogue=(await db.query('SELECT count(*)::int n FROM document_import_jobs')).rows[0].n;
- const dialogue=await send({mode:'documentation',message:'Тебя устраивает структура нашего ТЗ?'});
- assert.equal(dialogue.statusCode,200,dialogue.body);
- assert.match(dialogue.json().message,/Структура пока недостаточно подробная/);
- assert.equal((await db.query('SELECT count(*)::int n FROM document_import_jobs')).rows[0].n,beforeDialogue,'Questions must never enqueue editing jobs');
- const savedConversation=(await app.inject('/api/projects/'+projectId+'/assistant/messages?mode=documentation')).json();
- assert.ok(savedConversation.some(m=>m.role==='assistant'&&m.body.includes('Структура пока недостаточно')),'Critical response is persisted');
-
+ // Preserve an earlier owner/analyst design decision as factual conversation history.
+ const previousDecision='Структура пока недостаточно подробная: два сценария нужно сгруппировать по подсистемам. Предлагаю разделить функциональные требования, UX и исходные материалы.';
+ await db.query("INSERT INTO assistant_messages(id,project_id,task_id,role,body,channel,created_at) VALUES($1,$2,NULL,'assistant',$3,'documentation',now())",
+  [randomUUID(),projectId,previousDecision]);
  // Simulate an older completed import, from before raw-source archiving existed.
  // Organizing must recover all originals from the pinned snapshot without asking GitHub again.
  await db.query("DELETE FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId]);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId])).rows[0].n,0);
- const reorganize=await send({mode:'documentation',message:'Улучши структуру документации: сгруппируй наши страницы по системным разделам'});
- assert.equal(reorganize.statusCode,202,reorganize.body);
- const restructuringJob=reorganize.json().import_job_id;
+ const restructuringJob=await queueJob({message:'Сгруппируй страницы по системным разделам',structureOnly:true});
  await service.runDocumentationJob(restructuringJob);
  const organized=(await db.query('SELECT id,body,parent_id FROM documents WHERE import_source LIKE $1',['topic:%'])).rows;
  assert.equal(organized.length,2);
@@ -190,7 +152,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(organized.find(x=>x.id===pageId).id,pageId,'Document ID survives reorganization');
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'structure:%'")).rows[0].n,1);
  assert.equal(organized[0].parent_id,organized[1].parent_id,'Related pages are grouped under the same navigation node');
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type IS DISTINCT FROM \'question\'')).rows[0].n,0);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
  const checkpointCalls=modelCalls;
  await service.runDocumentationJob(jobId);
  assert.equal(modelCalls,checkpointCalls,'Completed jobs must not replay');
@@ -200,15 +162,14 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  const answered=await app.inject({method:'POST',url:'/api/projects/'+projectId+'/documentation/questions/'+questions[0].id+'/answer',payload:{answer:'Оплата при получении'}});
  assert.equal(answered.statusCode,202,answered.body);
  await service.runDocumentationJob(answered.json().import_job_id);
- assert.equal((await db.query("SELECT question_status AS status FROM tasks WHERE id=$1",[questions[0].id])).rows[0].status,'resolved');
+ assert.equal((await db.query("SELECT status FROM documentation_questions WHERE id=$1",[questions[0].id])).rows[0].status,'resolved');
  assert.match((await db.query('SELECT body FROM documents WHERE id=$1',[pageId])).rows[0].body,/оплачивает его при получении/);
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type IS DISTINCT FROM \'question\'')).rows[0].n,0,'Documentation questions never create development tasks');
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0,'Documentation questions never create development tasks');
 
  // User edits an imported page. Reimport the same named sources and preserve it.
  await db.query("UPDATE documents SET body='Ручная правка владельца',updated_at=now() WHERE id=$1",[pageId]);
- const rerun=await send({mode:'documentation',message:'Сверь исходники повторно',attachments});
- assert.equal(rerun.statusCode,202,rerun.body);
- await service.runDocumentationJob(rerun.json().import_job_id);
+ const rerunId=await queueJob({message:'Повторная сверка источников',attachments,sourceKey:'attachments:coffee-source'});
+ await service.runDocumentationJob(rerunId);
  assert.equal((await db.query('SELECT body FROM documents WHERE id=$1',[pageId])).rows[0].body,'Ручная правка владельца');
  const proposals=(await db.query("SELECT id,document_id,status FROM document_import_proposals WHERE document_id=$1",[pageId])).rows;
  assert.equal(proposals.length,1,'Conflicting import creates review proposal');
@@ -224,15 +185,13 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(oldVersions.length,2);
  failRebuildOnce=true;rebuildPartCalls=0;
  const rewriteMessage='Ок, давай перепиши текущее ТЗ в соответствии с предложенной тобой структурой, а текущие материалы можешь перенести в исходники';
- const rewrite=await send({mode:'documentation',message:rewriteMessage});
- assert.equal(rewrite.statusCode,202,rewrite.body);
- const rewriteId=rewrite.json().import_job_id;
+ const rewriteId=await queueJob({message:rewriteMessage,rebuildSpec:true});
  const flag=(await db.query('SELECT analyst_input FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0].analyst_input;
  assert.equal(flag.rebuildSpec,true,'The explicit conversational command must choose the rewrite workflow');
  await service.runDocumentationJob(rewriteId);
  assert.equal((await db.query('SELECT status FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0].status,'failed');
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'rebuild:%'",[projectId])).rows[0].n,1,
-  'The first completed rewritten page must already be persisted');
+  'The first completed rewritten page must already be persisted. Job: '+JSON.stringify((await db.query('SELECT status,message,rebuild_plan FROM document_import_jobs WHERE id=$1',[rewriteId])).rows[0]));
  for(const oldDoc of oldVersions){
   const current=(await db.query('SELECT body,parent_id FROM documents WHERE id=$1',[oldDoc.id])).rows[0];
   assert.equal(current.body,oldDoc.body);
@@ -266,8 +225,8 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   assert.equal(current.parent_id,oldArchive.id,'Previous pages are moved to Research after successful rewrite');
   assert.match(current.import_source,/^archived-topic:/);
  }
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type IS DISTINCT FROM \'question\'')).rows[0].n,0,'Rebuilding does not launch development');
- assert.equal((await db.query("SELECT count(*)::int n FROM tasks WHERE type='question' AND question_job_id=$1",[rewriteId])).rows[0].n,2,
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0,'Rebuilding does not launch development');
+ assert.equal((await db.query("SELECT count(*)::int n FROM documentation_questions WHERE job_id=$1",[rewriteId])).rows[0].n,2,
   'Open product-owner questions are linked to rewritten pages');
  const beforeReplay=rebuildPartCalls;
  await service.runDocumentationJob(rewriteId);
