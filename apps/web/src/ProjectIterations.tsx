@@ -14,10 +14,10 @@ type IterationDetails=Pick<IterationSummary,'id'|'title'|'revision'|'approved_re
  body:string;documents:PlanDocument[];tasks:PlannedTask[];plans:PlanRef[];recommended_task_ids:string[];
  planning_runs:{id:string;status:string;message:string}[];
 };
-type PlanItem={key:string;title:string;description:string;parent?:string;kind?:'analysis'|'development';depends_on?:string;tags?:string[];existing?:{id:string;title:string}};
+type PlanItem={key:string;title:string;description:string;parent?:string;kind?:'analysis'|'development';depends_on?:string;tags?:string[];existing?:{id:string;title:string};changes?:string[]};
 type PlanPreview={
  id:string;items:PlanItem[];unmentioned:{id:string;title:string}[];stale:boolean;preview_revision:string;published_at:string|null;
- result:{created:string[];existing:string[]}|null;
+ result:{created:string[];existing:string[];updated?:string[]}|null;
 };
 type LaunchResult={id:string;started:boolean;message:string};
 const initialDraft={title:'',body:'',document_ids:[] as string[]};
@@ -41,6 +41,7 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
  const [editing,setEditing]=useState(false);
  const [draftRevision,setDraftRevision]=useState<number|undefined>();
  const [preview,setPreview]=useState<PlanPreview|null>(null);
+ const [selectedChanges,setSelectedChanges]=useState<string[]>([]);
  const [selectedTasks,setSelectedTasks]=useState<string[]>([]);
  const [recommendation,setRecommendation]=useState(false);
  const [launchResults,setLaunchResults]=useState<LaunchResult[]>([]);
@@ -92,14 +93,14 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
   });
  }
  function openPlan(id:string){
-  void perform(async()=>setPreview(await request<PlanPreview>(url+'/plans/'+id)));
+  void perform(async()=>{setPreview(await request<PlanPreview>(url+'/plans/'+id));setSelectedChanges([]);});
  }
  function publish(){
   if(!preview)return;
   void perform(async()=>{
-   const result=await request<{created:string[];existing:string[]}>(url+'/plans/'+preview.id+'/publish',requestBody('POST',{confirm:true,preview_revision:preview.preview_revision}));
+   const result=await request<{created:string[];existing:string[]}>(url+'/plans/'+preview.id+'/publish',requestBody('POST',{confirm:true,preview_revision:preview.preview_revision,selected_changes:selectedChanges}));
    await refreshDetails();await onChange();setPreview(null);
-   setNotice('Создано карточек: '+result.created.length+'. Уже было в плане: '+result.existing.length+'.');
+   setNotice('Создано карточек: '+result.created.length+'. Обновлено: '+(result as {updated?:string[]}).updated?.length+'. Уже существовало: '+result.existing.length+'.');
   });
  }
  function useRecommendation(){
@@ -178,11 +179,12 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
      <h4>{preview.published_at?'Опубликованный план':'Предпросмотр плана'}</h4>
      {!preview.published_at&&<p>Задачи на разработку будут готовы к отдельному запуску. Задачи на доанализ появятся в колонке «Анализ».</p>}
      {preview.stale&&!preview.published_at&&<p className="error">Объём или исходные документы изменились. Подготовь новый черновик.</p>}
-     {preview.result&&<p>Создано карточек: {preview.result.created.length}. Уже существовало: {preview.result.existing.length}.</p>}
+     {preview.result&&<p>Создано карточек: {preview.result.created.length}. Обновлено: {preview.result.updated?.length??0}. Уже существовало: {preview.result.existing.length}.</p>}
      {preview.items.map(item=><details key={item.key} className={item.parent?'iteration-child':''}>
-      <summary>{item.parent?kindLabel(item.kind??null):'Эпик'} · {item.title} · {item.existing?'Уже есть':'Новая карточка'}</summary>
+      <summary>{item.parent?kindLabel(item.kind??null):'Эпик'} · {item.title} · {item.existing?(item.changes?.length?'Изменена':'Без изменений'):'Новая карточка'}</summary>
       <p>{item.description}</p>
       {item.existing&&<p>Сохранится текущая карточка <a href={taskLink(item.existing.id)}>{item.existing.title}</a>.</p>}
+       {item.existing&&!!item.changes?.length&&<label><input type="checkbox" checked={selectedChanges.includes(item.key)} onChange={e=>setSelectedChanges(old=>e.target.checked?[...old,item.key]:old.filter(k=>k!==item.key))}/> Применить изменения: {item.changes.join(', ')}</label>}
       {!!item.tags?.length&&<small>Теги: {item.tags.join(', ')}. </small>}
       {item.depends_on&&<small>Зависит от {preview.items.find(task=>task.key===item.depends_on)?.title}</small>}
      </details>)}
