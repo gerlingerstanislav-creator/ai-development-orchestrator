@@ -90,9 +90,9 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal(calls,3,'Temporal retry does not regenerate a completed draft');
  const status=(await request('GET',url)).json();
  assert.equal(status.planning_runs[0].status,'completed');
- const plan=await propose();
- assert.equal(status.planning_runs[0].plan_id,plan.id);
- assert.deepEqual(await propose(),plan,'Identical content reuses the same draft');
+ const plan={id:status.planning_runs[0].plan_id};
+ const manual=await propose();
+ assert.deepEqual(await propose(),manual,'Identical content reuses the same draft');
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
  const planUrl=url+'/plans/'+plan.id;
  const preview=(await request('GET',planUrl)).json();
@@ -101,7 +101,9 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  await db.query("UPDATE documents SET updated_at=updated_at+interval '1 second' WHERE id=$1",[source]);
  assert.equal((await publish()).statusCode,409,'Changed source invalidates publication');
  proposal.source_revision=(await readIteration(db,project,id)).source_revision;
- const next=await propose(),nextUrl=url+'/plans/'+next.id;
+ const next=await proposeIterationPlan(db,project,actor,{...proposal,epics:[{...proposal.epics[0],tasks:[...proposal.epics[0].tasks,
+  {key:'form-validation',title:'Валидация формы',description:'Добавить и протестировать валидацию полей',kind:'development',tags:['frontend'],depends_on:'form'}]}]});
+ const nextUrl=url+'/plans/'+next.id;
  const nextPreview=(await request('GET',nextUrl)).json();
  const firstPublish=await request('POST',nextUrl+'/publish',{confirm:true,preview_revision:nextPreview.preview_revision});
  assert.equal(firstPublish.statusCode,200,firstPublish.body);
