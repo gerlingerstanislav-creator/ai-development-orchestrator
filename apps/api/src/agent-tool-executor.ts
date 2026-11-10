@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
+import {buildKnowledgeContext} from './knowledge-workflow.js';
 
 const uuid=z.string().uuid();
 const createDoc=z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:uuid,
@@ -148,19 +149,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {results:r.rows};
  }
  case 'knowledge.context':{
-  const {task_id,stage}=z.object({task_id:uuid,stage:z.string().min(2).max(60).default('development')}).parse(params);
-  const task=(await pool.query('SELECT id,title,description FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id])).rows[0];
-  if(!task)throw rejected('Задача не найдена',404);
-  const [rules,agent,docs]=await Promise.all([
-   pool.query('SELECT id,body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[projectId]),
-   pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,stage]),
-   pool.query("SELECT id,title,knowledge_summary AS summary,updated_at AS version,knowledge_key FROM documents WHERE project_id=$1 AND knowledge_status='approved' AND (knowledge_key IS NOT NULL OR to_tsvector('simple',title||' '||body) @@ plainto_tsquery('simple',$2)) ORDER BY (knowledge_key IS NOT NULL) DESC,updated_at DESC LIMIT 12",[projectId,task.title])
-  ]);
-  const context={task,stage,agent:agent.rows[0]||null,mandatory_rules:rules.rows,documents:docs.rows,
-   instruction:'Дополнительные документы читай через knowledge.read. Поиск не гарантирует полноту; проверяй связанные требования.'};
-  await pool.query('INSERT INTO knowledge_context_snapshots(id,project_id,task_id,agent_stage,agent_session_id,sources,instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',
-   [randomUUID(),projectId,task_id,stage,session.id,JSON.stringify(docs.rows.map(d=>({id:d.id,version:d.version,knowledge_key:d.knowledge_key}))),JSON.stringify({agent:agent.rows[0]||null,mandatory_rules:rules.rows})]);
-  return context;
+  const {task_id,stage,tags}=z.object({
+   task_id:uuid,stage:z.enum(['analysis','development','testing','documentation','manager']).default('analysis'),
+   tags:z.array(z.string().min(1).max(60)).max(24).default([])
+  }).parse(params);
+  return buildKnowledgeContext(pool,{projectId,taskId:task_id,stage,sessionId:session.id,tags});
  }
 
  case 'tasks.list':{
