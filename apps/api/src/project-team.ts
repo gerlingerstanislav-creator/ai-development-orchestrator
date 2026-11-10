@@ -1,3 +1,4 @@
+import {agentInstructions} from './agent-instructions.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
@@ -52,6 +53,21 @@ export async function initProjectTeamSchema(pool:Pool){
  WHERE w.project_id=s.project_id AND w.stage='deployment' AND s.role='devops'
    AND (w.agent_name IS DISTINCT FROM s.agent_name OR w.agent_instructions IS DISTINCT FROM s.agent_instructions);
  `);
+ // Move only untouched built-in profiles to concise current instructions.
+ // Preserve any role with an instruction edit recorded by a project owner.
+ const legacyDefaults={"analysis":"На основании согласованного бизнес-аналитиком пула анализируй технические требования, данные, API, интеграции, состояния, ограничения и зависимости. Уточняй только блокирующие вопросы по текущим задачам. Продуктовые решения возвращай бизнес-аналитику и владельцу продукта. Не создавай задачи и вопросы по невыбранному функционалу. Сверяй PR с утверждённым ТЗ; QA выполняет тестировщик.","development":"Реализуй только утверждённое ТЗ в существующем репозитории/ветке, выполняй доступные проверки, исправляй воспроизводимые дефекты QA. Создай или обнови PR. Пиши тестировщику технические нюансы и вопросы, заказчику не обращайся. Не меняй секреты.","testing":"Независимо составь тест-план и проведи все доступные проверки на конкретном SHA. Сохраняй доказательства по каждому сценарию. Без реального браузера не засчитывай визуальное тестирование. Если инструментов нет — сообщи Менеджеру проекта непроверенные сценарии, не проси заказчика проводить тесты и не разрешай слияние самостоятельно.","documentation":"Обновляй только проверенную, слитую функциональность по ТЗ и фактическим изменениям. Не включай неутверждённые рабочие заметки команды как установленные требования. Все вопросы направляй коллегам или Менеджеру проекта, а не заказчику.","devops":"Отвечай за надёжность, скорость и экономичность CI/CD, GitHub Actions и выкладки. Анализируй фактические job, длительность, повторные установки зависимостей, кеширование, concurrency, отмену устаревших запусков, повторные сборки, артефакты, безопасность секретов и права GitHub token. Предлагай минимальные проверяемые изменения с измеримым эффектом. Не отключай тесты или защиту веток ради скорости. Используй неизменяемые версии артефактов, гарантируй идемпотентность и исключай параллельные деплои в одну среду. Перед выкладкой проверяй обязательные статусы и SHA; для продакшена нужен явный разрешённый механизм выкладки и стратегия отката. Не утверждай, что сделал deploy, если нет результата инструмента. Не запускай выкладку в ходе консультации."};
+ const oldConversation={
+  manager:'Помогай владельцу проекта ставить задачи и принимать решения. Координируй работу других агентов, уточняй только существенные вопросы, показывай реальные состояния задач и не объявляй действие выполненным без подтверждения инструментов.',
+  analyst:'Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.'
+ };
+ for(const role of ['manager','analyst'] as const){
+  await pool.query("UPDATE project_conversation_agents a SET agent_instructions=$3,updated_at=now() WHERE role=$1 AND agent_instructions=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role=$1)",[role,['',oldConversation[role]],agentInstructions[role]]);
+ }
+ for(const role of ['analysis','development','testing','documentation'] as const){
+  await pool.query("UPDATE workflow_stages w SET agent_instructions=$3 WHERE stage=$1 AND agent_instructions=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=w.project_id AND h.role=$1)",[role,['',legacyDefaults[role]],agentInstructions[role]]);
+ }
+ await pool.query("UPDATE project_specialist_agents a SET agent_instructions=$2,updated_at=now() WHERE role='devops' AND agent_instructions=ANY($1::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role='devops')",[[legacyDefaults.devops,''],agentInstructions.devops]);
+ await pool.query("UPDATE workflow_stages w SET agent_name=s.agent_name,agent_instructions=s.agent_instructions FROM project_specialist_agents s WHERE w.project_id=s.project_id AND w.stage='deployment' AND s.role='devops'");
 }
 export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId:string,role:'manager'|'analyst'){
  const row=(await pool.query('SELECT agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role])).rows[0];
