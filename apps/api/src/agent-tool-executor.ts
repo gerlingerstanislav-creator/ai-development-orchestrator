@@ -11,17 +11,17 @@ const updateDoc=z.object({document_id:uuid,expected_revision:z.string().datetime
  idempotency_key:z.string().min(8).max(120).optional()});
 const revision=(value:unknown)=>new Date(value as string).toISOString();
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
-async function parentExists(db:Pool|PoolClient,projectId:string,id:string){
+async function parentExists(db:Pick<Pool,'query'>,projectId:string,id:string){
  return !!(await db.query('SELECT id FROM documents WHERE id=$1 AND project_id=$2',[id,projectId])).rowCount;
 }
-async function createPage(db:Pool|PoolClient,projectId:string,params:z.infer<typeof createDoc>){
+async function createPage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<typeof createDoc>){
  if(!await parentExists(db,projectId,params.parent_id))throw rejected('Родительская страница не найдена',404);
  const id=randomUUID();
  await db.query('INSERT INTO documents(id,project_id,title,body,parent_id) VALUES($1,$2,$3,$4,$5)',
   [id,projectId,params.title,params.body,params.parent_id]);
  return {id,title:params.title,parent_id:params.parent_id};
 }
-async function updatePage(db:Pool|PoolClient,projectId:string,params:z.infer<typeof updateDoc>){
+async function updatePage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<typeof updateDoc>){
  const old=(await db.query('SELECT id,title,body,parent_id,system_key,updated_at FROM documents WHERE project_id=$1 AND id=$2 FOR UPDATE',
   [projectId,params.document_id])).rows[0];
  if(!old)throw rejected('Страница не найдена',404);
@@ -41,7 +41,7 @@ async function updatePage(db:Pool|PoolClient,projectId:string,params:z.infer<typ
   [projectId,params.document_id,title,params.body??old.body,parent]);
  return {id:params.document_id,revision:revision(updated.rows[0].updated_at)};
 }
-export async function executeAgentTool(pool:Pool,session:AgentSession,name:string,args:unknown,
+export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSession,name:string,args:unknown,
  startWorkflow:(jobId:string)=>Promise<void>):Promise<unknown>{
  const projectId=session.project_id,actorId=session.actor_id;
  const params=(args&&typeof args==='object'&&!Array.isArray(args)?args:{}) as Record<string,unknown>;
@@ -74,24 +74,19 @@ export async function executeAgentTool(pool:Pool,session:AgentSession,name:strin
  case 'documents.create':return createPage(pool,projectId,createDoc.parse(params));
  case 'documents.update':{
   const values=updateDoc.parse(params);
-  const client=await pool.connect();
-  try{await client.query('BEGIN');const result=await updatePage(client,projectId,values);await client.query('COMMIT');return result;}
-  catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  return updatePage(pool,projectId,values);
  }
  case 'documents.changeset':{
   const {operations}=z.object({operations:z.array(z.discriminatedUnion('op',[
    createDoc.extend({op:z.literal('create')}),
    updateDoc.extend({op:z.literal('update')})
   ])).min(1).max(40)}).parse(params);
-  const client=await pool.connect();
-  try{
-   await client.query('BEGIN');const changed=[];
-   for(const operation of operations){
-    if(operation.op==='create')changed.push(await createPage(client,projectId,operation));
-    else changed.push(await updatePage(client,projectId,operation));
-   }
-   await client.query('COMMIT');return {changed};
-  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  const changed=[];
+  for(const operation of operations){
+   if(operation.op==='create')changed.push(await createPage(pool,projectId,operation));
+   else changed.push(await updatePage(pool,projectId,operation));
+  }
+  return {changed};
  }
  case 'tasks.list':{
   const r=await pool.query('SELECT id,title,description,stage,analysis_state,display_number,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 100',[projectId]);
@@ -104,15 +99,10 @@ export async function executeAgentTool(pool:Pool,session:AgentSession,name:strin
  }
  case 'tasks.create':{
   const {title,description}=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(10).max(12000)}).parse(params);
-  const client=await pool.connect();
-  try{
-   await client.query('BEGIN');const id=randomUUID();
-   await client.query("INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state) VALUES($1,$2,$3,$4,'task','analysis','ready_for_development')",
-    [id,projectId,title,description]);
-   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'created','Создано агентом через инструменты сервиса')",
-    [randomUUID(),id,actorId]);
-   await client.query('COMMIT');return {id,stage:'analysis'};
-  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  const id=randomUUID();
+  await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state) VALUES($1,$2,$3,$4,'task','analysis','ready_for_development')",[id,projectId,title,description]);
+  await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'created','Создано агентом через инструменты сервиса')",[randomUUID(),id,actorId]);
+  return {id,stage:'analysis'};
  }
  case 'questions.list':{
   const r=await pool.query("SELECT q.id,q.question,q.answer,q.status,q.document_id,d.title AS document_title FROM documentation_questions q JOIN documents d ON d.id=q.document_id WHERE q.project_id=$1 AND q.status IN ('open','answered') ORDER BY q.created_at DESC LIMIT 100",[projectId]);
