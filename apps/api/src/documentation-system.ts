@@ -21,6 +21,7 @@ export async function initDocumentationSystem(pool:Pool){
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_commit text;
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS rebuild_sources jsonb;
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS rebuild_plan jsonb;
+ ALTER TABLE document_import_topics ADD COLUMN IF NOT EXISTS rebuild_questions jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS system_key text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS import_synced_hash text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_refs jsonb NOT NULL DEFAULT '[]'::jsonb;
