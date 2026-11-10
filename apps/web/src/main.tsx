@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import {ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
+import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
@@ -1552,7 +1553,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <button type="button" title="Реорганизовать импортированные тематические страницы с аналитиком" aria-label="Реорганизовать структуру документации" onClick={()=>{setAnalystDocumentId(null);setProjectChatMode('documentation');setProjectInput('Улучши структуру документации: распредели импортированные тематические страницы по системным разделам и осмысленным группам. Не меняй тексты и ссылки.');setProjectChatOpen(true);}}><LayoutGrid size={17}/></button>
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
-   <div className="docs-list-footer">
+   {selected&&<KnowledgeInstructions projectId={selected.id} request={api}/>}\n   <div className="docs-list-footer">
     <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
     <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
    </div>
