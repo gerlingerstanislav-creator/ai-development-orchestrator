@@ -469,7 +469,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,documentId}));
  }
  useEffect(()=>{if(projectChatOpen)projectInputRef.current?.focus();},[projectChatOpen,projectChatMode]);
- const [docQuestions,setDocQuestions]=useState<DocumentationQuestion[]>([]);
+ const [,setDocQuestions]=useState<DocumentationQuestion[]>([]);
  const [docProposals,setDocProposals]=useState<DocumentationProposal[]>([]);
  const [questionAnswers,setQuestionAnswers]=useState<Record<string,string>>({});
  const analystFileInput=useRef<HTMLInputElement>(null);
