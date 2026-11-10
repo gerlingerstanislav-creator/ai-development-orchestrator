@@ -19,6 +19,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   'CREATE TABLE projects(id uuid PRIMARY KEY,name text,description text)',
   'CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid,title text,body text,parent_id uuid,system_key text,source_refs jsonb DEFAULT \u0027[]\u0027::jsonb,import_source text,updated_at timestamptz DEFAULT now())',
   'CREATE UNIQUE INDEX idx_docs_src ON documents(project_id,import_source) WHERE import_source IS NOT NULL',
+  'CREATE TABLE document_versions(id uuid PRIMARY KEY,document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,body text NOT NULL,task_ids jsonb NOT NULL DEFAULT '[]'::jsonb,created_at timestamptz NOT NULL DEFAULT now())',
   'CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,description text,type text,stage text,analysis_state text,updated_at timestamptz DEFAULT now())',
   'CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text)',
   'CREATE TABLE documentation_questions(id uuid,project_id uuid,job_id uuid,topic_key text,question_key text,document_id uuid,question text,status text DEFAULT \u0027open\u0027,answer text,created_at timestamptz DEFAULT now(),UNIQUE(project_id,document_id,question_key))',
@@ -67,6 +68,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.ok(read.revision);
  const updated=await call('documents.update',{document_id:newId,expected_revision:read.revision,body:'Новые согласованные условия'});
  assert.equal(updated.statusCode,200,updated.body);
+ assert.equal((await db.query('SELECT count(*)::int n FROM document_versions WHERE document_id=$1',[newId])).rows[0].n,1,'Agent changes must be versioned');
  assert.equal((await call('documents.update',{document_id:newId,expected_revision:read.revision,body:'Устаревшие изменения'})).statusCode,409);
  assert.equal((await call('documents.update',{document_id:root,expected_revision:(await call('documents.read',{document_id:root})).json().result.document.revision,title:'Удалить корень'})).statusCode,409);
  const change=await call('documents.changeset',{operations:[
