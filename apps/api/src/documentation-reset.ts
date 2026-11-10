@@ -20,6 +20,7 @@ export async function initDocumentationReset(pool:Pick<Pool,'query'>){
   expires_at timestamptz NOT NULL DEFAULT now()+interval '10 minutes',
   consumed_at timestamptz
  );
+ ALTER TABLE documentation_reset_audit ADD COLUMN IF NOT EXISTS deleted_questions int NOT NULL DEFAULT 0;
  CREATE INDEX IF NOT EXISTS idx_documentation_reset_intents_project
   ON documentation_reset_intents(project_id,created_at DESC);
  CREATE TABLE IF NOT EXISTS documentation_reset_audit(
@@ -34,10 +35,11 @@ export async function initDocumentationReset(pool:Pick<Pool,'query'>){
 async function docInventory(db:Pick<Pool,'query'>,projectId:string){
  const docs=await db.query('SELECT id,updated_at,title,system_key FROM documents WHERE project_id=$1 ORDER BY id',[projectId]);
  const imports=await db.query('SELECT id,updated_at,status FROM document_import_jobs WHERE project_id=$1 ORDER BY id',[projectId]);
+ const questions=await db.query("SELECT id,document_id,question_status,updated_at FROM tasks WHERE project_id=$1 AND type='question' ORDER BY id",[projectId]);
  const active=imports.rows.filter((j:any)=>['queued','running'].includes(j.status));
  const pages=docs.rows.filter((d:any)=>d.system_key===null).length;
- const digest=createHash('sha256').update(JSON.stringify({docs:docs.rows,imports:imports.rows})).digest('hex');
- return {pages,roots:docs.rows.length-pages,imports:imports.rows.length,active_jobs:active.length,digest};
+ const digest=createHash('sha256').update(JSON.stringify({docs:docs.rows,imports:imports.rows,questions:questions.rows})).digest('hex');
+ return {pages,roots:docs.rows.length-pages,imports:imports.rows.length,questions:questions.rows.length,active_jobs:active.length,digest};
 }
 
 export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
@@ -52,7 +54,7 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
   const intentId=randomUUID();
   await pool.query('INSERT INTO documentation_reset_intents(id,project_id,actor_id,snapshot_digest,pages,imports) VALUES($1,$2,$3,$4,$5,$6)',
    [intentId,id,uid(req),inventory.digest,inventory.pages,inventory.imports]);
-  return {intent_id:intentId,project_name:project.name,pages:inventory.pages,imports:inventory.imports,
+  return {intent_id:intentId,project_name:project.name,pages:inventory.pages,imports:inventory.imports,questions:inventory.questions,
    roots_preserved:inventory.roots,confirmation_phrase:CONFIRM,
    warning:'Будут безвозвратно удалены пользовательские и импортированные страницы, вопросы документации, история версий и прежние записи импорта. Пять системных корней останутся пустыми; вложенную структуру затем создадут агенты. Вопросы аналитика (задачи типа question) удаляются вместе с документацией; задачи разработки, план и правила сохраняются.'};
  });
@@ -75,15 +77,18 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    // Lock documents and import jobs, preventing concurrent edit/write during the reset.
    const docs=(await client.query('SELECT id,updated_at,title,system_key FROM documents WHERE project_id=$1 ORDER BY id FOR UPDATE',[id])).rows;
    const imports=(await client.query('SELECT id,updated_at,status FROM document_import_jobs WHERE project_id=$1 ORDER BY id FOR UPDATE',[id])).rows;
+   // Questions have become task records, so lock and hash them alongside pages.
+   const questions=(await client.query("SELECT id,document_id,question_status,updated_at FROM tasks WHERE project_id=$1 AND type='question' ORDER BY id FOR UPDATE",[id])).rows;
    if(imports.some((job:any)=>['queued','running'].includes(job.status))){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Во время подтверждения запущен процесс документации'});
    }
-   const digest=createHash('sha256').update(JSON.stringify({docs,imports})).digest('hex');
+   const digest=createHash('sha256').update(JSON.stringify({docs,imports,questions})).digest('hex');
    if(digest!==intent.snapshot_digest){await client.query('ROLLBACK');return reply.code(409).send({error:'Документация изменилась после просмотра. Сформируй новое подтверждение.'});}
    const deletedPages=docs.filter((doc:any)=>doc.system_key===null).length;
    // Questions are task records tied to the documentation being reset.
    // Keep unrelated development tasks and their history intact.
-   await client.query("DELETE FROM tasks WHERE project_id=$1 AND type='question'",[id]);
+   const removedQuestions=await client.query("DELETE FROM tasks WHERE project_id=$1 AND type='question' RETURNING id",[id]);
+   if(removedQuestions.rowCount!==questions.length)throw Error('Состав вопросов изменился во время очистки');
    // FK references to deleted pages cascade. System root guard remains enabled.
    // Leaf-first deletion avoids the ON DELETE SET NULL parent FK triggering the
    // project root guard on surviving child pages.
@@ -98,10 +103,10 @@ export function registerDocumentationResetRoutes(app:FastifyInstance,d:Deps){
    await client.query('DELETE FROM document_import_jobs WHERE project_id=$1',[id]);
    // Preserve only stable system roots; agents own all nested sections.
    await client.query('UPDATE documentation_reset_intents SET consumed_at=now() WHERE id=$1',[intent_id]);
-   await client.query('INSERT INTO documentation_reset_audit(id,project_id,actor_id,deleted_pages,deleted_imports) VALUES($1,$2,$3,$4,$5)',
-    [randomUUID(),id,uid(req),deletedPages,imports.length]);
+   await client.query('INSERT INTO documentation_reset_audit(id,project_id,actor_id,deleted_pages,deleted_imports,deleted_questions) VALUES($1,$2,$3,$4,$5,$6)',
+    [randomUUID(),id,uid(req),deletedPages,imports.length,questions.length]);
    await client.query('COMMIT');
-   return {ok:true,deleted_pages:deletedPages,deleted_imports:imports.length,remaining_system_roots:5,empty_spec_sections:0};
+   return {ok:true,deleted_pages:deletedPages,deleted_imports:imports.length,deleted_questions:questions.length,remaining_system_roots:5,empty_spec_sections:0};
   }catch(error){await client.query('ROLLBACK').catch(()=>{});
    if((error as any)?.code==='40001')return reply.code(409).send({error:'Во время очистки документы изменились. Повтори предварительный просмотр.'});
    throw error;}
