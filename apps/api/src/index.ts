@@ -13,6 +13,7 @@ import {initDocumentationSystem} from './documentation-system.js';
 import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
 import {registerSafeTaskDeletion} from './task-deletion.js';
 import {registerBusinessAnalystHandoff} from './business-analyst-handoff.js';
+import {registerProjectManagerInbox} from './project-manager-inbox.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
@@ -248,6 +249,7 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS assistant_messages (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), role text not null check(role in ('user','assistant')), body text not null, created_task_id uuid references tasks(id) on delete set null, created_at timestamptz not null default now());
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS created_document_id uuid REFERENCES documents(id) ON DELETE SET NULL;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS channel text NOT NULL DEFAULT 'project';
+ ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'completed';
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS reply_to uuid REFERENCES assistant_messages(id) ON DELETE SET NULL;
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS topic_id uuid;
  CREATE TABLE IF NOT EXISTS project_chat_topics (id uuid PRIMARY KEY, project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE, title text NOT NULL, status text NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed')), created_at timestamptz NOT NULL DEFAULT now(), closed_at timestamptz);
@@ -1846,6 +1848,11 @@ const assistant=registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexU
   await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
  }
 });
+registerProjectManagerInbox(app,{pool,uid,access,requireAdmin,start:async(projectId,messageId)=>{
+ const client=await temporal();
+ await client.workflow.start('processProjectManagerInbox',{taskQueue:'agent-pipeline',workflowId:'project-pm-'+messageId,
+  workflowIdReusePolicy:'REJECT_DUPLICATE',args:[projectId,messageId]});
+}});
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
