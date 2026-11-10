@@ -12,7 +12,7 @@ import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
-import {agentMemoryContext,conversationInstructions} from './project-team.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning} from './project-team.js';
 
 type Dependencies={
  pool:Pool; uid:(req:any)=>string;
@@ -549,12 +549,16 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Правила проекта:\n'+(await rulesContext(id)).slice(0,5000),
     'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,11000),
     'История этого чата:\n'+(await history(id,null,mode)).slice(-5500),
+     'Если есть один повторно применимый урок на основе проверенных фактов, добавь в конце ответа отдельную строку LEARNING_SUGGESTION: <урок>; иначе LEARNING_SUGGESTION: none. Не включай секреты или персональные данные.',
     'Сообщение пользователя:\n'+mentionedAgent.message
    ].join('\n\n');
    try{
     const response=await completion(prompt,config);
     await storeTokenUsage(id,null,config.model,response.usage);
-    const answer='@'+mentionedAgent.alias+' · '+response.text.trim();
+     const raw=response.text.trim();
+     const lesson=raw.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim();
+     await recordAgentLearning(pool,{projectId:id,role:mentionedAgent.stage,runId:randomUUID(),body:lesson,evidence:'Прямой диалог с @'+mentionedAgent.alias});
+     const answer='@'+mentionedAgent.alias+' · '+raw.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
     await store(id,null,uid(req),'user',message,null,null,mode);
     await store(id,null,null,'assistant',answer,null,null,mode);
     await countCall(id,uid(req));
