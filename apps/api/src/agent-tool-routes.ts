@@ -47,6 +47,31 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   }
   return 'running';
  }
+ // An API crash can happen after the queued job commits and before Temporal
+ // accepts its workflow start. Reconcile durable intent after restarts and
+ // periodically; duplicate workflow IDs are treated as already started.
+ let recoverTimer:ReturnType<typeof setInterval>|null=null;
+ let recovering=false;
+ async function recoverQueuedJobs(){
+  if(recovering)return;
+  recovering=true;
+  try{
+   const pending=await pool.query(
+    "SELECT id FROM document_import_jobs WHERE analyst_input IS NOT NULL AND (status='queued' OR (status='running' AND message='Temporal: запуск процесса')) ORDER BY created_at LIMIT 15");
+   for(const job of pending.rows){
+    try{await startQueuedJob(job.id);}
+    catch(error){app.log.error({error,jobId:job.id},'Could not recover durable agent workflow start');}
+   }
+  }finally{recovering=false;}
+ }
+ app.addHook('onReady',async()=>{
+  await recoverQueuedJobs().catch(error=>app.log.error({error},'Agent workflow recovery failed'));
+  recoverTimer=setInterval(()=>{
+   void recoverQueuedJobs().catch(error=>app.log.error({error},'Agent workflow recovery failed'));
+  },20000);
+  recoverTimer.unref?.();
+ });
+ app.addHook('onClose',async()=>{if(recoverTimer)clearInterval(recoverTimer);});
  const authenticate=async(req:any,reply:any)=>{
   const session=await readAgentSession(pool,String(req.headers['x-agent-token']||''));
   if(!session){reply.code(403).send({error:'Сессия агента недоступна или истекла'});return null;}
