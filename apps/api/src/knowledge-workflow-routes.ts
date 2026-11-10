@@ -52,8 +52,8 @@ export function registerKnowledgeWorkflowRoutes(app:FastifyInstance,d:Deps){
  });
  app.get('/api/projects/:id/knowledge/task-links',async(req:any,reply)=>{
   const id=await project(req,reply);if(!id)return;
-  const {task_id}=z.object({task_id:uuid}).parse(req.query);
-  const r=await pool.query('SELECT l.id,l.document_id,l.task_id,l.relation,d.title,d.knowledge_status FROM knowledge_task_links l JOIN documents d ON d.id=l.document_id AND d.project_id=l.project_id WHERE l.project_id=$1 AND l.task_id=$2 ORDER BY d.title',[id,task_id]);
+  const {task_id,document_id}=z.object({task_id:uuid.optional(),document_id:uuid.optional()}).refine(v=>Boolean(v.task_id||v.document_id),'Необходимо указать задачу или документ').parse(req.query);
+  const r=await pool.query('SELECT l.id,l.document_id,l.task_id,l.relation,d.title,d.knowledge_status FROM knowledge_task_links l JOIN documents d ON d.id=l.document_id AND d.project_id=l.project_id WHERE l.project_id=$1 AND ($2::uuid IS NULL OR l.task_id=$2) AND ($3::uuid IS NULL OR l.document_id=$3) ORDER BY d.title LIMIT 200',[id,task_id||null,document_id||null]);
   return {links:r.rows};
  });
  app.post('/api/projects/:id/knowledge/task-links',async(req:any,reply)=>{
