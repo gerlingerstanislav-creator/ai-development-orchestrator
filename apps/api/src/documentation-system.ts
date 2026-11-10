@@ -160,6 +160,17 @@ export async function initDocumentationSystem(pool:Pool){
  FROM documentation_questions q
  WHERE NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id=q.id)
  ON CONFLICT DO NOTHING;
+ -- Never drop source data if even one legacy question failed to migrate.
+ IF EXISTS (
+  SELECT 1 FROM documentation_questions q
+  LEFT JOIN tasks t ON t.id=q.id AND t.project_id=q.project_id AND t.type='question'
+  WHERE t.id IS NULL OR t.document_id IS DISTINCT FROM q.document_id
+     OR t.question_key IS DISTINCT FROM q.question_key
+     OR t.question_status IS DISTINCT FROM q.status
+     OR t.question_answer IS DISTINCT FROM q.answer
+ ) THEN
+  RAISE EXCEPTION 'Legacy question migration incomplete; source table preserved';
+ END IF;
  DROP TABLE documentation_questions;
  END IF;
  END $migrate_questions$;
