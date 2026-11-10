@@ -1427,11 +1427,21 @@ app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
   agent_name:z.string().trim().min(1).max(100).optional(),
   agent_instructions:z.string().max(12000).optional()
  }).refine(v=>Object.keys(v).length>0,'Укажи настройку для изменения'),req.body);
- const updated=await pool.query(
-  'UPDATE workflow_stages SET mode=COALESCE($1,mode),agent_name=COALESCE($2,agent_name),agent_instructions=COALESCE($3,agent_instructions) WHERE project_id=$4 AND stage=$5 RETURNING stage,label,mode,position,agent_name,agent_instructions',
-  [mode??null,agent_name??null,agent_instructions??null,id,stage]);
- if(!updated.rowCount)return reply.code(404).send({error:'Этап не найден'});
- return updated.rows[0];
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const updated=await client.query(
+   'UPDATE workflow_stages SET mode=COALESCE($1,mode),agent_name=COALESCE($2,agent_name),agent_instructions=COALESCE($3,agent_instructions) WHERE project_id=$4 AND stage=$5 RETURNING stage,label,mode,position,agent_name,agent_instructions',
+   [mode??null,agent_name??null,agent_instructions??null,id,stage]);
+  if(!updated.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Этап не найден'});}
+  if(stage==='deployment'&&(agent_name!==undefined||agent_instructions!==undefined)){
+   const current=updated.rows[0];
+   await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops',$2,$3) ON CONFLICT(project_id,role) DO UPDATE SET agent_name=EXCLUDED.agent_name,agent_instructions=EXCLUDED.agent_instructions,updated_at=now()",
+    [id,current.agent_name,current.agent_instructions]);
+  }
+  await client.query('COMMIT');
+  return updated.rows[0];
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 });
 app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return tasksWithCustomerQuestions(pool,id);});
 app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
