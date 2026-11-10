@@ -89,7 +89,8 @@ test('task deletion protects execution history and removes unstarted analyst tas
   'CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id))',
   'CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id))',
   'CREATE TABLE qa_test_plans(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id))',
-  'CREATE TABLE qa_test_cases(id uuid PRIMARY KEY,project_id uuid,source_task_id uuid REFERENCES tasks(id))'
+  'CREATE TABLE qa_test_cases(id uuid PRIMARY KEY,project_id uuid,source_task_id uuid REFERENCES tasks(id))',
+  "CREATE TABLE requirement_review_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),status text DEFAULT 'queued')"
  ].join(';\n')+';');
  const pool={query:(...args)=>db.query(...args),connect:async()=>({
   query:(sql,...args)=>sql==='BEGIN'?db.query('SAVEPOINT test_delete'):
