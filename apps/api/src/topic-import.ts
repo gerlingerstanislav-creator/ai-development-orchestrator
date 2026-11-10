@@ -2,6 +2,7 @@ import type {Pool} from 'pg';
 import {randomUUID,createHash} from 'node:crypto';
 import {z} from 'zod';
 import {parseAgentObject,completeStructured} from './structured-agent-response.js';
+import {archiveSourceDocuments,suggestedRootForTopic} from './documentation-import-structure.js';
 
 export type SourceFile={path:string;body:string};
 export type SourceFragment={index:number;path:string;heading:string;body:string;sha:string};
@@ -311,12 +312,14 @@ export async function importByTopics(args:TopicImportArgs){
  }
  const uncovered=classified.filter(x=>!x.topics.length&&!x.exclusion);
  if(uncovered.length)throw Error('Найдены фрагменты без темы и причины исключения: '+uncovered.map(x=>x.index).join(', '));
- const specRoot=await pool.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[projectId]);
- if(!specRoot.rowCount)throw Error('Системный раздел ТЗ не создан');
- const specId:string=specRoot.rows[0].id;
+ const rootRows=await pool.query("SELECT id,system_key FROM documents WHERE project_id=$1 AND system_key IS NOT NULL",[projectId]);
+ const roots=new Map<string,string>(rootRows.rows.map((row:{id:string;system_key:string})=>[row.system_key,row.id]));
+ const specId=roots.get('spec');
+ if(!specId||!roots.get('research'))throw Error('Системные разделы документации не созданы');
  let finished=0;
  for(const [key,items] of groups){
   const title=knownTopics.get(key)||key;
+  const targetParent=roots.get(suggestedRootForTopic(key,title))||specId;
   await pool.query("INSERT INTO document_import_topics(job_id,topic_key,title) VALUES($1,$2,$3) ON CONFLICT(job_id,topic_key) DO NOTHING",
    [jobId,key,title]);
   const batches=splitBatches(items);
@@ -360,14 +363,16 @@ export async function importByTopics(args:TopicImportArgs){
     await client.query('BEGIN');
     const live=(await client.query("SELECT cursor FROM document_import_topics WHERE job_id=$1 AND topic_key=$2 FOR UPDATE",[jobId,key])).rows[0];
     if(live.cursor!==i){await client.query('COMMIT');continue;}
-    const existing=(await client.query("SELECT id,title,body,import_synced_hash FROM documents WHERE project_id=$1 AND import_source=$2 FOR UPDATE",[projectId,importSource])).rows[0];
+    const existing=(await client.query("SELECT id,title,body,parent_id,import_synced_hash FROM documents WHERE project_id=$1 AND import_source=$2 FOR UPDATE",[projectId,importSource])).rows[0];
     let pageId:string,conflict=false;
     if(existing){
      pageId=existing.id;
      conflict=!existing.import_synced_hash||fingerprint(existing.title,existing.body)!==existing.import_synced_hash;
      if(!conflict){
-      await client.query("UPDATE documents SET title=$2,body=$3,source_refs=$4,import_synced_hash=$5,updated_at=now() WHERE id=$1",
-       [pageId,title,newBody,JSON.stringify(refs),fingerprint(title,newBody)]);
+      // Preserve user-chosen nesting; relocate only pages still under the old default ТЗ root.
+      const moveFromDefault=existing.parent_id===specId&&targetParent!==specId;
+      await client.query("UPDATE documents SET title=$2,body=$3,source_refs=$4,import_synced_hash=$5,parent_id=CASE WHEN $6 THEN $7 ELSE parent_id END,updated_at=now() WHERE id=$1",
+       [pageId,title,newBody,JSON.stringify(refs),fingerprint(title,newBody),moveFromDefault,targetParent]);
      }else{
       await client.query(
        "INSERT INTO document_import_proposals(id,project_id,job_id,topic_key,document_id,title,proposed_body,base_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(job_id,topic_key) DO UPDATE SET title=EXCLUDED.title,proposed_body=EXCLUDED.proposed_body,base_hash=EXCLUDED.base_hash,status='open',decided_at=NULL",
@@ -376,7 +381,7 @@ export async function importByTopics(args:TopicImportArgs){
     }else{
      const doc=await client.query(
       "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,document_kind,implementation_status,source_refs,import_synced_hash) VALUES($1,$2,$3,$4,$5,$6,'technical','unverified',$7,$8) RETURNING id",
-      [randomUUID(),projectId,title,newBody,specId,importSource,JSON.stringify(refs),fingerprint(title,newBody)]);
+      [randomUUID(),projectId,title,newBody,targetParent,importSource,JSON.stringify(refs),fingerprint(title,newBody)]);
      pageId=doc.rows[0].id;
     }
     const last=i===batches.length-1;
@@ -401,7 +406,11 @@ export async function importByTopics(args:TopicImportArgs){
  const {total,done,conflicts}=status.rows[0];
  if(total!==done)throw Error('Не все темы завершены, импорт можно возобновить');
  const exclusions=classified.filter(x=>!x.topics.length&&x.exclusion).map(x=>({file:x.path,heading:x.heading,reason:x.exclusion}));
- const result={message:'Подготовлено тем ТЗ: '+done+'. Ручных конфликтов: '+conflicts+'. Исключено фрагментов с указанием причины: '+exclusions.length+'.',created_task_id:null,created_document_id:specId,generated_documents:done,exclusions,commit:location?.commit||null};
+ // Fragments not included in synthesized ТЗ remain accessible verbatim.
+ const archived=await archiveSourceDocuments({pool,jobId,projectId,sourceKey,files,location,progress});
+ const result={message:'Подготовлено тематических страниц: '+done+'. Исходных файлов сохранено: '+files.length+
+  '. Ручных конфликтов в темах: '+conflicts+'. Фрагментов вне ТЗ (доступны в исходниках): '+exclusions.length+'.',
+  created_task_id:null,created_document_id:specId,generated_documents:done,archived_documents:files.length,source_conflicts:archived.conflicts,exclusions,commit:location?.commit||null};
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
