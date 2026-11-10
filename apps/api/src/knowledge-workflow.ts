@@ -66,11 +66,19 @@ export async function buildKnowledgeContext(db:DB,args:ContextArgs){
  const [rules,stage,modules,docs]=await Promise.all([
   db.query('SELECT id,body FROM project_rules WHERE project_id=$1 ORDER BY created_at',[args.projectId]),
   db.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[args.projectId,args.stage]),
-  db.query("SELECT id,title,body,tags,mandatory,priority,revision FROM knowledge_instruction_modules WHERE (project_id=$1 OR project_id IS NULL) AND status='approved' AND (stage IS NULL OR stage=$2) ORDER BY mandatory DESC,priority DESC,updated_at DESC",[args.projectId,args.stage]),
-  db.query("SELECT d.id,d.title,d.knowledge_summary AS summary,left(d.body,1700) AS excerpt,d.updated_at AS version,d.knowledge_key,COUNT(l.id)::int AS task_links,ts_rank_cd(to_tsvector('simple',d.title||' '||d.body),plainto_tsquery('simple',$3)) AS relevance FROM documents d LEFT JOIN knowledge_task_links l ON l.document_id=d.id AND l.project_id=$1 AND l.task_id=$2 WHERE d.project_id=$1 AND d.knowledge_status='approved' AND (l.id IS NOT NULL OR to_tsvector('simple',d.title||' '||d.body) @@ plainto_tsquery('simple',$3) OR d.title ILIKE '%'||$3||'%') GROUP BY d.id ORDER BY task_links DESC,relevance DESC,d.updated_at DESC LIMIT 30",[args.projectId,args.taskId,task.title])
+  db.query("SELECT id,project_id,title,body,tags,mandatory,priority,revision FROM knowledge_instruction_modules WHERE (project_id=$1 OR project_id IS NULL) AND status='approved' AND (stage IS NULL OR stage=$2) ORDER BY mandatory DESC, (project_id IS NULL) DESC,priority DESC,updated_at DESC",[args.projectId,args.stage]),
+  db.query("SELECT d.id,d.title,d.knowledge_summary AS summary,d.knowledge_tags AS tags,left(d.body,1700) AS excerpt,d.updated_at AS version,d.knowledge_key,COUNT(l.id)::int AS task_links,ts_rank_cd(to_tsvector('simple',d.title||' '||d.body),plainto_tsquery('simple',$3)) AS relevance FROM documents d LEFT JOIN knowledge_task_links l ON l.document_id=d.id AND l.project_id=$1 AND l.task_id=$2 WHERE d.project_id=$1 AND d.knowledge_status='approved' AND (l.id IS NOT NULL OR to_tsvector('simple',d.title||' '||d.body) @@ plainto_tsquery('simple',$3) OR d.title ILIKE '%'||$3||'%') GROUP BY d.id ORDER BY task_links DESC,relevance DESC,d.updated_at DESC LIMIT 30",[args.projectId,args.taskId,task.title])
  ]);
  const explicitTags=new Set((args.tags||[]).map(t=>t.trim().toLowerCase()));
- const matched=modules.rows.filter(row=>row.mandatory || !row.tags?.length || row.tags.some((t:string)=>explicitTags.has(t.toLowerCase())));
+ // Approved document tags are explicit knowledge metadata, not inferred user intent.
+ for(const doc of docs.rows)for(const tag of doc.tags||[])explicitTags.add(String(tag).toLowerCase());
+ const seen=new Set<string>();
+ const matched=modules.rows.filter(row=>{
+  if(!(row.mandatory || !row.tags?.length || row.tags.some((t:string)=>explicitTags.has(t.toLowerCase()))))return false;
+  const key=String(row.stage||args.stage)+':'+row.title.trim().toLowerCase();
+  if(!row.mandatory&&seen.has(key))return false;
+  seen.add(key);return true;
+ });
  const instructions={
   agent:stage.rows[0]||null,
   mandatory_rules:rules.rows,
