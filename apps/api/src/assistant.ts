@@ -222,8 +222,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    if(state.rows[0]?.status!=='running')throw Error('Работа аналитика остановлена пользователем');
   };
   const liveInstructions=async()=>(
-   await pool.query('SELECT id,body FROM process_instructions WHERE project_id=$1 AND process_id=$2 ORDER BY created_at,id',[id,jobId])
-  ).rows as Array<{id:string;body:string}>;
+   await pool.query('SELECT body FROM process_instructions WHERE project_id=$1 AND process_id=$2 ORDER BY created_at',[id,jobId])
+  ).rows as Array<{body:string}>;
   const completeLive=async(prompt:string,config:any,options?:Parameters<typeof completion>[2])=>{
    for(let revision=0;revision<5;revision++){
     await running();
@@ -233,7 +233,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     const result=await completion(prompt+instructionText,config,options);
     await running();
     const latest=await liveInstructions();
-    if(latest.length===current.length&&latest.every((item,i)=>item.id===current[i].id))return result;
+    if(latest.length===current.length&&latest.every((item,i)=>item.body===current[i].body))return result;
     await processEvent(id,jobId,'instruction_updated','Аналитик получил уточнение во время ответа и пересчитывает результат');
    }
    throw Error('Поступают новые указания быстрее, чем аналитик завершает текущий шаг. Возобнови процесс после согласования уточнений.');
