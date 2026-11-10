@@ -3,6 +3,7 @@ import type {Pool,PoolClient} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {parseAgentObject} from './structured-agent-response.js';
+import {saveSpecRevision} from './requirements.js';
 
 type Db=Pick<Pool,'query'>;
 const uuid=z.string().uuid();
@@ -22,7 +23,7 @@ const epicPlan=z.object({
 const planInput=epicPlan.extend({iteration_id:uuid,expected_revision:revision,source_revision:z.string().length(64)});
 type Plan=z.infer<typeof planInput>;
 type IterationRow={id:string;title:string;body:string;revision:number;approved_revision:number|null;recommended_task_ids:string[]};
-type TaskPlanRow={id:string;title:string;type:string;parent_id:string|null;iteration_item_key:string|null;depends_on_task_id:string|null};
+type TaskPlanRow={id:string;project_id:string;title:string;description:string;type:string;stage:string;parent_id:string|null;iteration_item_key:string|null;depends_on_task_id:string|null;iteration_work_kind:string|null;tags:string[];spec_version:number;updated_at:string};
 function problem(statusCode:number,message:string){return Object.assign(Error(message),{statusCode});}
 
 export async function initProjectIterations(db:Db){
@@ -236,9 +237,26 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
 
 const normalize=(name:string)=>name.trim().toLowerCase();
 async function currentPlanItems(db:Db,projectId:string,id:string,lock=false){
- return (await db.query<TaskPlanRow>('SELECT id,title,type,parent_id,iteration_item_key,depends_on_task_id FROM tasks WHERE project_id=$1 AND iteration_id=$2 ORDER BY position,id'+(lock?' FOR UPDATE':''),[projectId,id])).rows;
+ return (await db.query<TaskPlanRow>('SELECT id,project_id,title,description,type,stage,parent_id,iteration_item_key,depends_on_task_id,iteration_work_kind,tags,spec_version,updated_at FROM tasks WHERE project_id=$1 AND iteration_id=$2 ORDER BY position,id'+(lock?' FOR UPDATE':''),[projectId,id])).rows;
 }
 
+function planDiff(items:ReturnType<typeof planItems>['items']){
+ const known=new Map(items.filter(i=>i.existing).map(i=>[i.key,i.existing!.id]));
+ return items.map(item=>{
+  const old=item.existing;
+  if(!old)return {...item,changes:[] as string[]};
+  const changes:string[]=[];
+  const check=(field:string,a:unknown,b:unknown)=>{if(JSON.stringify(a)!==JSON.stringify(b))changes.push(field);};
+  check('title',old.title,item.title);check('description',old.description,item.description);
+  if(item.parent){
+   check('tags',[...(old.tags||[])].sort(),[...(item.tags||[])].sort());
+   check('kind',old.iteration_work_kind,item.kind??null);
+   check('parent',old.parent_id,known.get(item.parent)??null);
+   check('depends_on',old.depends_on_task_id,item.depends_on?known.get(item.depends_on)??null:null);
+  }
+  return {...item,changes};
+ });
+}
 function planItems(plan:Plan,current:TaskPlanRow[]){
  const items:{key:string;title:string;description:string;kind?:'analysis'|'development';tags?:string[];depends_on?:string;parent?:string;existing?:TaskPlanRow}[]=[];
  const claimed=new Set<string>();
@@ -277,7 +295,7 @@ async function readPlan(db:Db,id:string,planId:string){
  return row;
 }
 
-async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorId:string,previewRevision:string){
+async function publishPlan(db:PoolClient,projectId:string,id:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
  await iteration(db,projectId,id,true);
  const record=await readPlan(db,id,planId);
  if(record.published_at)return record.result;
@@ -287,6 +305,10 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
  const current=await currentPlanItems(db,projectId,id,true);
  if(sourceRevision(current)!==previewRevision)throw problem(409,'Состав задач изменился. Открой предпросмотр заново.');
  const {items}=planItems(plan,current);
+ const differences=planDiff(items);
+ const selected=new Set(selectedChanges);
+ if(selected.size!==selectedChanges.length||selectedChanges.some(k=>!differences.some(i=>i.key===k&&i.existing&&i.changes.length)))
+  throw problem(409,'Изменения плана устарели. Открой предпросмотр заново.');
  const ids=new Map(items.map(item=>[item.key,item.existing?.id??randomUUID()]));
  const inserted=items.filter(item=>!item.existing);
  const names=new Set<string>();
@@ -307,13 +329,30 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
    VALUES($1,$2,$3,1,$4,$5,'analyst',$6,$7)`,
    [randomUUID(),projectId,taskId,item.title,item.description,actorId,'Согласованный план итерации, редакция '+plan.expected_revision]);
  }
+ const updated:string[]=[];
+ for(const item of differences){
+  if(!item.existing||!selected.has(item.key))continue;
+  const old=item.existing;
+  const changedRequirements=item.changes.includes('title')||item.changes.includes('description');
+  if(changedRequirements&&item.parent){
+   await saveSpecRevision(db,old,{title:item.title,description:item.description,origin:'iteration_plan',actorId,
+    reason:'Изменение плана итерации',reviewStatus:['analysis','backlog'].includes(old.stage)?'current':'pending'});
+  }else if(changedRequirements){
+   await db.query('UPDATE tasks SET title=$3,description=$4,updated_at=now() WHERE project_id=$1 AND id=$2',[projectId,old.id,item.title,item.description]);
+  }
+  await db.query(`UPDATE tasks SET parent_id=$3,depends_on_task_id=$4,iteration_work_kind=$5,tags=$6,updated_at=now()
+   WHERE project_id=$1 AND id=$2`,[projectId,old.id,item.parent?ids.get(item.parent):null,item.depends_on?ids.get(item.depends_on):null,item.kind??null,item.tags??[]]);
+  await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'plan_updated',$4)",
+   [randomUUID(),old.id,actorId,'Изменения плана: '+item.changes.join(', ')]);
+  updated.push(old.id);
+ }
  for(const item of inserted){
   const taskId=ids.get(item.key)!;
   if(item.depends_on)await db.query("UPDATE tasks SET depends_on_task_id=$2,dependency_source='manual' WHERE id=$1",[taskId,ids.get(item.depends_on)]);
   if(item.parent&&documents.length)await db.query(`INSERT INTO knowledge_task_links(id,project_id,document_id,task_id,relation)
    SELECT gen_random_uuid(),$1,unnest($2::uuid[]),$3,'requires' ON CONFLICT DO NOTHING`,[projectId,documents.map(doc=>doc.id),taskId]);
  }
- const result={created:inserted.map(item=>ids.get(item.key)),existing:items.filter(item=>item.existing).map(item=>item.existing!.id)};
+ const result={created:inserted.map(item=>ids.get(item.key)),existing:items.filter(item=>item.existing).map(item=>item.existing!.id),updated};
  await db.query('UPDATE iteration_plans SET published_at=now(),result=$2 WHERE id=$1',[planId,JSON.stringify(result)]);
  return result;
 }
@@ -390,13 +429,13 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
   const {items,unmentioned}=planItems(plan,tasks);
   const stale=current.revision!==plan.expected_revision||current.approved_revision!==plan.expected_revision||
    sourceRevision(await sourceDocuments(pool,iterationId))!==plan.source_revision;
-  return {id:planId,items,unmentioned,stale,preview_revision:sourceRevision(tasks),published_at:record.published_at,result:record.result};
+  return {id:planId,items:planDiff(items),unmentioned,stale,preview_revision:sourceRevision(tasks),published_at:record.published_at,result:record.result};
  });
  app.post(base+'/:iterationId/plans/:planId/publish',async(req:any,reply)=>{
   const {id,iterationId,planId}=scope.extend({planId:uuid}).parse(req.params);
   if(!await canWrite(req,reply,id))return;
-  const {preview_revision}=z.object({confirm:z.literal(true),preview_revision:z.string().length(64)}).parse(req.body);
-  return transaction(pool,db=>publishPlan(db,id,iterationId,planId,uid(req),preview_revision));
+  const {preview_revision,selected_changes}=z.object({confirm:z.literal(true),preview_revision:z.string().length(64),selected_changes:z.array(key).max(95).default([])}).parse(req.body);
+  return transaction(pool,db=>publishPlan(db,id,iterationId,planId,uid(req),preview_revision,selected_changes));
  });
  app.put('/api/projects/:id/tasks/:taskId/planning',async(req:any,reply)=>{
   const {id,taskId}=projectParams.extend({taskId:uuid}).parse(req.params);
