@@ -844,8 +844,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function updateDocumentation(){if(!selected||knowledgeBusy)return;
   setKnowledgeBusy(true);setDocumentationNotice('');
   try{
-   const r=await api<{updated_tasks:number}>('/projects/'+selected.id+'/documentation/update',{method:'POST'});
-   setDocumentationNotice('Документация обновлена по '+r.updated_tasks+' задачам. Задачи переведены в «Готово».');
+   const r=await api<{updated_tasks:number;awaiting_review?:number;proposals?:number}>('/projects/'+selected.id+'/documentation/update',{method:'POST'});
+   setDocumentationNotice('Завершено задач: '+r.updated_tasks+'. '+(r.awaiting_review?'Ожидает согласования тематической документации: '+r.awaiting_review+'.':'')+(r.proposals?' Предложений на проверку: '+r.proposals+'.':''));
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setKnowledgeBusy(false);}
  }
