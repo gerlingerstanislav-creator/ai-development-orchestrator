@@ -12,7 +12,7 @@ const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'
 const watchSteps=proxyActivities<Pick<typeof activities,'readProjectManagerWatch'>>({
  startToCloseTimeout:'30 seconds',retry:{maximumAttempts:3,initialInterval:'2 seconds'}
 });
-export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'}):Promise<void>{
+export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'}):Promise<void>{
  for(let count=0;count<20160;count++){
   const status=await watchSteps.readProjectManagerWatch(watch);
   if(status==='completed')return;
