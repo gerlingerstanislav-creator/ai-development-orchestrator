@@ -766,6 +766,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setDocBusy(true);
   try{
    await api('/projects/'+selected.id+'/knowledge/documents/'+selectedDocId+'/metadata',{method:'PATCH',body:JSON.stringify(knowledgeMeta)});
+   const current=await api<{version:string}>('/projects/'+selected.id+'/knowledge/documents/'+selectedDocId+'?mode=summary');
+   setDocs(old=>old.map(d=>d.id===selectedDocId?{...d,updated_at:current.version}:d));
    await loadKnowledgeDetails(selected.id,selectedDocId);
   }catch(e){fail(e);}finally{setDocBusy(false);}
  }
