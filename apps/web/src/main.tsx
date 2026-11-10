@@ -740,6 +740,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   ]).then(([d,links,versions])=>{if(active){setKnowledgeMeta({status:d.status as 'approved'|'draft'|'review'|'obsolete',summary:d.summary||'',tags:d.tags||[]});setKnowledgeRelated(links.results);setKnowledgeVersions(versions.versions);}}).catch(fail);
   return()=>{active=false;};
  },[selected?.id,selectedDocId]);
+ async function exportSpecification(){
+  if(!selected)return;
+  try{
+   const data=await api<{filename:string;markdown:string}>('/projects/'+selected.id+'/knowledge/spec/export');
+   const url=URL.createObjectURL(new Blob([data.markdown],{type:'text/markdown;charset=utf-8'}));
+   const link=document.createElement('a');link.href=url;link.download=data.filename;document.body.appendChild(link);link.click();link.remove();
+   URL.revokeObjectURL(url);
+  }catch(e){fail(e);}
+ }
  async function saveKnowledgeMetadata(){
   if(!selected||!selectedDocId||!knowledgeMeta)return;
   setDocBusy(true);
@@ -1529,6 +1538,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    <div className="docs-list-footer">
+    <button className="secondary" type="button" onClick={()=>void exportSpecification()}><BookOpen size={15}/> Скачать ТЗ (Markdown)</button>
     <button className="primary docs-discuss-button" type="button" onClick={openDocumentationChat}><MessageCircle size={16}/> Обсудить с аналитиком</button>
    </div>
   </aside>
