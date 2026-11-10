@@ -256,23 +256,17 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Исходные границы: '+details.body.slice(0,7000)
  ].join('\n\n');
  const draft=epicPlan.parse(parseAgentObject(await ask(managerPrompt,run.project_id)));
- // The PM is not allowed to rewrite approved analyst scope or silently drop acceptance criteria.
- const byEpic=new Map(draft.epics.map(epic=>[epic.key,epic]));
- if(draft.epics.length!==analyst.epics.length)throw problem(409,'ПМ изменил согласованный набор эпиков');
- for(const epic of analyst.epics){
-  const merged=byEpic.get(epic.key);
-  if(!merged||merged.title!==epic.title||merged.description!==epic.description)throw problem(409,'ПМ изменил согласованное содержание эпика');
-  const byTask=new Map(merged.tasks.map(task=>[task.key,task]));
-  for(const task of epic.tasks){
-   const result=byTask.get(task.key);
-   if(!result||JSON.stringify(result)!==JSON.stringify(task))throw problem(409,'ПМ изменил согласованные требования задачи');
-  }
- }
- validatePlan({...planScope,...draft});
+ // Analyst requirements remain authoritative. PM can propose additions, not rewrite them.
+ const analystKeys=new Set(analyst.epics.flatMap(epic=>[epic.key,...epic.tasks.map(task=>task.key)]));
+ const mergedByEpic=new Map(draft.epics.map(epic=>[epic.key,epic]));
+ const finalized=epicPlan.parse({epics:analyst.epics.map(epic=>({
+  ...epic,tasks:[...epic.tasks,...(mergedByEpic.get(epic.key)?.tasks??[]).filter(task=>!analystKeys.has(task.key))]
+ }))});
+ validatePlan({...planScope,...finalized});
  await transaction(pool,async db=>{
   const state=(await db.query('SELECT status FROM iteration_planning_runs WHERE id=$1 FOR UPDATE',[runId])).rows[0];
   if(!state||state.status!=='running')return;
-  const result=await proposeIterationPlan(db,run.project_id,run.actor_id,{...planScope,...draft});
+  const result=await proposeIterationPlan(db,run.project_id,run.actor_id,{...planScope,...finalized});
   await db.query("UPDATE iteration_planning_runs SET status='completed',message='Черновик готов к предпросмотру',plan_id=$2,updated_at=now() WHERE id=$1",[runId,result.id]);
   await planningEvent(db,run.project_id,runId,'completed','Черновик декомпозиции готов к предпросмотру');
  });
