@@ -74,11 +74,13 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
  app.addHook('onClose',async()=>{if(timer)clearInterval(timer);});
 }
 
-export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string):Promise<void>{
+export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'};
+export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string):Promise<ProjectManagerWatch[]>{
  const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel='project' AND role='user' AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id",[messageId,projectId]);
- if(!claim.rowCount)return;
+ if(!claim.rowCount)return [];
  const turn=claim.rows[0];
  let sessionId:string|null=null;
+ let watchers:ProjectManagerWatch[]=[];
  try{
   const [configResult,projectResult,contextResult,tasksResult,questionsResult,historyResult,replyResult,topicResult]=await Promise.all([
    pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
@@ -124,6 +126,15 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
+  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize')",[projectId,session.id]);
+  const seen=new Set<string>();
+  watchers=toolEvents.rows.flatMap(row=>{
+   const kind:ProjectManagerWatch['kind']=row.tool==='iterations.prepare_plan'?'iteration_plan':'document_import';
+   const id=kind==='iteration_plan'?row.result?.planning_run_id:row.result?.import_job_id;
+   if(typeof id!=='string'||seen.has(id))return [];
+   seen.add(id);
+   return [{projectId,processId:id,kind}];
+  });
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -140,4 +151,31 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
  }finally{
   if(sessionId)await finishAgentSession(pool,sessionId).catch(()=>{});
  }
+ return watchers;
+}
+
+/** Polling is a short database activity; the waiting happens in Temporal,
+ * not in the PM AI session or an HTTP request. */
+export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
+ const table=watch.kind==='iteration_plan'?'iteration_planning_runs':'document_import_jobs';
+ const where=watch.kind==='iteration_plan'?'r.id=$1 AND i.project_id=$2':'r.id=$1 AND r.project_id=$2';
+ const sql=watch.kind==='iteration_plan'
+  ? "SELECT r.id,r.status,r.message,r.plan_id,i.title AS name,i.id AS iteration_id FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id WHERE "+where
+  : "SELECT r.id,r.status,r.message,r.saved_documents,r.result FROM document_import_jobs r WHERE "+where;
+ const result=await pool.query(sql,[watch.processId,watch.projectId]);
+ const process=result.rows[0];
+ if(!process)return 'completed';
+ if(process.status==='queued'||process.status==='running')return 'pending';
+ const mark=await pool.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING process_id",
+  [watch.projectId,watch.processId,watch.kind]);
+ if(!mark.rowCount)return 'completed';
+ const title=watch.kind==='iteration_plan'?'Подготовка задач итерации «'+process.name+'»':'Работа с документацией';
+ const message=process.status==='completed'
+  ?watch.kind==='iteration_plan'
+   ?title+' завершена. Черновик готов к согласованию в разделе «Документация → План разработки». ID плана: '+String(process.plan_id||'не указан')+'. Перед публикацией необходимо проверить состав задач.'
+   :title+' завершена. '+String(process.message||'Документация обновлена')
+  :title+' завершилась со статусом «'+process.status+'». '+String(process.message||'Посмотри детали в Центре процессов');
+ await pool.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status) VALUES($1,$2,'assistant',$3,'project','completed')",
+  [randomUUID(),watch.projectId,message.slice(0,3500)]);
+ return 'completed';
 }
