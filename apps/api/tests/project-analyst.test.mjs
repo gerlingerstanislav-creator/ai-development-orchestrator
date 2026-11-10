@@ -119,7 +119,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
    })]);
   return jobId;
  };
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0);
+ assert.equal((await db.query("SELECT count(*)::int n FROM tasks WHERE type<>'question'")).rows[0].n,0);
  const attachments=[{name:'coffee.md',body:'# Предзаказ\nПокупатель оформляет заказ.'},{name:'barista.md',body:'# Выдача заказа\nБариста выдаёт заказ.'}];
  failOnce=true;
  const jobId=await queueJob({message:'Составь ТЗ по темам',attachments,sourceKey:'attachments:coffee-source'});
@@ -152,7 +152,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(organized.find(x=>x.id===pageId).id,pageId,'Document ID survives reorganization');
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'structure:%'")).rows[0].n,1);
  assert.equal(organized[0].parent_id,organized[1].parent_id,'Related pages are grouped under the same navigation node');
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0);
+ assert.equal((await db.query("SELECT count(*)::int n FROM tasks WHERE type<>'question'")).rows[0].n,0);
  const checkpointCalls=modelCalls;
  await service.runDocumentationJob(jobId);
  assert.equal(modelCalls,checkpointCalls,'Completed jobs must not replay');
@@ -164,7 +164,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  await service.runDocumentationJob(answered.json().import_job_id);
  assert.equal((await db.query("SELECT question_status AS status FROM tasks WHERE id=$1",[questions[0].id])).rows[0].status,'resolved');
  assert.match((await db.query('SELECT body FROM documents WHERE id=$1',[pageId])).rows[0].body,/оплачивает его при получении/);
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0,'Documentation questions never create development tasks');
+ assert.equal((await db.query("SELECT count(*)::int n FROM tasks WHERE type<>'question'")).rows[0].n,0,'Documentation questions never create development tasks');
 
  // User edits an imported page. Reimport the same named sources and preserve it.
  await db.query("UPDATE documents SET body='Ручная правка владельца',updated_at=now() WHERE id=$1",[pageId]);
@@ -225,7 +225,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   assert.equal(current.parent_id,oldArchive.id,'Previous pages are moved to Research after successful rewrite');
   assert.match(current.import_source,/^archived-topic:/);
  }
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE type<>'question'')).rows[0].n,0,'Rebuilding does not launch development');
+ assert.equal((await db.query("SELECT count(*)::int n FROM tasks WHERE type<>'question'")).rows[0].n,0,'Rebuilding does not launch development');
  assert.equal((await db.query("SELECT count(*)::int n FROM tasks WHERE type='question' AND question_job_id=$1",[rewriteId])).rows[0].n,2,
   'Open product-owner questions are linked to rewritten pages');
  const beforeReplay=rebuildPartCalls;
