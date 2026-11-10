@@ -5,7 +5,7 @@ import {z} from 'zod';
 
 const uuid=z.string().uuid();
 const conversationalRoles=['manager','analyst'] as const;
-const stageRoles=['backlog','analysis','development','testing','merge_queue','deployment','documentation','done'] as const;
+const stageRoles=['analysis','development','testing','deployment','documentation'] as const;
 const specialistRoles=['devops'] as const;
 const roleSchema=z.enum([...conversationalRoles,...stageRoles,...specialistRoles]);
 const memoryStatus=z.enum(['approved','rejected']);
@@ -83,7 +83,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
  app.get('/api/projects/:id/team',async(req:any,reply)=>{
   const {id}=param.parse(req.params);if(!await access(req,reply,id))return;
   const [stages,specialists,conversations,memory]=await Promise.all([
-   pool.query('SELECT stage,label,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id]),
+   pool.query('SELECT stage,label,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=ANY($2::text[]) ORDER BY position',[id,stageRoles]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 ORDER BY role',[id]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 ORDER BY CASE role WHEN \'manager\' THEN 0 ELSE 1 END',[id]),
    pool.query(`SELECT m.id,m.role,m.kind,m.body,m.evidence,m.status,m.origin,m.author_id,m.created_at,m.reviewed_at,

@@ -4,7 +4,7 @@ type Request=(path:string,options?:RequestInit)=>Promise<any>;
 type Module={id:string;title:string;body:string;stage:string|null;tags:string[];mandatory:boolean;status:'draft'|'approved'|'obsolete';priority:number;revision:number};
 type Draft=Omit<Module,'id'|'revision'>;
 const empty:Draft={title:'',body:'',stage:null,tags:[],mandatory:false,status:'draft',priority:0};
-const stages=[['','Все этапы'],['analysis','Системный аналитик'],['business_analyst','Бизнес-аналитик'],['development','Разработка'],['testing','Тестирование'],['documentation','Документация'],['manager','Менеджер']];
+const stages=[['','Все этапы'],['analysis','AI-Системный аналитик'],['business_analyst','AI-Бизнес-аналитик'],['development','Разработка'],['testing','Тестирование'],['documentation','Документация'],['manager','AI-Менеджер проекта']];
 export function KnowledgeInstructions({projectId,request}:{projectId:string;request:Request}){
  const [items,setItems]=useState<Module[]>([]);
  const [editing,setEditing]=useState<string|null>(null);
@@ -48,11 +48,11 @@ export function KnowledgeInstructions({projectId,request}:{projectId:string;requ
   setDraft({title:item.title,body:item.body,stage:item.stage,tags:item.tags||[],mandatory:item.mandatory,status:item.status,priority:item.priority});
  }
  return <details className="knowledge-instructions-panel">
-  <summary>Инструкции агентов ({items.length})</summary>
+  <summary>Модули инструкций проекта ({items.length})</summary>
   <p className="muted">Утверждённые инструкции добавляются к выбранному этапу. Обязательные применяются независимо от тегов.</p>
   {items.map(item=><div className="knowledge-instruction-item" key={item.id}>
    <div><strong>{item.title}</strong><small>{stages.find(s=>s[0]===String(item.stage||''))?.[1]||item.stage} · {item.status==='approved'?'Утверждена':item.status==='draft'?'Черновик':'Устарела'}{item.mandatory?' · обязательная':''}</small></div>
-   <div className="docs-actions"><button type="button" onClick={()=>edit(item)}>Изменить</button><button type="button" disabled={busy} onClick={()=>void remove(item.id)}>Удалить</button></div>
+   <div className="docs-actions"><button className="secondary" type="button" onClick={()=>edit(item)}>Изменить</button><button className="secondary" type="button" disabled={busy} onClick={()=>void remove(item.id)}>Удалить</button></div>
   </div>)}
   <div className="knowledge-instruction-form">
    <label>Название<input value={draft.title} maxLength={180} onChange={e=>setDraft({...draft,title:e.target.value})}/></label>
@@ -64,7 +64,7 @@ export function KnowledgeInstructions({projectId,request}:{projectId:string;requ
    </div>
    <label>Теги через запятую<input value={draft.tags.join(', ')} onChange={e=>setDraft({...draft,tags:e.target.value.split(',').map(t=>t.trim()).filter(Boolean).slice(0,24)})}/></label>
    <label className="knowledge-checkbox"><input type="checkbox" checked={draft.mandatory} onChange={e=>setDraft({...draft,mandatory:e.target.checked})}/> Обязательная инструкция</label>
-   <div className="docs-actions"><button type="button" disabled={busy||draft.title.trim().length<3||draft.body.trim().length<5} onClick={()=>void save()}>{editing?'Сохранить':'Добавить'}</button>{editing&&<button type="button" onClick={()=>{setEditing(null);setDraft(empty);}}>Отмена</button>}</div>
+   <div className="docs-actions"><button className="secondary" type="button" disabled={busy||draft.title.trim().length<3||draft.body.trim().length<5} onClick={()=>void save()}>{editing?'Сохранить':'Добавить'}</button>{editing&&<button className="secondary" type="button" onClick={()=>{setEditing(null);setDraft(empty);}}>Отмена</button>}</div>
   </div>
   {error&&<p role="alert" className="error">{error}</p>}
  </details>;

@@ -1,5 +1,7 @@
 import {useEffect,useMemo,useState} from 'react';
 import {BookOpen,Brain,ChevronRight,History,Pencil,Plus,RefreshCcw,ShieldCheck,Trash2,Users,X} from 'lucide-react';
+import {aiAgentName} from './agent-labels.js';
+import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import './ProjectTeam.css';
 
 type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string};
@@ -7,7 +9,7 @@ type Memory={id:string;role:string;kind:string;body:string;evidence:string;statu
 type Snapshot={agents:Agent[];memory:Memory[]};
 type Revision={id:string;previous_name:string;previous_instructions:string;next_name:string;next_instructions:string;created_at:string};
 type Request=<T>(path:string,options?:RequestInit)=>Promise<T>;
-const roleLabels:Record<string,string>={manager:'ПМ',analyst:'БА',analysis:'СА',development:'Разработчик',testing:'QA',deployment:'DevOps',documentation:'Документатор',merge_queue:'Интегратор',backlog:'Оператор',done:'Система'};
+const roleLabels:Record<string,string>={manager:'ПМ',analyst:'БА',analysis:'СА',development:'Разработчик',testing:'QA',deployment:'DevOps',devops:'DevOps',documentation:'Документатор'};
 const kindName=(kind:string)=>kind==='observation'?'Наблюдение':kind==='instruction_suggestion'?'Предложение инструкции':kind;
 const statusName=(status:string)=>status==='approved'?'Утверждено':status==='rejected'?'Отклонено':status==='recorded'?'Зафиксировано':status==='pending'?'На рассмотрении':status;
 export function ProjectTeam({projectId,request}:{projectId:string;request:Request}){
@@ -49,12 +51,12 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
     <div className="team-list-heading">Роли <span>{agents.length}</span></div>
     {agents.map(agent=><button type="button" key={agent.id} className={'team-agent '+(selected?.id===agent.id?'selected':'')} aria-current={selected?.id===agent.id?'page':undefined} onClick={()=>{setSelectedId(agent.id);setFilter('all');setEditing(false);setAdding(false);setHistoryOpen(false);}}>
      <span className="team-agent-avatar">{(roleLabels[agent.role]||agent.name).slice(0,2).toUpperCase()}</span>
-     <span className="team-agent-label"><strong>{agent.name}</strong><small>{agent.stage}</small></span><ChevronRight size={15}/>
+     <span className="team-agent-label"><strong title={aiAgentName(agent.name)}>{aiAgentName(agent.name)}</strong><small>{agent.stage}</small></span><ChevronRight size={15}/>
     </button>)}
     {!agents.length&&<p className="muted">Роли не найдены.</p>}
    </nav>
    <div className="team-detail">
-    {selected?<><header className="team-detail-heading"><div><span className="team-kicker">{selected.type==='conversation'?'Диалоговый агент':selected.type==='specialist'?'Специалист':'Роль workflow'}</span><h3>{selected.name}</h3><p className="muted">{selected.stage}</p></div></header>
+    {selected?<><header className="team-detail-heading"><div><span className="team-kicker">{selected.type==='conversation'?'Диалоговый агент':selected.type==='specialist'?'Специалист':'Роль workflow'}</span><h3>{aiAgentName(selected.name)}</h3><p className="muted">{selected.stage}</p></div></header>
      <section className="team-instruction-block"><h4><ShieldCheck size={16}/> Технические правила</h4><p className="muted">Ограничения безопасности, права инструментов, порядок проверок и слияния PR остаются в коде. Они не редактируются и не могут быть отменены инструкциями проекта. Внутренние промпты провайдера не раскрываются.</p></section>
      <section className="team-instruction-block"><div className="team-section-toolbar"><h4><BookOpen size={16}/> Инструкции роли</h4><div className="team-actions">{!editing&&<><button className="secondary" type="button" onClick={()=>void showHistory()}><History size={14}/> История</button><button className="secondary" type="button" onClick={beginEdit}><Pencil size={14}/> Изменить</button></>}</div></div>
       {editing?<div className="team-editor"><label>Название агента<input maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label><label>Инструкции<textarea rows={12} maxLength={12000} value={draft.instructions} onChange={e=>setDraft({...draft,instructions:e.target.value})}/></label><div className="team-actions"><button className="secondary" type="button" disabled={saving} onClick={()=>setEditing(false)}>Отмена</button><button className="primary" type="button" disabled={saving||!draft.name.trim()} onClick={()=>void saveProfile()}>{saving?'Сохранение…':'Сохранить'}</button></div></div>:
@@ -72,5 +74,6 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
     </>:<p className="muted">Выберите участника команды.</p>}
    </div>
   </div>
+  <KnowledgeInstructions key={projectId} projectId={projectId} request={request}/>
  </div>;
 }

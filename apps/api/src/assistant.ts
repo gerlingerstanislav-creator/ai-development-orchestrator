@@ -83,7 +83,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const row=record.rows[0];
   if(!row)return '';
   const memory=await agentMemoryContext(pool,id,stage);
-  return 'Роль исполнителя: '+String(row.agent_name||'')+'\nДополнительные инструкции этапа (не отменяют системные правила):\n'+String(row.agent_instructions||'').slice(0,7000)+(memory?'\n\nПроверенный опыт агента:\n'+memory:'');
+  const heading=stage==='backlog'?'Правила работы с новыми задачами:\n':
+   'Роль исполнителя: '+String(row.agent_name||'')+'\nДополнительные инструкции этапа (не отменяют системные правила):\n';
+  return heading+String(row.agent_instructions||'').slice(0,7000)+(memory?'\n\nПроверенный опыт агента:\n'+memory:'');
  }
  async function businessAnalystModules(id:string){
   const rows=(await pool.query(
