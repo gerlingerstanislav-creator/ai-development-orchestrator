@@ -55,6 +55,14 @@ export async function initProjectIterations(db:Db){
   created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now()
  );
  CREATE UNIQUE INDEX IF NOT EXISTS idx_iteration_active_planning ON iteration_planning_runs(iteration_id) WHERE status IN ('queued','running');
+ CREATE TABLE IF NOT EXISTS project_sprints(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,name text NOT NULL,starts_on date NOT NULL,ends_on date NOT NULL,CHECK(ends_on>=starts_on));
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_project_sprints_name ON project_sprints(project_id,lower(name));
+ CREATE TABLE IF NOT EXISTS project_versions(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,name text NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_project_versions_name ON project_versions(project_id,lower(name));
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS sprint_id uuid REFERENCES project_sprints(id) ON DELETE SET NULL;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS version_id uuid REFERENCES project_versions(id) ON DELETE SET NULL;
+ CREATE INDEX IF NOT EXISTS idx_tasks_sprint ON tasks(project_id,sprint_id);
+ CREATE INDEX IF NOT EXISTS idx_tasks_version ON tasks(project_id,version_id);
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_id uuid REFERENCES project_iterations(id) ON DELETE SET NULL;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_item_key text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS iteration_work_kind text;
@@ -416,6 +424,30 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
  const projectParams=z.object({id:uuid});
  const scope=projectParams.extend({iterationId:uuid});
  const canWrite=async(req:any,reply:any,id:string)=>await access(req,reply,id)&&await requireAdmin(req,reply);
+ app.get('/api/projects/:id/planning-options',async(req:any,reply)=>{
+  const {id}=projectParams.parse(req.params);
+  if(!await access(req,reply,id))return;
+  const [sprints,versions]=await Promise.all([
+   pool.query('SELECT id,name,starts_on,ends_on FROM project_sprints WHERE project_id=$1 ORDER BY starts_on DESC,name',[id]),
+   pool.query('SELECT id,name FROM project_versions WHERE project_id=$1 ORDER BY created_at DESC,name',[id])
+  ]);
+  return {sprints:sprints.rows,versions:versions.rows};
+ });
+ app.post('/api/projects/:id/sprints',async(req:any,reply)=>{
+  const {id}=projectParams.parse(req.params);
+  if(!await canWrite(req,reply,id))return;
+  const data=z.object({name:title,starts_on:z.string().date(),ends_on:z.string().date()}).parse(req.body);
+  if(data.ends_on<data.starts_on)throw problem(400,'Конец спринта раньше начала');
+  return (await pool.query('INSERT INTO project_sprints(id,project_id,name,starts_on,ends_on) VALUES($1,$2,$3,$4,$5) RETURNING id,name,starts_on,ends_on',
+   [randomUUID(),id,data.name,data.starts_on,data.ends_on])).rows[0];
+ });
+ app.post('/api/projects/:id/versions',async(req:any,reply)=>{
+  const {id}=projectParams.parse(req.params);
+  if(!await canWrite(req,reply,id))return;
+  const data=z.object({name:title}).parse(req.body);
+  return (await pool.query('INSERT INTO project_versions(id,project_id,name) VALUES($1,$2,$3) RETURNING id,name',
+   [randomUUID(),id,data.name])).rows[0];
+ });
  app.get(base,async(req:any,reply)=>{
   const {id}=projectParams.parse(req.params);
   if(await access(req,reply,id))return listIterations(pool,id);
@@ -477,15 +509,18 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
  app.put('/api/projects/:id/tasks/:taskId/planning',async(req:any,reply)=>{
   const {id,taskId}=projectParams.extend({taskId:uuid}).parse(req.params);
   if(!await canWrite(req,reply,id))return;
-  const data=z.object({iteration_id:uuid.nullable(),tags}).parse(req.body);
+  const data=z.object({iteration_id:uuid.nullable(),tags,sprint_id:uuid.nullable().optional(),version_id:uuid.nullable().optional()}).parse(req.body);
   return transaction(pool,async db=>{
    const current=(await db.query('SELECT iteration_id FROM tasks WHERE project_id=$1 AND id=$2',[id,taskId])).rows[0];
    if(!current)throw problem(404,'Задача не найдена');
    const lockIds=[...new Set([current.iteration_id,data.iteration_id].filter(Boolean))].sort();
+   if(data.sprint_id&&!(await db.query('SELECT 1 FROM project_sprints WHERE project_id=$1 AND id=$2',[id,data.sprint_id])).rowCount)throw problem(400,'Спринт не принадлежит проекту');
+   if(data.version_id&&!(await db.query('SELECT 1 FROM project_versions WHERE project_id=$1 AND id=$2',[id,data.version_id])).rowCount)throw problem(400,'Версия не принадлежит проекту');
    for(const iterationId of lockIds)await iteration(db,id,iterationId,true);
    const updated=await db.query(`UPDATE tasks SET iteration_item_key=CASE WHEN iteration_id IS DISTINCT FROM $3::uuid THEN NULL ELSE iteration_item_key END,
-    iteration_id=$3,tags=$4 WHERE project_id=$1 AND id=$2 AND iteration_id IS NOT DISTINCT FROM $5::uuid RETURNING iteration_id,tags`,
-    [id,taskId,data.iteration_id,data.tags,current.iteration_id]);
+    iteration_id=$3,tags=$4,sprint_id=CASE WHEN $6::boolean THEN $7::uuid ELSE sprint_id END,version_id=CASE WHEN $8::boolean THEN $9::uuid ELSE version_id END
+    WHERE project_id=$1 AND id=$2 AND iteration_id IS NOT DISTINCT FROM $5::uuid RETURNING iteration_id,tags,sprint_id,version_id`,
+    [id,taskId,data.iteration_id,data.tags,current.iteration_id,'sprint_id' in data,data.sprint_id??null,'version_id' in data,data.version_id??null]);
    if(!updated.rowCount)throw problem(409,'Привязка задачи изменилась. Обнови карточку.');
    return updated.rows[0];
   });
