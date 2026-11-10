@@ -7,6 +7,13 @@ import {QaPanel} from './QaPanel.js';
 type Project={id:string,name:string,description:string};
 type Task={awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
+const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'}] as const;
+function mentionMatches(value:string,stages:Stage[]){
+ const tail=/(?:^|\\s)@([a-z]*)$/i.exec(value);
+ if(!tail)return [];
+ return mentionOptions.filter(item=>item.alias.toLowerCase().startsWith(tail[1].toLowerCase())&&stages.some(s=>s.stage===item.stage));
+}
+function addMention(value:string,alias:string){return value.replace(/@([a-z]*)$/i,'@'+alias+' ');}
 type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
@@ -1655,7 +1662,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <input hidden type="file" ref={analystFileInput} multiple accept=".md,.txt,.csv,.json,.yaml,.yml" onChange={e=>{attachAnalystFiles(e.currentTarget.files);e.currentTarget.value='';}}/>
      <button className="secondary" type="button" aria-label="Прикрепить материалы" title="Прикрепить материалы" disabled={projectChatBusy} onClick={()=>analystFileInput.current?.click()}><Paperclip size={16}/></button>
     </>}
-    <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
+    {mentionMatches(projectInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
+      {mentionMatches(projectInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>{setProjectInput(addMention(projectInput,option.alias));projectInputRef.current?.focus();}}>
+       <strong>@{option.alias}</strong><small>{stages.find(s=>s.stage===option.stage)?.agent_name||option.alias}</small></button>)}
+     </div>}
+     <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Опиши функциональность или укажи источник документации…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
     <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||(!projectInput.trim()&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
@@ -1842,7 +1853,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>}
      {managerFeedback&&<p className="manager-action-error" role="alert">{managerFeedback}</p>}
      <form className="assistant-composer" onSubmit={sendTaskMessage}>
-      <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
+      {mentionMatches(taskInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
+        {mentionMatches(taskInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>setTaskInput(addMention(taskInput,option.alias))}>
+         <strong>@{option.alias}</strong><small>{stages.find(s=>s.stage===option.stage)?.agent_name||option.alias}</small></button>)}
+       </div>}
+       <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
        placeholder={awaitingAnalysisAnswer?'Ответьте на вопросы аналитика…':'Напишите Менеджеру проекта… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" />
       <button className="primary" type="submit" disabled={managerSending||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
