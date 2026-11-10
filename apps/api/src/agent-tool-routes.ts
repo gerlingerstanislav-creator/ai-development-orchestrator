@@ -26,7 +26,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  const {pool,access,requireAdmin,startDocumentationWorkflow}=deps;
  const readonlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
   'tasks.list','tasks.read','questions.list','processes.list','memory.list',
-  'knowledge.search','knowledge.read','knowledge.related','knowledge.context']);
+  'knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section']);
  async function startQueuedJob(jobId:string){
   const row=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0];
   if(!row)throw Object.assign(Error('Процесс не найден'),{statusCode:404});
