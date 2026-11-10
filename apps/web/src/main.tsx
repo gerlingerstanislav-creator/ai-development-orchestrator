@@ -451,7 +451,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     requirements_rejected:'Изменение ТЗ отклонено',tests_passed:'Тестирование пройдено',
     tests_failed:'Замечания тестировщика',qa_tools_unavailable:'Тестировщик · проверки ограничены средой',
     qa_waiver_approved:'Непроверенные сценарии согласованы',handoff_blocked:'Передача на следующий этап остановлена',
-    merged:'PR слит',documentation_updated:'Документация обновлена'
+    merged:'PR слит',deployment_skipped:'Выкладка пропущена',deployment_pending:'Ожидает выкладки',deployment_manual_confirmed:'Ручная выкладка подтверждена',documentation_updated:'Документация обновлена'
    } as Record<string,string>)[ev.event]||'Событие задачи',text:ev.detail,time:ev.created_at})),
    ...taskProcessEvents.map(ev=>({id:'process-'+ev.id,kind:'event' as const,title:(ev.process_kind==='testing'?'Тестировщик':ev.process_kind==='analysis'?'Аналитик':ev.process_kind==='development'?'Разработчик':'Процесс')+' · '+({
     review_started:'Сверка требований',needs_approval:'Нужно решение',current:'ТЗ актуально',test_design_started:'Генерация тест-кейсов',
@@ -525,7 +525,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(from==='analysis'&&to==='development')return readyForDevelopment&&!taskChatBusy&&!managerWorking&&!!gitLink&&aiSettings.enabled;
   if(from==='development'&&to==='merge_queue')return !aiBusy&&!aiRuns.some(r=>r.task_id===task.id&&['running','queued'].includes(r.status));
   if(from==='merge_queue'&&to==='deployment')return !mergeBusy;
-  if(from==='deployment'&&to==='documentation')return !mergeBusy;
+  if(from==='deployment'&&to==='documentation')return false; // Explicit audited action is required.
   if(from==='documentation'&&to==='done')return !knowledgeBusy;
   return false;
  }
@@ -538,7 +538,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }else if(from==='analysis')await approveDevelopment(task);
   else if(from==='development')await runAiTask();
   else if(from==='merge_queue')await mergeTask(task);
-  else if(from==='deployment')await resolveDeployment(task);
   else if(from==='documentation')await updateDocumentation();
  }
  const [drag,setDrag]=useState<string|null>(null);
@@ -1213,14 +1212,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    else fail(e);
   }finally{setTaskChatBusy(false);}
  }
- async function resolveDeployment(task:Task){
+ async function resolveDeployment(task:Task,outcome:'skipped'|'manual_confirmed'){
   if(!selected)return;
-  const skip=window.confirm('Пропустить выкладку? ОК — пропустить, Отмена — подтвердить ручную выкладку.');
+  const skip=outcome==='skipped';
   const reason=window.prompt(skip?'Причина пропуска выкладки (минимум 5 символов):':'Укажите подтверждение ручной выкладки (окружение, релиз, проверка):');
   if(!reason?.trim()||reason.trim().length<5)return;
   setMergeBusy(true);
   try{
-   await api('/projects/'+selected.id+'/tasks/'+task.id+'/deployment/resolve',{method:'POST',body:JSON.stringify({outcome:skip?'skipped':'manual_confirmed',reason:reason.trim()})});
+   await api('/projects/'+selected.id+'/tasks/'+task.id+'/deployment/resolve',{method:'POST',body:JSON.stringify({outcome,reason:reason.trim()})});
    await loadProject(selected.id);
    setMergeReport(skip?'Этап выкладки пропущен с записью причины.':'Ручная выкладка отмечена как подтверждённая пользователем.');
   }catch(e){fail(e);}finally{setMergeBusy(false);}
@@ -1900,7 +1899,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.pr_base_branch&&<div className="task-git-ref"><span>База PR</span><code>{activeTask.pr_base_branch}</code></div>}
      {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
-     {activeTask.stage==='deployment'&&<p className="muted">PR уже слит. Подтвердите ручную выкладку или явно пропустите её с указанием причины.</p>}
+     {activeTask.stage==='deployment'&&<div><p className="muted">PR уже слит. Подтвердите ручную выкладку или явно пропустите её с указанием причины.</p><div className="row-line"><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'skipped')}>Пропустить выкладку</button><button type="button" className="primary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'manual_confirmed')}>Подтвердить ручную выкладку</button></div></div>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
     <aside className="task-conversation manager-conversation">
