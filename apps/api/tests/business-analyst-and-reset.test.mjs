@@ -5,6 +5,7 @@ import pg from 'pg';
 import Fastify from 'fastify';
 import {initDocumentationReset,registerDocumentationResetRoutes} from '../dist/documentation-reset.js';
 import {registerSafeTaskDeletion} from '../dist/task-deletion.js';
+import {registerBusinessAnalystHandoff} from '../dist/business-analyst-handoff.js';
 import {toolsForRole,toolAllowedForRole} from '../dist/agent-tools.js';
 
 test('BA can edit documentation, but cannot create technical tasks or owner questions',()=>{
@@ -110,5 +111,43 @@ test('task deletion protects execution history and removes unstarted analyst tas
  const yes=await app.inject({method:'DELETE',url:path+removable,payload:{confirm_task_id:removable}});
  assert.equal(yes.statusCode,200,yes.body);
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE project_id=$1',[project])).rows[0].n,1);
+ await db.query('ROLLBACK');opened=false;
+});
+
+
+test('BA-to-SA handoff requires explicit approval and creates an analysis task only on action',async t=>{
+ const db=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await db.connect();
+ const app=Fastify();
+ let opened=false;
+ t.after(async()=>{await app.close();if(opened)await db.query('ROLLBACK');await db.end();});
+ await db.query('BEGIN');opened=true;
+ const schema='bahandoff_'+randomUUID().replaceAll('-','');
+ await db.query('CREATE SCHEMA '+schema);
+ await db.query('SET LOCAL search_path TO '+schema+',public');
+ await db.query([
+  'CREATE TABLE projects(id uuid PRIMARY KEY)',
+  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,description text,type text,stage text,analysis_state text,position int)",
+  'CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid REFERENCES tasks(id),actor_id uuid,event text,detail text)'
+ ].join(';\n')+';');
+ const pool={query:(...args)=>db.query(...args),connect:async()=>({
+  query:(sql,...args)=>sql==='BEGIN'?db.query('SAVEPOINT handoff'):
+   sql==='COMMIT'?db.query('RELEASE SAVEPOINT handoff'):
+   sql==='ROLLBACK'?db.query('ROLLBACK TO SAVEPOINT handoff'):db.query(sql,...args),
+  release(){}
+ })};
+ const project=randomUUID(),actor=randomUUID();
+ await db.query('INSERT INTO projects(id) VALUES($1)',[project]);
+ registerBusinessAnalystHandoff(app,{pool,uid:()=>actor,access:async()=>true});
+ const url='/api/projects/'+project+'/business-analyst/handoff';
+ const payload={title:'Согласованный пакет',description:'Владелец согласовал сценарий и границы выбранной функциональности.'};
+ const denied=await app.inject({method:'POST',url,payload});
+ assert.equal(denied.statusCode,400,denied.body);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
+ const created=await app.inject({method:'POST',url,payload:{...payload,approved:true}});
+ assert.equal(created.statusCode,201,created.body);
+ const task=(await db.query('SELECT stage,analysis_state FROM tasks WHERE id=$1',[created.json().task_id])).rows[0];
+ assert.equal(task.stage,'analysis');
+ assert.equal(task.analysis_state,'new');
  await db.query('ROLLBACK');opened=false;
 });
