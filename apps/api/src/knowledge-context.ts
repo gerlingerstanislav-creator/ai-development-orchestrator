@@ -153,7 +153,7 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
  app.get('/api/projects/:id/knowledge/context-reads',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id))return;
   const {task_id}=z.object({task_id:uuid}).parse(req.query);
-  const r=await pool.query('SELECT document_id,document_version,agent_stage,created_at FROM knowledge_context_reads WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 200',[id,task_id]);return {results:r.rows};
+  const r=await pool.query('SELECT document_id,document_version,agent_stage,process_id,created_at FROM knowledge_context_reads WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 200',[id,task_id]);return {results:r.rows};
  });
  app.delete('/api/projects/:id/knowledge/links/:linkId',async(req:any,reply)=>{
   const {id,linkId}=z.object({id:uuid,linkId:uuid}).parse(req.params);
@@ -228,7 +228,7 @@ export function registerKnowledgeContextRoutes(app:FastifyInstance,d:Dependencie
  app.get('/api/projects/:id/knowledge/context-snapshots',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);if(!await access(req,reply,id))return;
   const {task_id}=z.object({task_id:uuid}).parse(req.query);
-  const rows=await pool.query('SELECT id,task_id,agent_stage,agent_session_id,sources,instructions,created_at FROM knowledge_context_snapshots WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 100',[id,task_id]);
+  const rows=await pool.query('SELECT id,task_id,agent_stage,agent_session_id,process_id,sources,instructions,created_at FROM knowledge_context_snapshots WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 100',[id,task_id]);
   return {snapshots:rows.rows};
  });
 
