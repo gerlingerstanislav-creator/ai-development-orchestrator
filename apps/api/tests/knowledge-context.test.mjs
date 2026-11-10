@@ -25,7 +25,12 @@ test('Knowledge Context migration is idempotent and retrieval is project scoped'
  ].join(';\n')+';');
  const p=randomUUID(),foreign=randomUUID();
  await db.query('INSERT INTO projects(id) VALUES($1),($2)',[p,foreign]);
- const pool={query:(...args)=>db.query(...args)};
+ const pool={query:(...args)=>db.query(...args),connect:async()=>({
+  query:(sql,...args)=>sql==='BEGIN'?db.query('SAVEPOINT restore_knowledge'):
+    sql==='COMMIT'?db.query('RELEASE SAVEPOINT restore_knowledge'):
+    sql==='ROLLBACK'?db.query('ROLLBACK TO SAVEPOINT restore_knowledge'):db.query(sql,...args),
+  release(){}
+ })};
  await initDocumentationSystem(pool);
  const spec=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[p])).rows[0];
  const docId=randomUUID();
