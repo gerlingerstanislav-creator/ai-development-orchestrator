@@ -1848,8 +1848,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
   </section>}
   <div className="chat-agent-launchers" role="group" aria-label="Чаты с агентами">
-   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><MessageCircle size={19}/><span>ПМ</span></button>
-   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='documentation'?'active':'')} onClick={()=>toggleAgentChat('documentation')} title="Чат с бизнес-аналитиком" aria-label="Открыть чат с БА"><MessageCircle size={19}/><span>БА</span></button>
+   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><span className="chat-agent-glyph"><MessageCircle size={32}/><span>ПМ</span></span></button>
+   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='documentation'?'active':'')} onClick={()=>toggleAgentChat('documentation')} title="Чат с бизнес-аналитиком" aria-label="Открыть чат с БА"><span className="chat-agent-glyph"><MessageCircle size={32}/><span>БА</span></span></button>
   </div>
  </>}
  {workflowModal&&selected&&<div className="overlay workflow-stage-overlay" onMouseDown={()=>{if(!workflowSaving)setWorkflowModal(null);}}>
