@@ -62,7 +62,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   }
   if(prompt.includes('Составь план НОВЫХ содержательных тематических страниц')){
    rebuildPlanCalls++;
-   assert.match(prompt,/Структура пока недостаточно подробная/,'Reuse actual previously proposed structure');
+   assert.match(prompt,/Структура пока недостаточно подробная/,'Reuse actual previously proposed structure; prompt='+prompt.slice(0,2100));
    const old=(await db.query("SELECT id,import_source FROM documents WHERE project_id=$1 AND import_source LIKE 'topic:%' ORDER BY title,id",[projectId])).rows;
    assert.equal(old.length,2);
    return Response.json({message:JSON.stringify({chapters:[
