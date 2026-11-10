@@ -109,9 +109,9 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  const rerunPreview=(await request('GET',rerunUrl)).json();
  assert.equal(rerunPreview.items.filter(item=>item.existing).length,3);
  assert.deepEqual((await request('POST',rerunUrl+'/publish',{confirm:true,preview_revision:rerunPreview.preview_revision})).json().created,[]);
- assert.equal((await request('POST',url+'/launch',{confirm:true,task_ids:[epic.id]})).statusCode,409);
+ assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[epic.id]})).statusCode,409);
  await db.query("UPDATE tasks SET analysis_state='ready_for_development' WHERE id=$1",[form.id]);
- const start=await request('POST',url+'/launch',{confirm:true,task_ids:[form.id,order.id]});
+ const start=await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id,order.id]});
  assert.equal(start.statusCode,200,start.body);
  assert.deepEqual(start.json().results.map(item=>[item.id,item.started]),[[form.id,true],[order.id,false]]);
  assert.deepEqual(launchCalls,[{id:form.id,approveAnalysis:true,iterationApproval:{id,revision:1}}]);
@@ -119,5 +119,6 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.deepEqual(tagUpdate.json(),{iteration_id:id,tags:['миграция']});
  const change=await request('PUT',url,{title:'MVP 1',body:scope.body,document_ids:[source],expected_revision:1});
  assert.deepEqual(change.json(),{id,revision:2});
- assert.equal((await request('POST',url+'/launch',{confirm:true,task_ids:[form.id]})).statusCode,409);
+ assert.equal((await request('POST',url+'/approve',{expected_revision:2})).statusCode,200);
+ assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id]})).statusCode,409);
 });

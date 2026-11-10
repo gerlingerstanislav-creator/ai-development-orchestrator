@@ -112,7 +112,7 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
   if(!details||!selectedTasks.length||!window.confirm('Запустить разработку для выбранных задач ('+selectedTasks.length+')?'))return;
   const ids=selectedTasks;
   void perform(async()=>{
-   const result=await request<{results:LaunchResult[]}>(url+'/launch',requestBody('POST',{confirm:true,task_ids:ids}));
+   const result=await request<{results:LaunchResult[]}>(url+'/launch',requestBody('POST',{confirm:true,task_ids:ids,expected_revision:details.revision}));
    setLaunchResults(result.results);setSelectedTasks([]);
    await refreshDetails();await onChange();
   });

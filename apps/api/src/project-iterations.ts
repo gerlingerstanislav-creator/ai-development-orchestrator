@@ -414,9 +414,10 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
  app.post(base+'/:iterationId/launch',async(req:any,reply)=>{
   const {id,iterationId}=scope.parse(req.params);
   if(!await canWrite(req,reply,id))return;
-  const {task_ids}=z.object({confirm:z.literal(true),task_ids:taskSelection}).parse(req.body);
+  const {task_ids,expected_revision}=z.object({confirm:z.literal(true),task_ids:taskSelection,expected_revision:revision}).parse(req.body);
   const current=await iteration(pool,id,iterationId);
-  if(current.approved_revision!==current.revision)throw problem(409,'Сначала подтверди текущий объём итерации');
+  if(current.revision!==expected_revision||current.approved_revision!==expected_revision)
+   throw problem(409,'Объём итерации изменился. Проверь актуальную редакцию перед запуском.');
   const tasks=await selection(pool,id,iterationId,task_ids);
   const headers={authorization:String(req.headers.authorization||''),cookie:String(req.headers.cookie||'')};
   const results=[];
