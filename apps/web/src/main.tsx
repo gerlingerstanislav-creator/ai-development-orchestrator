@@ -14,6 +14,8 @@ function mentionMatches(value:string,stages:Stage[]){
  return mentionOptions.filter(item=>item.alias.toLowerCase().startsWith(tail[1].toLowerCase())&&stages.some(s=>s.stage===item.stage));
 }
 function addMention(value:string,alias:string){return value.replace(/@([a-z]*)$/i,'@'+alias+' ');}
+function addressedAgent(value:string){return /^\\s*@(Analyst|QA)(?=\\s|[:,.!?]|$)/i.exec(value)?.[1]?.toLowerCase()==='qa'?'QA':/^\\s*@Analyst(?=\\s|[:,.!?]|$)/i.test(value)?'Analyst':null;}
+
 type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
 type RequirementInfo={task:{id:string;title:string;description:string;spec_version:number;spec_review_status:string;spec_review_note:string};reviews:RequirementReview[];versions:RequirementHistory[];runs:Array<{id:string;status:string;message:string}>};
@@ -1642,7 +1644,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
     {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Опиши проект, прикрепи текстовые файлы или пришли ссылку на папку либо Markdown-файл в GitHub. Я составлю ТЗ и задам вопросы, если понадобится твоё решение.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
-      <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → Аналитику':'Аналитик → Вам'):(m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам')}</span>
+      <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → Аналитику':'Аналитик → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       <div>{m.body}</div>
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
