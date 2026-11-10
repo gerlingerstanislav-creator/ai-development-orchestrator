@@ -56,7 +56,7 @@ export function isDocumentationRebuildCommand(message:string):boolean{
   .replace(/^давай\s+/i,'');
  return /^(?:перепиши|перепишем|пересобери|пересобер[её]м|переделай|переработай|переоформи|перестрой|составь\s+заново|сформируй\s+заново)(?=\s|[,!.:]|$)/i.test(request)
   &&/(?:тз(?=\s|[,!.:]|$)|техническ|документац|документ|страниц|требован)/i.test(request)
-  &&!/^перестрой\s+структуру\s+/i.test(request);
+  &&!/^(?:перестрой|переделай|переработай)\s+структур[уы]\s+/i.test(request);
 }
 
 export function isExplicitDocumentationChange(message:string):boolean{
