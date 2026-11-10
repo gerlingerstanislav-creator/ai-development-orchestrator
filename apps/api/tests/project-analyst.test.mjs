@@ -5,7 +5,7 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import {createAssistantService,isExplicitTaskCreation,isExplicitDocumentationChange,isDocumentationStructureCommand,isDocumentationRebuildCommand} from '../dist/assistant.js';
 
-test('task commands are explicit even in the analyst chat',()=>{
+test('explicit task commands are distinguished from questions and documentation edits',()=>{
  assert.equal(isExplicitTaskCreation('Создай задачу, а в ней уже спроси'),true);
  assert.equal(isExplicitTaskCreation('Пожалуйста, создай новую задачу: обновить документацию'),true);
  assert.equal(isExplicitTaskCreation('Как создать задачу из документации?'),false);
@@ -53,6 +53,9 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   CREATE TEMP TABLE assistant_messages (id uuid,project_id uuid,task_id uuid,actor_id uuid,role text,body text,created_task_id uuid,created_document_id uuid,channel text,created_at timestamptz DEFAULT now());
   CREATE TEMP TABLE project_ai_settings (project_id uuid,enabled boolean,model text,reasoning text);
   CREATE TEMP TABLE workflow_stages (project_id uuid,stage text,agent_name text,agent_instructions text);
+  CREATE TEMP TABLE project_conversation_agents (project_id uuid,role text,agent_name text,agent_instructions text);
+  CREATE TEMP TABLE knowledge_instruction_modules (id uuid,project_id uuid,stage text,title text,body text,mandatory boolean,priority int,status text);
+  CREATE TEMP TABLE agent_memory (id uuid,project_id uuid,role text,kind text,body text,evidence text,status text,created_at timestamptz DEFAULT now());
   CREATE TEMP TABLE project_rules (project_id uuid,body text,created_at timestamptz);
   CREATE TEMP TABLE process_instructions (project_id uuid,process_id uuid,body text,created_at timestamptz);
   CREATE TEMP TABLE process_events (id uuid,project_id uuid,process_id uuid,process_kind text,level text,stage text,detail text);
@@ -72,6 +75,8 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   await db.query('INSERT INTO documents(id,project_id,title,body,parent_id,system_key) VALUES($1,$2,$3,\'\',NULL,$4)',[randomUUID(),projectId,title,key]);
  }
  await db.query("INSERT INTO project_ai_settings VALUES($1,true,'gpt-6-luna','low')",[projectId]);
+ await db.query("INSERT INTO project_conversation_agents VALUES($1,'analyst','Бизнес-аналитик','Зафиксируй правила предзаказа')",[projectId]);
+ await db.query("INSERT INTO workflow_stages VALUES($1,'analysis','Системный аналитик','Опиши контракты API')",[projectId]);
  const originalFetch=globalThis.fetch;
  let pageId=null,modelCalls=0,failOnce=false,seenTopicCalls=0;
  let failRebuildOnce=false,rebuildPartCalls=0,rebuildPlanCalls=0;
@@ -79,7 +84,9 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   assert.equal(url,'http://codex.test/assistant','Imported sources must not be requested again during follow-up');
   modelCalls++;
   const {prompt}=JSON.parse(options.body);
-  if(prompt.includes('Ты системный аналитик проекта и собеседник владельца продукта.')){
+  if(prompt.includes('Ты бизнес-аналитик проекта и собеседник владельца продукта.')){
+   assert.match(prompt,/Зафиксируй правила предзаказа/);
+   assert.doesNotMatch(prompt,/Опиши контракты API/);
    assert.ok(prompt.includes('Предзаказ'),'Analyst must see current project documentation for a reasoned critique');
    return Response.json({message:'Структура пока недостаточно подробная: два сценария нужно сгруппировать по подсистемам. Предлагаю разделить функциональные требования, UX и исходные материалы.'});
   }
@@ -135,6 +142,11 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  const started=[];
  service.registerRoutes(app,{pool,uid:()=>actorId,access:async()=>true,requireAdmin:async()=>true,startDocumentationWorkflow:async id=>started.push(id)});
  const send=(payload)=>app.inject({method:'POST',url:'/api/projects/'+projectId+'/assistant',payload});
+ const directTask=await send({mode:'documentation',message:'Создай задачу на обновление документации'});
+ assert.equal(directTask.statusCode,200,directTask.body);
+ assert.match(directTask.json().message,/Передать СА/);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
+ assert.deepEqual(started,[]);
  const attachments=[{name:'coffee.md',body:'# Предзаказ\nПокупатель оформляет заказ.'},{name:'barista.md',body:'# Выдача заказа\nБариста выдаёт заказ.'}];
  failOnce=true;
  const first=await send({mode:'documentation',message:'Составь ТЗ по темам',attachments});

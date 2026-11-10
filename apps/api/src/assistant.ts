@@ -648,7 +648,13 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const location=extractGitHubDocumentLocation(message);
   // A missing source or unclear action is a conversation, not a reason to
   // hallucinate unavailable integrations or silently create the wrong object.
-  const create=!documentationMode&&isExplicitTaskCreation(message);
+  const create=isExplicitTaskCreation(message);
+  if(documentationMode&&create){
+   const answer='Чтобы создать задачу из согласованной постановки, нажми «Передать СА» и подтверди пакет.';
+   await store(id,null,uid(req),'user',message,null,null,mode);
+   await store(id,null,null,'assistant',answer,null,null,mode);
+   return {message:answer,created_task_id:null,created_document_id:null};
+  }
   const docImportIntent=/(?:документ|док[уи]|файл|markdown|страниц|документаци)/i.test(message)
    &&/(?:github|репозитор|из ideas)/i.test(message)
    &&/(?:перенес|перенести|импортир|загруз|скопир|взял|возьми|забер|собер|созда|сформир|сдела|генерир|переработ|подготов|перетащ)/i.test(message)
