@@ -139,7 +139,7 @@ export async function initDocumentationSystem(pool:Pool){
  `);
 
  await pool.query(String.raw`
- ALTER TABLE tasks ADD COLUMN IF NOT EXISTS document_id uuid REFERENCES documents(id) ON DELETE SET NULL;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS document_id uuid REFERENCES documents(id) ON DELETE CASCADE;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_key text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_topic text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS question_status text;
