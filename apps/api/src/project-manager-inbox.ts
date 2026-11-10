@@ -160,25 +160,36 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
 /** Polling is a short database activity; the waiting happens in Temporal,
  * not in the PM AI session or an HTTP request. */
 export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
- const table=watch.kind==='iteration_plan'?'iteration_planning_runs':'document_import_jobs';
  const where=watch.kind==='iteration_plan'?'r.id=$1 AND i.project_id=$2':'r.id=$1 AND r.project_id=$2';
  const sql=watch.kind==='iteration_plan'
   ? "SELECT r.id,r.status,r.message,r.plan_id,i.title AS name,i.id AS iteration_id FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id WHERE "+where
   : "SELECT r.id,r.status,r.message,r.saved_documents,r.result FROM document_import_jobs r WHERE "+where;
  const result=await pool.query(sql,[watch.processId,watch.projectId]);
- const process=result.rows[0];
+ let process=result.rows[0];
  if(!process)return 'completed';
+ if(watch.kind==='iteration_plan'&&process.status==='completed'&&!process.plan_id){
+  // An owner answer arrived during generation; planning transparently
+  // continued in a newer run. Wait for that final draft instead.
+  const next=await pool.query("SELECT r.id,r.status,r.message,r.plan_id,i.title AS name,i.id AS iteration_id FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id WHERE i.project_id=$1 AND i.id=$2 ORDER BY r.created_at DESC,r.id DESC LIMIT 1",[watch.projectId,process.iteration_id]);
+  if(next.rows[0]?.id!==process.id)process=next.rows[0];
+ }
  if(process.status==='queued'||process.status==='running')return 'pending';
- const mark=await pool.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING process_id",
+ const client=await pool.connect();
+ try{
+ await client.query('BEGIN');
+ const mark=await client.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING process_id",
   [watch.projectId,watch.processId,watch.kind]);
- if(!mark.rowCount)return 'completed';
+ if(!mark.rowCount){await client.query('ROLLBACK');return 'completed';}
  const title=watch.kind==='iteration_plan'?'Подготовка задач итерации «'+process.name+'»':'Работа с документацией';
  const message=process.status==='completed'
   ?watch.kind==='iteration_plan'
    ?title+' завершена. Черновик готов к согласованию в разделе «Документация → План разработки». ID плана: '+String(process.plan_id||'не указан')+'. Перед публикацией необходимо проверить состав задач.'
    :title+' завершена. '+String(process.message||'Документация обновлена')
   :title+' завершилась со статусом «'+process.status+'». '+String(process.message||'Посмотри детали в Центре процессов');
- await pool.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status) VALUES($1,$2,'assistant',$3,'project','completed')",
+ await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status) VALUES($1,$2,'assistant',$3,'project','completed')",
   [randomUUID(),watch.projectId,message.slice(0,3500)]);
+ await client.query('COMMIT');
  return 'completed';
+ }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
+ finally{client.release();}
 }
