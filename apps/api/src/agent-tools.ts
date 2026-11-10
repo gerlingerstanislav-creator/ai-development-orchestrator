@@ -17,6 +17,7 @@ const id=field('string','UUID'),str=field('string','Произвольный т�
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
+ tool('iterations.record_decision','Записать ответ владельца на вопрос аналитика по итерации. Ответ попадёт в следующие попытки декомпозиции и не будет утерян.',{iteration_id:id,question:str,answer:str},['iteration_id','question','answer']),
  tool('iterations.approve','Согласовать редакцию объёма итерации после явного подтверждения владельца. Нужна текущая revision.',{iteration_id:id,expected_revision:field('integer','Текущая ревизия объёма')},['iteration_id','expected_revision']),
  tool('iterations.preview_plan','Посмотреть точные изменения черновика задач до утверждения и публикации.',{iteration_id:id,plan_id:id},['iteration_id','plan_id']),
  tool('iterations.publish_plan','Опубликовать только явно подтверждённые изменения черновика задач. Требуются значения актуального предпросмотра и список выбранных ключей.',{iteration_id:id,plan_id:id,preview_revision:str,selected_changes:{type:'array',items:str}},['iteration_id','plan_id','preview_revision','selected_changes']),
