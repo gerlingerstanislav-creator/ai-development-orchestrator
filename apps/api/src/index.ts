@@ -1310,7 +1310,8 @@ app.post('/api/projects/:id/tasks/:taskId/deployment/resolve',async(req:any,repl
   if(!task.rowCount||task.rows[0].stage!=='deployment'){
    await client.query('ROLLBACK');return reply.code(409).send({error:'Задача не находится на этапе выкладки'});
   }
-  await client.query("UPDATE task_deployment_records SET status=$3,reason=$4,actor_id=$5,updated_at=now() WHERE project_id=$1 AND task_id=$2 AND status='pending'",[id,taskId,outcome,reason,uid(req)]);
+  const record=await client.query("UPDATE task_deployment_records SET status=$3,reason=$4,actor_id=$5,updated_at=now() WHERE project_id=$1 AND task_id=$2 AND status='pending' RETURNING task_id",[id,taskId,outcome,reason,uid(req)]);
+  if(!record.rowCount)throw Object.assign(new Error('Не найдена ожидающая выкладка для этой задачи'),{statusCode:409});
   await client.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE project_id=$1 AND id=$2",[id,taskId]);
   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)",[randomUUID(),taskId,uid(req),outcome==='skipped'?'deployment_skipped':'deployment_manual_confirmed',reason]);
   await client.query('COMMIT');
