@@ -14,7 +14,7 @@ function mentionMatches(value:string,stages:Stage[]){
  return mentionOptions.filter(item=>item.alias.toLowerCase().startsWith(tail[1].toLowerCase())&&stages.some(s=>s.stage===item.stage));
 }
 function addMention(value:string,alias:string){return value.replace(/@([a-z]*)$/i,'@'+alias+' ');}
-function addressedAgent(value:string){return /^\\s*@(Analyst|QA)(?=\\s|[:,.!?]|$)/i.exec(value)?.[1]?.toLowerCase()==='qa'?'QA':/^\\s*@Analyst(?=\\s|[:,.!?]|$)/i.test(value)?'Analyst':null;}
+function addressedAgent(value:string){const match=/^\s*@(Analyst|QA|DevOps)(?=\s|[:,.!?]|$)/i.exec(value);return match?(match[1].toLowerCase()==='qa'?'QA':match[1].toLowerCase()==='devops'?'DevOps':'Analyst'):null;}
 
 type RequirementReview={id:string;classification:string;status:string;summary:string;proposed_description:string;questions:string[];spec_version:number;commit_sha:string;created_at:string};
 type RequirementHistory={version:number;description:string;origin:string;reason:string;created_at:string};
