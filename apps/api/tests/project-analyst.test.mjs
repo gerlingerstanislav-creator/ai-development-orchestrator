@@ -137,7 +137,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  assert.equal(completed.result.generated_documents,2);
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'topic:%'")).rows[0].n,2);
  // Preserve an earlier owner/analyst design decision as factual conversation history.
- const previousDecision='Структура пока недостаточно подробная: два сценария нужно сгруппировать по подсистемам.';
+ const previousDecision='Структура пока недостаточно подробная: два сценария нужно сгруппировать по подсистемам. Предлагаю разделить функциональные требования, UX и исходные материалы.';
  await db.query("INSERT INTO assistant_messages(id,project_id,task_id,role,body,channel,created_at) VALUES($1,$2,NULL,'assistant',$3,'documentation',now())",
   [randomUUID(),projectId,previousDecision]);
  // Simulate an older completed import, from before raw-source archiving existed.
