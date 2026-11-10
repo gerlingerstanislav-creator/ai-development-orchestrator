@@ -9,12 +9,12 @@ import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
 import {KnowledgeAudit} from './KnowledgeAudit.js';
 import {DocumentationReset} from './DocumentationReset.js';
-import {ProjectIterations,TaskPlanningFields,type IterationSummary} from './ProjectIterations.js';
+import {ProjectIterations,TaskPlanningFields,type IterationSummary,type PlanningOptions} from './ProjectIterations.js';
 import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={iteration_id?:string|null;tags?:string[];awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -267,6 +267,16 @@ function App(){
  const [iterations,setIterations]=useState<IterationSummary[]>([]);
  const [iterationFilter,setIterationFilter]=useState('');
  const [tagFilter,setTagFilter]=useState('');
+ const [sprintFilter,setSprintFilter]=useState('');
+ const [versionFilter,setVersionFilter]=useState('');
+ const [planningOptions,setPlanningOptions]=useState<PlanningOptions>({sprints:[],versions:[]});
+ useEffect(()=>{
+  if(!selected?.id||!token)return;
+  let valid=true;
+  setPlanningOptions({sprints:[],versions:[]});
+  void api<PlanningOptions>('/projects/'+selected.id+'/planning-options').then(data=>{if(valid)setPlanningOptions(data);}).catch(()=>{});
+  return()=>{valid=false;};
+ },[selected?.id,token]);
 
  const [workflowModal,setWorkflowModal]=useState<Stage|null>(null);
  const [workflowEditing,setWorkflowEditing]=useState<'agent'|'mode'|'instructions'|null>(null);
@@ -723,7 +733,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   ]);
   if(selectedProjectRef.current===projectId){setIterations(items);setTasks(current);}
  }
- async function saveTaskPlanning(projectId:string,taskId:string,values:{iteration_id:string|null;tags:string[]}){
+ async function saveTaskPlanning(projectId:string,taskId:string,values:{iteration_id:string|null;tags:string[];sprint_id:string|null;version_id:string|null}){
   const saved=await api<typeof values>('/projects/'+projectId+'/tasks/'+taskId+'/planning',{method:'PUT',body:JSON.stringify(values)});
   if(selectedProjectRef.current===projectId){
    setTasks(old=>old.map(task=>task.id===taskId?{...task,...saved}:task));
@@ -1565,10 +1575,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status;
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
- const boardDocQuestions=iterationFilter||tagFilter?[]:docQuestions;
+ const boardDocQuestions=iterationFilter||tagFilter||sprintFilter||versionFilter?[]:docQuestions;
  const taskTags=[...new Set(tasks.flatMap(task=>task.tags??[]))].sort((a,b)=>a.localeCompare(b,'ru'));
  const filtered=tasks.filter(t=>(!iterationFilter||(iterationFilter==='unassigned'?!t.iteration_id:t.iteration_id===iterationFilter))&&
-  (!tagFilter||t.tags?.includes(tagFilter))&&(t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,''))));
+  (!tagFilter||t.tags?.includes(tagFilter))&&(!sprintFilter||(sprintFilter==='unassigned'?!t.sprint_id:t.sprint_id===sprintFilter))&&(!versionFilter||(versionFilter==='unassigned'?!t.version_id:t.version_id===versionFilter))&&(t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,''))));
  if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
@@ -1682,6 +1692,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {section==='tasks'&&<><div className="toolbar"><div className="planning-filters"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/>
  <select aria-label="Фильтр по итерации" value={iterationFilter} onChange={e=>setIterationFilter(e.target.value)}>
   <option value="">Все итерации</option><option value="unassigned">Без итерации</option>{iterations.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
+ </select>
+ <select aria-label="Фильтр по спринту" value={sprintFilter} onChange={e=>setSprintFilter(e.target.value)}>
+  <option value="">Все спринты</option><option value="unassigned">Без спринта</option>
+  {planningOptions.sprints.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
+ </select>
+ <select aria-label="Фильтр по версии" value={versionFilter} onChange={e=>setVersionFilter(e.target.value)}>
+  <option value="">Все версии</option><option value="unassigned">Без версии</option>
+  {planningOptions.versions.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
  </select>
  <select aria-label="Фильтр по тегу" value={tagFilter} onChange={e=>setTagFilter(e.target.value)}>
   <option value="">Все теги</option>{taskTags.map(tag=><option key={tag} value={tag}>{tag}</option>)}
@@ -2105,7 +2123,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
 
       <span>Модель: <strong>{aiSettings.model}</strong></span>
      </div>
-     {selected&&<TaskPlanningFields key={activeTask.id} task={activeTask} summaries={iterations}
+     {selected&&<TaskPlanningFields key={activeTask.id} task={activeTask} summaries={iterations} projectId={selected.id} request={api} options={planningOptions} onOptionsChange={setPlanningOptions}
       save={values=>saveTaskPlanning(selected.id,activeTask.id,values)}/>}
      <div className="task-dependency">
       <label>Зависит от задачи
