@@ -127,12 +127,17 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
  const savedConversation=(await app.inject('/api/projects/'+projectId+'/assistant/messages?mode=documentation')).json();
  assert.ok(savedConversation.some(m=>m.role==='assistant'&&m.body.includes('Структура пока недостаточно')),'Critical response is persisted');
 
+ // Simulate an older completed import, from before raw-source archiving existed.
+ // Organizing must recover all originals from the pinned snapshot without asking GitHub again.
+ await db.query("DELETE FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId]);
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId])).rows[0].n,0);
  const reorganize=await send({mode:'documentation',message:'Улучши структуру документации: сгруппируй наши страницы по системным разделам'});
  assert.equal(reorganize.statusCode,202,reorganize.body);
  const restructuringJob=reorganize.json().import_job_id;
  await service.runDocumentationJob(restructuringJob);
  const organized=(await db.query('SELECT id,body,parent_id FROM documents WHERE import_source LIKE $1',['topic:%'])).rows;
  assert.equal(organized.length,2);
+ assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE project_id=$1 AND import_source LIKE 'source:%'",[projectId])).rows[0].n,2,'Legacy source files are recovered from saved import snapshots');
  assert.equal(organized.find(x=>x.id===pageId).id,pageId,'Document ID survives reorganization');
  assert.equal((await db.query("SELECT count(*)::int n FROM documents WHERE import_source LIKE 'structure:%'")).rows[0].n,1);
  assert.equal(organized[0].parent_id,organized[1].parent_id,'Related pages are grouped under the same navigation node');
