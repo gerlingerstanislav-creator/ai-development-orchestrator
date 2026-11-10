@@ -19,6 +19,8 @@ export const documentRootTitle=(key:string)=>DOCUMENT_ROOTS.find(x=>x.key===key)
 export async function initDocumentationSystem(pool:Pool){
  await pool.query(String.raw`
  ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS source_commit text;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS rebuild_sources jsonb;
+ ALTER TABLE document_import_jobs ADD COLUMN IF NOT EXISTS rebuild_plan jsonb;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS system_key text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS import_synced_hash text;
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_refs jsonb NOT NULL DEFAULT '[]'::jsonb;
@@ -125,6 +127,7 @@ export async function initDocumentationSystem(pool:Pool){
   review_suggestion text,updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY(job_id,topic_key)
  );
+ ALTER TABLE document_import_topics ADD COLUMN IF NOT EXISTS rebuild_questions jsonb NOT NULL DEFAULT '[]'::jsonb;
  CREATE TABLE IF NOT EXISTS document_import_proposals(
   id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   job_id uuid NOT NULL REFERENCES document_import_jobs(id) ON DELETE CASCADE,

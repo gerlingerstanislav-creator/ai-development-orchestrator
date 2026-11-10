@@ -8,6 +8,7 @@ import {importByTopics} from './topic-import.js';
 import {pendingAgentQuestions,taskNotesContext} from './task-agent-notes.js';
 import {saveSpecRevision} from './requirements.js';
 import {organizeImportedDocumentation} from './documentation-organization.js';
+import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 
 type Dependencies={
  pool:Pool; uid:(req:any)=>string;
@@ -34,6 +35,7 @@ type AnalystInput=Pick<z.infer<typeof analystRequest>,'mode'|'attachments'|'docu
  location:ReturnType<typeof extractGitHubDocumentLocation>;
  questionId?:string;
  structureOnly?:boolean;
+ rebuildSpec?:boolean;
 };
 type AssistantRuntime=Pick<Dependencies,'pool'|'codexUrl'|'runnerKey'|'decryptToken'>;
 
@@ -45,6 +47,16 @@ export function isExplicitTaskCreation(message:string):boolean{
 /** Discussion and critique are not editing jobs. Only an explicit imperative may mutate docs. */
 export function isDocumentationStructureCommand(message:string):boolean{
  return /^(?:(?:пожалуйста[,\s]+|давай\s+|можешь\s+)?)(?:перестрой|реорганизуй|переорганизуй|структурируй|переструктурируй|упорядочи|рассортируй|улучши|переделай)\s+.{0,85}(?:структур|документ|страниц|тз\b|раздел)/i.test(message.trim());
+}
+
+export function isDocumentationRebuildCommand(message:string):boolean{
+ const request=message.trim()
+  .replace(/^(?:ок(?:ей)?|хорошо|ладно|согласен)[,!.:\s]+/i,'')
+  .replace(/^(?:давай|пожалуйста[,!]?|можешь|прошу)\s+/i,'')
+  .replace(/^давай\s+/i,'');
+ return /^(?:перепиши|перепишем|пересобери|пересобер[её]м|переделай|переработай|переоформи|перестрой|составь\s+заново|сформируй\s+заново)(?=\s|[,!.:]|$)/i.test(request)
+  &&/(?:тз(?=\s|[,!.:]|$)|техническ|документац|документ|страниц|требован)/i.test(request)
+  &&!/^(?:перестрой|переделай|переработай)\s+структур[уы]\s+/i.test(request);
 }
 
 export function isExplicitDocumentationChange(message:string):boolean{
@@ -160,7 +172,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const job=(await pool.query("SELECT * FROM document_import_jobs WHERE id=$1 AND status='running' AND analyst_input IS NOT NULL",[jobId])).rows[0];
   if(!job)return;
   const {project_id:id,actor_id:actorId,request_text:message,source_key:sourceKey}=job;
-  const {location,attachments,mode,documentId,questionId,structureOnly}=job.analyst_input as AnalystInput;
+  const {location,attachments,mode,documentId,questionId,structureOnly,rebuildSpec}=job.analyst_input as AnalystInput;
   const input={actorId,message:message+(attachments.length?'\n\nМатериалы: '+attachments.map(file=>file.name).join(', '):''),mode};
   const updateProgress=async(stage:string,message:string)=>{
    await pool.query('UPDATE document_import_jobs SET message=$2,updated_at=now() WHERE id=$1',[jobId,message]);
@@ -174,6 +186,13 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    }else if(questionId){
     await updateProgress('resolving_question','Аналитик учитывает решение владельца продукта в ТЗ');
     await applyOwnerAnswer(config);
+   }else if(rebuildSpec){
+    await rebuildProjectDocumentation({pool,job,
+     complete:async prompt=>completion(prompt,config,{maxAttempts:3}),
+     recordUsage:async usage=>storeTokenUsage(id,null,config.model,usage),
+     progress:updateProgress,
+     agentInstructions:await stageAgentContext(id,'analysis')
+    });
    }else if(structureOnly){
     await organizeImportedDocumentation({
      pool,job,
@@ -501,16 +520,17 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    await store(id,null,null,'assistant',answer,null,null,mode);
    return {message:answer,created_task_id:null,created_document_id:null};
   }
-  const documentationAction=localDocumentIntent||isExplicitDocumentationChange(message)||isDocumentationStructureCommand(message);
-  const structureOnly=documentationMode&&!location&&!attachments.length&&isDocumentationStructureCommand(message);
+  const rebuildSpec=documentationMode&&!location&&!attachments.length&&isDocumentationRebuildCommand(message);
+  const documentationAction=localDocumentIntent||isExplicitDocumentationChange(message)||isDocumentationStructureCommand(message)||rebuildSpec;
+  const structureOnly=documentationMode&&!rebuildSpec&&!location&&!attachments.length&&isDocumentationStructureCommand(message);
   if(!create&&(documentationMode&&(!!location||attachments.length>0||documentationAction)||location&&docImportIntent)){
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'Включи AI в настройках проекта'});
    const jobId=randomUUID(),actorId=uid(req);
    const sourceUrl=location?'https://github.com/'+location.owner+'/'+location.repository+(location.path.toLowerCase().endsWith('.md')?'/blob/':'/tree/')+location.branch+'/'+location.path:null;
-   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:attachments.length?'attachments:'+createHash('sha256').update(JSON.stringify(attachments.map(file=>file.name).sort())).digest('hex'):(structureOnly?'structure:':'analyst:')+jobId;
+   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:attachments.length?'attachments:'+createHash('sha256').update(JSON.stringify(attachments.map(file=>file.name).sort())).digest('hex'):(rebuildSpec?'rebuild:':structureOnly?'structure:':'analyst:')+jobId;
    const queued=await pool.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,source_url,source_key,request_text,analyst_input) VALUES($1,$2,$3,'running','Запрос передан аналитику',$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id",
-    [jobId,id,actorId,sourceUrl,sourceKey,message,JSON.stringify({location,attachments,mode,documentId:targetDocumentId,structureOnly} satisfies AnalystInput)]);
+    [jobId,id,actorId,sourceUrl,sourceKey,message,JSON.stringify({location,attachments,mode,documentId:targetDocumentId,structureOnly,rebuildSpec} satisfies AnalystInput)]);
    if(!queued.rowCount)return reply.code(409).send({error:'Аналитик уже работает над запросом проекта. Текущий запуск доступен в Центре процессов.'});
    try{await startDocumentationWorkflow(jobId);}
    catch(error){
