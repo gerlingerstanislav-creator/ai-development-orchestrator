@@ -4,7 +4,7 @@ type Request=(path:string,options?:RequestInit)=>Promise<any>;
 type Module={id:string;title:string;body:string;stage:string|null;tags:string[];mandatory:boolean;status:'draft'|'approved'|'obsolete';priority:number;revision:number};
 type Draft=Omit<Module,'id'|'revision'>;
 const empty:Draft={title:'',body:'',stage:null,tags:[],mandatory:false,status:'draft',priority:0};
-const stages=[['','Все этапы'],['analysis','Анализ'],['development','Разработка'],['testing','Тестирование'],['documentation','Документация'],['manager','Менеджер']];
+const stages=[['','Все этапы'],['analysis','Системный аналитик'],['business_analyst','Бизнес-аналитик'],['development','Разработка'],['testing','Тестирование'],['documentation','Документация'],['manager','Менеджер']];
 export function KnowledgeInstructions({projectId,request}:{projectId:string;request:Request}){
  const [items,setItems]=useState<Module[]>([]);
  const [editing,setEditing]=useState<string|null>(null);
