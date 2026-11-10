@@ -580,6 +580,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){fail(e);}
  }
  function canAdvance(task:Task,from:string,to:string){
+  if(task.type==='question')return false;
   if(task.stage!==from)return false;
   if(from==='backlog'&&to==='analysis')return true;
   if(from==='analysis'&&to==='development')return readyForDevelopment&&!taskChatBusy&&!managerWorking&&!!gitLink&&aiSettings.enabled;
@@ -2168,7 +2169,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <div className="task-modal-actions">
      <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
      {['backlog','analysis'].includes(activeTask.stage)&&<button type="button" className="secondary" title="Удалить ненужную задачу без результатов разработки" onClick={()=>void deleteUnstartedTask()}><Trash2 size={14}/> Удалить</button>}
-     {!['documentation','done'].includes(activeTask.stage)&&
+     {activeTask.type!=='question'&&!['documentation','done'].includes(activeTask.stage)&&
       <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
      <button className="task-close" type="button" onClick={()=>{if(selected)navigate(projectUrl(selected.id,'tasks'));}} title="Закрыть задачу" aria-label="Закрыть задачу"><X size={20}/></button>
     </div>
@@ -2325,7 +2326,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </form>
     </aside>
    </div>
-   <div className="task-workflow" aria-label="Этапы выполнения">
+   {activeTask.type!=='question'&&<div className="task-workflow" aria-label="Этапы выполнения">
     {stages.map((stage,i)=><React.Fragment key={stage.stage}>
      {i>0&&<button className="workflow-arrow" disabled={!canAdvance(activeTask,stages[i-1].stage,stage.stage)}
        title={canAdvance(activeTask,stages[i-1].stage,stage.stage)?'Перейти: '+stage.label:'Для этого перехода нужны выполненные условия предыдущего этапа'}
@@ -2335,7 +2336,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span>{stage.label}</span>
      </div>
     </React.Fragment>)}
-   </div>
+   </div>}
   </div>
  </div>}
  {showConnection&&<div className="overlay" onMouseDown={()=>setShowConnection(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={addConnection}><div className="modal-heading"><h2>Новое подключение</h2><button type="button" onClick={()=>setShowConnection(false)}><X/></button></div><p className="muted">{cred.provider==='github_token'?'Подключение GitHub для выбранного проекта. Токен создаётся в GitHub и хранится в сервисе зашифрованным.':'Подключение по API-ключу. ChatGPT Plus / Codex CLI настраивается отдельно в разделе «Настройки аккаунта».'}</p>
