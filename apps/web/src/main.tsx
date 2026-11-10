@@ -76,7 +76,7 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantMessage={id:string;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
  messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
@@ -437,6 +437,22 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskAgentRuns,setTaskAgentRuns]=useState<AgentRun[]>([]);
  const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
+ const projectAtBottom=useRef(true);const projectLastMessage=useRef<string|null>(null);
+ const [projectShowScrollBottom,setProjectShowScrollBottom]=useState(false);
+ const [projectReplyTo,setProjectReplyTo]=useState<string|null>(null);
+ const [projectTopics,setProjectTopics]=useState<Array<{id:string;title:string;status:'open'|'closed'}>>([]);
+ const [projectTopicId,setProjectTopicId]=useState('');
+ const [projectNewTopic,setProjectNewTopic]=useState('');
+ const [projectTopicBusy,setProjectTopicBusy]=useState(false);
+ function onProjectScroll(){
+  const node=projectThreadRef.current;if(!node)return;
+  projectAtBottom.current=node.scrollHeight-node.scrollTop-node.clientHeight<75;
+  setProjectShowScrollBottom(!projectAtBottom.current);
+ }
+ function scrollProjectToBottom(){
+  const node=projectThreadRef.current;if(!node)return;
+  node.scrollTop=node.scrollHeight;projectAtBottom.current=true;setProjectShowScrollBottom(false);
+ }
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
  const [openChatProjectId,setOpenChatProjectId]=useState<string|null>(null);
  const [projectChatMode,setProjectChatMode]=useState<ProjectChatMode>('project');
@@ -767,7 +783,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>{alive=false;window.clearInterval(timer);};
  },[token,selected?.id,section]);
 
- useEffect(()=>{if(projectThreadRef.current)projectThreadRef.current.scrollTop=projectThreadRef.current.scrollHeight;},[projectMessages,projectChatOpen,projectChatBusy,projectChatMode]);
+ useLayoutEffect(()=>{
+  if(!projectChatOpen)return;
+  const last=projectMessages.at(-1)?.id||null;
+  const hasNewMessage=last!==projectLastMessage.current;
+  if(hasNewMessage&&(projectLastMessage.current===null||projectAtBottom.current))scrollProjectToBottom();
+  projectLastMessage.current=last;
+ },[projectMessages,projectChatOpen]);
  useLayoutEffect(()=>{
   const element=taskThreadRef.current;
   if(element)element.scrollTop=element.scrollHeight;
@@ -835,6 +857,36 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setBaHandoffOpen(false);setBaHandoffNotice('');
  },[selectedProjectId]);
  useEffect(()=>{if(!token)setProjectChats({});},[token]);
+ useEffect(()=>{projectLastMessage.current=null;projectAtBottom.current=true;setProjectShowScrollBottom(false);setProjectReplyTo(null);setProjectTopicId('');},[selectedProjectId]);
+ useEffect(()=>{
+  if(!selectedProjectId||!projectChatOpen)return;
+  let alive=true;
+  async function refresh(){
+   try{
+    const topics=await api<Array<{id:string;title:string;status:'open'|'closed'}>>('/projects/'+selectedProjectId+'/assistant/topics');
+    if(alive)setProjectTopics(topics);
+   }catch{/* Keep the chat usable when topics cannot be loaded. */}
+  }
+  void refresh();const timer=window.setInterval(()=>void refresh(),6000);
+  return()=>{alive=false;window.clearInterval(timer);};
+ },[selectedProjectId,projectChatOpen]);
+ async function createProjectTopic(){
+  if(!selectedProjectId||projectNewTopic.trim().length<3)return;
+  setProjectTopicBusy(true);
+  try{
+   const topic=await api<{id:string;title:string;status:'open'}>('/projects/'+selectedProjectId+'/assistant/topics',{method:'POST',body:JSON.stringify({title:projectNewTopic.trim()})});
+   setProjectTopics(old=>[topic,...old]);setProjectTopicId(topic.id);setProjectNewTopic('');
+  }catch(e){fail(e);}finally{setProjectTopicBusy(false);}
+ }
+ async function toggleProjectTopic(topic:{id:string;status:'open'|'closed'}){
+  if(!selectedProjectId)return;
+  try{
+   const status=topic.status==='open'?'closed':'open';
+   await api('/projects/'+selectedProjectId+'/assistant/topics/'+topic.id,{method:'PATCH',body:JSON.stringify({status})});
+   setProjectTopics(old=>old.map(x=>x.id===topic.id?{...x,status}:x));
+   if(status==='closed'&&projectTopicId===topic.id)setProjectTopicId('');
+  }catch(e){fail(e);}
+ }
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -1251,12 +1303,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   e.preventDefault();
   const files=projectChatMode==='documentation'?analystFiles:[];
   if(!selected||(!projectInput.trim()&&!files.length)||projectChatBusy)return;
-  const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+crypto.randomUUID();
+  const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+crypto.randomUUID(),replyTo=projectReplyTo,topicId=projectTopicId||null;
   const message=projectInput.trim()||'Подготовь ТЗ по приложенным материалам.';
   const chatKey=projectChatKey(projectId,mode);
   const sentAt=new Date().toISOString();
+  setProjectReplyTo(null);
   updateProjectChat(chatKey,chat=>({...chat,input:'',pendingId:optimisticId,error:'',messages:[
-   ...chat.messages,{id:optimisticId,role:'user',body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:sentAt}
+   ...chat.messages,{id:optimisticId,role:'user',reply_to:replyTo,topic_id:topicId,body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:sentAt}
   ]}));
   function updatePendingChat(update:(chat:ProjectChatState)=>ProjectChatState){
    updateProjectChat(chatKey,chat=>chat.pendingId===optimisticId?update(chat):chat);
@@ -1269,7 +1322,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     ?await api<AssistantResponse>('/projects/'+projectId+'/processes/'+currentJobId+'/instructions',
       {method:'POST',body:JSON.stringify({message})})
     :await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
-       message,mode,attachments,documentId:mode==='documentation'?analystDocumentId:null
+       message,mode,attachments,replyTo,topicId,documentId:mode==='documentation'?analystDocumentId:null
       })});
    if(response.import_job_id){
     const jobId=response.import_job_id;
@@ -1285,6 +1338,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    ]}));
    if(selectedProjectRef.current===projectId&&(response.created_task_id||response.created_document_id))await loadProject(projectId);
   }catch(e){
+   setProjectReplyTo(replyTo);
    updatePendingChat(chat=>({...chat,error:e instanceof Error?e.message:String(e),
     messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m)
    }));
@@ -2068,11 +2122,26 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <button type="button" className="primary" disabled={baHandoffBusy||baHandoffTitle.trim().length<5||baHandoffBody.trim().length<20} onClick={()=>void sendBaHandoff()}>Согласовать и передать СА</button></div>
    </div>}
    {projectChatMode==='documentation'&&baHandoffNotice&&<p className="ba-handoff-notice">{baHandoffNotice}</p>}
-   <div ref={projectThreadRef} className="assistant-thread" role="log" aria-live="polite">
+   <div className="pm-topic-bar">
+    <select aria-label="Тема обсуждения" value={projectTopicId} onChange={e=>setProjectTopicId(e.target.value)}>
+     <option value="">Общий чат</option>
+     {projectTopics.map(topic=><option key={topic.id} value={topic.id} disabled={topic.status==='closed'}>{topic.status==='closed'?'✓ ':''}{topic.title}</option>)}
+    </select>
+    {projectTopicId&&<button className="secondary" type="button" onClick={()=>{const topic=projectTopics.find(x=>x.id===projectTopicId);if(topic)void toggleProjectTopic(topic);}}>Закрыть</button>}
+   </div>
+   <form className="pm-new-topic" onSubmit={e=>{e.preventDefault();void createProjectTopic();}}>
+    <input aria-label="Название новой темы" value={projectNewTopic} placeholder="Новая тема обсуждения…" onChange={e=>setProjectNewTopic(e.target.value)}/>
+    <button type="submit" className="secondary" disabled={projectTopicBusy||projectNewTopic.trim().length<3}><Plus size={15}/> Тема</button>
+   </form>
+   <div className="pm-thread-wrap">
+   <div ref={projectThreadRef} onScroll={onProjectScroll} className="assistant-thread" role="log" aria-live="polite">
     {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Обсуди со мной идеи, бизнес-логику и требования. Я не создаю задачи без твоего решения. После согласования передай пакет системному аналитику.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
     {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
+      {m.reply_to&&<div className="pm-quoted-message">Ответ на: {projectMessages.find(x=>x.id===m.reply_to)?.body.slice(0,180)||'сообщение из истории'}</div>}
+      {m.topic_id&&<small className="pm-message-topic">{projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       <div>{m.body}</div>
+      {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
       {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
@@ -2084,6 +2153,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {(projectChatBusy||projectImportJobId)&&<p className="assistant-hint">{projectImportProgress||'Codex готовит ответ…'}</p>}
     {projectChatError&&<p className="task-action-error" role="alert">{projectChatError}</p>}
    </div>
+   {projectShowScrollBottom&&<button type="button" className="pm-scroll-bottom" title="К последнему сообщению" aria-label="Прокрутить к концу чата" onClick={scrollProjectToBottom}><ChevronDown size={16}/></button>}
+   </div>
+   {projectReplyTo&&<div className="pm-reply-preview"><span>Ответ на: {projectMessages.find(m=>m.id===projectReplyTo)?.body.slice(0,180)||'сообщение ПМ'}</span><button type="button" aria-label="Отменить ответ" onClick={()=>setProjectReplyTo(null)}><X size={14}/></button></div>}
    {projectChatMode==='documentation'&&(analystDocumentId||analystFiles.length>0)&&<div className="analyst-materials">
     {analystDocumentId&&<span>Раздел: {docs.find(doc=>doc.id===analystDocumentId)?.title||'Выбранная страница'}
      <button type="button" aria-label="Снять выбор раздела" onClick={()=>setAnalystDocumentId(null)} disabled={projectChatBusy}><X size={13}/></button></span>}
@@ -2106,7 +2178,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </section>}
   <div className="chat-agent-launchers" role="group" aria-label="Чаты с агентами">
    <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><span className="chat-agent-glyph"><MessageCircle size={32}/><span>ПМ</span></span></button>
-   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='documentation'?'active':'')} onClick={()=>toggleAgentChat('documentation')} title="Чат с бизнес-аналитиком" aria-label="Открыть чат с БА"><span className="chat-agent-glyph"><MessageCircle size={32}/><span>БА</span></span></button>
+
   </div>
  </>}
  {workflowModal&&selected&&<div className="overlay workflow-stage-overlay" onMouseDown={()=>{if(!workflowSaving)setWorkflowModal(null);}}>
