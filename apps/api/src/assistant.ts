@@ -175,9 +175,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const r=await pool.query('SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NOT DISTINCT FROM $2 AND channel=$3 ORDER BY created_at DESC,role ASC,id DESC LIMIT 10',[id,taskId,channel]);
   return r.rows.reverse().map(x=>x.role+': '+x.body.slice(0,1600)).join('\n\n');
  }
- async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null,channel:'project'|'documentation'='project',db:Pick<Pool,'query'>=pool,actions:{documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean}={}){
-  await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10,$11)',
-   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false]);
+ async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null,channel:'project'|'documentation'='project',db:Pick<Pool,'query'>=pool,actions:{documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean}={},relation:{replyTo?:string|null;topicId?:string|null}={}){
+  await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested,owner_question_cleanup_requested,reply_to,topic_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10,$11,$12,$13)',
+   [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false,relation.replyTo??null,relation.topicId??null]);
  }
  async function storeTokenUsage(id:string,taskId:string|null,model:string,usage:{input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined){
   if(!usage)return;
@@ -635,10 +635,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      const lesson=raw.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim();
      await recordAgentLearning(pool,{projectId:id,role:mentionedAgent.stage,runId:randomUUID(),body:lesson,evidence:'Прямой диалог с @'+mentionedAgent.alias});
      const answer='@'+mentionedAgent.alias+' · '+raw.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
-    await store(id,null,uid(req),'user',message,null,null,mode);
-    await pool.query("UPDATE assistant_messages SET reply_to=$3,topic_id=$4 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='user' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,replyTo||null,topicId||null]);
-    await store(id,null,null,'assistant',answer,null,null,mode);
-    await pool.query("UPDATE assistant_messages SET topic_id=$3 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='assistant' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,topicId||null]);
+    await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
+    await store(id,null,null,'assistant',answer,null,null,mode,pool,{}, {topicId});
     await countCall(id,uid(req));
     return {message:answer,created_task_id:null,created_document_id:null};
    }catch(error){return reply.code(503).send({error:'Ошибка агента: '+String(error instanceof Error?error.message:error).slice(0,350)});}
@@ -657,7 +655,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const {id:sessionId,secret}=await createAgentSession(pool,id,uid(req),role);
    const prompt=[
     'Ты '+(documentationMode?'бизнес-аналитик (БА)':'менеджер проекта (ПМ)')+' AI Development Orchestrator.',
-    documentationMode?'':'Ты единая точка общения владельца с командой. Делегируй бизнес-анализ, системный анализ, разработку, тестирование, DevOps другим агентам через задачи и инструменты. Не исполняй их работу самостоятельно. Быстро сообщи об отправке поручения, затем возвращайся с подтверждёнными результатами. По возможности отвечай на вопросы агентов, используя согласованные решения владельца; если решения нет, явно спроси владельца. Не блокируй другие поручения обсуждением одной темы. Разделяй независимые вопросы на темы, закрывай обсуждение после полученного ответа и переданного решения.',
+    documentationMode?'':'Ты единая точка общения владельца с командой. Делегируй бизнес-анализ, системный анализ, разработку, тестирование, DevOps другим агентам через задачи и инструменты. Не исполняй их работу самостоятельно. Быстро сообщи об отправке поручения, затем возвращайся с подтверждёнными результатами. По возможности отвечай на вопросы агентов, используя согласованные решения владельца; если решения нет, явно спроси владельца. Согласовывай с владельцем этапы workflow: показывай задачу, переход, основания, риски и ожидаемые последствия. Решение владельца передавай через реальные инструменты, не считай текст согласования фактом перехода. Не обходи защитные условия, проверки и обязательные подтверждения. Не блокируй другие поручения обсуждением одной темы. Разделяй независимые вопросы на темы, закрывай обсуждение после полученного ответа и переданного решения.',
     conversationRole.slice(0,4300),
     'Пользователь пишет своими словами. Самостоятельно определяй смысл и выбирай реальные действия, не классифицируй текст по ключевым словам.',
     'У тебя подключён MCP-сервер orchestrator с инструментами чтения и изменения проекта. Ты вправе вызывать инструменты.',
@@ -696,10 +694,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     if(typeof data.message!=='string'||!data.message.trim())throw Error('Агент не вернул ответ');
     const effects=await agentSessionEffects(pool,sessionId);
     await storeTokenUsage(id,null,config.model,data.usage);
-    await store(id,null,uid(req),'user',message,null,null,mode);
-    await pool.query("UPDATE assistant_messages SET reply_to=$3,topic_id=$4 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='user' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,replyTo||null,topicId||null]);
-    await store(id,null,null,'assistant',data.message,effects.created_task_id,effects.created_document_id,mode,pool,effects);
-    await pool.query("UPDATE assistant_messages SET topic_id=$3 WHERE id=(SELECT id FROM assistant_messages WHERE project_id=$1 AND channel=$2 AND role='assistant' AND task_id IS NULL ORDER BY created_at DESC,id DESC LIMIT 1)",[id,mode,topicId||null]);
+    await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
+    await store(id,null,null,'assistant',data.message,effects.created_task_id,effects.created_document_id,mode,pool,effects,{topicId});
     await countCall(id,uid(req));
     return {message:data.message,created_task_id:effects.created_task_id,
      created_document_id:effects.created_document_id,import_job_id:effects.import_job_id,
