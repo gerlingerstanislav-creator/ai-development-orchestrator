@@ -24,7 +24,7 @@ export function suggestedRootForTopic(key:string,title:string):DocumentationRoot
  * instead they create a review proposal.
  */
 export async function archiveSourceDocuments(args:{
- pool:Pool;jobId:string;projectId:string;sourceKey:string;
+ pool:Pick<Pool,'query'|'connect'>;jobId:string;projectId:string;sourceKey:string;
  files:SourceFile[];location?:{owner:string;repository:string;commit:string};
  progress:(stage:string,message:string)=>Promise<void>;
 }):Promise<{created:number;updated:number;conflicts:number}>{
