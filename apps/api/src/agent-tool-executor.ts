@@ -51,6 +51,26 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  const projectId=session.project_id,actorId=session.actor_id;
  const params=(args&&typeof args==='object'&&!Array.isArray(args)?args:{}) as Record<string,unknown>;
  switch(name){
+ case 'discussions.list':{
+  const topics=await pool.query('SELECT id,title,status,created_at,closed_at FROM project_chat_topics WHERE project_id=$1 ORDER BY status,created_at DESC LIMIT 100',[projectId]);
+  return {topics:topics.rows};
+ }
+ case 'discussions.open':{
+  const {title}=z.object({title:z.string().trim().min(3).max(180)}).parse(params);
+  const existing=await pool.query("SELECT id,title,status FROM project_chat_topics WHERE project_id=$1 AND status='open' AND lower(title)=lower($2) LIMIT 1",[projectId,title]);
+  if(existing.rowCount)return {topic:existing.rows[0],existing:true};
+  const id=randomUUID();
+  const inserted=await pool.query("INSERT INTO project_chat_topics(id,project_id,title) VALUES($1,$2,$3) RETURNING id,title,status",[id,projectId,title]);
+  return {topic:inserted.rows[0],existing:false};
+ }
+ case 'discussions.close':
+ case 'discussions.reopen':{
+  const {topic_id}=z.object({topic_id:uuid}).parse(params);
+  const status=name==='discussions.close'?'closed':'open';
+  const updated=await pool.query("UPDATE project_chat_topics SET status=$3,closed_at=CASE WHEN $3='closed' THEN now() ELSE NULL END WHERE project_id=$1 AND id=$2 RETURNING id,title,status",[projectId,topic_id,status]);
+  if(!updated.rowCount)throw rejected('Тема не найдена',404);
+  return {topic:updated.rows[0]};
+ }
  case 'iterations.list':return listIterations(pool,projectId);
  case 'iterations.read':{
   const {iteration_id}=z.object({iteration_id:uuid}).parse(params);
