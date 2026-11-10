@@ -437,6 +437,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskAgentRuns,setTaskAgentRuns]=useState<AgentRun[]>([]);
  const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
+ const taskAtBottom=useRef(true);const taskLastMessage=useRef<string|null>(null);
+ const [taskShowScrollBottom,setTaskShowScrollBottom]=useState(false);
+ function onTaskScroll(){
+  const node=taskThreadRef.current;if(!node)return;
+  taskAtBottom.current=node.scrollHeight-node.scrollTop-node.clientHeight<75;
+  setTaskShowScrollBottom(!taskAtBottom.current);
+ }
+ function scrollTaskToBottom(){
+  const node=taskThreadRef.current;if(!node)return;
+  node.scrollTop=node.scrollHeight;taskAtBottom.current=true;setTaskShowScrollBottom(false);
+ }
  const projectAtBottom=useRef(true);const projectLastMessage=useRef<string|null>(null);
  const [projectShowScrollBottom,setProjectShowScrollBottom]=useState(false);
  const [projectReplyTo,setProjectReplyTo]=useState<string|null>(null);
@@ -790,10 +801,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(hasNewMessage&&(projectLastMessage.current===null||projectAtBottom.current))scrollProjectToBottom();
   projectLastMessage.current=last;
  },[projectMessages,projectChatOpen]);
+ useEffect(()=>{taskLastMessage.current=null;taskAtBottom.current=true;setTaskShowScrollBottom(false);},[activeTask?.id]);
  useLayoutEffect(()=>{
-  const element=taskThreadRef.current;
-  if(element)element.scrollTop=element.scrollHeight;
- },[activeTask?.id,managerMessages,taskAgentRuns,managerWorking,decisions.length]);
+  const latest=chatEntries.at(-1)?.id||null;
+  const newMessage=latest!==taskLastMessage.current;
+  if(newMessage&&(taskLastMessage.current===null||taskAtBottom.current))scrollTaskToBottom();
+  taskLastMessage.current=latest;
+ },[activeTask?.id,managerMessages,taskAgentRuns]);
  // One live timeline for analysis, development, QA-design, testing and approvals.
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id)return;
@@ -2309,7 +2323,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <header><MessageCircle size={17}/><strong>Менеджер проекта</strong>
       <small>{decisions.length?'Ожидает вашего решения':activeAgentRuns.length||managerWorking?'Команда работает':'Контролирует процесс'}</small>
      </header>
-     <div ref={taskThreadRef} className="assistant-thread manager-thread" role="log" aria-live="polite">
+     <div className="task-thread-wrap">
+     <div ref={taskThreadRef} onScroll={onTaskScroll} className="assistant-thread manager-thread" role="log" aria-live="polite">
       {!managerState?.messages.length&&<p className="assistant-hint">Менеджер проекта координирует аналитика, разработчика и тестировщика. Все вопросы и решения для вас поступают только от него.</p>}
       <details className="manager-internal-log">
        <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
@@ -2346,6 +2361,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>}
       </div>)}
 
+     </div>
+     {taskShowScrollBottom&&<button type="button" className="pm-scroll-bottom" aria-label="Прокрутить к последнему сообщению задачи" title="К последнему сообщению" onClick={scrollTaskToBottom}><ChevronDown size={16}/></button>}
      </div>
      {(activeAgentRuns.length>0||managerWorking)&&<ul className="manager-live-activity" aria-label="Текущая работа команды" aria-live="polite">
       {activeAgentRuns.map(run=><li key={run.kind+'-'+run.id}><LoaderCircle size={14} aria-hidden="true"/>
