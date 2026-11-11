@@ -1783,6 +1783,44 @@ app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,rep
 app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
  const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ // Stop the actual Codex job and its Temporal workflow, without deleting the task or PR.
+ const cancelRunner=async(runId:string)=>{
+  try{
+   await fetch((process.env.CODEX_RUNNER_URL||'http://codex:4300')+'/jobs/'+runId+'/cancel',{
+    method:'POST',headers:{'X-Runner-Secret':process.env.RUNNER_SHARED_SECRET||''},
+    signal:AbortSignal.timeout(8000)
+   });
+  }catch(error){req.log.warn({error,runId},'Codex cancellation needs reconciliation');}
+ };
+ const cancelWorkflow=async(workflowId:string)=>{
+  try{const client=await temporal();await client.workflow.getHandle(workflowId).cancel();}
+  catch(error){req.log.warn({error,workflowId},'Temporal cancellation needs reconciliation');}
+ };
+ const dev=await pool.query("UPDATE ai_task_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
+ if(dev.rowCount){
+  await cancelRunner(processId);
+  await cancelWorkflow('task-cycle-'+(dev.rows[0].cycle_id||processId));
+  await releaseTaskOrchestration(pool,id,dev.rows[0].task_id,dev.rows[0].cycle_id||processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','cancelled','Разработка остановлена пользователем')",[randomUUID(),id,processId]);
+  return {ok:true,status:'cancelled'};
+ }
+ const test=await pool.query("UPDATE ai_test_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
+ if(test.rowCount){
+  await cancelRunner(processId);
+  const cycle=test.rows[0].cycle_id;
+  if(cycle){await cancelWorkflow('task-cycle-'+cycle);await cancelWorkflow('manual-test-'+cycle);}
+  await releaseTaskOrchestration(pool,id,test.rows[0].task_id,cycle||processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'testing','cancelled','Тестирование остановлено пользователем')",[randomUUID(),id,processId]);
+  return {ok:true,status:'cancelled'};
+ }
+ const queue=await pool.query("UPDATE iteration_execution_queue SET status='cancelled',detail='Запуск отменён пользователем',updated_at=now() WHERE project_id=$1 AND task_id=$2 AND status='queued' RETURNING task_id",[id,processId]);
+ if(queue.rowCount)return {ok:true,status:'cancelled'};
+ const planning=await pool.query("UPDATE iteration_planning_runs r SET status='cancelled',message='Прервано пользователем',updated_at=now() FROM project_iterations i WHERE r.id=$2 AND r.iteration_id=i.id AND i.project_id=$1 AND r.status IN ('queued','running') RETURNING r.id",[id,processId]);
+ if(planning.rowCount){
+  await cancelWorkflow('iteration-plan-'+processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'analysis','cancelled','Планирование итерации остановлено')",[randomUUID(),id,processId]);
+  return {ok:true,status:'cancelled'};
+ }
  const stopped=await pool.query(
   "UPDATE document_import_jobs SET status='cancelled',message='Остановлен пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND actor_id=$3 AND status='running' RETURNING id",
   [id,processId,uid(req)]);
