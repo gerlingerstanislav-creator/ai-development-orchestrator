@@ -64,6 +64,9 @@ try{
  const version=await qaRun('registry allowlist','npm',['view','is-number@7.0.0','version','--fetch-retries=0'],90000);
  assert.match(version,/7\.0\.0/);
  // Local test servers run entirely inside the disposable QA workspace.
+ const proxyEnv=await qaRun('QA network diagnostics','node',['-e',
+  "console.log(JSON.stringify({http:process.env.HTTP_PROXY,https:process.env.HTTPS_PROXY,no:process.env.NO_PROXY,lower:process.env.no_proxy,node:process.env.NODE_USE_ENV_PROXY}))"]);
+ console.log('QA sandbox network configuration:',proxyEnv.trim());
  const localCheck=`
   const assert=require('node:assert/strict'),http=require('node:http');
   const server=http.createServer((req,res)=>res.end('qa-local-ok'));
