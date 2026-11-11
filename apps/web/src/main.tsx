@@ -1952,7 +1952,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     return <>
      <div className="process-detail-header"><h3>{process.title}</h3><span className={'process-status '+process.status}>{processStatus(process.status)}</span></div>
      <p className="muted">{process.detail}</p>
-     {['queued','running'].includes(process.status)&&(['development','testing'].includes(process.kind)||process.title.startsWith('План задач'))&&
+     {['queued','running'].includes(process.status)&&(['development','testing'].includes(process.kind)||process.title.startsWith('План задач')||process.title.startsWith('Анализ задачи'))&&
       <div className="process-actions"><button type="button" className="secondary" disabled={processActionBusy} onClick={()=>void interruptProcess(process)}>Прервать процесс</button></div>}
      {process.kind==='document_import'&&<div className="process-metrics"><span>Файлов: {process.sourceFileCount??'—'}</span><span>Фрагментов: {process.progress?.completed??0} / {process.progress?.total??'—'}</span><span>Тем готово: {process.topicProgress?.completed??0} / {process.topicProgress?.total||'—'}</span><span>Сохранено страниц: {process.savedDocuments??0}</span></div>}
      {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
