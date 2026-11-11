@@ -158,6 +158,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  case 'iterations.save':return saveIteration(pool,projectId,params);
  case 'iterations.prepare_plan':return queueIterationPlanning(pool,projectId,actorId,params);
  case 'iterations.recommend_launch':return recommendIterationLaunch(pool,projectId,params);
+ case 'tasks.dependency_graph':{
+  if(session.role!=='manager')throw rejected('Граф зависимостей доступен ПМ',403);
+  const rows=await pool.query("SELECT id,title,stage,type,analysis_state,depends_on_task_id,dependency_source,git_branch,pr_url FROM tasks WHERE project_id=$1 AND type<>'epic' ORDER BY created_at LIMIT 400",[projectId]);
+  return {tasks:rows.rows};
+ }
  case 'iterations.launch':{
   if(session.role!=='manager')throw rejected('Запуск итерации доступен только ПМ',403);
   const data=z.object({iteration_id:uuid,expected_revision:z.number().int().positive()}).parse(params);
