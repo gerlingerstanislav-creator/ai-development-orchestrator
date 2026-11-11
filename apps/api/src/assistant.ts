@@ -746,10 +746,10 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   ].join('\n'):'Ты инженерный помощник в карточке задачи. Отвечай по делу; не утверждай, что изменял код.';
   const prompt=composeAgentPrompt({
    role:refining?'Системный аналитик':'Инженерный помощник по задаче',
-   objective:message,
+   objective:'Актуальное ТЗ задачи «'+task.title+'»:\n'+String(task.description||'').slice(0,12500)+'\n\nНовое сообщение пользователя:\n'+message,
    tools:'В этом вызове нет инструментов; это анализ постановки или ответ в чате.',
    instructions:instructions+'\n'+analystInstructions.slice(0,1100),
-   scope:'Задача '+taskId+': '+task.title+'\nАктуальное ТЗ:\n'+String(task.description||'').slice(0,11000),
+   scope:'Задача '+taskId+', текущий этап: '+task.stage,
    context:relatedContext,
    output:refining?'Верни JSON указанной схемы. Если нет блокирующих вопросов — questions: [].':'Краткий ответ по-русски.'
   });
