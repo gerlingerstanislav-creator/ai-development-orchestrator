@@ -4,7 +4,7 @@ import {mkdtemp,mkdir,readFile,rm,writeFile} from 'node:fs/promises';
 import net from 'node:net';
 import {homedir,tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {createTaskPolicy,runnerEnvironment} from './execution-policy.mjs';
+import {createTaskPolicy,runnerEnvironment,qaAllowedDomains} from './execution-policy.mjs';
 
 const root=await mkdtemp(join(tmpdir(),'ado-isolation-'));
 const auth=await mkdtemp(join(process.env.CODEX_HOME||homedir(),'ado-smoke-auth-'));
@@ -39,7 +39,53 @@ try{
  assert.equal(await readFile(gitConfig,'utf8'),'git metadata');
  assert.equal(await readFile(join(repo,'job.txt'),'utf8'),'workspace works');
  assert.equal(await readFile(join(workdir,'scratch','temp.txt'),'utf8'),'scratch works');
- console.log('Runner sandbox isolates project files, Codex credentials, Git metadata, and loopback');
+ const qaPolicy=await createTaskPolicy(workdir,{qa:true});
+ const qaArgs=qaPolicy.sandboxArgs.join(' ');
+ assert.match(qaArgs,/features\.network_proxy=true/);
+ assert.match(qaArgs,/permissions\.ado-qa\.network\.enabled=true/);
+ for(const domain of qaAllowedDomains)assert.ok(qaArgs.includes(domain),'missing QA network allowlist entry '+domain);
+ assert.ok(!qaAllowedDomains.includes('api'),'QA cannot access platform service DNS');
+ assert.ok(!qaAllowedDomains.includes('db'),'QA cannot access PostgreSQL DNS');
+ const qaRun=async(label,binary,args,timeout=45000)=>{
+  const command=spawn('codex',[...qaPolicy.sandboxArgs,'--',binary,...args],{
+   cwd:repo,env,stdio:['ignore','pipe','pipe']
+  });
+  let out='',err='';
+  command.stdout.on('data',chunk=>{out+=chunk.toString();});
+  command.stderr.on('data',chunk=>{err+=chunk.toString();});
+  const timer=setTimeout(()=>command.kill('SIGTERM'),timeout);
+  const status=await new Promise((resolve,reject)=>{command.once('error',reject);command.once('close',resolve);});
+  clearTimeout(timer);
+  assert.equal(status,0,label+' failed: '+out.slice(-1200)+' '+err.slice(-1200));
+  return out;
+ };
+ // Codex QA commands may install dependencies from approved registries.
+ // This is an end-to-end check of the actual proxy, not just config parsing.
+ const version=await qaRun('registry allowlist','npm',['view','is-number@7.0.0','version','--fetch-retries=0'],90000);
+ assert.match(version,/7\.0\.0/);
+ // Local test servers run entirely inside the disposable QA workspace.
+ const localCheck=`
+  const assert=require('node:assert/strict'),http=require('node:http');
+  const server=http.createServer((req,res)=>res.end('qa-local-ok'));
+  server.listen(0,'127.0.0.1',async()=>{
+   try{const response=await fetch('http://127.0.0.1:'+server.address().port);
+    assert.equal(await response.text(),'qa-local-ok');server.close();}
+   catch(error){console.error(error);server.close();process.exitCode=1;}
+  });
+ `;
+ await qaRun('QA loopback server','node',['-e',localCheck],30000);
+ // Ensure a real headless browser launches under the *same* sandbox profile.
+ const browserCheck=`
+  const {chromium}=require('@playwright/test'),assert=require('node:assert/strict');
+  (async()=>{const browser=await chromium.launch({headless:true,executablePath:'/usr/bin/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});
+   try{const page=await browser.newPage();await page.goto('data:text/html,<title>QA ready</title>');
+    assert.equal(await page.title(),'QA ready');await page.screenshot({path:'qa-browser-smoke.png'});}
+   finally{await browser.close();}
+  })().catch(error=>{console.error(error);process.exitCode=1;});
+ `;
+ await qaRun('Playwright Chromium','node',['-e',browserCheck],40000);
+ assert.equal((await readFile(join(repo,'qa-browser-smoke.png'))).subarray(0,4).toString('hex'),'89504e47');
+ console.log('Runner sandbox isolates project files, Codex credentials and Git metadata; QA proxy allows registries, loopback, and headless browser');
 }finally{
  server.close();
  await Promise.all([rm(root,{recursive:true,force:true}),rm(auth,{recursive:true,force:true})]);
