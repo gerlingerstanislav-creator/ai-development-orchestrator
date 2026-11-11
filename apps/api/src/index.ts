@@ -1439,7 +1439,7 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   readDevelopmentQueue(pool,id),
   pool.query("SELECT q.note_id AS id,q.task_id,q.role,q.status,q.error AS detail,q.updated_at,n.body,t.display_number FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed') ORDER BY q.updated_at DESC LIMIT 60",[id]),
-  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 AND status IN ('queued','working','waiting_agents','waiting_user') ORDER BY updated_at DESC LIMIT 30",[id]),
+  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.updated_at,t.title,t.display_number FROM agent_analysis_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
  const processes:any[]=[
@@ -1473,7 +1473,7 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   processes.push({id:row.id,kind:'analysis',title:'Вопрос специалисту · задача #'+row.display_number,status:row.status,detail:row.detail||row.body,createdAt:row.updated_at,updatedAt:row.updated_at,taskId:row.task_id});
  }
  for(const row of pmOrders.rows){
-  processes.push({id:row.id,kind:'analysis',title:row.status==='waiting_user'?'ПМ · нужен твой ответ в чате':row.status==='waiting_agents'?'ПМ · ожидает команду':'Поручение ПМ',status:row.status==='working'?'running':row.status==='queued'?'queued':'waiting',detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at});
+  processes.push({id:row.id,kind:'analysis',title:row.status==='waiting_user'?'ПМ · нужен твой ответ в чате':row.status==='waiting_agents'?'ПМ · ожидает команду':'Поручение ПМ',status:row.status==='working'?'running':row.status==='queued'?'queued':['completed','failed'].includes(row.status)?row.status:'waiting',detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at});
  }
  for(const row of merges.rows){
   processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
