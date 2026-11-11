@@ -1,14 +1,15 @@
 # QA через существующий Codex Runner
 
-QA использует тот же `apps/codex-runner`, что и разработка: отдельную временную копию PR, `codex exec` и процесс Temporal. Отдельного сервиса или Docker-сокета у QA нет. Все тесты относятся к точному SHA PR.
+QA использует тот же `apps/codex-runner`, что и разработка: временную копию PR, `codex exec` и Temporal. Не нужен второй QA сервис, Docker-сокет или отдельный платный API. Все проверки относятся к точному SHA PR.
 
 ## Что доступно
 
-- Node.js и npm, Python 3, pip, venv и pytest.
-- Системный Chromium и `@playwright/test` (через `NODE_PATH=/usr/local/lib/node_modules`). Для Playwright с системным Chromium указывайте `executablePath: '/usr/lib/chromium/chromium'` и `args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-crashpad-for-testing', '--disable-crash-reporter']` — это внутри внешней песочницы Codex, а не запуск браузера на хосте. Прямой бинарник, в отличие от Debian launcher `/usr/bin/chromium`, не требует чтения скрытого в песочнице `/proc/cpuinfo`.
-- Установка зависимостей **в рабочую копию**: `npm ci` при наличии lockfile, `npm install` в остальных случаях, `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
-- Запуск локального HTTP-сервера и клиентских тестов внутри QA sandbox. Временный сервер следует запускать и завершать в одном тестовом сценарии (`trap` для shell).
-- Реальная проверка доступности браузера **внутри QA sandbox** перед запуском QA, а не по предположению модели.
+- Node.js/npm, Python 3, pip, venv, pytest и Git.
+- Установка зависимостей в рабочую копию PR через npm и PyPI в рамках разрешённой сетевой политики.
+- Локальные HTTP-серверы и API-тесты без реальных Telegram/погодных API. Для внешних сервисов QA создаёт моки/фикстуры.
+- Запуск тестов из репозитория, сохранение команд, результатов и ошибок в QA-отчёте.
+
+**Браузерные E2E сейчас недоступны в защищённой Linux-песочнице Codex.** В CI подтверждено, что Chromium падает с `SIGTRAP` из-за ограничений Codex seccomp; отключение Crashpad не помогло. Поэтому мы **не устанавливаем неработающий Chromium/Playwright в образ**, не используем режим `danger-full-access` и не считаем визуальные кейсы проверенными. Когда Codex выпустит безопасное исправление либо появится отдельное разрешённое браузерное окружение, поддержку можно добавить без переработки workflow. До этого визуальные сценарии должны иметь `blocked/tool_unavailable`.
 
 ## Защитные границы
 
@@ -34,7 +35,7 @@ env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test
 
 ## Проверка после обновления
 
-1. CI выполняет Docker image build и `apps/codex-runner/isolation-smoke.mjs`: изоляция секретов и Git, npm registry, временный loopback HTTP и запуск Playwright/Chromium.
+1. CI выполняет Docker image build и `apps/codex-runner/isolation-smoke.mjs`: изоляция секретов и Git, npm registry, запрет прямого внешнего TCP, временный loopback HTTP и Python venv/pytest.
 2. В запущенном приложении попросите ПМа повторить QA существующего PR. Temporal должен создать новый QA-цикл, показывать этап и сохранить результаты проверки.
 3. QA должен записать `checks`, `caseResults` и `capabilities` для конкретного SHA. При настоящих дефектах возвращает задачу разработчику; при доказанной недоступности оставшихся сценариев — `blocked` и запрос согласования, но не автоматический пропуск.
 
