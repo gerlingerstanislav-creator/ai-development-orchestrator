@@ -590,7 +590,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    if(!config.enabled)return reply.code(409).send({error:'AI отключён в настройках проекта'});
    const [project,docs]=await Promise.all([
     pool.query('SELECT name,description FROM projects WHERE id=$1',[id]),
-    pool.query('SELECT title,body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 8',[id])
+    pool.query('SELECT title,left(body,450) AS body FROM documents WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 2',[id])
    ]);
    let devopsGitHubContext='';
    if(mentionedAgent.stage==='devops'){
@@ -620,20 +620,18 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      }catch(error){devopsGitHubContext+='\\nНе удалось прочитать последние GitHub Actions: '+String(error instanceof Error?error.message:error).slice(0,180);}
     }else devopsGitHubContext='Репозиторий GitHub не привязан к проекту или недоступен текущему пользователю.';
    }
-   const prompt=[
-    replyContext,topicContext,
-    'Ты '+mentionedAgent.name+' — специалист '+(mentionedAgent.stage==='devops'?'DevOps и CI/CD':'этапа '+mentionedAgent.stage)+'. Пользователь адресовал сообщение непосредственно тебе через @'+mentionedAgent.alias+'. Не представляйся менеджером.',
-    AGENT_MENTION_HINT,'Отвечай по-русски на основе реального контекста. Не утверждай о проведённых проверках или внесённых изменениях без фактических подтверждений.',
-    'Инструкции специалиста:\n'+mentionedAgent.instructions.slice(0,7000),
-    'Память специалиста:\n'+await agentMemoryContext(pool,id,mentionedAgent.stage),
-    mentionedAgent.stage==='devops'?'Актуальные метаданные GitHub Actions (без доступа к содержимому логов и конфигурации workflow):\\n'+devopsGitHubContext:'',
-    'Проект:\n'+JSON.stringify(project.rows[0]||{}).slice(0,3000),
-    'Правила проекта:\n'+(await rulesContext(id)).slice(0,5000),
-    'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,11000),
-    'История этого чата:\n'+(await history(id,null,mode)).slice(-5500),
-     'Если есть один повторно применимый урок на основе проверенных фактов, добавь в конце ответа отдельную строку LEARNING_SUGGESTION: <урок>; иначе LEARNING_SUGGESTION: none. Не включай секреты или персональные данные.',
-    'Сообщение пользователя:\n'+mentionedAgent.message
-   ].join('\n\n');
+   const prompt=composeAgentPrompt({
+    role:mentionedAgent.name+' — специалист '+mentionedAgent.stage,
+    objective:mentionedAgent.message,
+    tools:'Здесь только ответ в чате, без выполнения действий. Проверка CI, изменение кода или работа с документами не подтверждены без соответствующего инструмента.',
+    instructions:mentionedAgent.instructions.slice(0,2400),
+    scope:JSON.stringify(project.rows[0]||{}).slice(0,450),
+    context:'Правила проекта: '+(await rulesContext(id)).slice(0,700)+
+     '\nСвязанные документы: '+JSON.stringify(docs.rows).slice(0,750)+
+     (devopsGitHubContext?'\nМетаданные CI: '+devopsGitHubContext.slice(0,1800):''),
+    continuation:replyContext||topicContext,
+    output:'Отвечай по-русски на основе проверяемых фактов. Не выдумывай выполненные операции. В конце LEARNING_SUGGESTION: <урок> или none.'
+   });
    try{
     const roleConfig=await resolveRoleAiSettings(pool,id,mentionedAgent.stage,config);
     const response=await completion(prompt,roleConfig);
