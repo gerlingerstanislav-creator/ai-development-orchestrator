@@ -1,4 +1,4 @@
-import type {Pool,PoolClient} from 'pg';
+import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
