@@ -1125,9 +1125,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setAiBusy(true);
   try{
    await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/start-testing',{method:'POST'});
-   setTaskFeedback('Проверка запущена через Temporal. Подробности — в Центре процессов.');
+   setManagerFeedback('Сверка ТЗ и QA запущены. Подробности — в Центре процессов.');
    await loadProject(selected.id);
-  }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось проверить или повторить QA');fail(e);}finally{setAiBusy(false);}
+  }catch(e){setManagerFeedback(e instanceof Error?e.message:'Не удалось запустить проверку');}finally{setAiBusy(false);}
  }
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const response=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
@@ -2340,6 +2340,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
      <details className="task-advanced"><summary>Дополнительные параметры задачи</summary><div className="task-metadata">
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
+      {['testing','merge_queue'].includes(activeTask.stage)&&activeTask.pr_url&&activeTask.git_branch&&
+       <button type="button" className="textbtn" disabled={aiBusy||!aiSettings.enabled}
+        onClick={()=>void startTaskTesting()}>Повторить сверку ТЗ и QA</button>}
 
       <span>Модель: <strong>{aiSettings.model}</strong></span>
      </div>

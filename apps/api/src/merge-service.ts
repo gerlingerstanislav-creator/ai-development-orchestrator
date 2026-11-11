@@ -1,8 +1,30 @@
 import {randomUUID} from 'node:crypto';
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
+import {requireMergeCi} from './merge-ci.js';
 import {deploymentDecision} from './deployment-stage.js';
 import {qaWaiverAssessment} from './qa-waiver.js';
 import {pendingAgentQuestions} from './task-agent-notes.js';
+
+async function requireQaForMerge(db:Pick<Pool,'query'>,projectId:string,taskId:string,headSha:string){
+ const spec=(await db.query('SELECT spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId])).rows[0];
+ if(!spec||spec.spec_review_status!=='current'||spec.spec_version!==spec.spec_reviewed_version||spec.spec_reviewed_commit!==headSha)
+  throw Object.assign(Error('Аналитик не сверил текущую версию ТЗ с коммитом PR. Запустите сверку и QA в карточке задачи.'),{statusCode:409});
+ const plan=(await db.query('SELECT spec_version,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId])).rows[0];
+ if(!plan?.spec_hash||plan.spec_version!==spec.spec_version)
+  throw Object.assign(Error('Нет QA-плана для текущей версии ТЗ. Запустите QA в карточке задачи.'),{statusCode:409});
+ const run=(await db.query('SELECT id,task_id,verdict,report,status,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[projectId,taskId])).rows[0];
+ if(!run||run.status!=='completed'||run.report?.commit!==headSha||run.qa_spec_version!==spec.spec_version||
+  run.qa_plan_snapshot?.spec_hash!==plan.spec_hash||(!Array.isArray(run.qa_plan_snapshot?.cases)||!run.qa_plan_snapshot.cases.length))
+  throw Object.assign(Error('Нет завершённого QA-отчёта для текущего SHA, версии ТЗ и плана. Повторите QA в карточке задачи.'),{statusCode:409});
+ if(run.verdict==='blocked'){
+  const waiver=(await db.query('SELECT commit_sha,spec_version FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 AND test_run_id=$3',
+   [projectId,taskId,run.id])).rows[0];
+  if(!waiver||!qaWaiverAssessment(run).eligible||waiver.commit_sha!==headSha||waiver.spec_version!==spec.spec_version)
+   throw Object.assign(Error('Сценарии QA не подтверждены. Проверьте доступность среды или согласуйте допустимое исключение в карточке задачи.'),{statusCode:409});
+ }else if(run.verdict!=='passed'){
+  throw Object.assign(Error('Тестировщик выявил дефекты или проверка не завершена. Слияние запрещено.'),{statusCode:409});
+ }
+}
 
 export function createMergeService(pool:Pool,decryptToken:(value:string)=>string){
 async function restackChildren(projectId:string,parentId:string,parentHeadSha:string,parentBase:string,repository:string,token:string,actorId:string){
@@ -27,16 +49,10 @@ async function restackChildren(projectId:string,parentId:string,parentHeadSha:st
   }
  }
 }
-async function registerMergedDeployment(projectId:string,taskId:string,userId:string,mergeSha:string|null,prUrl:string){
- const client=await pool.connect();
- try{
-  await client.query('BEGIN');
+async function recordMergedDeployment(client:PoolClient,projectId:string,taskId:string,userId:string,mergeSha:string|null,prUrl:string){
   const task=await client.query('SELECT stage FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,projectId]);
   if(!task.rowCount)throw new Error('Задача не найдена после слияния PR');
-  if(task.rows[0].stage!=='merge_queue'){
-   await client.query('COMMIT');
-   return task.rows[0].stage as string;
-  }
+  if(task.rows[0].stage!=='merge_queue')return;
   const mode=(await client.query("SELECT mode FROM project_deployment_settings WHERE project_id=$1",[projectId])).rows[0]?.mode||'skip';
   const decision=deploymentDecision(mode);
   const skipped=decision.status==='skipped';
@@ -48,9 +64,14 @@ async function registerMergedDeployment(projectId:string,taskId:string,userId:st
    [randomUUID(),taskId,userId,skipped?'deployment_skipped':'deployment_pending',skipped?'Выкладка пропущена: окружение не настроено':'Нужно подтвердить ручную выкладку или указать причину пропуска']);
   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'merged',$4)",
    [randomUUID(),taskId,userId,prUrl]);
-  await client.query('COMMIT');
-  return destination;
- }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}
+async function registerMergedDeployment(projectId:string,taskId:string,userId:string,mergeSha:string|null,prUrl:string){
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN');
+  await recordMergedDeployment(db,projectId,taskId,userId,mergeSha,prUrl);
+  await db.query('COMMIT');
+ }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
 }
  async function mergeTaskPr(projectId:string,taskId:string,userId:string){
  const info=await pool.query("SELECT t.id,t.title,t.stage,t.pr_number,t.pr_url,t.depends_on_task_id,t.pr_base_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted,d.merge_sha FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 LEFT JOIN task_deployment_records d ON d.task_id=t.id AND d.project_id=t.project_id WHERE t.id=$1 AND t.project_id=$2",
@@ -65,8 +86,8 @@ async function registerMergedDeployment(projectId:string,taskId:string,userId:st
  if(!pull.ok)throw Object.assign(new Error('Не удалось получить PR: GitHub HTTP '+pull.status),{statusCode:502});
  let pr=await pull.json() as any;
  if(pr.merged){
+  await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
   if(row.stage==='merge_queue'){
-   await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
    await registerMergedDeployment(projectId,taskId,userId,String(pr.merge_commit_sha||pr.head.sha||''),row.pr_url);
   }
   return {taskId,status:'merged' as const,url:row.pr_url};
@@ -94,69 +115,39 @@ async function registerMergedDeployment(projectId:string,taskId:string,userId:st
   }
  }
  if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
- // QA plans require a verified test run for the exact commit being merged.
- const spec=await pool.query('SELECT spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
- if(!spec.rowCount||spec.rows[0].spec_review_status!=='current'||spec.rows[0].spec_version!==spec.rows[0].spec_reviewed_version||(spec.rows[0].spec_reviewed_commit&&spec.rows[0].spec_reviewed_commit!==pr.head.sha))
-  throw Object.assign(new Error('Требования изменились или аналитик проверял другую версию PR. Повтори сверку требований и тестирование.'),{statusCode:409});
- const qaPlan=await pool.query('SELECT id,spec_version FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
- const orchestrated=await pool.query('SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND cycle_id IS NOT NULL LIMIT 1',[projectId,taskId]);
- if((qaPlan.rowCount||orchestrated.rowCount)&&spec.rows[0].spec_reviewed_commit!==pr.head.sha)
-  throw Object.assign(new Error('Аналитик не проверил последний коммит PR. Сначала повтори сверку требований.'),{statusCode:409});
- if((qaPlan.rowCount||orchestrated.rowCount)&&(!qaPlan.rowCount||qaPlan.rows[0].spec_version!==spec.rows[0].spec_version))
-  throw Object.assign(new Error('Нет QA-плана для актуальной версии ТЗ. Сначала выполни тестирование.'),{statusCode:409});
- if(qaPlan.rowCount){
-  const lastTest=await pool.query('SELECT id,task_id,verdict,report,status,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
-  const run=lastTest.rows[0];
-  const matches=run&&run.status==='completed'&&run.report?.commit===pr.head.sha&&run.qa_spec_version===spec.rows[0].spec_version;
-  if(!matches)throw Object.assign(new Error('QA-отчёт устарел или не относится к текущему коммиту PR. Повтори тестирование.'),{statusCode:409});
-  if(run.verdict==='blocked'){
-   const waiver=await pool.query('SELECT id,test_run_id,commit_sha,spec_version FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 AND test_run_id=$3',[projectId,taskId,run.id]);
-   if(!waiver.rowCount||!qaWaiverAssessment(run).eligible||waiver.rows[0].commit_sha!==pr.head.sha||waiver.rows[0].spec_version!==spec.rows[0].spec_version)
-    throw Object.assign(new Error('Сценарии не проверены. Необходимо отдельное согласование исключений в карточке задачи.'),{statusCode:409});
-  }else if(run.verdict!=='passed'){
-   throw Object.assign(new Error('Тестировщик выявил дефекты или проверка не завершена. Слияние запрещено.'),{statusCode:409});
-  }
- }
+ const headSha=pr.head?.sha;
+ if(typeof headSha!=='string'||!/^[a-f0-9]{40}$/i.test(headSha))
+  throw Object.assign(Error('GitHub не подтвердил SHA текущего PR'),{statusCode:409});
+ await requireQaForMerge(pool,projectId,taskId,headSha);
  if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
  if(pr.mergeable===null || pr.mergeable_state==='unknown')
   throw Object.assign(new Error('GitHub ещё вычисляет mergeability PR, повторная проверка необходима'),{statusCode:409});
  if(pr.mergeable===false || pr.mergeable_state==='dirty')
   throw Object.assign(new Error('PR содержит конфликт с целевой веткой'),{statusCode:409});
+ await requireMergeCi({base,headers,branch:pr.base.ref,headSha,
+  mergeSha:typeof pr.merge_commit_sha==='string'&&/^[a-f0-9]{40}$/i.test(pr.merge_commit_sha)?pr.merge_commit_sha:null});
  if(pr.mergeable_state==='blocked')
-  throw Object.assign(new Error('PR заблокирован правилами GitHub или проверками'),{statusCode:409});
- // Best-effort CI inspection. Fine-grained tokens may lack Checks access;
- // GitHub still enforces branch protection and required checks on the merge API.
- // Never treat an inaccessible check endpoint as proof that CI has passed.
- const readCi=async(path:string,label:string):Promise<any|null>=>{
-  const url=base+path;
-  const response=await fetch(url,{headers,signal:AbortSignal.timeout(15000)});
-  if(response.status===401||response.status===403){
-   const publicHeaders={Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
-   const publicResponse=await fetch(url,{headers:publicHeaders,signal:AbortSignal.timeout(15000)});
-   if(publicResponse.ok)return publicResponse.json();
-   if([401,403,404].includes(publicResponse.status))return null;
-   throw Object.assign(new Error('Не удалось проверить '+label+': GitHub HTTP '+publicResponse.status),{statusCode:502});
-  }
-  if(!response.ok)throw Object.assign(new Error('Не удалось проверить '+label+' в GitHub: HTTP '+response.status),{statusCode:502});
-  return response.json();
- };
- const checkData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/check-runs?per_page=100','CI (Check Runs)');
- if(checkData){
-  const runs=Array.isArray(checkData.check_runs)?checkData.check_runs:[];
-  const incomplete=runs.filter((c:any)=>c.status!=='completed'||!['success','neutral','skipped'].includes(c.conclusion));
-  if(incomplete.length)throw Object.assign(new Error('PR ожидает проверок CI или содержит ошибки: '+incomplete.map((c:any)=>c.name).slice(0,5).join(', ')),{statusCode:409});
-  if(Number(checkData.total_count||0)>runs.length)throw Object.assign(new Error('У коммита больше 100 проверок CI. Для безопасного слияния необходимо получить все результаты проверок.'),{statusCode:409});
- }
- const statusData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/status','статусы коммита');
- if(statusData){
-  const statuses=Array.isArray(statusData.statuses)?statusData.statuses:[];
-  if(statuses.length&&statusData.state!=='success')throw Object.assign(new Error('Статусы коммита не пройдены: '+statusData.state),{statusCode:409});
- }
+  throw Object.assign(Error('Проверки CI подтверждены, но GitHub блокирует слияние. Проверьте ограничения целевой ветки в PR.'),{statusCode:409});
 
- const merge=await fetch(base+'/pulls/'+row.pr_number+'/merge',{method:'PUT',headers:{...headers,'Content-Type':'application/json'},
-  body:JSON.stringify({sha:pr.head.sha,merge_method:'merge',commit_title:'Merge AI task: '+String(row.title).slice(0,150)}),
-  signal:AbortSignal.timeout(25000)});
- const merged=await merge.json().catch(()=>({})) as any;
+ const db=await pool.connect();
+ let merge:Response;
+ let merged:{merged?:boolean;sha?:string;message?:string};
+ try{
+  await db.query('BEGIN');
+  const locked=(await db.query('SELECT stage,pr_number FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[projectId,taskId])).rows[0];
+  if(locked?.stage!=='merge_queue'||locked.pr_number!==row.pr_number)
+   throw Object.assign(Error('Задача или PR изменились после проверки. Повторите слияние.'),{statusCode:409});
+  if(await pendingAgentQuestions(db,projectId,taskId))
+   throw Object.assign(Error('Нельзя слить PR: у задачи остаются вопросы без ответа'),{statusCode:409});
+  await requireQaForMerge(db,projectId,taskId,headSha);
+  merge=await fetch(base+'/pulls/'+row.pr_number+'/merge',{method:'PUT',headers:{...headers,'Content-Type':'application/json'},
+   body:JSON.stringify({sha:headSha,merge_method:'merge',commit_title:'Merge AI task: '+String(row.title).slice(0,150)}),
+   signal:AbortSignal.timeout(25000)});
+  merged=await merge.json().catch(()=>({}));
+  if(merge.ok&&merged.merged)
+   await recordMergedDeployment(db,projectId,taskId,userId,String(merged.sha||pr.merge_commit_sha||''),row.pr_url);
+  await db.query('COMMIT');
+ }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
  if(!merge.ok || !merged.merged){
   const latest=await fetch(base+'/pulls/'+row.pr_number,{headers,signal:AbortSignal.timeout(15000)});
   if(latest.ok){
@@ -171,7 +162,6 @@ async function registerMergedDeployment(projectId:string,taskId:string,userId:st
   throw Object.assign(new Error('GitHub отклонил слияние: '+String(merged.message||merge.status).slice(0,240)),{statusCode});
  }
  await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
- await registerMergedDeployment(projectId,taskId,userId,String(merged.sha||pr.merge_commit_sha||''),row.pr_url);
  return {taskId,status:'merged' as const,url:row.pr_url};
 }
  return {mergeTaskPr};
