@@ -87,5 +87,5 @@ test('PM reports completed delegated iteration only once and never reports a req
  assert.equal(await checkProjectManagerWatch(pool,watch),'completed');
  const messages=(await db.query('SELECT body FROM assistant_messages')).rows;
  assert.equal(messages.length,1);
- assert.match(messages[0].body,/Черновик готов к согласованию/);
+ assert.match(messages[0].body,/План разработки/);
 });
