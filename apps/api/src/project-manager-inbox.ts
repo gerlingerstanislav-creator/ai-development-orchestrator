@@ -1,3 +1,4 @@
+import {recordPmInboxDiagnostic,scanStalledPmInbox} from './pm-inbox-diagnostics.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
@@ -110,12 +111,14 @@ export async function deliverProjectManagerInbox(pool:Pick<Pool,'query'>,start:R
    if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error)?.name)){
     await pool.query(`UPDATE assistant_messages SET pm_next_dispatch_at=now()+interval '15 seconds'
      WHERE id=$1 AND pm_dispatch_attempt=$2 AND pm_dispatched_at IS NULL`,[turn.id,turn.pm_dispatch_attempt]);
+    await recordPmInboxDiagnostic(pool,{projectId:turn.project_id,messageId:turn.id,attempt:turn.pm_dispatch_attempt,stage:'dispatch_deferred',level:'warning',error}).catch(()=>{});
     onError(error,turn);
     return;
    }
   }
   await pool.query('UPDATE assistant_messages SET pm_dispatched_at=now() WHERE id=$1 AND pm_dispatch_attempt=$2',
    [turn.id,turn.pm_dispatch_attempt]);
+  await recordPmInboxDiagnostic(pool,{projectId:turn.project_id,messageId:turn.id,attempt:turn.pm_dispatch_attempt,stage:'dispatch_queued'}).catch(()=>{});
  }));
 }
 
@@ -123,7 +126,17 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
  const {pool,uid,access,requireAdmin,start}=deps;
  let recovering=false;
  let timer:ReturnType<typeof setInterval>|null=null;
+ let auditTimer:ReturnType<typeof setInterval>|null=null;
+ let auditing=false;
  let closing=false;
+ const scan=()=>{
+  if(auditing||closing)return;
+  auditing=true;
+  void scanStalledPmInbox(pool)
+   .then(count=>{if(count)app.log.warn({count},'PM turns waiting too long; diagnostics stored');})
+   .catch(error=>app.log.warn({error},'PM stalled-turn scan failed'))
+   .finally(()=>{auditing=false;});
+ };
  const kick=()=>{
   if(recovering||closing)return;
   recovering=true;
@@ -210,11 +223,12 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
  // and the periodic scan also covers disconnects, restarts and internal turns.
  app.addHook('onResponse',async req=>{if(req.method==='POST'&&req.routeOptions.url?.includes('/manager/inbox'))kick();});
  app.addHook('onReady',async()=>{
-  kick();
+  kick();scan();
   timer=setInterval(kick,5000);
-  timer.unref?.();
+  auditTimer=setInterval(scan,60000);
+  timer.unref?.();auditTimer.unref?.();
  });
- app.addHook('onClose',async()=>{closing=true;if(timer)clearInterval(timer);});
+ app.addHook('onClose',async()=>{closing=true;if(timer)clearInterval(timer);if(auditTimer)clearInterval(auditTimer);});
 }
 
 export async function failProjectManagerInbox(pool:Pick<Pool,'query'>,projectId:string,messageId:string,attempt:number){
@@ -227,6 +241,7 @@ export async function failProjectManagerInbox(pool:Pick<Pool,'query'>,projectId:
 
 export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution'|'testing';orderId?:string;topicId?:string|null;actorId?:string};
 export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string,attempt=1):Promise<ProjectManagerWatch[]>{
+ const startedAt=Date.now();
  const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel IN ('project','pm-internal') AND role='user' AND pm_dispatch_attempt=$3 AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id,pm_order_id,channel",[messageId,projectId,attempt]);
  if(!claim.rowCount)return [];
  const turn=claim.rows[0];
@@ -234,6 +249,9 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
  if(orderId)await pool.query("UPDATE project_pm_orders SET status='working',updated_at=now() WHERE id=$1",[orderId]);
  let sessionId:string|null=null;
  let watchers:ProjectManagerWatch[]=[];
+ const audit=(stage:'turn_started'|'runner_request'|'runner_response'|'turn_completed'|'retry_scheduled'|'turn_failed',level:'info'|'warning'|'error'='info',error?:unknown,statusCode?:number)=>
+  recordPmInboxDiagnostic(pool,{projectId,messageId,orderId,attempt,stage,level,error,statusCode,sessionId,elapsedMs:Date.now()-startedAt}).catch(()=>{});
+ await audit('turn_started');
  try{
   // No project-wide task snapshots or chat history on each PM turn.
   // Current order and explicit reply are sufficient; tools provide everything else.
@@ -281,12 +299,14 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    output:'Ответь по-русски кратко. При действиях назови подтверждённый результат; при ожидании — конкретную причину.'
   });
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
+  await audit('runner_request');
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
    body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
+  await audit('runner_response',response.ok?'info':'warning',response.ok?undefined:new Error(String(data.error||'Ошибка HTTP Codex Runner').slice(0,240)),response.status);
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
   const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','qa.retry','iterations.launch','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
@@ -327,6 +347,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    }
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  await audit('turn_completed');
  }catch(error){
   const message=String(error instanceof Error?error.message:error);
   const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
@@ -337,6 +358,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    ) UPDATE project_pm_orders o SET status='queued',updated_at=now() FROM waiting w WHERE o.id=w.pm_order_id`,
     [messageId,attempt]);
   }else await failProjectManagerInbox(pool,projectId,messageId,attempt);
+  await audit(retryable?'retry_scheduled':'turn_failed',retryable?'warning':'error',error);
   if(!retryable)throw Object.assign(new Error(message.slice(0,650)),{nonRetryable:true});
   throw error;
  }finally{
