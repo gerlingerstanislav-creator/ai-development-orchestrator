@@ -242,6 +242,7 @@ export async function prepareIterationPlanDraft(runId:string){
  await runIterationPlanning(pool,runId,async(prompt,projectId,role)=>{
   const ai=(await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0];
   if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
+  await recordAgentPrompt(pool,{projectId,processId:runId,role:role||'analysis',operation:'iteration_planning',prompt}).catch(()=>{});
   return askRunnerAssistant(prompt,projectId,null,'iteration_planning',await resolveRoleAiSettings(pool,projectId,role||'analysis',ai),210000);
  });
 }
@@ -287,7 +288,7 @@ export async function reconcileRequirements(args:{projectId:string;taskId:string
   if(cached)return 'current';
   await event(projectId,runId,'analysis','review_started',mode==='handoff'?'Сверка реализации с утверждённым ТЗ перед тестированием':'Анализ изменения требований');
   const notes=await taskHandoffContext(projectId,taskId,'analysis');
-  const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary,taskContext:notes},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review'));
+  const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary,taskContext:notes},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review',runId));
   const latest=await pool.query('SELECT summary,questions FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
   const hasQuestions=Array.isArray(latest.rows[0]?.questions)&&latest.rows[0].questions.length>0;
   const noteBody=(hasQuestions?latest.rows[0].questions.join('\n')+'\n':'')+String(latest.rows[0]?.summary||'').trim();
