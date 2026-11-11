@@ -124,6 +124,7 @@ const jobQueue=[];
 const activeBranches=new Set();
 let runningJobs=0;
 let activeChatRequests=0;
+const activeAgentRoles=new Set();
 function startNextJobs(){
  for(let i=0;i<jobQueue.length && runningJobs<MAX_PARALLEL_DEVELOPMENT;){
   const {job,state}=jobQueue[i];
@@ -629,7 +630,10 @@ http.createServer(async(req,res)=>{
       !['low','medium'].includes(data.reasoning)||
       typeof data.session_token!=='string'||!/^[a-f0-9]{64}$/.test(data.session_token))
      return reply(res,400,{error:'Неверный агентный запрос'});
-   activeChatRequests++;
+   const roleKey=['manager','analyst','business_analyst'].includes(data.agent_role)&&/^[a-f0-9-]{36}$/.test(data.project_id||'')?data.project_id+':'+(data.agent_role==='business_analyst'?'analyst':data.agent_role):null;
+    if(roleKey&&activeAgentRoles.has(roleKey))return reply(res,429,{error:'Исполнитель этой роли занят'});
+    if(roleKey)activeAgentRoles.add(roleKey);
+    activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
     // Token is supplied only in the child process environment; it is never
@@ -656,7 +660,7 @@ http.createServer(async(req,res)=>{
     return reply(res,200,{message,usage:parsed.usage});
    }catch(error){
     return reply(res,503,{error:'Агент Codex: '+String(error?.message||error).slice(0,900)});
-   }finally{activeChatRequests--;}
+   }finally{activeChatRequests--;if(roleKey)activeAgentRoles.delete(roleKey);}
   }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
