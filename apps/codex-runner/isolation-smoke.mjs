@@ -76,7 +76,7 @@ try{
    catch(error){console.error(error);server.close();process.exitCode=1;}
   });
  `;
- await qaRun('QA loopback server','node',['-e',localCheck],30000);
+ await qaRun('QA loopback server','env',['NO_PROXY=localhost,127.0.0.1,::1','no_proxy=localhost,127.0.0.1,::1','node','-e',localCheck],30000);
  // Arbitrary public destinations must remain denied, even though registry
  // downloads succeeded and loopback is available.
  const deniedCheck=`
