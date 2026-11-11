@@ -10,6 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
+import {qaPrerequisiteError} from './qa-preflight.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -453,6 +454,7 @@ async function runTestJob(job,state){
    'for tool in node npm npx python3 pytest git; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: available"; else echo "$tool: unavailable"; fi; done',
    'for tool in chromium chromium-browser google-chrome playwright; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: installed but not validated"; else echo "$tool: unavailable"; fi; done',
    'if test -d node_modules; then echo "node_modules: available"; else echo "node_modules: unavailable"; fi',
+   'if python3 -c "import sqlite3" >/dev/null 2>&1; then echo "python3_runtime: ok"; else echo "python3_runtime: unavailable"; fi',
    'echo "network_policy: npm/PyPI registries and loopback only"'
   ].join('; ');
   const probe=await command('codex',[...policy.sandboxArgs,'--','sh','-c',probeScript],{
@@ -460,6 +462,9 @@ async function runTestJob(job,state){
   });
   const capabilities=probe.stdout.trim().slice(0,2500);
   state.capabilities=capabilities;
+  const tracked=(await command('git',['ls-files'],{cwd:dir,env:gitEnv,timeout:10000,maxOutputChars:100000,jobId:job.id})).stdout.split(/\r?\n/);
+  const prerequisite=qaPrerequisiteError(tracked,capabilities);
+  if(prerequisite)throw Error(prerequisite);
   // Keep complete case data in the isolated workspace instead of embedding a huge JSON in the prompt.
   await writeFile(join(dir,'.ado-qa-plan.json'),JSON.stringify(job.testPlan||{}),{mode:0o600});
   const prompt=[
@@ -474,6 +479,8 @@ async function runTestJob(job,state){
    'Массив findings используй ТОЛЬКО для подтверждённых дефектов приложения, а не для отсутствующих инструментов; последние описывай в caseResults.',
    'Разрешено устанавливать зависимости проекта через npm и pip только из разрешённых registry.npmjs.org и PyPI в рабочую копию проекта или локальный venv. Не устанавливай глобальные пакеты, не меняй GitHub, не читай секреты и не пытайся обойти сетевую политику.',
    'Если в проекте есть package-lock.json, используй npm ci; если есть Python-проект, используй python3 -m venv внутри рабочей копии и pip. Запускай unit, integration и API проверки. Записывай фактические команды и коды возврата.',
+   'Для очередей с задержками проверяй время через управляемые часы и временную SQLite-базу: НЕ жди настоящие 5 или 15 минут. Для интеграций Telegram используй заглушки отправки; реальные токены не нужны для локальных модульных тестов.',
+   'Проверяй текущий PR и ранее слитую регрессию. Не требуй уже готового бота, прогноза или пользовательского пути от отдельного Python-модуля, если они реализуются другими незавершёнными задачами.',
    'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
    'ВАЖНО: сетевой proxy Codex сбрасывает NO_PROXY для каждой sandbox-команды. Если Node.js fetch, Playwright или тесты обращаются к локальному HTTP-серверу, запускай клиентскую команду с явными NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 (например: env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test). Это исключает только localhost из прокси; произвольные внешние хосты по-прежнему запрещены.',
    'Браузер в текущем контейнере отсутствует: Linux Codex seccomp препятствует безопасному запуску Chromium. Не устанавливай браузер для обхода изоляции, не объявляй визуальные сценарии пройденными. Отмечай их blocked/tool_unavailable с конкретной причиной, если нет альтернативного действующего браузерного инструмента.',
