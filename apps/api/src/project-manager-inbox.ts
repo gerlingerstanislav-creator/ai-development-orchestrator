@@ -442,7 +442,7 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
  const title=watch.kind==='iteration_plan'?'Подготовка задач итерации «'+process.name+'»':watch.kind==='development'?'Разработка задачи «'+process.name+'»':'Работа с документацией';
  const message=process.status==='completed'
   ?watch.kind==='iteration_plan'
-   ?title+' завершена. '+String(process.message||'')+' План: '+String(process.plan_id||'не указан')+'. Проверь, какие карточки появились на доске; повторного согласования публикации не требуется. Разработка запускается отдельно.'
+   ?title+' завершена. '+String(process.message||'')+' План разработки: '+String(process.plan_id||'не указан')+'. Проверь, какие карточки появились на доске; повторного согласования публикации не требуется. Разработка запускается отдельно.'
    :watch.kind==='development'
    ?title+' завершена. '+String(process.message||'')+(process.pr_url?' PR: '+process.pr_url:'')
    :title+' завершена. '+String(process.message||'Документация обновлена')
