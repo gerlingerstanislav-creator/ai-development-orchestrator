@@ -691,7 +691,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    try{
     const response=await fetch(codexUrl+'/agent',{
      method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-     body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:secret}),
+     body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:secret,agent_role:role,project_id:id}),
      signal:AbortSignal.timeout(255000)
     });
     const data=await response.json().catch(()=>({})) as any;
