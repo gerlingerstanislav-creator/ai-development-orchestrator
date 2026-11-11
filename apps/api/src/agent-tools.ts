@@ -48,6 +48,8 @@ export const agentToolCatalog=[
  tool('knowledge.related','Найти связанные требования и архитектурные документы.',{document_id:id},['document_id']),
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('tasks.list','Получить задачи и этапы. Для колонки «Вопросы к ПО» передай product_owner_questions_only=true. Включает также вопросы по документации, созданные аналитиком: это задачи типа question.',{product_owner_questions_only:field('boolean','Показать только задачи из колонки «Вопросы к ПО»')}),
+ tool('tasks.dependency_graph','Проверить реальные технические зависимости, блокировки и этапы задач, прежде чем снимать или менять связи.',{}),
+ tool('tasks.update_dependency','Самостоятельно исправить ошибочную техническую зависимость с аудитом. Меняй связь только при доказанном отсутствии реальной кодовой зависимости; не меняй зависимости для уже созданных веток.',{task_id:id,depends_on_task_id:{type:['string','null'],description:'UUID задачи-основания или null для удаления',format:'uuid'},reason:field('string','Обоснование изменения связи'),idempotency_key:idem},['task_id','depends_on_task_id','reason']),
  tool('tasks.read','Прочитать задачу, недавние реплики и ответы на вопросы. Используй перед повторным обращением к пользователю по этой задаче.',{task_id:id},['task_id']),
  tool('tasks.request_owner_question_cleanup','По явному запросу пользователя открыть предпросмотр удаления из колонки «Вопросы к ПО». Учти задачи типа question, созданные аналитиком. Удаление — только после явного подтверждения владельца.',{}),
  tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
@@ -74,7 +76,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch']);
+const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole){
  return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.'));
