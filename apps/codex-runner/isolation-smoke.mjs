@@ -90,6 +90,16 @@ try{
   }})().catch(error=>{console.error(error);process.exitCode=1;});
  `;
  await qaRun('QA deny unapproved domain','node',['-e',deniedCheck],17000);
+ const rawSocketCheck=`
+  const net=require('node:net');
+  const socket=net.connect({host:'1.1.1.1',port:443,timeout:6000},()=>{
+   console.error('SECURITY: outbound raw TCP escaped QA domain proxy');
+   process.exitCode=1;socket.destroy();
+  });
+  socket.on('error',()=>{socket.destroy();});
+  socket.on('timeout',()=>{socket.destroy();});
+ `;
+ await qaRun('QA denies raw external TCP','node',['-e',rawSocketCheck],14000);
  // Ensure a real headless browser launches under the *same* sandbox profile.
  const browserCheck=`
   const {chromium}=require('@playwright/test'),assert=require('node:assert/strict');
