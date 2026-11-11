@@ -46,13 +46,17 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
    const waiting=topicId?(await client.query("SELECT id FROM project_pm_orders WHERE project_id=$1 AND topic_id=$2 AND status='waiting_user' ORDER BY updated_at DESC LIMIT 1",[id,topicId])).rows[0]?.id:null;
    const existing=parent?(await client.query("SELECT id FROM project_pm_orders WHERE id=$1 AND project_id=$2 AND status='waiting_user'",[parent,id])).rows[0]?.id:null;
    orderId=existing||waiting||randomUUID();
-   await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7)",
-    [messageId,id,uid(req),message,replyTo||null,topicId||null,orderId]);
+   // Insert the order before the message: assistant_messages.pm_order_id has an immediate FK.
+   // source_message_id is linked after the message exists, avoiding a circular FK violation.
    if(existing||waiting)
     await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[orderId]);
    else
-    await client.query("INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,topic_id,summary) VALUES($1,$2,$3,$4,$5,$6)",
-     [orderId,id,uid(req),messageId,topicId||null,message.slice(0,500)]);
+    await client.query("INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,topic_id,summary) VALUES($1,$2,$3,NULL,$4,$5)",
+     [orderId,id,uid(req),topicId||null,message.slice(0,500)]);
+   await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7)",
+    [messageId,id,uid(req),message,replyTo||null,topicId||null,orderId]);
+   if(!existing&&!waiting)
+    await client.query("UPDATE project_pm_orders SET source_message_id=$2 WHERE id=$1",[orderId,messageId]);
    await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)",
     [randomUUID(),orderId,existing||waiting?'owner_reply':'created',existing||waiting?'Владелец ответил на вопрос ПМ':'Поручение принято от владельца']);
    await client.query('COMMIT');
