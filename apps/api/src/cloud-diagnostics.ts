@@ -72,7 +72,7 @@ export async function sendCloudBatch(rows:Record<string,unknown>[],url:string,ap
  const endpoint=url.replace(/\/+$/,'')+'/rest/v1/ado_diagnostic_events?on_conflict=event_key';
  const response=await fetchFn(endpoint,{
   method:'POST',
-  headers:{apikey:apiKey,Authorization:'Bearer '+apiKey,'Content-Type':'application/json',Prefer:'resolution=ignore-duplicates,return=minimal'},
+  headers:{apikey:apiKey,'Content-Type':'application/json',Prefer:'resolution=ignore-duplicates,return=minimal'},
   body:JSON.stringify(rows),signal:AbortSignal.timeout(12000)
  });
  if(!response.ok)throw Error('Cloud diagnostics HTTP '+response.status+': '+(await response.text()).slice(0,250));
