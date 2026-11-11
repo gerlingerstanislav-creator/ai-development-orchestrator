@@ -214,13 +214,15 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
  return watchers;
 }
 
-async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch,total:number,finished:number):Promise<'completed'>{
+async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch,total:number,finished:number,stale:number):Promise<'completed'>{
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
   const mark=await client.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,'iteration_execution') ON CONFLICT DO NOTHING RETURNING process_id",[watch.projectId,watch.processId]);
   if(mark.rowCount){
-   const message='Обработка задач итерации завершена: '+finished+' из '+total+'. Проверь результаты, тесты и оставшиеся исключения, затем сообщи владельцу.';
+   const message='Обработка очереди итерации завершена: '+finished+' из '+total+'.'+
+    (stale?' Запуск '+stale+' задач требует повторного подтверждения.':'')+
+    ' Проверь результаты и сообщи владельцу.';
    await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",[randomUUID(),watch.projectId,message,watch.topicId||null,watch.orderId||null]);
    if(watch.orderId&&watch.actorId){
     const next=randomUUID();
@@ -237,16 +239,20 @@ async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch
  * not in the PM AI session or an HTTP request. */
 export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
  if(watch.kind==='iteration_execution'){
-  const status=await pool.query(`SELECT count(*)::int AS total,count(*) FILTER (WHERE t.stage='done' OR q.status='cancelled')::int AS finished FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.iteration_id=$2`,[watch.projectId,watch.processId]);
+  const status=await pool.query(`SELECT count(*)::int AS total,count(*) FILTER (WHERE t.stage='done' OR q.status IN ('cancelled','stale'))::int AS finished,count(*) FILTER (WHERE q.status='stale')::int AS stale FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.iteration_id=$2`,[watch.projectId,watch.processId]);
   const total=Number(status.rows[0]?.total||0),finished=Number(status.rows[0]?.finished||0);
   if(!total||finished!==total)return 'pending';
-  return reportIterationExecutionWatch(pool,watch,total,finished);
+  return reportIterationExecutionWatch(pool,watch,total,finished,Number(status.rows[0]?.stale||0));
  }
  const where=watch.kind==='iteration_plan'?'r.id=$1 AND i.project_id=$2':'r.id=$1 AND r.project_id=$2';
  const sql=watch.kind==='iteration_plan'
   ? "SELECT r.id,r.status,r.message,r.plan_id,i.title AS name,i.id AS iteration_id FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id WHERE "+where
   :watch.kind==='development'
-  ? "SELECT r.id,r.status,r.message,r.pr_url,t.title AS name FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id AND t.project_id=r.project_id WHERE "+where
+  ? `SELECT r.id,r.status,r.message,r.pr_url,t.title AS name
+     FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id AND t.project_id=r.project_id WHERE ${where}
+     UNION ALL
+     SELECT q.run_id,q.status,q.detail,NULL,t.title FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id
+      WHERE q.run_id=$1 AND q.project_id=$2 AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.id=q.run_id)`
   : "SELECT r.id,r.status,r.message,r.saved_documents,r.result FROM document_import_jobs r WHERE "+where;
  const result=await pool.query(sql,[watch.processId,watch.projectId]);
  let process=result.rows[0];
@@ -257,7 +263,7 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
   const next=await pool.query("SELECT r.id,r.status,r.message,r.plan_id,i.title AS name,i.id AS iteration_id FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id WHERE i.project_id=$1 AND i.id=$2 ORDER BY r.created_at DESC,r.id DESC LIMIT 1",[watch.projectId,process.iteration_id]);
   if(next.rows[0]?.id!==process.id)process=next.rows[0];
  }
- if(process.status==='queued'||process.status==='running')return 'pending';
+ if(['queued','running','dispatching'].includes(process.status))return 'pending';
  const client=await pool.connect();
  try{
  await client.query('BEGIN');

@@ -4,7 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {parseAgentObject} from './structured-agent-response.js';
 import {saveSpecRevision} from './requirements.js';
-import {enqueueIterationWork} from './agent-work-scheduler.js';
+import {enqueueDevelopment,initAgentWorkQueue} from './agent-work-scheduler.js';
 
 type Db=Pick<Pool,'query'>;
 const uuid=z.string().uuid();
@@ -84,19 +84,8 @@ export async function initProjectIterations(db:Db){
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';
  CREATE INDEX IF NOT EXISTS idx_tasks_iteration ON tasks(project_id,iteration_id);
  CREATE UNIQUE INDEX IF NOT EXISTS idx_iteration_task_key ON tasks(iteration_id,iteration_item_key) WHERE iteration_item_key IS NOT NULL;
- CREATE TABLE IF NOT EXISTS iteration_execution_queue (
-  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  iteration_id uuid NOT NULL REFERENCES project_iterations(id) ON DELETE CASCADE,
-  task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
-  requested_by uuid NOT NULL REFERENCES users(id),
-  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','dispatching','dispatched','cancelled')),
-  run_id uuid,detail text NOT NULL DEFAULT '',
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY(project_id,task_id)
- );
- CREATE INDEX IF NOT EXISTS idx_iteration_execution_queue_pending ON iteration_execution_queue(status,created_at);
  `);
+ await initAgentWorkQueue(db);
 }
 
 export async function listIterations(db:Db,projectId:string){
@@ -611,28 +600,11 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
   const {id,iterationId}=scope.parse(req.params);
   if(!await canWrite(req,reply,id))return;
   const {task_ids,expected_revision}=z.object({confirm:z.literal(true),task_ids:taskSelection,expected_revision:revision}).parse(req.body);
-  const current=await iteration(pool,id,iterationId);
-  if(current.revision!==expected_revision||current.approved_revision!==expected_revision)
-   throw problem(409,'Объём итерации изменился. Проверь актуальную редакцию перед запуском.');
-  const tasks=await selection(pool,id,iterationId,task_ids);
-  await enqueueIterationWork(pool,id,iterationId,uid(req),current.revision,task_ids);
-  const headers={authorization:String(req.headers.authorization||''),cookie:String(req.headers.cookie||'')};
-  const results=[];
-  for(const task of tasks){
-   if(task.stage!=='analysis'||task.analysis_state!=='ready_for_development'||task.spec_review_status!=='current'||task.spec_version!==task.spec_reviewed_version||task.clarification_questions?.length){
-    results.push({id:task.id,started:false,message:'Задача не готова к разработке. Проверь этап и вопросы аналитика.'});
-    continue;
-   }
-   try{
-    const response=await app.inject({method:'POST',url:'/api/projects/'+id+'/tasks/'+task.id+'/run-ai',headers,
-     payload:{approveAnalysis:true,iterationApproval:{id:iterationId,revision:current.revision}}});
-    const data=response.json();
-    results.push({id:task.id,started:response.statusCode===202,message:String(data.message||data.error||'Запуск не принят')});
-   }catch{
-    results.push({id:task.id,started:false,message:'Ответ запуска не получен. Проверь состояние задачи в Центре процессов.'});
-   }
-  }
-  return {results};
+  const result=await transaction(pool,db=>enqueueDevelopment(db,id,uid(req),{iterationId,revision:expected_revision,taskIds:task_ids}));
+  return {results:result.tasks.map(task=>({
+   id:task.id,run_id:task.run_id,status:task.status,
+   message:task.status==='queued'?'Принято в очередь разработки':'Запуск уже обработан'
+  }))};
  });
 }
 

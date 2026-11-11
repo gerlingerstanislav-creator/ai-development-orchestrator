@@ -27,7 +27,7 @@ import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuesti
 import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
-import {initAgentWorkQueue,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
+import {enqueueDevelopment,readDevelopmentQueue,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {initAgentPeerQueue,reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
@@ -603,7 +603,13 @@ app.get('/api/projects/:id/token-usage',async(req:any,reply)=>{
 app.get('/api/projects/:id/ai-runs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const runs=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at,cycle_id FROM ai_task_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[id]);
+ const runs=await pool.query(`SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at,cycle_id
+  FROM ai_task_runs WHERE project_id=$1
+  UNION ALL
+  SELECT q.run_id,q.task_id,COALESCE(s.model,'gpt-6-luna'),'queued',NULL,NULL,q.detail,q.created_at,NULL,NULL
+   FROM iteration_execution_queue q LEFT JOIN project_ai_settings s ON s.project_id=q.project_id
+   WHERE q.project_id=$1 AND q.status='queued' AND q.run_id IS NOT NULL
+  ORDER BY created_at DESC LIMIT 30`,[id]);
  return runs.rows;
 });
 app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
@@ -612,114 +618,18 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  if(!await requireAdmin(req,reply))return;
  const {approveAnalysis,iterationApproval}=z.object({approveAnalysis:z.boolean().default(false),
   iterationApproval:z.object({id:z.string().uuid(),revision:z.number().int().positive()}).optional()}).parse(req.body||{});
- const t=await pool.query('SELECT id,title,description,stage,type,iteration_id,analysis_state,related_task_ids,depends_on_task_id,pr_base_branch,git_branch,test_feedback,spec_review_status,spec_version,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
- if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
- const task=t.rows[0];
- if(task.type==='question')return reply.code(409).send({error:'Вопрос к ПО не является задачей разработки'});
- const fromAnalysis=approveAnalysis&&task.stage==='analysis';
- if(iterationApproval&&(task.iteration_id!==iterationApproval.id||task.type==='epic'))
-  return reply.code(409).send({error:'Задача не входит в выбранную итерацию'});
- if(fromAnalysis&&(task.analysis_state!=='ready_for_development'||task.spec_review_status!=='current'||(task.clarification_questions||[]).length))
-  return reply.code(409).send({error:'Анализ ещё не завершён. Ответь на открытые вопросы в чате задачи и дождись проверки аналитика.'});
- if(!fromAnalysis&&(task.stage!=='development'||task.analysis_state!=='approved'))
-  return reply.code(409).send({error:'Задача не готова к переходу из текущего этапа в разработку.'});
- if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'У задачи есть вопросы агентов без ответа. Ответь на них прежде чем запускать разработку.'});
- if(['pending','needs_approval'].includes(t.rows[0].spec_review_status))return reply.code(409).send({error:'Требования ещё проверяются аналитиком. Дождись завершения сверки.'});
- const relatedIds=(t.rows[0].related_task_ids||[]) as string[];
- const related=relatedIds.length?(await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id=ANY($2::uuid[])',[id,relatedIds])).rows:[];
- // Informationally related tasks never block development; only a typed code dependency does.
- const parentId=t.rows[0].depends_on_task_id as string|null;
- let parentBranch:string|null=null;
- if(parentId){
-  const p=await pool.query('SELECT id,title,stage,git_branch,pr_url FROM tasks WHERE project_id=$1 AND id=$2',[id,parentId]);
-  if(!p.rowCount)return reply.code(409).send({error:'Задача-основание отсутствует в проекте'});
-  const parent=p.rows[0];
-  if(['deployment','documentation','done'].includes(parent.stage))parentBranch=null;
-  else if(parent.stage==='merge_queue'&&parent.git_branch&&parent.pr_url)parentBranch=parent.git_branch;
-  else return reply.code(409).send({error:'Ожидание зависимости: сначала заверши разработку задачи «'+parent.title+'» до открытого PR. После этого текущая задача сможет стартовать от её ветки.'});
- }
- const settings=await pool.query('SELECT model,reasoning,max_runtime_seconds,daily_run_limit,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
- const ai=settings.rows[0]||aiDefaults;
- if(!ai.enabled)return reply.code(409).send({error:'Включи ручной запуск AI в настройках проекта'});
- const maxRuntimeSeconds=1800; // Technical safeguard only; not a usage quota.
- const git=await pool.query("SELECT g.repository,g.default_branch,g.target_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.owner_id=$2 AND c.provider='github_token'",[id,uid(req)]);
- if(!git.rowCount)return reply.code(409).send({error:'Сначала привяжи GitHub-репозиторий с токеном'});
- const active=await pool.query("SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') LIMIT 1",[id,taskId]);
- if(active.rowCount)return reply.code(409).send({error:'Эта задача уже выполняется или находится в очереди'});
- // Finish Git work from a previously successful Codex run before consuming any new tokens.
- // This also recovers from GitHub 403 after the user fixes token permissions.
- if(!fromAnalysis&&!task.test_feedback){
+ const client=await pool.connect();
  try{
-  const finished=await finishExistingTaskBranch(id,taskId,uid(req));
-  if(finished)return reply.send({status:'completed',recovered:true,pr_url:finished.pr_url,branch:finished.branch,task_id:taskId,
-   message:'Разработка уже выполнена. Pull Request создан автоматически без повторного запуска Codex.'});
- }catch(e){
-  const err=e as Error&{statusCode?:number};
-  return reply.code(err.statusCode||503).send({error:err.message});
- }
- } // When QA found defects, Codex must revise the existing PR instead of treating it as finished.
- const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[id]);
-  const runId=randomUUID(),token=decryptToken(git.rows[0].secret_encrypted);
- const branch=parentBranch||(git.rows[0].target_branch||git.rows[0].default_branch);
- const check=await fetch('https://api.github.com/repos/'+git.rows[0].repository+'/branches/'+encodeURIComponent(branch),{
-  headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
-  signal:AbortSignal.timeout(12000)});
- if(!check.ok)return reply.code(409).send({error:check.status===404
-  ?'Ветка '+branch+' не существует в '+git.rows[0].repository+'. Открой настройки GitHub проекта и повторно проверь подключение.'
-  :'Не удалось подтвердить доступ к ветке '+branch+' (GitHub HTTP '+check.status+')'});
- const pullsPermission=await fetch('https://api.github.com/repos/'+git.rows[0].repository+'/pulls?state=open&per_page=1',{
-  headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'},
-  signal:AbortSignal.timeout(12000)});
- if(pullsPermission.status===403)return reply.code(409).send({error:'GitHub запрещает чтение Pull Request (403). Добавь подключённому токену права Pull requests: Read and write для этого репозитория. Codex не запущен, лимит модели не потрачен.'});
- if(!pullsPermission.ok)return reply.code(502).send({error:'Не удалось проверить доступ к PR до разработки: GitHub HTTP '+pullsPermission.status});
-
- const db=await pool.connect();
- try{
-  await db.query('BEGIN');
-  if(iterationApproval){
-   const approved=await db.query('SELECT id FROM project_iterations WHERE project_id=$1 AND id=$2 AND revision=$3 AND approved_revision=revision FOR SHARE',
-    [id,iterationApproval.id,iterationApproval.revision]);
-   if(!approved.rowCount){await db.query('ROLLBACK');return reply.code(409).send({error:'Итерация изменилась после выбора задач.'});}
-  }
-  if(!await acquireTaskOrchestration(db,id,taskId,runId,'task-cycle-'+runId,'development')){
-   await db.query('ROLLBACK');
-   return reply.code(409).send({error:'Для задачи уже выполняется цикл разработки, сверки требований или тестирования.'});
-  }
-  const current=(await db.query("SELECT stage,analysis_state,spec_version,spec_review_status,clarification_questions,depends_on_task_id,iteration_id FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[id,taskId])).rows[0];
-  const ready=current&&current.stage===task.stage&&current.analysis_state===task.analysis_state&&current.spec_version===task.spec_version&&current.spec_review_status===task.spec_review_status&&current.depends_on_task_id===task.depends_on_task_id&&(!iterationApproval||current.iteration_id===iterationApproval.id);
-  if(!ready||fromAnalysis&&(current.clarification_questions||[]).length||await pendingAgentQuestions(db,id,taskId)){
-   await db.query('ROLLBACK');
-   return reply.code(409).send({error:'Состояние задачи изменилось. Обнови карточку и проверь вопросы аналитика.'});
-  }
-  if(fromAnalysis){
-   await db.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE project_id=$1 AND id=$2",[id,taskId]);
-   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Анализ → Разработка')",[randomUUID(),taskId,uid(req)]);
-  }
-  const developerAi=await resolveRoleAiSettings(db,id,'development',ai);
-  await db.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status,cycle_id,cycle_attempt) VALUES($1,$2,$3,$4,$5,'queued',$6,0)",
-   [runId,id,taskId,uid(req),developerAi.model,runId]);
-  await db.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','queued',$4)",
-   [randomUUID(),id,runId,'Запуск разработки принят в очередь']);
-  await db.query('COMMIT');
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
- try{
-  const client=await temporal();
-  await client.workflow.start('developmentTestingCycle',{
-   taskQueue:'agent-pipeline',workflowId:'task-cycle-'+runId,
-   args:[{projectId:id,taskId,runId,maxFixes:3}]
-  });
- }catch(e){
-  const err=e as Error;
-  await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",
-   [runId,'Не удалось запустить Temporal: '+err.message.slice(0,500)]);
-  if(fromAnalysis){
-   const restored=await pool.query("UPDATE tasks SET stage='analysis',analysis_state='ready_for_development',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='development' AND spec_version=$3 RETURNING id",[id,taskId,task.spec_version]);
-   if(restored.rowCount)await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Запуск Temporal не удался. Задача возвращена в анализ.')",[randomUUID(),taskId,uid(req)]);
-  }
-  await releaseTaskOrchestration(pool,id,taskId,runId);
-  return reply.code(503).send({error:'Temporal недоступен: '+err.message.slice(0,500)});
- }
- return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:(await resolveRoleAiSettings(pool,id,'development',ai)).model,created_at:new Date().toISOString()});
+  await client.query('BEGIN');
+  const scope=iterationApproval
+   ?{iterationId:iterationApproval.id,revision:iterationApproval.revision,taskIds:[taskId]}
+   :{taskId,approveAnalysis};
+  const {tasks:[intent]}=await enqueueDevelopment(client,id,uid(req),scope);
+  const ai=await resolveRoleAiSettings(client,id,'development');
+  await client.query('COMMIT');
+  return reply.code(202).send({id:intent.run_id,task_id:taskId,status:'queued',
+   message:'Запуск принят. Подробности ожидания — в Центре процессов.',model:ai.model,created_at:intent.created_at});
+ }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
 });
 // One project-scoped source for QA activity in Kanban, task chat and Process Center.
 app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
@@ -868,7 +778,14 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
  const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  const run=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at,cycle_id FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,id]);
- if(!run.rowCount)return reply.code(404).send({error:'Запуск не найден'});
+ if(!run.rowCount){
+  const intent=(await pool.query(`SELECT q.run_id AS id,q.task_id,q.status,q.created_at,q.detail AS message,
+   COALESCE(s.model,'gpt-6-luna') AS model FROM iteration_execution_queue q
+   LEFT JOIN project_ai_settings s ON s.project_id=q.project_id WHERE q.project_id=$1 AND q.run_id=$2`,[id,runId])).rows[0];
+  if(!intent)return reply.code(404).send({error:'Запуск не найден'});
+  return {...intent,status:intent.status==='stale'?'failed':intent.status==='dispatched'?'completed':intent.status,
+   message:intent.message||'Ожидает диспетчера разработки'};
+ }
  const current=run.rows[0];
  if(current.cycle_id)return current; // Temporal worker is the single owner of lifecycle transitions.
  if(current.status==='running'||current.status==='queued'){
@@ -916,59 +833,6 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
 
 
 
-async function finishExistingTaskBranch(id:string,taskId:string,actorId:string):Promise<{pr_url:string;branch:string;recovered:boolean}|null>{
- const result=await pool.query(
-  "SELECT t.title,t.stage,t.git_branch,t.pr_url,t.depends_on_task_id,t.pr_base_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
-  [taskId,id,actorId]);
- if(!result.rowCount)throw Object.assign(new Error('Задача или GitHub-подключение не найдены'),{statusCode:404});
- const row=result.rows[0];
- if(row.stage!=='development'&&row.stage!=='merge_queue')return null;
- if(row.pr_url)return {pr_url:row.pr_url,branch:String(row.git_branch||taskId),recovered:true};
- const branch=taskId;
- const token=decryptToken(row.secret_encrypted);
- let baseBranch=String(row.pr_base_branch||row.target_branch||row.default_branch);
- if(row.depends_on_task_id&&!row.pr_base_branch){
-  const p=await pool.query('SELECT stage,git_branch,pr_url FROM tasks WHERE id=$1 AND project_id=$2',[row.depends_on_task_id,id]);
-  if(!p.rowCount)throw Object.assign(new Error('Не найдена задача, от которой зависит разработка'),{statusCode:409});
-  if(p.rows[0].stage==='merge_queue'&&p.rows[0].git_branch&&p.rows[0].pr_url)baseBranch=p.rows[0].git_branch;
-  else if(!['done','documentation','deployment'].includes(p.rows[0].stage))
-   throw Object.assign(new Error('Зависимая задача ещё не подготовила PR'),{statusCode:409});
- }
- const apiBase='https://api.github.com/repos/'+row.repository;
- const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
- const gh=async(endpoint:string,options:RequestInit={})=>{
-  const response=await fetch(apiBase+endpoint,{...options,headers:{...headers,...options.headers},signal:AbortSignal.timeout(20000)});
-  const data=await response.json().catch(()=>({})) as any;
-  return {response,data};
- };
- // A task's branch might not yet have been created. No changes means normal Codex development.
- const branchResult=await gh('/branches/'+encodeURIComponent(branch));
- if(branchResult.response.status===404)return null;
- if(!branchResult.response.ok)throw Object.assign(new Error('Не удалось проверить ветку задачи в GitHub: HTTP '+branchResult.response.status),{statusCode:502});
- const comparison=await gh('/compare/'+encodeURIComponent(baseBranch)+'...'+encodeURIComponent(branch));
- if(!comparison.response.ok)throw Object.assign(new Error('Не удалось сравнить ветки: GitHub HTTP '+comparison.response.status),{statusCode:502});
- if(!(Number(comparison.data.ahead_by)>0))return null;
- // Source code has already been pushed. Don't charge Codex again for the same work.
- const existing=await gh('/pulls?state=open&head='+encodeURIComponent(row.repository.split('/')[0]+':'+branch)+'&per_page=100');
- if(!existing.response.ok)throw Object.assign(new Error(existing.response.status===403
-  ?'GitHub HTTP 403: у подключённого токена нет доступа к Pull Requests. В GitHub выдай ему разрешение Pull requests: Read and write и сохрани подключение заново.'
-  :'Не удалось прочитать Pull Requests: GitHub HTTP '+existing.response.status),{statusCode:existing.response.status===403?409:502});
- const previous=(Array.isArray(existing.data)?existing.data:[]).find((pr:any)=>pr.base?.ref===baseBranch);
- let pr=previous;
- if(!pr){
-  const created=await gh('/pulls',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({title:'AI: '+String(row.title).slice(0,180),body:'Изменения по задаче '+taskId+'\n\nПодготовлено AI Development Orchestrator. Проверь изменения перед слиянием.',head:branch,base:baseBranch,draft:false})});
-  if(!created.response.ok)throw Object.assign(new Error(created.response.status===403
-   ?'GitHub HTTP 403: создание PR запрещено. Нужны Pull requests: Read and write в разрешениях токена.'
-   :'Не удалось создать PR: GitHub HTTP '+created.response.status+' '+String(created.data.message||'').slice(0,180)),{statusCode:409});
-  pr=created.data;
- }
- await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[taskId,branch,pr.html_url,pr.number,id,baseBranch]);
- await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pr_created',$4)",[randomUUID(),taskId,actorId,'PR создан автоматически: '+pr.html_url]);
- await pool.query("UPDATE ai_task_runs SET pr_url=$2,status='completed',message=$3,completed_at=COALESCE(completed_at,now()) WHERE project_id=$1 AND task_id=$4 AND status='failed' AND branch=$5",
-  [id,pr.html_url,'PR автоматически создан из готовых изменений без нового запроса к Codex',taskId,branch]);
- return {pr_url:pr.html_url,branch,recovered:true};
-}
 async function restackChildren(projectId:string,parentId:string,parentHeadSha:string,parentBase:string,repository:string,token:string,actorId:string){
  const children=await pool.query("SELECT id,pr_number,pr_base_branch FROM tasks WHERE project_id=$1 AND depends_on_task_id=$2 AND stage='merge_queue' AND pr_number IS NOT NULL",[projectId,parentId]);
  if(!children.rowCount)return;
@@ -1727,7 +1591,7 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
    FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id
    WHERE i.project_id=$1 ORDER BY r.created_at DESC LIMIT 70`,[id]),
   pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT q.task_id AS id,q.task_id,q.status,q.detail,q.created_at,q.updated_at,t.title,t.display_number,t.priority,t.depends_on_task_id,dep.stage AS dependency_stage FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id LEFT JOIN tasks dep ON dep.id=t.depends_on_task_id WHERE q.project_id=$1 AND q.status IN ('queued','dispatching','cancelled') ORDER BY t.priority,q.created_at LIMIT 120",[id]),
+  readDevelopmentQueue(pool,id),
   pool.query("SELECT q.note_id AS id,q.task_id,q.role,q.status,q.error AS detail,q.updated_at,n.body,t.display_number FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed') ORDER BY q.updated_at DESC LIMIT 60",[id]),
   pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 AND status IN ('queued','working','waiting_agents','waiting_user') ORDER BY updated_at DESC LIMIT 30",[id])
  ]);
@@ -1738,7 +1602,7 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   ...iterationRuns.rows.map(row=>({id:row.id,kind:'analysis',title:'План задач · '+row.title,status:row.status,
    detail:row.message,createdAt:row.created_at,updatedAt:row.updated_at,iterationId:row.iteration_id,result:{message:row.message}})),
   ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:(r.source_url?'Анализ материалов · '+r.source_url.split('/').slice(-1)[0]:'Подготовка ТЗ'),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,requestText:r.request_text,progress:{completed:r.analyzed_chunks,total:r.total_chunks},topicProgress:{completed:r.topic_completed,total:r.topic_total},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
-  ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
+  ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:queuedTasks.find(row=>row.run_id===r.id)?.detail||r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
  ];
  for(const row of tests.rows){
   processes.push({id:row.id,kind:'testing',title:'Тестирование #'+row.display_number+' · '+row.task_title,
@@ -1750,8 +1614,10 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   processes.push({id:row.id,kind:'analysis',title:'Сверка ТЗ #'+row.display_number+' · '+row.task_title,status:row.status,
    detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,result:{message:row.message}});
  }
- for(const row of queuedTasks.rows){
-  processes.push({id:row.id,kind:'development',title:'Очередь разработки #'+row.display_number+' · '+row.title,status:row.status==='dispatching'?'running':row.status,detail:row.detail||(row.depends_on_task_id&&!['merge_queue','deployment','documentation','done'].includes(row.dependency_stage)?'Ожидает завершения зависимости':'Ожидает готовности требований или свободного разработчика'),createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id});
+ for(const row of queuedTasks){
+  if(developments.rows.some(run=>run.id===row.run_id))continue;
+  processes.push({id:row.run_id||row.task_id,kind:'development',title:'Очередь разработки #'+row.display_number+' · '+row.title,
+   status:row.status==='dispatching'?'running':row.status,detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id});
  }
  for(const row of peerQuestions.rows){
   processes.push({id:row.id,kind:'analysis',title:'Вопрос специалисту · задача #'+row.display_number,status:row.status,detail:row.detail||row.body,createdAt:row.updated_at,updatedAt:row.updated_at,taskId:row.task_id});
@@ -1825,7 +1691,7 @@ app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'testing','cancelled','Тестирование остановлено пользователем')",[randomUUID(),id,processId]);
   return {ok:true,status:'cancelled'};
  }
- const queue=await pool.query("UPDATE iteration_execution_queue SET status='cancelled',detail='Запуск отменён пользователем',updated_at=now() WHERE project_id=$1 AND task_id=$2 AND status='queued' RETURNING task_id",[id,processId]);
+ const queue=await pool.query("UPDATE iteration_execution_queue SET status='cancelled',detail='Запуск отменён пользователем',updated_at=now() WHERE project_id=$1 AND COALESCE(run_id,task_id)=$2 AND status='queued' RETURNING task_id",[id,processId]);
  if(queue.rowCount)return {ok:true,status:'cancelled'};
  const planning=await pool.query("UPDATE iteration_planning_runs r SET status='cancelled',message='Прервано пользователем',updated_at=now() FROM project_iterations i WHERE r.id=$2 AND r.iteration_id=i.id AND i.project_id=$1 AND r.status IN ('queued','running') RETURNING r.id",[id,processId]);
  if(planning.rowCount){
@@ -2069,22 +1935,28 @@ async function recoverTask({projectId,taskId,auth,cookie}:Parameters<ManagerDeps
     await tx.query('COMMIT');
    }catch(e){await tx.query('ROLLBACK');throw e;}finally{tx.release();}
   }
-  let response=await request(task.stage==='development'?'/run-ai':'/start-testing');
-  let data=response.json() as any;
-  if(task.stage==='development'&&response.statusCode<400&&data.recovered){
-   response=await request('/start-testing');
-   data=response.json();
-   task.stage='testing';
-  }
+  const response=await request(task.stage==='development'?'/run-ai':'/start-testing');
+  const data=response.json() as any;
   if(response.statusCode>=400)
    return {ok:false,status:response.statusCode,message:String(data.error||'Проверка условий перехода не прошла'),details:data};
   return {ok:true,status:202,message:task.stage==='development'
-   ?'Менеджер запустил разработку. После неё система сверит ТЗ и запустит тестирование.'
+   ?'Менеджер поставил разработку в очередь. После неё система сверит ТЗ и запустит тестирование.'
    :'Менеджер запустил сверку требований и тестирование существующего PR.',details:data};
  }
 registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview,resumeAfterAnswer:async input=>{
  const owner=await pool.query("SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[input.projectId,input.taskId]);
  if(owner.rowCount)return {started:true,message:'Ответ передан в текущий процесс.'};
+ const intent=(await pool.query(`SELECT q.status,q.spec_version,t.spec_version AS current_spec,q.iteration_id,t.iteration_id AS current_iteration,
+  q.approved_revision,i.approved_revision AS current_approval,i.revision
+  FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id
+  LEFT JOIN project_iterations i ON i.id=q.iteration_id
+  WHERE q.project_id=$1 AND q.task_id=$2 AND q.status IN ('queued','stale')`,[input.projectId,input.taskId])).rows[0];
+ if(intent){
+  const valid=intent.status==='queued'&&intent.spec_version===intent.current_spec&&intent.iteration_id===intent.current_iteration
+   &&(!intent.iteration_id||intent.approved_revision===intent.current_approval&&intent.approved_revision===intent.revision);
+  if(valid)return {started:true,message:'Ответ сохранён. Диспетчер повторно проверит условия запуска.'};
+  return {started:false,message:'Ответ сохранён. Изменившийся запуск нужно подтвердить повторно.'};
+ }
  const result=await recoverTask(input);
  return {started:result.ok,message:result.message};
 }});
@@ -2104,7 +1976,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentWorkQueue(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
   try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}

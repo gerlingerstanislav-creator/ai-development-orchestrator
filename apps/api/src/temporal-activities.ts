@@ -59,15 +59,17 @@ async function jobSettings(projectId:string,taskId:string){
  const agentSettings=await Promise.all(workflow.rows.map(async row=>({...row,agent_instructions:String(row.agent_instructions||'')+'\n\nНакопленный опыт и утверждённые дополнения:\n'+await agentMemoryContext(pool,projectId,row.stage)})));
   return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),agentSettings};
 }
-async function dispatch(job:any){
+async function dispatch(job:any,beforeStart?:()=>Promise<boolean>){
  try{
   await runner('/jobs/'+job.id);
-  return; // A Temporal activity retry must not create a duplicate Codex job.
+  return true; // A Temporal activity retry must not create a duplicate Codex job.
  }catch(e){
   if((e as any).statusCode!==404)throw e;
  }
+ if(beforeStart&&!await beforeStart())return false;
  try{await runner('/jobs','POST',job);}
  catch(e){if((e as any).statusCode!==409)throw e;}
+ return true;
 }
 
 function formatWorkflowKnowledge(ctx:Awaited<ReturnType<typeof buildKnowledgeContext>>){
@@ -236,24 +238,89 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
  }
 }
 
+async function finishExistingTaskBranch(args:TaskRef,git:{repository:string;baseBranch:string;token:string;title:string},actorId:string):Promise<boolean>{
+ const {projectId,taskId,runId}=args;
+ const {repository,baseBranch,token,title}=git;
+ const branch=taskId;
+ const apiBase='https://api.github.com/repos/'+repository;
+ const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
+ const gh=async(endpoint:string,options:RequestInit={})=>{
+  const response=await fetch(apiBase+endpoint,{...options,headers:{...headers,...options.headers},signal:AbortSignal.timeout(20000)});
+  const data=await response.json().catch(()=>({})) as any;
+  return {response,data};
+ };
+ // A task's branch might not yet have been created. No changes means normal Codex development.
+ const branchResult=await gh('/branches/'+encodeURIComponent(branch));
+ if(branchResult.response.status===404)return false;
+ if(!branchResult.response.ok)throw Object.assign(new Error('Не удалось проверить ветку задачи в GitHub: HTTP '+branchResult.response.status),{statusCode:502});
+ const comparison=await gh('/compare/'+encodeURIComponent(baseBranch)+'...'+encodeURIComponent(branch));
+ if(!comparison.response.ok)throw Object.assign(new Error('Не удалось сравнить ветки: GitHub HTTP '+comparison.response.status),{statusCode:502});
+ if(!(Number(comparison.data.ahead_by)>0))return false;
+ // Source code has already been pushed. Don't charge Codex again for the same work.
+ const existing=await gh('/pulls?state=open&head='+encodeURIComponent(repository.split('/')[0]+':'+branch)+'&per_page=100');
+ if(!existing.response.ok)throw Object.assign(new Error(existing.response.status===403
+  ?'GitHub HTTP 403: у подключённого токена нет доступа к Pull Requests. В GitHub выдай ему разрешение Pull requests: Read and write и сохрани подключение заново.'
+  :'Не удалось прочитать Pull Requests: GitHub HTTP '+existing.response.status),{statusCode:existing.response.status===403?409:502});
+ const previous=(Array.isArray(existing.data)?existing.data:[]).find((pr:any)=>pr.base?.ref===baseBranch);
+ let pr=previous;
+ if(!pr){
+  const created=await gh('/pulls',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({title:'AI: '+title.slice(0,180),body:'Изменения по задаче '+taskId+'\n\nПодготовлено AI Development Orchestrator. Проверь изменения перед слиянием.',head:branch,base:baseBranch,draft:false})});
+  if(!created.response.ok)throw Object.assign(new Error(created.response.status===403
+   ?'GitHub HTTP 403: создание PR запрещено. Нужны Pull requests: Read and write в разрешениях токена.'
+   :'Не удалось создать PR: GitHub HTTP '+created.response.status+' '+String(created.data.message||'').slice(0,180)),{statusCode:409});
+  pr=created.data;
+ }
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN');
+  const saved=await db.query(`UPDATE ai_task_runs SET pr_url=$2,branch=$3,status='completed',
+   message='PR восстановлен из готовых изменений без повторного запуска Codex',completed_at=now()
+   WHERE id=$1 AND status='queued' RETURNING id`,[runId,pr.html_url,branch]);
+  if(saved.rowCount){
+   await db.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
+    [taskId,branch,pr.html_url,pr.number,baseBranch,projectId]);
+   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pr_created',$4)",
+    [randomUUID(),taskId,actorId,'PR восстановлен из готовых изменений: '+pr.html_url]);
+  }
+  await db.query('COMMIT');
+ }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
+ return true;
+}
+
 export async function startDevelopment(args:TaskRef){
  const {projectId,taskId,runId,attempt=0}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  if(await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы агентов, на которые ещё не ответили');
- const record=await pool.query('SELECT status FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,projectId]);
+ const record=await pool.query(`SELECT r.status,r.triggered_by,q.spec_version AS approved_spec
+  FROM ai_task_runs r LEFT JOIN iteration_execution_queue q ON q.run_id=r.id WHERE r.id=$1 AND r.project_id=$2`,[runId,projectId]);
  if(!record.rowCount)throw ApplicationFailure.nonRetryable('Запуск разработки отсутствует');
  if(record.rows[0].status==='cancelled')throw ApplicationFailure.nonRetryable('Разработка отменена пользователем');
  if(['completed','failed'].includes(record.rows[0].status))return;
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
  const feedback=String(task.test_feedback||'').slice(0,10000);
  if(task.spec_review_status==='pending'||task.spec_review_status==='needs_approval')throw ApplicationFailure.nonRetryable('Требования ожидают проверки аналитиком или согласования');
+ const beforeStart=!attempt&&record.rows[0].status==='queued'&&record.rows[0].approved_spec!=null?async()=>{
+  if(task.spec_version!==record.rows[0].approved_spec)
+   throw ApplicationFailure.nonRetryable('Версия ТЗ изменилась после согласования запуска');
+  if(!feedback&&await finishExistingTaskBranch(args,{repository:repo.repository,baseBranch,token,title:task.title},record.rows[0].triggered_by))return false;
+  const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'};
+  const base='https://api.github.com/repos/'+repo.repository;
+  const branch=await fetch(base+'/branches/'+encodeURIComponent(baseBranch),{headers,signal:AbortSignal.timeout(12000)});
+  if(branch.status===404)throw ApplicationFailure.nonRetryable('Ветка '+baseBranch+' не найдена в GitHub');
+  if(!branch.ok)throw Error('Не удалось проверить базовую ветку: GitHub HTTP '+branch.status);
+  const pulls=await fetch(base+'/pulls?state=open&per_page=1',{headers,signal:AbortSignal.timeout(12000)});
+  if(pulls.status===403)throw ApplicationFailure.nonRetryable('GitHub запрещает доступ к PR. Проверьте право Pull requests: Read and write.');
+  if(!pulls.ok)throw Error('Не удалось проверить доступ к PR: GitHub HTTP '+pulls.status);
+  return true;
+ }:undefined;
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const developerAi=await resolveRoleAiSettings(pool,projectId,'development',ai);
  const job={id:runId,taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
   title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
- await dispatch(job);
+ if(!await dispatch(job,beforeStart))return;
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
  await event(projectId,runId,'development','started',attempt?'Повторная разработка после дефектов':'Запуск разработки через Temporal');
@@ -457,7 +524,14 @@ export async function noteHandoffFailure(args:{projectId:string;taskId:string;ru
  await event(args.projectId,args.runId,'analysis',args.stage,message,'error');
 }
 export async function noteCycleFailure(args:{projectId:string;taskId:string;message:string;stage:string}){
- await pool.query("UPDATE tasks SET stage='development',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage IN ('development','testing')",
+ if(args.stage==='development'){
+  const failed=await pool.query(`UPDATE ai_task_runs SET status='failed',message=$3,completed_at=now()
+   WHERE project_id=$1 AND task_id=$2 AND status='queued'
+    AND cycle_id=(SELECT owner_id FROM task_orchestration_owners WHERE task_id=$2 AND state='active')
+   RETURNING id`,[args.projectId,args.taskId,args.message.slice(0,3000)]);
+  for(const run of failed.rows)await event(args.projectId,run.id,'development','failed',args.message,'error');
+ }
+ await pool.query("UPDATE tasks SET stage='development',test_feedback=CASE WHEN $3 LIKE 'Разработка не запущена:%' THEN test_feedback ELSE $3 END,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage IN ('development','testing')",
   [args.taskId,args.projectId,args.message.slice(0,3000)]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',
   [randomUUID(),args.taskId,'pipeline_failed',(args.stage+': '+args.message).slice(0,2400)]);
