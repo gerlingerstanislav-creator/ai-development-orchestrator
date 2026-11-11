@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from './agent-tools.js';
 import {agentLearnedContext} from './agent-tools.js';
-import {conversationInstructions,resolveRoleAiSettings} from './project-team.js';
+import {conversationInstructions,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
 type RouteDeps={
  pool:Pool;
@@ -164,7 +164,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   ].join('\n\n').slice(0,22500);
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:session.secret,agent_role:'manager',project_id:projectId}),
+   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
