@@ -127,7 +127,7 @@ function parseTaskAnalysisResult(text:string){
  */
 export async function runTaskStageAnalysis(runId:string):Promise<void>{
  const run=(await pool.query("SELECT id,project_id,task_id,spec_version,status FROM agent_analysis_runs WHERE id=$1",[runId])).rows[0];
- if(!run||['completed','waiting','failed'].includes(run.status))return;
+ if(!run||['completed','waiting','failed','cancelled'].includes(run.status))return;
  const active=await pool.query("UPDATE agent_analysis_runs SET status='running',updated_at=now() WHERE id=$1 AND status IN ('queued','running') RETURNING id",[runId]);
  if(!active.rowCount)return;
  const {project_id:projectId,task_id:taskId}=run;
@@ -160,8 +160,9 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
   try{
    await client.query('BEGIN');
    const latest=(await client.query("SELECT * FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[projectId,taskId])).rows[0];
-   if(!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||latest.spec_version!==run.spec_version){
-    await client.query("UPDATE agent_analysis_runs SET status='completed',message='Задача изменилась до сохранения результата',updated_at=now() WHERE id=$1",[runId]);
+   const stillActive=await client.query("SELECT status FROM agent_analysis_runs WHERE id=$1 FOR UPDATE",[runId]);
+   if(stillActive.rows[0]?.status==='cancelled'||!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||latest.spec_version!==run.spec_version){
+    await client.query("UPDATE agent_analysis_runs SET status='completed',message='Задача изменилась до сохранения результата',updated_at=now() WHERE id=$1 AND status<>'cancelled'",[runId]);
     await client.query('COMMIT');return;
    }
    if(output.outcome==='ready'){
@@ -190,7 +191,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
  }catch(error){
   const message=String(error).slice(0,650);
   await pool.query("UPDATE agent_analysis_runs SET status='failed',message=$2,updated_at=now() WHERE id=$1 AND status IN ('queued','running')",[runId,message]);
-  await pool.query("UPDATE tasks SET analysis_state='failed',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='analysis' AND analysis_state='processing' AND spec_version=$3",[taskId,projectId,run.spec_version]);
+  await pool.query("UPDATE tasks SET analysis_state='failed',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='analysis' AND analysis_state='processing' AND spec_version=$3 AND EXISTS(SELECT 1 FROM agent_analysis_runs WHERE id=$4 AND status='failed')",[taskId,projectId,run.spec_version,runId]);
   await event(projectId,runId,'analysis','failed',message,'error');
  }
 }
