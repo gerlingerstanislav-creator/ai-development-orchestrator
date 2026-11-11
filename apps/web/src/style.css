@@ -1276,3 +1276,9 @@ body:has(.tasks-page){overflow:hidden}
 .pm-chat-markdown .docs-markdown ul,.pm-chat-markdown .docs-markdown ol{margin:0 0 10px;padding-left:20px}
 .pm-chat-markdown .docs-markdown li{margin-bottom:3px}
 .pm-chat-markdown .docs-heading{font-size:13px!important;margin:12px 0 6px}
+
+/* Owner-only decision: keep unavailable QA checks distinct from runner failures. */
+.task-details .qa-waiver-panel{margin:12px 0;padding:10px 12px}
+.qa-waiver-reason{display:grid;gap:5px;font-size:12px;font-weight:600}
+.qa-waiver-reason textarea{font-size:12px;font-weight:400;line-height:1.45}
+.task-details .qa-waiver-panel button{max-width:100%;white-space:normal;text-align:left;justify-content:flex-start}
