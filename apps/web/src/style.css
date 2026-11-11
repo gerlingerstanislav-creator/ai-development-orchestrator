@@ -1262,3 +1262,7 @@ body:has(.tasks-page){overflow:hidden}
  overflow-wrap:anywhere;
 }
 .workflow-stage-dialog .workflow-detail-field textarea[rows="3"]{min-height:72px;max-height:130px}
+
+/* PM topics are temporary; unread activity is visible without hiding messages from the main feed. */
+.pm-topic-unread{display:inline-block;flex:0 0 7px;width:7px;height:7px;margin-left:auto;border-radius:50%;background:#6679e7}
+.pm-topic-item:has(.pm-topic-unread){display:flex;align-items:center;gap:7px}
