@@ -341,7 +341,7 @@ async function runJob(job,state){
    'Не используй GitHub MCP, GitHub API или другие удалённые инструменты для записи файлов: все изменения выполняй ТОЛЬКО в локальной рабочей папке. За commit, push и PR отвечает оркестратор.',
    'Не изменяй файлы вне рабочей директории. Не устанавливай пакеты из сети.',
    'Постарайся выполнить задачу полностью. Если требования противоречивы, объясни препятствие.',
-   'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||('Задача: '+job.title+'\n'+job.description)),
+   'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||['Задача: '+job.title+'\n'+job.description,'Инструкции: '+String(job.agentInstructions||'').slice(0,2000),'Правила: '+String(job.projectRules||'').slice(0,1300),'Документация: '+String(job.knowledgeContext||'').slice(0,1700),'Передача: '+String(job.handoffContext||'').slice(0,1100)].join('\n\n')),
    'В самом конце ответа отдельной строкой укажи HANDOFF_NOTE: <краткие конкретные нюансы реализации для аналитика и тестировщика, которые не должны попадать в документацию>. Если таких нюансов нет, напиши HANDOFF_NOTE: none. Не включай пароли, секреты и токены.',
     'Если выявлен один повторно применимый урок для твоей роли, в последней строке укажи LEARNING_SUGGESTION: <конкретное правило с основанием на фактах запуска>; иначе LEARNING_SUGGESTION: none. Это предложение на согласование, не обязательное правило. Не включай секреты или персональные данные.'
   ].join('\n\n');
@@ -483,7 +483,7 @@ async function runTestJob(job,state){
    'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","handoffNote":"процедурное замечание другому агенту, не часть документации; пустая строка если замечаний нет","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","reason":"executed|tool_unavailable|environment_unavailable|manual_only|unknown","evidence":"команда и результат или причина недоступности"}]}.',
    'Вердикт failed при обнаружении воспроизводимых проблем. Вердикт passed только при достаточных проверках и отсутствии дефектов. blocked — если проверить нельзя.',
     'В поле learningSuggestion запиши одно полезное повторно применимое улучшение процесса QA, основанное на фактических проверках этого запуска, или пустую строку. Это предложение на утверждение пользователю, не обязательная инструкция. Не добавляй секреты или персональные данные.',
-   'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||('Задача: '+job.title+'\n'+job.description)),
+   'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||['Задача: '+job.title+'\n'+String(job.description).slice(0,6000),'Инструкции: '+String(job.agentInstructions||'').slice(0,1600),'Правила: '+String(job.projectRules||'').slice(0,800),'Документация: '+String(job.knowledgeContext||'').slice(0,900),'Передача: '+String(job.handoffContext||'').slice(0,800)].join('\n\n')),
    'Возможности текущего контейнера, обнаруженные автоматически: '+capabilities,
    'План тестирования по актуальной версии ТЗ (только кейсы этой задачи): '+JSON.stringify({spec_version:job.testPlan?.spec_version,cases:job.testPlan?.cases||[]}).slice(0,52000),
    'Текущий git commit: '+state.testedCommit
