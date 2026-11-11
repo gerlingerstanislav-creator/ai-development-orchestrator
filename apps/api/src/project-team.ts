@@ -16,7 +16,7 @@ const selectedModel=z.enum(selectableAgentModels);
 export async function resolveRoleAiSettings(pool:Pick<Pool,'query'>,projectId:string,role:string,defaults?:{model:string;reasoning:string;enabled?:boolean}){
  const [base,override]=await Promise.all([
   defaults?Promise.resolve({rows:[defaults]}):pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
-  pool.query('SELECT model FROM project_agent_models WHERE project_id=$1 AND role=$2',[projectId,role])
+  pool.query('SELECT model FROM project_agent_models WHERE project_id=$1 AND role=$2',[projectId,role]).catch(error=>{if((error as {code?:string}).code==='42P01')return {rows:[]};throw error;})
  ]);
  const fallback=base.rows[0]||{model:'gpt-6-luna',reasoning:'low',enabled:false};
  return {...fallback,model:override.rows[0]?.model||fallback.model};
@@ -207,7 +207,9 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
  });
  app.patch('/api/projects/:id/team/:role/model',async(req:any,reply)=>{
   const {id,role}=changeParam.parse(req.params);if(!await canWrite(req,reply,id))return;
-  const {model}=z.object({model:selectedModel.nullable()}).parse(req.body);
+  const validated=z.object({model:selectedModel.nullable()}).safeParse(req.body);
+  if(!validated.success)return reply.code(400).send({error:'Недопустимая модель агента'});
+  const {model}=validated.data;
   const table=conversationalRoles.includes(role as typeof conversationalRoles[number])?'project_conversation_agents':specialistRoles.includes(role as typeof specialistRoles[number])?'project_specialist_agents':'workflow_stages';
   const key=table==='workflow_stages'?'stage':'role';
   if(!(await pool.query(`SELECT 1 FROM ${table} WHERE project_id=$1 AND ${key}=$2`,[id,role])).rowCount)
