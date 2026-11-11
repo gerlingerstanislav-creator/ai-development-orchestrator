@@ -3,7 +3,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from '../../codex-runner/execution-policy.mjs';
+import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment,qaAllowedDomains} from '../../codex-runner/execution-policy.mjs';
 
 test('the subprocess environment is explicit and Git credentials stay with Runner Git commands',()=>{
  const base=runnerEnvironment({PATH:'/usr/bin',LANG:'C',RUNNER_SHARED_SECRET:'runner',JWT_SECRET:'jwt',CODEX_HOME:'/auth',GITHUB_TOKEN:'github'});
@@ -37,4 +37,26 @@ test('Codex diagnostics prefer structured failures over the stdin notice',()=>{
  const events=JSON.stringify({type:'turn.failed',error:{message:'Invalid schema for the QA report'}});
  assert.equal(codexFailureDetail(events,'Reading additional input from stdin...'),'Invalid schema for the QA report');
  assert.equal(codexFailureDetail('', 'Reading additional input from stdin...\nSandbox failed'),'Sandbox failed');
+});
+
+test('QA alone receives a proxy-enforced registry/loopback allowlist',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'ado-qa-policy-'));
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const qa=await createTaskPolicy(join(root,'qa'),{qa:true});
+ const dev=await createTaskPolicy(join(root,'dev'));
+ const options=qa.execArgs.join('\n');
+ assert.match(options,/default_permissions="ado-qa"/);
+ assert.match(options,/features\.network_proxy=true/);
+ assert.match(options,/permissions\.ado-qa\.network\.enabled=true/);
+ assert.match(options,/permissions\.ado-qa\.network\.allow_local_binding=false/);
+ assert.match(options,/permissions\.ado-qa\.network\.allow_upstream_proxy=false/);
+ for(const domain of qaAllowedDomains)assert.ok(options.includes('"'+domain+'"="allow"'),domain+' is missing');
+ for(const disallowed of ['api','db','*','example.com','auth.openai.com'])
+  assert.ok(!qaAllowedDomains.includes(disallowed),'unexpected QA permission '+disallowed);
+ assert.match(options,/NODE_PATH/);
+ assert.match(options,/CHROMIUM_BIN/);
+ assert.match(dev.execArgs.join('\n'),/permissions\.ado-task\.network\.enabled=false/);
+ assert.ok(!dev.execArgs.some(arg=>arg.includes('network_proxy=true')));
+ assert.ok(!qa.execArgs.some(arg=>arg.includes('RUNNER_SHARED_SECRET')));
+ assert.ok(!qa.execArgs.some(arg=>arg.includes('GITHUB_TOKEN')));
 });
