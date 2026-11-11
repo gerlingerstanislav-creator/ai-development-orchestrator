@@ -5,6 +5,10 @@ RUN apt-get update \
  && test -s /etc/ssl/certs/ca-certificates.crt \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g @openai/codex@0.167.1 \
+ && codex_native="$(find "$(npm root -g)/@openai" -type f -path '*/vendor/*/bin/codex')" \
+ && test -x "$codex_native" \
+ && ln -s "$codex_native" /usr/local/bin/codex-linux-sandbox \
+ && codex-linux-sandbox --help >/dev/null \
  && mkdir -p /home/node/.codex /var/lib/ado-runner \
  && chown -R node:node /home/node/.codex /var/lib/ado-runner
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
