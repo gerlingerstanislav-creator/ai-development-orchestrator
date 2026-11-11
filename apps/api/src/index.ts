@@ -2039,9 +2039,9 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
  }
 });
 async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentWorkQueue(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
- const reconcile=()=>{
-  void reconcileAgentPeerQueue(pool,temporal).catch(error=>app.log.error({error},'Agent peer queue reconciliation failed'));
-  void reconcileAgentWorkQueue(pool,temporal).catch(error=>app.log.error({error},'Agent work queue reconciliation failed'));
- };
+ const reconcile=()=>void (async()=>{
+  try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
+  try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}
+ })();
  reconcile();setInterval(reconcile,12000).unref();}
 main().catch(e=>{console.error(e);process.exit(1);});
