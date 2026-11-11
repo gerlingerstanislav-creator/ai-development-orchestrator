@@ -1485,7 +1485,7 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  for(const entry of promptRecords.rows){
   if(visibleIds.has(entry.id))continue;
   processes.push({id:entry.id,kind:'analysis',title:'AI-запрос · '+entry.role,
-   status:'logged',detail:'Запрос отправлен модели ('+entry.operation+'); результат смотри в соответствующем чате.',
+   status:'logged',detail:'Промпт подготовлен для вызова модели ('+entry.operation+'); результат смотри в соответствующем чате.',
    createdAt:entry.created_at,updatedAt:entry.created_at});
  }
  processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
