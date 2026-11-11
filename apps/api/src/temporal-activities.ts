@@ -13,6 +13,7 @@ import {recordTaskAgentNote,taskNotesContext,taskConversationEvidence,pendingAge
 import {managerSnapshot} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
+import {markPeerWorkResult} from './agent-peer-queue.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings} from './project-team.js';
@@ -583,11 +584,11 @@ function managerRequestSummary(request:any){
  * Peer-to-peer specialist communication. The manager is not a relay for all
  * messages: only unresolved customer decisions enter its inbox.
  */
-export async function resolvePeerQuestions(args:{projectId:string;taskId:string}):Promise<{resolved:number;pending:number}>{
+export async function resolvePeerQuestions(args:{projectId:string;taskId:string;noteId?:string}):Promise<{resolved:number;pending:number}>{
  const {projectId,taskId}=args;
  const notes=await pool.query(
-  "SELECT id,author_stage,target_stage,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND source_kind='agent' AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) ORDER BY requires_customer DESC,created_at LIMIT 2",
-  [projectId,taskId]);
+  "SELECT id,author_stage,target_stage,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND source_kind='agent' AND (status='open' OR (status='processing' AND processing_at<now()-interval '10 minutes')) AND ($3::uuid IS NULL OR id=$3) ORDER BY requires_customer DESC,created_at LIMIT 2",
+  [projectId,taskId,args.noteId||null]);
  let resolved=0;
  for(const note of notes.rows){
   const locked=await pool.query(
@@ -668,6 +669,18 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string}
  return {resolved,pending};
 }
 
+
+export async function runPeerQuestionWork(noteId:string):Promise<void>{
+ const q=await pool.query("SELECT project_id,task_id FROM agent_peer_queue WHERE note_id=$1 AND status='running'",[noteId]);
+ if(!q.rowCount)return;
+ try{
+  await resolvePeerQuestions({projectId:q.rows[0].project_id,taskId:q.rows[0].task_id,noteId});
+  await markPeerWorkResult(pool,noteId,null);
+ }catch(error){await markPeerWorkResult(pool,noteId,String(error));throw error;}
+}
+export async function failPeerQuestionWork(noteId:string,message:string):Promise<void>{
+ await markPeerWorkResult(pool,noteId,message);
+}
 
 export async function runProjectSpecification(jobId:string):Promise<void>{
  const service=createAssistantService({pool,codexUrl,runnerKey,decryptToken:decrypt});
