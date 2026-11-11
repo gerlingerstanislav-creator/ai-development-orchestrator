@@ -94,6 +94,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
  return askRunnerAssistant(prompt,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai));
 }
 async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000):Promise<string>{
+ const role=operation.includes('qa')||operation.includes('test')?'testing':'analysis';
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
   body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning,agent_role:role,project_id:projectId,role_capacity:await roleCapacity(pool,projectId,role)}),
@@ -212,8 +213,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
    prompt+='\\n\\nУтверждённые знания:\\n'+qaKnowledge.documents+'\\n\\nПрименимые инструкции:\\n'+qaKnowledge.modules+'\\n\\nПамять QA:\\n'+await agentMemoryContext(pool,projectId,'testing');
    const taskContext='\n\nПеред вопросом о требованиях проверь ответы в задаче. Переписка не подтверждает прохождение теста.\n'+handoff;
    prompt+=taskContext.slice(0,Math.min(3200,Math.max(0,24000-prompt.length)));
-   const role=operation.includes('qa')||operation.includes('test')?'testing':'analysis';
-  const response=await fetch(codexUrl+'/assistant',{method:'POST',
+   const response=await fetch(codexUrl+'/assistant',{method:'POST',
     headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
     body:JSON.stringify({prompt,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,agent_role:'testing',project_id:projectId,role_capacity:await roleCapacity(pool,projectId,'testing')}),
     signal:AbortSignal.timeout(105000)});
