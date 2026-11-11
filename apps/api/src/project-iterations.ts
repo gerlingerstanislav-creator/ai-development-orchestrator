@@ -84,6 +84,18 @@ export async function initProjectIterations(db:Db){
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS tags text[] NOT NULL DEFAULT '{}';
  CREATE INDEX IF NOT EXISTS idx_tasks_iteration ON tasks(project_id,iteration_id);
  CREATE UNIQUE INDEX IF NOT EXISTS idx_iteration_task_key ON tasks(iteration_id,iteration_item_key) WHERE iteration_item_key IS NOT NULL;
+ CREATE TABLE IF NOT EXISTS iteration_execution_queue (
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  iteration_id uuid NOT NULL REFERENCES project_iterations(id) ON DELETE CASCADE,
+  task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  requested_by uuid NOT NULL REFERENCES users(id),
+  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','dispatching','dispatched','cancelled')),
+  run_id uuid,detail text NOT NULL DEFAULT '',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(project_id,task_id)
+ );
+ CREATE INDEX IF NOT EXISTS idx_iteration_execution_queue_pending ON iteration_execution_queue(status,created_at);
  `);
 }
 
