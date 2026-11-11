@@ -32,6 +32,7 @@ export const agentToolCatalog=[
   {iteration_id:id,expected_revision:field('integer','Текущая ревизия'),title:str,body:str,document_ids:{type:'array',items:id},idempotency_key:idem},['title','body']),
  tool('iterations.prepare_plan','Передать согласованный объём системному аналитику. Запускает подготовку черновика с эпиками, задачами, тегами и зависимостями. Для создания задач владелец подтверждает предпросмотр.',
   {iteration_id:id,request:field('string','Уточнение владельца к декомпозиции в границах согласованного объёма'),idempotency_key:idem},['iteration_id']),
+ tool('iterations.launch','Только после прямой команды владельца «приступай к разработке» запустить согласованную итерацию через долговечную очередь ролей. Без команды не запускать; утверждение плана само по себе не разрешает разработку.',{iteration_id:id,expected_revision:field('integer','Согласованная текущая ревизия итерации'),idempotency_key:idem},['iteration_id','expected_revision']),
  tool('iterations.recommend_launch','Сохранить предлагаемый пакет до пяти задач в порядке запуска для выбора владельцем. Вызов не запускает разработку.',
   {iteration_id:id,task_ids:{type:'array',items:id},idempotency_key:idem},['iteration_id','task_ids']),
  tool('documents.list','Показать дерево документации с ревизиями. Перед созданием страниц ознакомься с существующей структурой, вложенные разделы определяются агентами.',{}),
@@ -73,7 +74,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch']);
+const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole){
  return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.'));
