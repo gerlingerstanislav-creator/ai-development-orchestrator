@@ -63,18 +63,25 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
    </nav>
    <div className="team-detail">
     {selected?<><header className="team-detail-heading"><div><span className="team-kicker">{selected.type==='conversation'?'Диалоговый агент':selected.type==='specialist'?'Специалист':'Роль workflow'}</span><h3>{aiAgentName(selected.name)}</h3><p className="muted">{selected.stage}</p></div></header>
-     <section className="team-instruction-block team-model-settings"><h4>Модель агента</h4>
-      <label>Исполнитель
-       <select value={selected.model??''} disabled={saving} onChange={e=>void changeModel(e.target.value)}>
-        <option value="">Наследовать модель проекта</option>
-        <option value="gpt-6-luna">GPT-6 Luna</option>
-        <option value="gpt-6-sol">GPT-6 Sol</option>
-        <option value="gpt-6.1-sol">GPT-6.1 Sol</option>
-       </select>
-      </label>
-      <p className="muted">Переопределение действует только для выбранной роли. Если не указано — используется модель проекта. Изменение применяется к новым запускам.</p>
+     <section className="team-instruction-block team-model-settings"><h4>Настройки исполнителей</h4>
+      <div className="team-execution-options">
+       <label>Модель агента
+        <select value={selected.model??''} disabled={saving} onChange={e=>void changeModel(e.target.value)}>
+         <option value="">Наследовать модель проекта</option>
+         <option value="gpt-6-luna">GPT-6 Luna</option>
+         <option value="gpt-6-sol">GPT-6 Sol</option>
+         <option value="gpt-6.1-sol">GPT-6.1 Sol</option>
+        </select>
+       </label>
+       <label htmlFor="team-role-capacity">Одновременные исполнители
+        <select id="team-role-capacity" aria-label="Количество исполнителей роли" value={selected.capacity||1} disabled={saving||selected.role==='manager'} onChange={e=>void changeCapacity(Number(e.target.value))}>
+         {Array.from({length:selected.role==='manager'?1:10},(_,i)=><option value={i+1} key={i+1}>{i+1}</option>)}
+        </select>
+       </label>
+      </div>
+      <p className="muted">Модель и количество исполнителей применяются к новым запускам. {selected.role==='manager'?'Менеджер проекта всегда один.':'При отсутствии переопределения используется модель проекта.'}</p>
      </section>
-     {selected.responsibility&&<section className="team-instruction-block team-responsibility"><h4><ShieldCheck size={16}/> Зона ответственности</h4><p>{selected.responsibility.mission}</p><div className="team-responsibility-grid"><div><strong>Получает</strong><ul>{selected.responsibility.inputs.map(item=><li key={item}>{item}</li>)}</ul></div><div><strong>Обязательный результат</strong><ul>{selected.responsibility.outcomes.map(item=><li key={item}>{item}</li>)}</ul></div></div><div className="team-capacity"><label htmlFor="team-role-capacity">Одновременные исполнители</label><select id="team-role-capacity" aria-label="Количество исполнителей роли" value={selected.capacity||1} disabled={saving||selected.role==='manager'} onChange={e=>void changeCapacity(Number(e.target.value))}>{Array.from({length:selected.role==='manager'?1:10},(_,i)=><option value={i+1} key={i+1}>{i+1}</option>)}</select><small className="muted">{selected.role==='manager'?'Менеджер проекта всегда один.':'Новые задания используют указанный лимит. Уже выполняемая работа не прерывается.'}</small></div></section>}
+     {selected.responsibility&&<section className="team-instruction-block team-responsibility"><h4><ShieldCheck size={16}/> Зона ответственности</h4><p>{selected.responsibility.mission}</p><div className="team-responsibility-grid"><div><strong>Получает</strong><ul>{selected.responsibility.inputs.map(item=><li key={item}>{item}</li>)}</ul></div><div><strong>Обязательный результат</strong><ul>{selected.responsibility.outcomes.map(item=><li key={item}>{item}</li>)}</ul></div></div></section>}
      <section className="team-instruction-block"><h4><ShieldCheck size={16}/> Системные ограничения</h4><p className="muted">Ограничения безопасности, права инструментов, порядок проверок и слияния PR остаются в коде. Они не редактируются и не могут быть отменены инструкциями проекта. Внутренние промпты провайдера не раскрываются.</p></section>
      <section className="team-instruction-block"><div className="team-section-toolbar"><h4><BookOpen size={16}/> Инструкции роли</h4><div className="team-actions">{!editing&&<><button className="secondary" type="button" onClick={()=>void showHistory()}><History size={14}/> История</button><button className="secondary" type="button" onClick={beginEdit}><Pencil size={14}/> Изменить</button></>}</div></div>
       {editing?<div className="team-editor"><label>Название агента<input maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label><label>Инструкции<textarea rows={12} maxLength={12000} value={draft.instructions} onChange={e=>setDraft({...draft,instructions:e.target.value})}/></label><div className="team-actions"><button className="secondary" type="button" disabled={saving} onClick={()=>setEditing(false)}>Отмена</button><button className="primary" type="button" disabled={saving||!draft.name.trim()} onClick={()=>void saveProfile()}>{saving?'Сохранение…':'Сохранить'}</button></div></div>:
