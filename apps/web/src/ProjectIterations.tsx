@@ -85,6 +85,9 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
    {details?<><Pencil size={15}/> Изменить</>:<><Plus size={15}/> Итерация</>}
   </button>}</header>
   <div className="iteration-stage-guide" aria-label="Этапы разработки">{stages.map((stage,index)=><div key={stage.stage} className="iteration-stage-guide-item"><small>{index+1}</small><strong>{stage.label}</strong><span>{stageDescriptions[stage.stage]||'Этап работы участников проекта.'}</span></div>)}</div>
+  <div className="iteration-stage-guide" aria-label="Этапы процесса разработки">
+   {stages.map((stage,index)=><div className="iteration-stage-guide-item" key={stage.stage}><small>{index+1}</small><strong>{stage.label}</strong><span>{stageDescriptions[stage.stage]||'Этап работы команды по правилам проекта.'}</span></div>)}
+  </div>
   {loading&&<p className="muted" role="status">Загрузка…</p>}
   {error&&<p className="error" role="alert">{error}</p>}
   {notice&&<p role="status">{notice}</p>}
