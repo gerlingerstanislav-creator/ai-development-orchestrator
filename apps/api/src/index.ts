@@ -4,6 +4,7 @@ import {deploymentDecision} from './deployment-stage.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes,validateHealthUrl} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
+import {resolveRoleAiSettings} from './project-team.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
@@ -691,8 +692,9 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
    await db.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE project_id=$1 AND id=$2",[id,taskId]);
    await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Анализ → Разработка')",[randomUUID(),taskId,uid(req)]);
   }
+  const developerAi=await resolveRoleAiSettings(db,id,'development',ai);
   await db.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status,cycle_id,cycle_attempt) VALUES($1,$2,$3,$4,$5,'queued',$6,0)",
-   [runId,id,taskId,uid(req),ai.model,runId]);
+   [runId,id,taskId,uid(req),developerAi.model,runId]);
   await db.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','queued',$4)",
    [randomUUID(),id,runId,'Запуск разработки принят в очередь']);
   await db.query('COMMIT');
@@ -714,7 +716,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
   await releaseTaskOrchestration(pool,id,taskId,runId);
   return reply.code(503).send({error:'Temporal недоступен: '+err.message.slice(0,500)});
  }
- return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:ai.model,created_at:new Date().toISOString()});
+ return reply.code(202).send({id:runId,task_id:taskId,status:'queued',message:'Запуск принят. Исполнитель возьмёт задачу при наличии свободного слота.',model:(await resolveRoleAiSettings(pool,id,'development',ai)).model,created_at:new Date().toISOString()});
 });
 // One project-scoped source for QA activity in Kanban, task chat and Process Center.
 app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
@@ -1233,7 +1235,7 @@ async function resolvePrConflicts(projectId:string,taskId:string,userId:string){
  const jobId=randomUUID();
  const job={id:jobId,kind:'resolve-conflict',taskId,repository:row.repository,
   baseBranch:row.target_branch||row.default_branch,token,
-  model:row.model||aiDefaults.model,reasoning:row.reasoning||aiDefaults.reasoning,
+  model:(await resolveRoleAiSettings(pool,projectId,'development',{model:row.model||aiDefaults.model,reasoning:row.reasoning||aiDefaults.reasoning})).model,reasoning:row.reasoning||aiDefaults.reasoning,
   maxRuntimeSeconds:900,title:row.title,description:row.description||''};
  // Get actual PR base: stacked PRs may initially target a parent task branch.
  const prResp=await fetch('https://api.github.com/repos/'+row.repository+'/pulls/'+row.pr_number,{
