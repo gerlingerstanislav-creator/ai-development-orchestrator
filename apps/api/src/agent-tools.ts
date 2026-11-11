@@ -62,6 +62,7 @@ export const agentToolCatalog=[
  tool('approvals.answer_question','Передать конкретный ответ владельца на открытый вопрос агента через стандартный API, возобновляющий аналитическую сверку.',{task_id:id,note_id:id,answer:str},['task_id','note_id','answer']),
  tool('approvals.decide','Применить явное решение владельца по открытому запросу менеджера задачи через стандартные серверные проверки и текущие ограничения workflow.',{task_id:id,request_id:id,choice:field('string','answer, approve_requirements, reject_requirements, wait_for_tools; исключения QA только по явному согласию владельца'),answer:field('string','Текст ответа владельца')},['task_id','request_id','choice']),
  tool('workflow.approve_development','Запустить разработку по явно подтверждённому поручению владельца через стандартный API; проверяет требования и блокировки.',{task_id:id},['task_id']),
+ tool('qa.retry','Повторно запустить сверку актуального ТЗ, формирование QA-плана и независимое тестирование уже существующего PR. Используй для конкретной задачи по прямому запросу владельца или после исправления инфраструктурного сбоя. API проверяет статус Temporal, текущий PR, блокировки и запрещает параллельный QA. Не считать перезапуск подтверждением качества.',{task_id:id,idempotency_key:idem},['task_id']),
  tool('approvals.list','Прочитать ожидающие решения владельца согласования по задачам (требования, вопросы агентов, QA).',{}),
  tool('discussions.list','Список тем ПМ проекта с открытыми и закрытыми обсуждениями.',{}),
  tool('discussions.open','Создать тему обсуждения с владельцем и сразу отправить первый вопрос или сообщение. Повторно используй открытую тему с тем же смыслом.',{title:str,opening_message:str,awaiting_reply:field('boolean','Нужен ответ владельца. По умолчанию да.')},['title','opening_message']),
@@ -79,7 +80,7 @@ export type AgentRole='manager'|'analyst'|'business_analyst';
 const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole){
- return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.'));
+ return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.')&&!t.name.startsWith('qa.'));
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);
