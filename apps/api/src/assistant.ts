@@ -214,6 +214,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     const current=await liveInstructions();
     const instructionText=current.length?'\n\nНовые указания владельца во время работы (применить к текущему ответу):\n'+
      current.slice(-20).map(x=>'- '+x.body).join('\n').slice(-9500):'';
+    await recordAgentPrompt(pool,{projectId:id,processId:jobId,role:'analyst',operation:'documentation',prompt:prompt+instructionText}).catch(()=>{});
     const result=await completion(prompt+instructionText,config,options);
     await running();
     const latest=await liveInstructions();
@@ -632,6 +633,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     continuation:replyContext||topicContext,
     output:'Отвечай по-русски на основе проверяемых фактов. Не выдумывай выполненные операции. В конце LEARNING_SUGGESTION: <урок> или none.'
    });
+   await recordAgentPrompt(pool,{projectId:id,processId:randomUUID(),role:mentionedAgent.stage,operation:'direct_mention',prompt}).catch(()=>{});
    try{
     const roleConfig=await resolveRoleAiSettings(pool,id,mentionedAgent.stage,config);
     const response=await completion(prompt,roleConfig);
@@ -756,7 +758,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   if(prompt.length>24000)return reply.code(409).send({error:'Аналитик не может обработать весь объём ТЗ и ответа за один запрос. Сократи уточнение.'});
   const runId=refining?randomUUID():null;
   if(runId)await recordAgentActivity(pool,id,[taskId],runId,'analysis','running','Аналитик уточняет требования');
-  if(runId)await recordAgentPrompt(pool,{projectId:id,processId:runId,role:'analysis',operation:'task_chat',prompt}).catch(()=>{});
+  await recordAgentPrompt(pool,{projectId:id,processId:runId||randomUUID(),role:refining?'analysis':'assistant',operation:'task_chat',prompt}).catch(()=>{});
   let outcome='Анализ прервался без результата.';
   let completed=false;
   try{
