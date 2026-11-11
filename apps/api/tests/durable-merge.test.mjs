@@ -26,8 +26,9 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
   CREATE TABLE task_deployment_records(task_id uuid PRIMARY KEY,project_id uuid,status text,reason text,merge_sha text,actor_id uuid,updated_at timestamptz);
   CREATE TABLE project_deployment_settings(project_id uuid,mode text);
   CREATE TABLE task_agent_notes(project_id uuid,task_id uuid,kind text,status text,target_stage text,requires_customer boolean);
-  CREATE TABLE qa_test_plans(id uuid,project_id uuid,task_id uuid,spec_version int);
-  CREATE TABLE ai_task_runs(project_id uuid,task_id uuid,cycle_id uuid);
+  CREATE TABLE qa_test_plans(id uuid,project_id uuid,task_id uuid,spec_version int,spec_hash text);
+  CREATE TABLE ai_test_runs(id uuid,project_id uuid,task_id uuid,status text,verdict text,report jsonb,qa_spec_version int,qa_plan_snapshot jsonb,
+   created_at timestamptz DEFAULT now());
  `);
  const [project,actor,parent,child,connection,legacy]=Array.from({length:6},randomUUID);
  const prUrl='https://github.com/example/repo/pull/1';
@@ -52,21 +53,44 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
 
  const fetch=globalThis.fetch;
  t.after(()=>{globalThis.fetch=fetch;});
- let merged=false,puts=0;
+ let merged=false,puts=0,ciPassed=false;
+ const headSha='a'.repeat(40);
  globalThis.fetch=async (url,options)=>{
   if(options?.method==='PUT'){
    puts++;
-   assert.equal(JSON.parse(options.body).sha,'a'.repeat(40));
+   assert.equal(JSON.parse(options.body).sha,headSha);
    merged=true;
    throw Error('GitHub merged but the connection dropped');
   }
-  if(url.includes('/check-runs'))return Response.json({check_runs:[],total_count:0});
-  if(url.endsWith('/status'))return Response.json({statuses:[]});
+  if(url.endsWith('/branches/main'))return Response.json({name:'main',protection:{required_status_checks:{contexts:['build']}}});
+  if(url.includes('/rules/branches/main?'))return Response.json([]);
+  if(url.endsWith('/protection/required_status_checks'))return Response.json({checks:[]});
+  if(url.includes('/check-runs'))return Response.json({check_runs:ciPassed?[{name:'build',status:'completed',conclusion:'success'}]:[]});
+  if(url.includes('/statuses?'))return Response.json([]);
   if(url.includes('/compare/'))return Response.json({status:'ahead'});
+  if(options?.method==='PATCH'&&url.endsWith('/pulls/2'))return Response.json({base:{ref:'main'}});
   assert.ok(url.endsWith('/pulls/1'),url);
-  return Response.json({merged,state:'open',mergeable:true,base:{ref:'main'},head:{sha:'a'.repeat(40)},merge_commit_sha:'b'.repeat(40)});
+  return Response.json({merged,state:'open',mergeable:true,base:{ref:'main'},head:{sha:headSha},merge_commit_sha:'b'.repeat(40)});
  };
  const service=createMergeService(db,()=> 'fake-token');
+ const attempt=()=>service.mergeTaskPr(project,parent,actor);
+ await assert.rejects(attempt,/Аналитик не сверил/);
+ await db.query('UPDATE tasks SET spec_reviewed_commit=$2 WHERE id=$1',[parent,headSha]);
+ await assert.rejects(attempt,/Нет QA-плана/);
+ const planHash='qa-plan-hash';
+ await db.query('INSERT INTO qa_test_plans VALUES($1,$2,$3,1,$4)',[randomUUID(),project,parent,planHash]);
+ const testRun=randomUUID(),snapshot={spec_hash:planHash,cases:[{id:randomUUID()}]};
+ await db.query("INSERT INTO ai_test_runs(id,project_id,task_id,status,verdict,report,qa_spec_version,qa_plan_snapshot) VALUES($1,$2,$3,'completed','passed',$4,1,$5)",
+  [testRun,project,parent,{commit:'c'.repeat(40)},snapshot]);
+ await assert.rejects(attempt,/Нет завершённого QA-отчёта/);
+ await db.query('UPDATE ai_test_runs SET report=$2,qa_spec_version=2 WHERE id=$1',[testRun,{commit:headSha}]);
+ await assert.rejects(attempt,/Нет завершённого QA-отчёта/);
+ await db.query('UPDATE ai_test_runs SET qa_spec_version=1,qa_plan_snapshot=$2 WHERE id=$1',[testRun,{...snapshot,spec_hash:'old-plan'}]);
+ await assert.rejects(attempt,/Нет завершённого QA-отчёта/);
+ await db.query('UPDATE ai_test_runs SET qa_plan_snapshot=$2 WHERE id=$1',[testRun,snapshot]);
+ await assert.rejects(attempt,/build — результат отсутствует/);
+ assert.equal(puts,0);
+ ciPassed=true;
  await assert.rejects(service.mergeTaskPr(project,parent,actor),/connection dropped/);
  assert.equal((await db.query('SELECT stage FROM tasks WHERE id=$1',[parent])).rows[0].stage,'merge_queue');
  assert.equal((await service.mergeTaskPr(project,parent,actor)).status,'merged');

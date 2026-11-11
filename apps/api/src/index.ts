@@ -707,7 +707,7 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  const task=await pool.query('SELECT stage,pr_url,git_branch,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача не найдена'});
  if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Сначала ответь на вопросы агентов'});
- if(task.rows[0].stage!=='testing'||!task.rows[0].pr_url||!task.rows[0].git_branch)
+ if(!['testing','merge_queue'].includes(task.rows[0].stage)||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
  if(['needs_approval','rejected'].includes(task.rows[0].spec_review_status))return reply.code(409).send({error:'Сначала разреши предложенное изменение ТЗ. При статусе pending аналитик будет вызван внутри QA-цикла.'});
  // A stale DB lock must not hide a finished QA run or prevent an explicit retry.
@@ -762,8 +762,26 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
   await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_retry_recovered','Предыдущий QA-процесс отсутствует или завершился с ошибкой. Запуск разблокирован.']);
  }
  const cycleId=randomUUID();
- if(!await acquireTaskOrchestration(pool,id,taskId,cycleId,'manual-test-'+cycleId,'testing'))
-  return reply.code(409).send({error:'Для задачи уже идёт аналитика, формирование QA-плана или тестирование'});
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN');
+  const locked=(await db.query('SELECT stage,pr_url,git_branch,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id])).rows[0];
+  if(!locked||!['testing','merge_queue'].includes(locked.stage)||!locked.pr_url||!locked.git_branch||
+   ['needs_approval','rejected'].includes(locked.spec_review_status)||await pendingAgentQuestions(db,id,taskId)){
+   await db.query('ROLLBACK');
+   return reply.code(409).send({error:'Условия повторной проверки изменились. Обновите карточку задачи.'});
+  }
+  if(!await acquireTaskOrchestration(db,id,taskId,cycleId,'manual-test-'+cycleId,'testing')){
+   await db.query('ROLLBACK');
+   return reply.code(409).send({error:'Для задачи уже идёт аналитика, формирование QA-плана или тестирование'});
+  }
+  if(locked.stage==='merge_queue'){
+   await db.query("UPDATE tasks SET stage='testing',updated_at=now() WHERE project_id=$1 AND id=$2",[id,taskId]);
+   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Повторная сверка ТЗ и QA перед слиянием')",
+    [randomUUID(),taskId,uid(req)]);
+  }
+  await db.query('COMMIT');
+ }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
  try{
   await temporalClient.workflow.start('manualTesting',{
    taskQueue:'agent-pipeline',workflowId:'manual-test-'+cycleId,
