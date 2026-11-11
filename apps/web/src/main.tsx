@@ -2043,7 +2043,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
      {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
      {selectedProcessId===process.id&&processPrompts.length>0&&<details className="process-prompt-audit" style={{margin:'12px 0'}}>
-      <summary style={{cursor:'pointer',fontWeight:600}}>Отправленные промпты ({processPrompts.length})</summary>
+      <summary style={{cursor:'pointer',fontWeight:600}}>Промпты запусков ({processPrompts.length})</summary>
       <p className="muted">Текст, переданный модели, с маскировкой известных секретов. Для повторных запусков показаны отдельные запросы.</p>
       {processPrompts.map(entry=><details key={entry.id} style={{margin:'8px 0'}}>
        <summary style={{cursor:'pointer'}}>{entry.role} · {new Date(entry.created_at).toLocaleString('ru-RU')} · {entry.original_chars} символов{entry.truncated?' · сокращённый журнал':''}</summary>
