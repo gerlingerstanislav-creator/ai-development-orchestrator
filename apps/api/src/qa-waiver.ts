@@ -50,7 +50,7 @@ export function qaWaiverAssessment(run:QaRunRow|null|undefined){
  const runtime=String(run?.report?.capabilities||'');
  const pythonNeeded=checks.some(c=>/python|pytest/i.test(String(c.name||''))&&c.result==='not_run')||
   unverified.some(c=>/python|pytest|интерпретатор/i.test(c.evidence));
- if(pythonNeeded&&/python3:\\s*unavailable|python3_runtime:\\s*unavailable/i.test(runtime))
+ if(pythonNeeded&&/python3:\s*unavailable|python3_runtime:\s*unavailable/i.test(runtime))
   blockers.push('QA запускается без Python 3, хотя он предусмотрен в образе Runner. Пересобери Codex Runner и повтори QA; пропуск таких проверок недопустим.');
  return {eligible:blockers.length===0,blockers,passed,total:cases.length,unverified,checks,
   summary:String(run?.report?.summary||''),capabilities:String(run?.report?.capabilities||''),commit:String(run?.report?.commit||''),spec_version:run?.qa_spec_version??null};
