@@ -397,7 +397,7 @@ async function readPlan(db:Db,id:string,planId:string){
  return row;
 }
 
-async function publishPlan(db:PoolClient,projectId:string,id:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
+async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
  await iteration(db,projectId,id,true);
  const record=await readPlan(db,id,planId);
  if(record.published_at)return record.result;
@@ -643,10 +643,10 @@ export async function previewIterationPlanViaManager(db:Db,projectId:string,iter
   sourceRevision(await sourceDocuments(db,iterationId))!==plan.source_revision;
  return {plan_id:planId,items:planDiff(items),unmentioned,stale,preview_revision:sourceRevision(tasks),published_at:record.published_at};
 }
-export async function publishIterationPlanViaManager(pool:Pool,projectId:string,iterationId:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
- // The MCP tool previously cast a Pool to PoolClient; a partial failure could
- // commit some tasks but no published plan. Use the same transaction as UI.
- return transaction(pool,db=>publishPlan(db,projectId,iterationId,planId,actorId,previewRevision,selectedChanges));
+export async function publishIterationPlanViaManager(db:Db,projectId:string,iterationId:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
+ // The MCP tools route passes an already-open transactional PoolClient.
+ // The UI route wraps the same helper in transaction(pool,...).
+ return publishPlan(db,projectId,iterationId,planId,actorId,previewRevision,selectedChanges);
 }
 export async function recordIterationDecision(db:Db,projectId:string,iterationId:string,actorId:string,question:string,answer:string){
  const found=await db.query('SELECT id FROM project_iterations WHERE id=$1 AND project_id=$2',[iterationId,projectId]);
