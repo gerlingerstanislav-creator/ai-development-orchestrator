@@ -49,3 +49,9 @@
 .team-history summary{cursor:pointer;margin-bottom:10px}
 .team-history strong{display:block;margin:10px 0 5px}
 .team-memory-item .team-actions{margin-top:10px}
+
+.team-responsibility{border-left:3px solid #6384b8}
+.team-responsibility-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:12px 0}
+.team-responsibility-grid strong{font-size:12px}
+.team-responsibility-grid ul{padding-left:17px;margin:7px 0;line-height:1.65;font-size:12px}
+@media(max-width:600px){.team-responsibility-grid{grid-template-columns:1fr}}
