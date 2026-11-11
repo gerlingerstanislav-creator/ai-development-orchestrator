@@ -103,7 +103,7 @@ try{
  // Ensure a real headless browser launches under the *same* sandbox profile.
  const browserCheck=`
   const {chromium}=require('@playwright/test'),assert=require('node:assert/strict');
-  (async()=>{const browser=await chromium.launch({headless:true,executablePath:'/usr/lib/chromium/chromium',args:['--no-sandbox','--disable-dev-shm-usage']});
+  (async()=>{const browser=await chromium.launch({headless:true,executablePath:'/usr/lib/chromium/chromium',args:['--no-sandbox','--disable-dev-shm-usage','--disable-crashpad-for-testing','--disable-crash-reporter']});
    try{const page=await browser.newPage();await page.goto('data:text/html,<title>QA ready</title>');
     assert.equal(await page.title(),'QA ready');await page.screenshot({path:'qa-browser-smoke.png'});}
    finally{await browser.close();}
