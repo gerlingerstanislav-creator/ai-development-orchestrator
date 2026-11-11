@@ -161,8 +161,8 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
-   const latest=(await client.query("SELECT * FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[projectId,taskId])).rows[0];
    const stillActive=await client.query("SELECT status FROM agent_analysis_runs WHERE id=$1 FOR UPDATE",[runId]);
+   const latest=(await client.query("SELECT * FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[projectId,taskId])).rows[0];
    if(stillActive.rows[0]?.status==='cancelled'||!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||latest.spec_version!==run.spec_version){
     await client.query("UPDATE agent_analysis_runs SET status='completed',message='Задача изменилась до сохранения результата',updated_at=now() WHERE id=$1 AND status<>'cancelled'",[runId]);
     await client.query('COMMIT');return;
