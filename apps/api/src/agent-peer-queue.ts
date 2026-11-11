@@ -23,7 +23,7 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
  const client=await pool.connect();
  let locked=false;
  try{
-  const l=await client.query("SELECT pg_try_advisory_lock(hashtext('ado-peer-work-dispatch')) AS locked");
+  const l=await client.query("SELECT pg_try_advisory_lock(hashtext('ado-iteration-development-queue')) AS locked");
   locked=l.rows[0]?.locked===true;
   if(!locked)return;
   await client.query(`INSERT INTO agent_peer_queue(note_id,project_id,task_id,role)
@@ -72,7 +72,7 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
    return;
   }
  }finally{
-  if(locked)await client.query("SELECT pg_advisory_unlock(hashtext('ado-peer-work-dispatch'))").catch(()=>{});
+  if(locked)await client.query("SELECT pg_advisory_unlock(hashtext('ado-iteration-development-queue'))").catch(()=>{});
   client.release();
  }
 }

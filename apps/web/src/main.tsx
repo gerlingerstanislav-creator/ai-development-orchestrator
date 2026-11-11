@@ -200,7 +200,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
   }
  }
  const data=await response.json().catch(()=>({}));
- if(!response.ok)throw Error(data.error||'Ошибка запроса');
+ if(!response.ok)throw Object.assign(Error(data.error||'Ошибка запроса'),{status:response.status});
  return data as T;
 }
 type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'settings';
@@ -1128,22 +1128,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось проверить или повторить QA');fail(e);}finally{setAiBusy(false);}
  }
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
-   const response=await api<AiRun&{recovered?:boolean}>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
-   if(response.recovered){
-    setTaskFeedback(response.message||'Изменения уже готовы. PR автоматически создан без повторного вызова Codex.');
-    await loadProject(selected.id);
-    const currentId=activeTask.id;
-    const current=await api<Task[]>('/projects/'+selected.id+'/tasks');
-    setActiveTask(old=>old?.id===currentId?current.find(t=>t.id===currentId)||old:old);
-    setEvents(await api<Array<{id:string;event:string;detail:string;created_at:string}>>('/projects/'+selected.id+'/tasks/'+currentId+'/events'));
-   }else{
-    setAiRuns(old=>[response,...old]);
-    setAiMessage('Codex запущен. PR будет создан автоматически после завершения разработки.');
-   }
+   const response=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
+   setAiRuns(old=>[response,...old.filter(run=>run.id!==response.id)]);
+   setAiMessage('Задача принята в очередь. Подробности — в Центре процессов.');
   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Не удалось начать разработку');fail(e);}finally{setAiBusy(false);}}
  useEffect(()=>{if(!token||!selected||!aiRuns.some(r=>r.status==='running'||r.status==='queued'))return;
   const timer=setInterval(async()=>{const active=aiRuns.filter(r=>r.status==='running'||r.status==='queued');
-   const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch(e){return {...r,message:'Не удалось обновить статус: '+(e instanceof Error?e.message:'ошибка сети')};}}));
+   const updated=await Promise.all(active.map(async r=>{try{return await api<AiRun>('/projects/'+selected.id+'/ai-runs/'+r.id);}catch(e){return {...r,status:(e as {status?:number})?.status===404?'failed':r.status,message:'Не удалось обновить статус: '+(e instanceof Error?e.message:'ошибка сети')};}}));
    setAiRuns(old=>old.map(r=>updated.find(x=>x.id===r.id)||r));
    if(activeTask){
     try{const latestEvents=await api<typeof events>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/events');setEvents(latestEvents);}
@@ -1514,8 +1505,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const projectId=selected.id;
   setTaskChatBusy(true);setManagerFeedback('');
   try{
-   const run=await api<AiRun&{recovered?:boolean}>('/projects/'+projectId+'/tasks/'+task.id+'/approve-development',{method:'POST'});
-   if(!run.recovered)setAiRuns(old=>[run,...old.filter(previous=>previous.id!==run.id)]);
+   const run=await api<AiRun>('/projects/'+projectId+'/tasks/'+task.id+'/approve-development',{method:'POST'});
+   setAiRuns(old=>[run,...old.filter(previous=>previous.id!==run.id)]);
    setAiMessage(run.message||'Разработка принята в очередь.');
    if(activeTask?.id===task.id)await refreshTaskActivity(projectId,task.id);
    else await loadProject(projectId);
@@ -1621,7 +1612,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  function kanbanOrder(a:Task,b:Task){
   const blockedA=dependencyReady(a)&&!a.awaits_product_owner?0:1,blockedB=dependencyReady(b)&&!b.awaits_product_owner?0:1;
-  return blockedA-blockedB||(a.priority??3)-(b.priority??3)||new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
+  return blockedA-blockedB||(a.priority??3)-(b.priority??3)||new Date(a.created_at).getTime()-new Date(b.created_at).getTime()||a.id.localeCompare(b.id);
  }
  async function updateTaskPriority(task:Task,priority:number){
   if(!selected)return;
@@ -1757,7 +1748,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
  }
- const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status;
+ const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status==='stale'?'Нужно подтвердить заново':status;
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
  const taskTags=[...new Set(tasks.flatMap(task=>task.tags??[]))].sort((a,b)=>a.localeCompare(b,'ru'));

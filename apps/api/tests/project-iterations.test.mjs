@@ -24,6 +24,10 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
    display_number int DEFAULT 1,spec_version int DEFAULT 1,spec_reviewed_version int DEFAULT 1,spec_review_status text DEFAULT 'current',
    clarification_questions jsonb DEFAULT '[]',spec_reviewed_commit text DEFAULT '',spec_review_note text DEFAULT '',updated_at timestamptz DEFAULT now()
   );
+  CREATE TABLE assistant_messages(project_id uuid,task_id uuid,channel text,role text,body text,created_at timestamptz);
+  CREATE TABLE project_pm_decisions(project_id uuid,iteration_id uuid,question text,answer text,created_at timestamptz);
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,status text);
+  CREATE TABLE task_orchestration_owners(task_id uuid,owner_id uuid,state text);
   CREATE TABLE project_ai_settings(project_id uuid PRIMARY KEY,enabled boolean);
   CREATE TABLE workflow_stages(project_id uuid,stage text,agent_instructions text);
   CREATE TABLE project_rules(project_id uuid,body text,created_at timestamptz DEFAULT now());
@@ -40,11 +44,6 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  await db.query("INSERT INTO documents(id,project_id,title) VALUES($1,$2,'ТЗ'),($3,$4,'Чужое ТЗ')",[source,project,foreignSource,other]);
  const pool={query:db.query.bind(db),connect:async()=>({query:db.query.bind(db),release(){}})};
  registerProjectIterationRoutes(app,{pool,uid:()=>actor,access:async()=>true,requireAdmin:async()=>true});
- const launchCalls=[];
- app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req,reply)=>{
-  launchCalls.push({id:req.params.taskId,...req.body});
-  return reply.code(202).send({message:'В очереди'});
- });
  const path='/api/projects/'+project+'/iterations';
  const request=(method,url,payload)=>app.inject({method,url,payload});
  const create=await request('POST',path,{title:'MVP',body:'Первый рабочий сценарий',document_ids:[source]});
@@ -157,8 +156,11 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[epic.id]})).statusCode,409);
  const start=await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id,order.id]});
  assert.equal(start.statusCode,200,start.body);
- assert.deepEqual(start.json().results.map(item=>[item.id,item.started]),[[form.id,true],[order.id,false]]);
- assert.deepEqual(launchCalls,[{id:form.id,approveAnalysis:true,iterationApproval:{id,revision:1}}]);
+ assert.deepEqual(start.json().results.map(item=>[item.id,item.status]),[[form.id,'queued'],[order.id,'queued']]);
+ const pending=(await db.query('SELECT task_id,approved_revision,run_id FROM iteration_execution_queue WHERE iteration_id=$1',[id])).rows;
+ assert.equal(pending.length,2);
+ for(const item of start.json().results)
+  assert.deepEqual(pending.find(row=>row.task_id===item.id),{task_id:item.id,approved_revision:1,run_id:item.run_id});
  const tagUpdate=await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{iteration_id:id,tags:['Миграция','миграция']});
  assert.deepEqual(tagUpdate.json(),{iteration_id:id,tags:['миграция'],sprint_id:null,version_id:null});
  const sprint=await request('POST','/api/projects/'+project+'/sprints',{name:'Спринт 1',starts_on:'2026-11-16',ends_on:'2026-11-27'});

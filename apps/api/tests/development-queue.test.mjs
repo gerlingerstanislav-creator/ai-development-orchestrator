@@ -1,0 +1,108 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import pg from 'pg';
+import {enqueueDevelopment,initAgentWorkQueue,readDevelopmentQueue,reconcileAgentWorkQueue} from '../dist/agent-work-scheduler.js';
+import {initTaskOrchestrationSchema,releaseTaskOrchestration} from '../dist/task-orchestration.js';
+
+test('development queue binds approval, skips blocked tasks and retries one stable Temporal start',async t=>{
+ const admin=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await admin.connect();
+ const schema='development_queue_'+randomUUID().replaceAll('-','');
+ await admin.query('CREATE SCHEMA '+schema);
+ const db=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await db.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
+ await db.query(`
+  CREATE TABLE projects(id uuid PRIMARY KEY);
+  CREATE TABLE users(id uuid PRIMARY KEY);
+  CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,revision int,approved_revision int);
+  CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,iteration_id uuid,title text DEFAULT '',display_number int DEFAULT 1,
+   type text DEFAULT 'task',stage text DEFAULT 'analysis',analysis_state text DEFAULT 'ready_for_development',
+   spec_version int DEFAULT 1,spec_reviewed_version int DEFAULT 1,spec_review_status text DEFAULT 'current',
+   clarification_questions jsonb DEFAULT '[]',priority int DEFAULT 2,depends_on_task_id uuid,git_branch text,pr_url text,
+   pr_base_branch text,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
+  CREATE TABLE project_ai_settings(project_id uuid,enabled boolean,model text,reasoning text);
+  CREATE TABLE project_agent_models(project_id uuid,role text,model text);
+  CREATE TABLE project_role_capacity(project_id uuid,role text,capacity int);
+  CREATE TABLE project_git_repositories(project_id uuid,connection_id uuid);
+  CREATE TABLE connections(id uuid,provider text);
+  CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text);
+  CREATE TABLE agent_peer_queue(project_id uuid,role text,status text);
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,cycle_id uuid,cycle_attempt int);
+  CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
+  CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text);
+  CREATE TABLE iteration_execution_queue(project_id uuid,iteration_id uuid NOT NULL,task_id uuid,requested_by uuid,
+   status text DEFAULT 'queued' CHECK(status IN ('queued','dispatching','dispatched','cancelled')),run_id uuid,
+   detail text DEFAULT '',created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now(),PRIMARY KEY(project_id,task_id));
+ `);
+ await initTaskOrchestrationSchema(db);
+ const project=randomUUID(),iteration=randomUUID(),actor=randomUUID(),connection=randomUUID();
+ const [legacy,first,second,dependency,changedSpec]=Array.from({length:5},randomUUID);
+ await db.query('INSERT INTO projects VALUES($1)',[project]);
+ await db.query('INSERT INTO users VALUES($1)',[actor]);
+ await db.query('INSERT INTO project_iterations VALUES($1,$2,1,1)',[iteration,project]);
+ await db.query("INSERT INTO project_ai_settings VALUES($1,true,'gpt-6-luna','low')",[project]);
+ await db.query("INSERT INTO connections VALUES($1,'github_token')",[connection]);
+ await db.query('INSERT INTO project_git_repositories VALUES($1,$2)',[project,connection]);
+ await db.query("INSERT INTO tasks(id,project_id,iteration_id) SELECT unnest($1::uuid[]),$2,$3",[[legacy,first,second,changedSpec],project,iteration]);
+ await db.query("INSERT INTO tasks(id,project_id,stage) VALUES($1,$2,'backlog')",[dependency,project]);
+ await db.query("INSERT INTO iteration_execution_queue(project_id,iteration_id,task_id,requested_by) VALUES($1,$2,$3,$4)",[project,iteration,legacy,actor]);
+ await initAgentWorkQueue(db);
+ const launch=async scope=>{
+  const client=await db.connect();
+  try{
+   await client.query('BEGIN');
+   const result=await enqueueDevelopment(client,project,actor,scope);
+   await client.query('COMMIT');
+   return result;
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+ };
+ const starts=[];
+ let failDelivery=false;
+ const temporal=async()=>({workflow:{start:async(_name,options)=>{
+  starts.push(options);
+  if(failDelivery){failDelivery=false;throw Error('temporary Temporal outage');}
+ }}});
+ const dispatch=()=>reconcileAgentWorkQueue(db,temporal);
+ const status=async task=>(await db.query('SELECT status,run_id,approved_revision FROM iteration_execution_queue WHERE task_id=$1',[task])).rows[0];
+
+ assert.equal((await status(legacy)).status,'stale');
+ await launch({iterationId:iteration,revision:1,taskIds:[first]});
+ await db.query('UPDATE project_iterations SET revision=2,approved_revision=2 WHERE id=$1',[iteration]);
+ await dispatch();
+ assert.equal(starts.length,0,'approving a new revision must not launch a prior request');
+ assert.equal((await status(first)).status,'stale');
+
+ const blocked=Array.from({length:81},randomUUID);
+ await db.query('INSERT INTO tasks(id,project_id,iteration_id,priority,depends_on_task_id) SELECT unnest($1::uuid[]),$2,$3,1,$4',
+  [blocked,project,iteration,dependency]);
+ await launch({iterationId:iteration,revision:2,taskIds:blocked});
+ await launch({iterationId:iteration,revision:2,taskIds:[changedSpec]});
+ await db.query('UPDATE tasks SET spec_version=2,spec_reviewed_version=2 WHERE id=$1',[changedSpec]);
+ const [fromPlan,fromCard]=await Promise.all([
+  launch({iterationId:iteration,revision:2,taskIds:[first]}),
+  launch({taskId:first,approveAnalysis:true})
+ ]);
+ const runId=fromPlan.tasks[0].run_id;
+ assert.equal(fromCard.tasks[0].run_id,runId,'concurrent entry points reuse one queued attempt');
+ assert.match((await readDevelopmentQueue(db,project)).find(row=>row.task_id===blocked[0]).detail,/задачи-основания/);
+
+ failDelivery=true;
+ await assert.rejects(dispatch,/temporary Temporal outage/);
+ assert.equal((await status(first)).status,'dispatching');
+ await dispatch();
+ assert.equal((await status(first)).status,'dispatched');
+ assert.equal((await status(changedSpec)).status,'stale');
+ assert.deepEqual(starts.map(run=>run.workflowId),['task-cycle-'+runId,'task-cycle-'+runId]);
+ assert.equal(starts[0].workflowIdReusePolicy,'REJECT_DUPLICATE');
+ assert.equal((await db.query('SELECT count(*)::int AS total FROM ai_task_runs')).rows[0].total,1);
+
+ await launch({iterationId:iteration,revision:2,taskIds:[second]});
+ assert.match((await readDevelopmentQueue(db,project)).find(row=>row.task_id===second).detail,/слот разработчика/);
+ await dispatch();
+ assert.equal(starts.length,2);
+ await db.query("UPDATE ai_task_runs SET status='completed' WHERE id=$1",[runId]);
+ await releaseTaskOrchestration(db,project,first,runId);
+ await dispatch();
+ assert.equal(starts[2].args[0].taskId,second);
+});
