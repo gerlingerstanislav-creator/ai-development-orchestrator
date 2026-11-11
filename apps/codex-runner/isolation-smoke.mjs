@@ -5,6 +5,7 @@ import net from 'node:net';
 import {homedir,tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createTaskPolicy,runnerEnvironment,qaAllowedDomains} from './execution-policy.mjs';
+import {qaPrerequisiteError} from './qa-preflight.mjs';
 
 const root=await mkdtemp(join(tmpdir(),'ado-isolation-'));
 const auth=await mkdtemp(join(process.env.CODEX_HOME||homedir(),'ado-smoke-auth-'));
@@ -103,6 +104,9 @@ try{
  const python=await qaRun('Python venv and pytest','sh',['-c',
   'python3 -m venv .qa-smoke-venv && .qa-smoke-venv/bin/python -c "import sys; assert sys.version_info.major == 3" && pytest --version'],45000);
  assert.match(python,/pytest/);
+ assert.equal(qaPrerequisiteError(['retry_delivery.py'], 'python3_runtime: ok'),null);
+ assert.match(qaPrerequisiteError(['retry_delivery.py'],'python3_runtime: unavailable'),/Ошибка окружения QA/);
+ assert.equal(qaPrerequisiteError(['src/index.js'], 'python3_runtime: unavailable'),null);
  console.log('Runner sandbox isolates project files, Codex credentials and Git metadata; QA proxy allows registries and loopback; Python venv/pytest works');
 }finally{
  server.close();

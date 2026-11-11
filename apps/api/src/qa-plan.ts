@@ -32,12 +32,20 @@ function parseResponse(raw:string){
  return generated.parse(JSON.parse(raw.slice(first,last+1)));
 }
 
+// Regression is meaningful only for implemented functionality. A task under QA
+// must not inherit cases from other unmerged PRs in the same iteration.
+export function qaRegressionScope(alias:string,projectArg:number,taskArg:number){
+ if(!/^[a-z]+$/.test(alias))throw Error('Invalid SQL alias');
+ return '('+alias+'.source_task_id IS NULL OR '+alias+'.source_task_id=$'+taskArg+
+  ' OR EXISTS(SELECT 1 FROM tasks regression_task WHERE regression_task.id='+alias+'.source_task_id AND regression_task.project_id=$'+projectArg+" AND regression_task.stage='done'))";
+}
+
 export type QaTestCase={id:string;title:string;area:string;description:string;preconditions:string;steps:Array<{action:string;expected:string}>;priority:string;category:string;execution_mode:string;purpose:string};
 
 export async function readQaPlan(pool:Pool,projectId:string,taskId:string):Promise<{summary:string;spec_version:number;spec_hash:string;cases:QaTestCase[]}|null>{
  const plan=await pool.query('SELECT id,summary,spec_version,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
  if(!plan.rowCount)return null;
- const cases=await pool.query('SELECT c.id,c.title,c.area,c.description,c.preconditions,c.steps,c.priority,c.category,c.execution_mode,p.purpose FROM qa_plan_cases p JOIN qa_test_cases c ON c.id=p.case_id WHERE p.plan_id=$1 AND c.project_id=$2 AND c.status=\'active\' ORDER BY CASE p.purpose WHEN \'targeted\' THEN 0 ELSE 1 END,c.priority,c.title',[plan.rows[0].id,projectId]);
+ const cases=await pool.query('SELECT c.id,c.title,c.area,c.description,c.preconditions,c.steps,c.priority,c.category,c.execution_mode,p.purpose FROM qa_plan_cases p JOIN qa_test_cases c ON c.id=p.case_id WHERE p.plan_id=$1 AND c.project_id=$2 AND c.status=\'active\' AND (p.purpose=\'targeted\' OR '+qaRegressionScope('c',2,3)+') ORDER BY CASE p.purpose WHEN \'targeted\' THEN 0 ELSE 1 END,c.priority,c.title',[plan.rows[0].id,projectId,taskId]);
  return {summary:plan.rows[0].summary,spec_version:plan.rows[0].spec_version,spec_hash:plan.rows[0].spec_hash,cases:cases.rows};
 }
 
@@ -48,7 +56,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='testing'",[projectId]),
   pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 8',[projectId]),
   pool.query("SELECT title,body FROM documents WHERE project_id=$1 AND (document_kind='functional' OR implementation_status='implemented') ORDER BY updated_at DESC LIMIT 2",[projectId]),
-  pool.query("SELECT id,title,area,description,priority,category FROM qa_test_cases WHERE project_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT 16",[projectId])
+  pool.query("SELECT c.id,c.title,c.area,c.description,c.priority,c.category FROM qa_test_cases c WHERE c.project_id=$1 AND c.status='active' AND "+qaRegressionScope('c',1,2)+" ORDER BY c.updated_at DESC LIMIT 16",[projectId,taskId])
  ]);
  if(!task.rowCount)throw new Error('Задача для подготовки QA не найдена');
  if(task.rows[0].analysis_state!=='approved')throw new Error('Сначала требуется утвердить анализ задачи');
@@ -59,7 +67,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  const hash=createHash('sha256').update(JSON.stringify({title:row.title,description:row.description,spec_version:row.spec_version,rulesText,instructions})).digest('hex');
  const plan=await pool.query('SELECT id,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
  if(plan.rowCount&&plan.rows[0].spec_hash===hash){
-  const count=await pool.query('SELECT count(*)::int AS count FROM qa_plan_cases WHERE plan_id=$1',[plan.rows[0].id]);
+  const count=await pool.query("SELECT count(*)::int AS count FROM qa_plan_cases p JOIN qa_test_cases c ON c.id=p.case_id WHERE p.plan_id=$1 AND c.project_id=$2 AND c.status='active' AND (p.purpose='targeted' OR "+qaRegressionScope('c',2,3)+")",[plan.rows[0].id,projectId,taskId]);
   if(count.rows[0].count>0)return count.rows[0].count;
  }
  const prompt=composeAgentPrompt({
@@ -86,7 +94,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
    throw new Error('ТЗ изменилось во время формирования тест-кейсов. Повтори подготовку по новой версии.');
   const current=await client.query('SELECT id,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2 FOR UPDATE',[projectId,taskId]);
   if(current.rowCount&&current.rows[0].spec_hash===hash){
-   const count=await client.query('SELECT count(*)::int AS count FROM qa_plan_cases WHERE plan_id=$1',[current.rows[0].id]);
+   const count=await client.query("SELECT count(*)::int AS count FROM qa_plan_cases p JOIN qa_test_cases c ON c.id=p.case_id WHERE p.plan_id=$1 AND c.project_id=$2 AND c.status='active' AND (p.purpose='targeted' OR "+qaRegressionScope('c',2,3)+")",[current.rows[0].id,projectId,taskId]);
    if(count.rows[0].count>0){await client.query('COMMIT');return count.rows[0].count;}
   }
   const planId=current.rowCount?current.rows[0].id:randomUUID();
@@ -104,6 +112,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
    flowIds.set(flow.title.toLowerCase(),stored.rows[0].id);
   }
   const selected=new Set<string>();
+   let regressionLinked=0;
   for(const candidate of produced.cases){
    const caseId=randomUUID();
    const flowId=flowIds.get(String(candidate.flow_title||'').toLowerCase())||null;
@@ -119,13 +128,13 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
    await client.query("INSERT INTO qa_plan_cases(plan_id,case_id,purpose) VALUES($1,$2,'targeted') ON CONFLICT DO NOTHING",[planId,stableId]);
   }
   // Smoke checks are always included; the model cannot suppress mandatory regression.
-  const smoke=await client.query("SELECT id FROM qa_test_cases WHERE project_id=$1 AND status='active' AND category='smoke' ORDER BY updated_at DESC LIMIT 10",[projectId]);
+  const smoke=await client.query("SELECT c.id FROM qa_test_cases c WHERE c.project_id=$1 AND c.status='active' AND c.category='smoke' AND "+qaRegressionScope('c',1,2)+" ORDER BY c.updated_at DESC LIMIT 10",[projectId,taskId]);
   const chosen=[...new Set([...produced.regression_case_ids,...smoke.rows.map((x:any)=>x.id)])].filter(id=>!selected.has(id)).slice(0,20);
   for(const caseId of chosen){
-   const valid=await client.query("SELECT 1 FROM qa_test_cases WHERE id=$1 AND project_id=$2 AND status='active'",[caseId,projectId]);
-   if(valid.rowCount)await client.query("INSERT INTO qa_plan_cases(plan_id,case_id,purpose) VALUES($1,$2,'regression') ON CONFLICT DO NOTHING",[planId,caseId]);
+   const valid=await client.query("SELECT 1 FROM qa_test_cases c WHERE c.id=$1 AND c.project_id=$2 AND c.status='active' AND "+qaRegressionScope('c',2,3),[caseId,projectId,taskId]);
+   if(valid.rowCount){await client.query("INSERT INTO qa_plan_cases(plan_id,case_id,purpose) VALUES($1,$2,'regression') ON CONFLICT DO NOTHING",[planId,caseId]);regressionLinked++;}
   }
   await client.query('COMMIT');
-  return selected.size+chosen.length;
+  return selected.size+regressionLinked;
  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
 }
