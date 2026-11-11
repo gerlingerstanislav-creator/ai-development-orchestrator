@@ -14,7 +14,7 @@ import {initDocumentationSystem} from './documentation-system.js';
 import {initDocumentationReset,registerDocumentationResetRoutes} from './documentation-reset.js';
 import {registerSafeTaskDeletion} from './task-deletion.js';
 import {registerBusinessAnalystHandoff} from './business-analyst-handoff.js';
-import {registerProjectManagerInbox} from './project-manager-inbox.js';
+import {failProjectManagerInbox,initProjectManagerInbox,pmInboxWorkflowId,registerProjectManagerInbox} from './project-manager-inbox.js';
 import {initKnowledgeContext,registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {initKnowledgeWorkflow} from './knowledge-workflow.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
@@ -40,12 +40,11 @@ import { z } from 'zod';
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-let temporalClient:Client|null=null;
-async function temporal():Promise<Client>{
- if(temporalClient)return temporalClient;
- const connection=await Connection.connect({address:process.env.TEMPORAL_ADDRESS||'temporal:7233'});
- temporalClient=new Client({connection,namespace:'default'});
- return temporalClient;
+let temporalClient:Promise<Client>|null=null;
+function temporal():Promise<Client>{
+ return temporalClient??=Connection.connect({address:process.env.TEMPORAL_ADDRESS||'temporal:7233'})
+  .then(connection=>new Client({connection,namespace:'default'}))
+  .catch(error=>{temporalClient=null;throw error;});
 }
 
 const jwtKey = new TextEncoder().encode(process.env.JWT_SECRET || '');
@@ -1850,10 +1849,21 @@ const assistant=registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexU
   await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
  }
 });
-registerProjectManagerInbox(app,{pool,uid,access,requireAdmin,start:async(projectId,messageId)=>{
+registerProjectManagerInbox(app,{pool,uid,access,requireAdmin,start:async turn=>{
  const client=await temporal();
- await client.workflow.start('processProjectManagerInbox',{taskQueue:'agent-pipeline',workflowId:'project-pm-'+messageId,
-  workflowIdReusePolicy:'REJECT_DUPLICATE',args:[projectId,messageId]});
+ const workflowId=pmInboxWorkflowId(turn);
+ try{
+  await client.withDeadline(Date.now()+5000,()=>client.workflow.start('processProjectManagerInbox',{
+   taskQueue:'agent-pipeline',workflowId,workflowIdReusePolicy:'REJECT_DUPLICATE',
+   args:[turn.project_id,turn.id,turn.pm_dispatch_attempt]
+  }));
+ }catch(error){
+  if((error as Error)?.name!=='WorkflowExecutionAlreadyStartedError')throw error;
+  const previous=await client.withDeadline(Date.now()+5000,()=>client.workflow.getHandle(workflowId).describe());
+  // A legacy workflow may have exhausted its retries before persisting the failure.
+  if(['FAILED','CANCELLED','TERMINATED','TIMED_OUT','COMPLETED'].includes(previous.status.name))
+   await failProjectManagerInbox(pool,turn.project_id,turn.id,turn.pm_dispatch_attempt);
+ }
 }});
 registerKnowledgeRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey});
 registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
@@ -1976,7 +1986,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
   try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}

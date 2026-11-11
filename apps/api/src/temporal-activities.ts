@@ -1,6 +1,6 @@
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
-import {executeProjectManagerInbox,readProjectManagerWatchResume,type ProjectManagerWatch} from './project-manager-inbox.js';
+import {executeProjectManagerInbox,failProjectManagerInbox,readProjectManagerWatchResume,type ProjectManagerWatch} from './project-manager-inbox.js';
 import {runIterationPlanning} from './project-iterations.js';
 import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
 import pg from 'pg';
@@ -781,8 +781,15 @@ export async function runAutomaticDeployment(runId:string){
 export async function failAutomaticDeployment(runId:string,message:string){await markDeploymentFailed(pool,runId,message);}
 
 /** Each durable PM message is an independently scheduled Temporal activity. */
-export async function runProjectManagerInbox(projectId:string,messageId:string):Promise<ProjectManagerWatch[]>{
- return executeProjectManagerInbox(pool,projectId,messageId,codexUrl,runnerKey);
+export async function runProjectManagerInbox(projectId:string,messageId:string,attempt?:number):Promise<ProjectManagerWatch[]>{
+ try{return await executeProjectManagerInbox(pool,projectId,messageId,codexUrl,runnerKey,attempt);}
+ catch(error){
+  if((error as {nonRetryable?:boolean})?.nonRetryable)throw ApplicationFailure.nonRetryable((error as Error).message);
+  throw error;
+ }
+}
+export async function markProjectManagerInboxFailed(projectId:string,messageId:string,attempt:number){
+ await failProjectManagerInbox(pool,projectId,messageId,attempt);
 }
 export async function readProjectManagerWatch(watch:ProjectManagerWatch):Promise<{status:'pending'|'completed';messageId?:string}>{
  return readProjectManagerWatchResume(pool,watch);

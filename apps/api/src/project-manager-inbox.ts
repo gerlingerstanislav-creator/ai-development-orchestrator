@@ -1,110 +1,165 @@
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from './agent-tools.js';
 import {agentLearnedContext} from './agent-tools.js';
 import {conversationInstructions,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
+type PendingTurn={id:string;project_id:string;channel:'project'|'pm-internal';pm_dispatch_attempt:number};
 type RouteDeps={
  pool:Pool;
  uid:(req:any)=>string;
  access:(req:any,reply:any,projectId:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
- start:(projectId:string,messageId:string)=>Promise<void>;
+ start:(turn:PendingTurn)=>Promise<void>;
 };
+
+export async function initProjectManagerInbox(pool:Pick<Pool,'query'>){
+ await pool.query(`
+  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS pm_request_id uuid;
+  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS pm_request_digest text;
+  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS pm_dispatch_attempt int NOT NULL DEFAULT 1;
+  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS pm_dispatched_at timestamptz;
+  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS pm_next_dispatch_at timestamptz NOT NULL DEFAULT now();
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_inbox_request ON assistant_messages(project_id,actor_id,pm_request_id)
+   WHERE pm_request_id IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_pm_inbox_delivery ON assistant_messages(pm_next_dispatch_at,created_at,id)
+   WHERE role='user' AND channel IN ('project','pm-internal') AND status='queued' AND pm_dispatched_at IS NULL;
+ `);
+}
+
+export function pmInboxWorkflowId(turn:PendingTurn){
+ const prefix=turn.channel==='pm-internal'?'pm-resume-':'project-pm-';
+ return prefix+turn.id+(turn.pm_dispatch_attempt>1?'-retry-'+turn.pm_dispatch_attempt:'');
+}
+
+export async function deliverProjectManagerInbox(pool:Pick<Pool,'query'>,start:RouteDeps['start'],onError:(error:unknown,turn:PendingTurn)=>void){
+ const pending=await pool.query<PendingTurn>(`SELECT id,project_id,channel,pm_dispatch_attempt FROM assistant_messages
+  WHERE channel IN ('project','pm-internal') AND role='user' AND status='queued'
+   AND pm_dispatched_at IS NULL AND pm_next_dispatch_at<=now()
+  ORDER BY pm_next_dispatch_at,created_at,id LIMIT 15`);
+ await Promise.all(pending.rows.map(async turn=>{
+  try{await start(turn);}
+  catch(error){
+   if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error)?.name)){
+    await pool.query(`UPDATE assistant_messages SET pm_next_dispatch_at=now()+interval '15 seconds'
+     WHERE id=$1 AND pm_dispatch_attempt=$2 AND pm_dispatched_at IS NULL`,[turn.id,turn.pm_dispatch_attempt]);
+    onError(error,turn);
+    return;
+   }
+  }
+  await pool.query('UPDATE assistant_messages SET pm_dispatched_at=now() WHERE id=$1 AND pm_dispatch_attempt=$2',
+   [turn.id,turn.pm_dispatch_attempt]);
+ }));
+}
 
 export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
  const {pool,uid,access,requireAdmin,start}=deps;
+ let recovering=false;
+ let timer:ReturnType<typeof setInterval>|null=null;
+ let closing=false;
+ const kick=()=>{
+  if(recovering||closing)return;
+  recovering=true;
+  void deliverProjectManagerInbox(pool,start,(error,turn)=>app.log.warn({error,messageId:turn.id},'PM delivery will be retried'))
+   .catch(error=>app.log.error({error},'PM inbox recovery failed'))
+   .finally(()=>{recovering=false;});
+ };
  app.post('/api/projects/:id/manager/inbox',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {message,replyTo,topicId}=z.object({
+  const {message,replyTo=null,topicId=null,requestId}=z.object({
    message:z.string().trim().min(1).max(4000),
    replyTo:z.string().uuid().nullable().optional(),
-   topicId:z.string().uuid().nullable().optional()
+   topicId:z.string().uuid().nullable().optional(),
+   requestId:z.string().uuid().optional()
   }).parse(req.body);
-  if(replyTo){
-   const target=await pool.query("SELECT 1 FROM assistant_messages WHERE id=$1 AND project_id=$2 AND task_id IS NULL AND channel='project'",[replyTo,id]);
-   if(!target.rowCount)return reply.code(400).send({error:'Сообщение, на которое вы отвечаете, не найдено'});
-  }
-  if(topicId){
-   const topic=await pool.query("SELECT 1 FROM project_chat_topics WHERE id=$1 AND project_id=$2 AND status='open'",[topicId,id]);
-   if(!topic.rowCount)return reply.code(409).send({error:'Тема закрыта или отсутствует'});
-  }
+  const actorId=uid(req);
   const messageId=randomUUID();
-
+  const digest=requestId?createHash('sha256').update(JSON.stringify([message,replyTo,topicId])).digest('hex'):null;
   const client=await pool.connect();
-  let orderId:string='';
-
   try{
    await client.query('BEGIN');
-
-   // A reply within a topic resumes the waiting order rather than opening
-   // an unrelated order and losing its decision context.
-   const parent=replyTo?(await client.query("SELECT pm_order_id FROM assistant_messages WHERE id=$1 AND project_id=$2",[replyTo,id])).rows[0]?.pm_order_id:null;
-   const waiting=topicId?(await client.query("SELECT id FROM project_pm_orders WHERE project_id=$1 AND topic_id=$2 AND status='waiting_user' ORDER BY updated_at DESC LIMIT 1",[id,topicId])).rows[0]?.id:null;
-   const existing=parent?(await client.query("SELECT id FROM project_pm_orders WHERE id=$1 AND project_id=$2 AND status='waiting_user'",[parent,id])).rows[0]?.id:null;
-   orderId=existing||waiting||randomUUID();
-   // Insert the order before the message: assistant_messages.pm_order_id has an immediate FK.
-   // source_message_id is linked after the message exists, avoiding a circular FK violation.
-   if(existing||waiting)
+   if(requestId){
+    await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[id+':'+actorId+':pm-inbox:'+requestId]);
+    const previous=(await client.query(`SELECT id,status,pm_order_id AS order_id,pm_request_digest FROM assistant_messages
+     WHERE project_id=$1 AND actor_id=$2 AND pm_request_id=$3`,[id,actorId,requestId])).rows[0];
+    if(previous){
+     await client.query('COMMIT');
+     if(previous.pm_request_digest!==digest)return reply.code(409).send({error:'Идентификатор запроса уже используется для другого сообщения'});
+     return reply.code(202).send({id:previous.id,order_id:previous.order_id,status:previous.status});
+    }
+   }
+   const target=replyTo?(await client.query(`SELECT pm_order_id FROM assistant_messages
+    WHERE id=$1 AND project_id=$2 AND task_id IS NULL AND channel='project'`,[replyTo,id])).rows[0]:null;
+   if(replyTo&&!target){
+    await client.query('ROLLBACK');
+    return reply.code(400).send({error:'Сообщение, на которое вы отвечаете, не найдено'});
+   }
+   if(topicId){
+    const topic=await client.query("SELECT 1 FROM project_chat_topics WHERE id=$1 AND project_id=$2 AND status='open'",[topicId,id]);
+    if(!topic.rowCount){
+     await client.query('ROLLBACK');
+     return reply.code(409).send({error:'Тема закрыта или отсутствует'});
+    }
+   }
+   const waiting=(await client.query(`SELECT id FROM project_pm_orders WHERE project_id=$1 AND status='waiting_user'
+    AND (id=$2 OR topic_id=$3) ORDER BY (id IS DISTINCT FROM $2),updated_at DESC,id LIMIT 1 FOR UPDATE`,
+   [id,target?.pm_order_id??null,topicId])).rows[0];
+   const orderId=waiting?.id??randomUUID();
+   if(waiting)
     await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[orderId]);
    else
-    await client.query("INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,topic_id,summary) VALUES($1,$2,$3,NULL,$4,$5)",
-     [orderId,id,uid(req),topicId||null,message.slice(0,500)]);
-   await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7)",
-    [messageId,id,uid(req),message,replyTo||null,topicId||null,orderId]);
-   if(!existing&&!waiting)
-    await client.query("UPDATE project_pm_orders SET source_message_id=$2 WHERE id=$1",[orderId,messageId]);
-   await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)",
-    [randomUUID(),orderId,existing||waiting?'owner_reply':'created',existing||waiting?'Владелец ответил на вопрос ПМ':'Поручение принято от владельца']);
+    await client.query('INSERT INTO project_pm_orders(id,project_id,actor_id,topic_id,summary) VALUES($1,$2,$3,$4,$5)',
+     [orderId,id,actorId,topicId,message.slice(0,500)]);
+   await client.query(`INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id,pm_order_id,pm_request_id,pm_request_digest)
+    VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7,$8,$9)`,
+    [messageId,id,actorId,message,replyTo,topicId,orderId,requestId??null,digest]);
+   if(!waiting)await client.query('UPDATE project_pm_orders SET source_message_id=$2 WHERE id=$1',[orderId,messageId]);
+   await client.query('INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)',
+    [randomUUID(),orderId,waiting?'owner_reply':'created',waiting?'Владелец ответил на вопрос ПМ':'Поручение принято от владельца']);
    await client.query('COMMIT');
-  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-  try{await start(id,messageId);}
-  catch(e){
-   await pool.query("UPDATE assistant_messages SET status='failed' WHERE id=$1",[messageId]);
-   await pool.query("UPDATE project_pm_orders SET status='failed',updated_at=now() WHERE id=$1",[orderId]);
-   return reply.code(503).send({error:'Сообщение сохранено, но не удалось поставить его в очередь Temporal',message_id:messageId});
-  }
-  return reply.code(202).send({id:messageId,status:'queued'});
+   return reply.code(202).send({id:messageId,order_id:orderId,status:'queued'});
+  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
  });
  app.post('/api/projects/:id/manager/inbox/:messageId/retry',async(req:any,reply)=>{
   const {id,messageId}=z.object({id:z.string().uuid(),messageId:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const changed=await pool.query("UPDATE assistant_messages SET status='queued' WHERE project_id=$1 AND id=$2 AND channel='project' AND role='user' AND status='failed' RETURNING id",[id,messageId]);
-  if(!changed.rowCount)return reply.code(409).send({error:'Повторить можно только сообщение с ошибкой'});
-  await pool.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=(SELECT pm_order_id FROM assistant_messages WHERE id=$1)",[messageId]);
-  await start(id,messageId).catch(error=>req.log.warn({error,messageId},'PM retry will be recovered'));
+  const result=await pool.query(`WITH retried AS (
+   UPDATE assistant_messages SET status='queued',pm_dispatch_attempt=pm_dispatch_attempt+1,
+    pm_dispatched_at=NULL,pm_next_dispatch_at=now()
+   WHERE project_id=$1 AND id=$2 AND channel='project' AND role='user' AND status='failed'
+   RETURNING id,pm_order_id
+  ), order_update AS (
+   UPDATE project_pm_orders o SET status='queued',updated_at=now() FROM retried r
+   WHERE o.id=r.pm_order_id AND o.status='failed'
+  ) SELECT id FROM retried`,[id,messageId]);
+  if(!result.rowCount)return reply.code(409).send({error:'Повторить можно только сообщение с ошибкой'});
   return reply.code(202).send({id:messageId,status:'queued'});
  });
- // Crash recovery: persisted turns must not depend on the browser or a single
- // successful dispatch attempt. Temporal workflow IDs are deterministic.
- let timer:ReturnType<typeof setInterval>|null=null,recovering=false;
- const recover=async()=>{
-  if(recovering)return;recovering=true;
-  try{
-   const rows=await pool.query("SELECT id,project_id FROM assistant_messages WHERE channel IN ('project','pm-internal') AND role='user' AND status='queued' AND created_at>now()-interval '30 days' ORDER BY created_at LIMIT 15");
-   for(const row of rows.rows){
-    try{await start(row.project_id,row.id);}
-    catch(error){
-     if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error)?.name))
-      app.log.warn({error,messageId:row.id},'Could not dispatch queued PM message');
-    }
-   }
-  }finally{recovering=false;}
- };
+ // The response acknowledges PostgreSQL. Delivery starts after the response
+ // and the periodic scan also covers disconnects, restarts and internal turns.
+ app.addHook('onResponse',async req=>{if(req.method==='POST'&&req.routeOptions.url?.includes('/manager/inbox'))kick();});
  app.addHook('onReady',async()=>{
-  await recover().catch(error=>app.log.error({error},'PM inbox recovery failed'));
-  timer=setInterval(()=>void recover().catch(error=>app.log.error({error},'PM inbox recovery failed')),20000);
+  kick();
+  timer=setInterval(kick,5000);
   timer.unref?.();
  });
- app.addHook('onClose',async()=>{if(timer)clearInterval(timer);});
+ app.addHook('onClose',async()=>{closing=true;if(timer)clearInterval(timer);});
+}
+
+export async function failProjectManagerInbox(pool:Pick<Pool,'query'>,projectId:string,messageId:string,attempt:number){
+ await pool.query(`WITH failed AS (
+  UPDATE assistant_messages SET status='failed' WHERE project_id=$1 AND id=$2 AND pm_dispatch_attempt=$3
+   AND status IN ('queued','processing') RETURNING pm_order_id
+ ) UPDATE project_pm_orders o SET status='failed',updated_at=now() FROM failed f
+   WHERE o.id=f.pm_order_id AND o.status IN ('working','queued')`,[projectId,messageId,attempt]);
 }
 
 export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution';orderId?:string;topicId?:string|null;actorId?:string};
-export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string):Promise<ProjectManagerWatch[]>{
- const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel IN ('project','pm-internal') AND role='user' AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id,pm_order_id,channel",[messageId,projectId]);
+export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string,attempt=1):Promise<ProjectManagerWatch[]>{
+ const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel IN ('project','pm-internal') AND role='user' AND pm_dispatch_attempt=$3 AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id,pm_order_id,channel",[messageId,projectId,attempt]);
  if(!claim.rowCount)return [];
  const turn=claim.rows[0];
  const orderId:string|null=turn.pm_order_id??null;
@@ -185,13 +240,13 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
-   const finished=await client.query("UPDATE assistant_messages SET status='completed' WHERE id=$1 AND status='processing' RETURNING id",[messageId]);
+   const finished=await client.query("UPDATE assistant_messages SET status='completed' WHERE id=$1 AND status='processing' AND pm_dispatch_attempt=$2 RETURNING id",[messageId,attempt]);
    if(finished.rowCount){
     if(effectiveTopic)await client.query("UPDATE assistant_messages SET topic_id=$2 WHERE id=$1",[messageId,effectiveTopic]);
     await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id,created_task_id,created_document_id,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5,$6,$7,$8,$9)",
      [randomUUID(),projectId,data.message,effectiveTopic,orderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
    }
-   if(orderId){
+   if(orderId&&finished.rowCount){
     const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question');
     const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===orderId);
     const status=watchers.length?'waiting_agents':hasOpenQuestion?'waiting_user':'completed';
@@ -204,8 +259,13 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
  }catch(error){
   const message=String(error instanceof Error?error.message:error);
   const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
-  await pool.query("UPDATE assistant_messages SET status=$2 WHERE id=$1 AND status='processing'",[messageId,retryable?'queued':'failed']);
-  if(orderId)await pool.query("UPDATE project_pm_orders SET status=$2,updated_at=now() WHERE id=$1",[orderId,retryable?'queued':'failed']).catch(()=>{});
+  if(retryable){
+   await pool.query(`WITH waiting AS (
+    UPDATE assistant_messages SET status='queued' WHERE id=$1 AND pm_dispatch_attempt=$2
+     AND status='processing' RETURNING pm_order_id
+   ) UPDATE project_pm_orders o SET status='queued',updated_at=now() FROM waiting w WHERE o.id=w.pm_order_id`,
+    [messageId,attempt]);
+  }else await failProjectManagerInbox(pool,projectId,messageId,attempt);
   if(!retryable)throw Object.assign(new Error(message.slice(0,650)),{nonRetryable:true});
   throw error;
  }finally{

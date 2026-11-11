@@ -76,7 +76,7 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantMessage={id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
  messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
@@ -859,7 +859,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     const messages=await api<AssistantMessage[]>('/projects/'+selectedProjectId+'/assistant/messages?mode='+projectChatMode,{signal:controller.signal});
     if(controller.signal.aborted)return;
     updateProjectChat(chatKey,chat=>chat.pendingId&&projectChatMode==='documentation'||chat.jobId?chat:{
-     ...chat,historyLoaded:true,messages:[...messages,...chat.messages.filter(message=>message.failed)]
+     ...chat,historyLoaded:true,messages:[...messages,...chat.messages.filter(message=>
+      (message.failed||message.pending||message.awaitingHistory)&&!messages.some(saved=>
+       saved.id===message.id||!!message.request_id&&saved.request_id===message.request_id))]
     });
    }catch(e){if(!controller.signal.aborted&&!projectHistoryLoaded)fail(e);}
    finally{refreshing=false;}
@@ -1306,16 +1308,42 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }
   updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,files:next}));
  }
+ async function sendPmMessage(projectId:string,turn:AssistantMessage&{request_id:string}){
+  const chatKey=projectChatKey(projectId,'project');
+  const updateTurn=(update:(message:AssistantMessage)=>AssistantMessage)=>updateProjectChat(chatKey,chat=>({
+   ...chat,error:'',messages:chat.messages.map(message=>message.request_id===turn.request_id&&message.id.startsWith('pending-')?update(message):message)
+  }));
+  updateTurn(message=>({...message,pending:true,failed:false}));
+  try{
+   const saved=await api<{id:string;status:AssistantMessage['status']}>('/projects/'+projectId+'/manager/inbox',{
+    method:'POST',body:JSON.stringify({requestId:turn.request_id,message:turn.body,replyTo:turn.reply_to,topicId:turn.topic_id})
+   });
+   updateTurn(message=>({...message,id:saved.id,status:saved.status,pending:false,awaitingHistory:true}));
+  }catch(e){
+   updateProjectChat(chatKey,chat=>chat.messages.some(message=>message.request_id===turn.request_id&&message.id.startsWith('pending-'))
+    ?{...chat,error:e instanceof Error?e.message:String(e),messages:chat.messages.map(message=>
+     message.request_id===turn.request_id?{...message,pending:false,failed:true}:message)}
+    :chat);
+  }
+ }
  async function sendProjectMessage(e:React.FormEvent){
   e.preventDefault();
   const files=projectChatMode==='documentation'?analystFiles:[];
   if(!selected||(!projectInput.trim()&&!files.length)||projectChatBusy)return;
-  const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+crypto.randomUUID(),replyTo=projectReplyTo,topicId=projectTopicId||null;
+  const requestId=crypto.randomUUID();
+  const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+requestId,replyTo=projectReplyTo,topicId=projectTopicId||null;
   const message=projectInput.trim()||'Подготовь ТЗ по приложенным материалам.';
   const chatKey=projectChatKey(projectId,mode);
   const sentAt=new Date().toISOString();
   setProjectReplyTo(null);
-  updateProjectChat(chatKey,chat=>({...chat,input:'',pendingId:mode==='documentation'?optimisticId:chat.pendingId,error:'',messages:[
+  if(mode==='project'){
+   const turn={id:optimisticId,request_id:requestId,role:'user' as const,body:message,
+    reply_to:replyTo,topic_id:topicId,created_at:sentAt,pending:true};
+   updateProjectChat(chatKey,chat=>({...chat,input:'',error:'',messages:[...chat.messages,turn]}));
+   await sendPmMessage(projectId,turn);
+   return;
+  }
+  updateProjectChat(chatKey,chat=>({...chat,input:'',pendingId:optimisticId,error:'',messages:[
    ...chat.messages,{id:optimisticId,role:'user',reply_to:replyTo,topic_id:topicId,body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:sentAt}
   ]}));
   function updatePendingChat(update:(chat:ProjectChatState)=>ProjectChatState){
@@ -1323,18 +1351,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }
   try{
    const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
-   const currentJobId=mode==='documentation'?getProjectChat('documentation').jobId:null;
+   const currentJobId=getProjectChat('documentation').jobId;
    if(currentJobId&&attachments.length)throw Error('Новые файлы можно прикрепить после завершения текущей работы аналитика.');
-   if(mode==='project'){
-    const posted=await api<{id:string;status:string}>('/projects/'+projectId+'/manager/inbox',{method:'POST',body:JSON.stringify({message,replyTo,topicId})});
-    updateProjectChat(chatKey,chat=>({...chat,messages:chat.messages.map(m=>m.id===optimisticId?{...m,id:posted.id,pending:false,status:'queued'}:m)}));
-    return;
-   }
    const response=currentJobId
     ?await api<AssistantResponse>('/projects/'+projectId+'/processes/'+currentJobId+'/instructions',
       {method:'POST',body:JSON.stringify({message})})
     :await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
-       message,mode,attachments,replyTo,topicId,documentId:mode==='documentation'?analystDocumentId:null
+       message,mode,attachments,replyTo,topicId,documentId:analystDocumentId
       })});
    if(response.import_job_id){
     const jobId=response.import_job_id;
@@ -1353,8 +1376,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setProjectReplyTo(replyTo);
    const applyError=(chat:ProjectChatState)=>({...chat,error:e instanceof Error?e.message:String(e),
     messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false,failed:true}:m)});
-   if(mode==='project')updateProjectChat(chatKey,applyError);
-   else updatePendingChat(applyError);
+   updatePendingChat(applyError);
   }finally{updatePendingChat(chat=>({...chat,pendingId:null}));}
  }
  // The active documentation run is independent of message submission: the owner can
@@ -2180,11 +2202,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       <div>{m.body}</div>
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
-      {m.status==='queued'&&<small className="chat-message-status">В очереди ПМ</small>}
+      {m.status==='queued'&&<small className="chat-message-status">Поручение сохранено · ожидает запуска</small>}
       {m.status==='processing'&&<small className="chat-message-status">ПМ распределяет поручение…</small>}
       {m.status==='failed'&&<small className="chat-message-status chat-message-failed">Обработка не завершена. <button type="button" className="textbtn" onClick={async()=>{try{await api('/projects/'+selectedProjectId+'/manager/inbox/'+m.id+'/retry',{method:'POST'});updateProjectChat(projectChatKey(selectedProjectId,'project'),chat=>({...chat,messages:chat.messages.map(x=>x.id===m.id?{...x,status:'queued'}:x)}));}catch(e){fail(e);}}}>Повторить</button></small>}
       {m.id===projectPendingId&&projectChatBusy&&<small className="chat-message-status">Codex обрабатывает сообщение…</small>}
-      {m.failed&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
+      {m.request_id&&m.pending&&<small className="chat-message-status">Сохраняем поручение…</small>}
+      {m.failed&&m.request_id&&<small className="chat-message-status chat-message-failed">Не удалось подтвердить отправку. <button type="button" className="textbtn" onClick={()=>{if(m.request_id)void sendPmMessage(selectedProjectId,{...m,request_id:m.request_id});}}>Повторить</button></small>}
+      {m.failed&&!m.request_id&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
       {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
       {selected&&m.documentation_reset_requested&&<DocumentationReset projectId={selected.id} request={api} onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
       {selected&&m.owner_question_cleanup_requested&&<OwnerQuestionCleanup projectId={selected.id} request={api}

@@ -16,7 +16,7 @@ export async function watchProjectManagerDelegation(watch:{projectId:string;proc
  for(let count=0;count<20160;count++){
   const status=await watchSteps.readProjectManagerWatch(watch);
   if(status.status==='completed'){
-   if(status.messageId){
+   if(status.messageId&&!patched('pm-resume-through-inbox')){
     try{await startChild(processProjectManagerInbox,{workflowId:'pm-resume-'+status.messageId,args:[watch.projectId,status.messageId],parentClosePolicy:ParentClosePolicy.ABANDON});}
     catch(error){if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error).name))throw error;}
    }
@@ -25,8 +25,12 @@ export async function watchProjectManagerDelegation(watch:{projectId:string;proc
   await sleep('30 seconds');
  }
 }
-export async function processProjectManagerInbox(projectId:string,messageId:string):Promise<void>{
- const watched=await inboxSteps.runProjectManagerInbox(projectId,messageId);
+export async function processProjectManagerInbox(projectId:string,messageId:string,attempt?:number):Promise<void>{
+ const watched=await (attempt===undefined?inboxSteps.runProjectManagerInbox(projectId,messageId)
+  :inboxSteps.runProjectManagerInbox(projectId,messageId,attempt)).catch(async error=>{
+   if(patched('pm-inbox-finalize-failed-turn'))await steps.markProjectManagerInboxFailed(projectId,messageId,attempt??1);
+   throw error;
+  });
  for(const watch of watched){
   try{
    await startChild(watchProjectManagerDelegation,{workflowId:'pm-followup-'+watch.processId,args:[watch],parentClosePolicy:ParentClosePolicy.ABANDON});
