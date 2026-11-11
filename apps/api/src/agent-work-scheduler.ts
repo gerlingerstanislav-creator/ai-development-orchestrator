@@ -50,6 +50,24 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
   const lock=await db.query("SELECT pg_try_advisory_lock(hashtext('ado-iteration-development-queue')) AS locked");
   acquired=lock.rows[0]?.locked===true;
   if(!acquired)return;
+  // Recover a crash after DB commit but before the Temporal start call.
+  const orphan=await db.query("SELECT project_id,task_id,run_id FROM iteration_execution_queue WHERE status='dispatching' AND run_id IS NOT NULL ORDER BY updated_at LIMIT 1");
+  if(orphan.rowCount){
+   const pending=orphan.rows[0];
+   const row=await db.query('SELECT status FROM ai_task_runs WHERE id=$1',[pending.run_id]);
+   if(!row.rowCount||row.rows[0].status==='failed'){
+    await db.query("UPDATE iteration_execution_queue SET status='queued',run_id=NULL,updated_at=now() WHERE project_id=$1 AND task_id=$2",[pending.project_id,pending.task_id]);
+   }else{
+    try{
+     const client=await temporal();
+     await client.workflow.start('developmentTestingCycle',{taskQueue:'agent-pipeline',workflowId:'task-cycle-'+pending.run_id,args:[{projectId:pending.project_id,taskId:pending.task_id,runId:pending.run_id,maxFixes:3}]});
+    }catch(error){
+     if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error).name))throw error;
+    }
+    await db.query("UPDATE iteration_execution_queue SET status='dispatched',detail='Запуск восстановлен',updated_at=now() WHERE project_id=$1 AND task_id=$2",[pending.project_id,pending.task_id]);
+   }
+   return;
+  }
   // One active development run system-wide. QA already runs independently in Codex Runner.
   const busy=await db.query("SELECT 1 FROM ai_task_runs WHERE status IN ('queued','running') LIMIT 1");
   if(busy.rowCount)return;
