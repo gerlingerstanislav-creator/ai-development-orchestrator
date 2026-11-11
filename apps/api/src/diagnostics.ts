@@ -64,6 +64,7 @@ async function writeEvent(pool:Pool,request:any,severity:string,eventType:string
 }
 
 export function installDiagnosticHooks(app:FastifyInstance,pool:Pool){
+ app.addHook('onRequest',async request=>{(request as any).diagnosticStart=Date.now();});
  app.addHook('onError',async(request,_reply,error)=>{
   (request as any).diagnosticException={
    name:error.name,message:error.message,stack:(error.stack||'').slice(0,6000)
@@ -86,11 +87,12 @@ export function installDiagnosticHooks(app:FastifyInstance,pool:Pool){
   if(!request.url.startsWith('/api/projects/')||request.url.includes('/diagnostics/export'))return;
   const method=request.method.toUpperCase();
   const status=reply.statusCode;
-  const duration=Math.round(request.elapsedTime||0);
+  const duration=Date.now()-Number((request as any).diagnosticStart||Date.now());
   if(status<400&&method==='GET'&&duration<3000)return;
   await writeEvent(pool,request,status>=500?'error':status>=400?'warning':'info',
    'http_request',{
     method,route:request.routeOptions?.url||'unknown',status,duration_ms:duration,
+    task_id:(request.params as any)?.taskId||null,process_id:(request.params as any)?.processId||null,
     exception:(request as any).diagnosticException||null,
     response_error:(request as any).diagnosticResponseError||null
    });
