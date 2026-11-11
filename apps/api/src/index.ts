@@ -1209,6 +1209,9 @@ app.get('/api/background-processes',async(req:any)=>{
    title:'AI-тестирование',detail:row.message||'Проверка задачи',status:'running',
    createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
+ for(const row of taskAnalyses.rows){
+  processes.push({id:row.id,kind:'analysis',title:'Анализ задачи #'+row.display_number+' · '+row.title,status:row.status,detail:row.message||'Системный аналитик обрабатывает задачу',createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id,result:{message:row.message}});
+ }
  for(const row of analyses.rows){
   if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // A Temporal review already appears within its development cycle.
   processes.push({id:'analysis:'+row.id,kind:'analysis',projectId:row.project_id,projectName:row.project_name,
@@ -1718,7 +1721,7 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const [imports,developments,tests,merges,analyses,iterationRuns,deployments,queuedTasks,peerQuestions,pmOrders]=await Promise.all([
+ const [imports,developments,tests,merges,analyses,iterationRuns,deployments,queuedTasks,peerQuestions,pmOrders,taskAnalyses]=await Promise.all([
   pool.query("SELECT j.id,j.status,j.message,j.source_url,j.request_text,j.source_file_count,j.analyzed_chunks,j.total_chunks,j.saved_documents,j.created_at,j.updated_at,j.result,j.draft_result IS NOT NULL AS has_draft,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id) AS topic_total,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id AND tp.status IN ('complete','conflict')) AS topic_completed FROM document_import_jobs j WHERE j.project_id=$1 ORDER BY j.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
@@ -1730,7 +1733,8 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT q.task_id AS id,q.task_id,q.status,q.detail,q.created_at,q.updated_at,t.title,t.display_number,t.priority,t.depends_on_task_id,dep.stage AS dependency_stage FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id LEFT JOIN tasks dep ON dep.id=t.depends_on_task_id WHERE q.project_id=$1 AND q.status IN ('queued','dispatching','cancelled') ORDER BY t.priority,q.created_at LIMIT 120",[id]),
   pool.query("SELECT q.note_id AS id,q.task_id,q.role,q.status,q.error AS detail,q.updated_at,n.body,t.display_number FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed') ORDER BY q.updated_at DESC LIMIT 60",[id]),
-  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 AND status IN ('queued','working','waiting_agents','waiting_user') ORDER BY updated_at DESC LIMIT 30",[id])
+  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 AND status IN ('queued','working','waiting_agents','waiting_user') ORDER BY updated_at DESC LIMIT 30",[id]),
+ pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.updated_at,t.title,t.display_number FROM agent_analysis_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
  const processes:any[]=[
   ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
@@ -1809,6 +1813,13 @@ app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
   try{const client=await temporal();await client.workflow.getHandle(workflowId).cancel();}
   catch(error){req.log.warn({error,workflowId},'Temporal cancellation needs reconciliation');}
  };
+ const analyst=await pool.query("UPDATE agent_analysis_runs SET status='cancelled',message='Прервано пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,spec_version",[id,processId]);
+ if(analyst.rowCount){
+  await pool.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='analysis' AND analysis_state='processing' AND spec_version=$3",[id,analyst.rows[0].task_id,analyst.rows[0].spec_version]);
+  await cancelWorkflow('task-analysis-'+processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'analysis','cancelled','Анализ задачи остановлен пользователем')",[randomUUID(),id,processId]);
+  return {ok:true,status:'cancelled'};
+ }
  const dev=await pool.query("UPDATE ai_task_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
  if(dev.rowCount){
   await cancelRunner(processId);
