@@ -27,6 +27,8 @@ import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuesti
 import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
+import {initAgentWorkQueue,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
+import {initAgentPeerQueue,reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -1883,7 +1885,16 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,sta
  const user=(await pool.query('SELECT email FROM users WHERE id=$1',[session.actor_id])).rows[0];
  if(!user)throw Object.assign(Error('Пользователь не найден'),{statusCode:403});
  const id=z.string().uuid();
- const taskId=id.parse(args.task_id);
+ if(name==='tasks.update_dependency'){
+   const taskId=id.parse(args.task_id);
+   const parentId=z.string().uuid().nullable().parse(args.depends_on_task_id);
+   const reason=z.string().trim().min(10).max(1200).parse(args.reason);
+   const result=await updateDependency(projectId,taskId,parentId,session.actor_id);
+   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pm_dependency_decision',$4)",
+    [randomUUID(),taskId,session.actor_id,reason]);
+   return result;
+  }
+  const taskId=id.parse(args.task_id);
  const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
  if(!task)throw Object.assign(Error('Задача не найдена'),{statusCode:404});
  const token=await accessToken(session.actor_id,user.email);
@@ -2038,5 +2049,10 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});}
+async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentWorkQueue(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+ const reconcile=()=>void (async()=>{
+  try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
+  try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}
+ })();
+ reconcile();setInterval(reconcile,12000).unref();}
 main().catch(e=>{console.error(e);process.exit(1);});
