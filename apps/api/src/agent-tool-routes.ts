@@ -126,7 +126,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
      const result=previous.rows[0].result;
      if(name.startsWith('documentation.')&&result?.import_job_id)
       return {result:{...result,status:await startQueuedJob(result.import_job_id)},cached:true};
-     if(startIterationPlanning&&name==='iterations.prepare_plan'&&result?.planning_run_id&&result?.status==='queued')
+     if(startIterationPlanning&&['iterations.prepare_plan','pm.decisions.record'].includes(name)&&result?.planning_run_id&&result?.status==='queued')
       await startIterationPlanning(result.planning_run_id).catch(error=>req.log.error({error},'Iteration planning will retry dispatch'));
      return {result,cached:true};
     }
@@ -145,7 +145,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
     return {result:{...(result as object),status:state}};
    }
    const planning=result as {planning_run_id?:string;status?:string};
-   if(startIterationPlanning&&name==='iterations.prepare_plan'&&planning.planning_run_id&&planning.status==='queued')
+   if(startIterationPlanning&&['iterations.prepare_plan','pm.decisions.record'].includes(name)&&planning.planning_run_id&&planning.status==='queued')
     await startIterationPlanning(planning.planning_run_id).catch(error=>req.log.error({error},'Iteration planning will retry dispatch'));
    return {result};
   }catch(error){

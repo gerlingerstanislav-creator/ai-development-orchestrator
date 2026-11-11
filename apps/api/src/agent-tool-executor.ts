@@ -82,6 +82,57 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(!updated.rowCount)throw rejected('Тема не найдена',404);
   return {topic:updated.rows[0]};
  }
+ case 'pm.decisions.list':{
+  return {decisions:(await pool.query('SELECT id,question,answer,iteration_id,order_id,created_at FROM project_pm_decisions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 100',[projectId])).rows};
+ }
+ case 'pm.decisions.record':{
+  const {source_message_id,question,answer,iteration_id,order_id}=z.object({
+   source_message_id:uuid,question:z.string().trim().min(3).max(2000),answer:z.string().trim().min(1).max(5000),
+   iteration_id:uuid.optional(),order_id:uuid.optional()
+  }).parse(params);
+  const source=(await pool.query("SELECT id,pm_order_id FROM assistant_messages WHERE id=$1 AND project_id=$2 AND role='user' AND channel='project'",[source_message_id,projectId])).rows[0];
+  if(!source)throw rejected('Решение должно иметь подтверждённый исходный ответ владельца',409);
+  const parent=order_id||source.pm_order_id||null;
+  if(parent){
+   const exists=await pool.query('SELECT 1 FROM project_pm_orders WHERE id=$1 AND project_id=$2',[parent,projectId]);
+   if(!exists.rowCount)throw rejected('Поручение не найдено',404);
+  }
+  if(iteration_id){
+   const valid=await pool.query('SELECT 1 FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
+   if(!valid.rowCount)throw rejected('Итерация не найдена',404);
+  }
+  const id=randomUUID();
+  const saved=await pool.query("INSERT INTO project_pm_decisions(id,project_id,order_id,source_message_id,iteration_id,question,answer) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,source_message_id,question) WHERE source_message_id IS NOT NULL DO NOTHING RETURNING id",
+   [id,projectId,parent,source_message_id,iteration_id||null,question,answer]);
+  let planning:{planning_run_id?:string;status?:string}|null=null;
+  if(saved.rowCount&&iteration_id){
+   await recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
+   const scope=await pool.query('SELECT revision,approved_revision FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
+   if(scope.rows[0]?.revision===scope.rows[0]?.approved_revision)
+    planning=await queueIterationPlanning(pool,projectId,actorId,{iteration_id,request:'Перепроверь план с новым подтверждённым решением: '+question.slice(0,250)});
+  }
+  return {id:saved.rows[0]?.id||null,recorded:!!saved.rowCount,iteration_id:iteration_id||null,planning_run_id:planning?.planning_run_id,status:planning?.status};
+ }
+ case 'pm.orders.list':{
+  return {orders:(await pool.query("SELECT id,summary,status,topic_id,updated_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[projectId])).rows};
+ }
+ case 'pm.orders.update':{
+  const {order_id,status,summary}=z.object({order_id:uuid,status:z.enum(['working','waiting_agents','waiting_user','completed','failed']),summary:z.string().trim().max(1000).optional()}).parse(params);
+  const result=await pool.query("UPDATE project_pm_orders SET status=$3,summary=COALESCE($4,summary),updated_at=now() WHERE project_id=$1 AND id=$2 RETURNING id,status",[projectId,order_id,status,summary??null]);
+  if(!result.rowCount)throw rejected('Поручение не найдено',404);
+  await pool.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'status',$3)",[randomUUID(),order_id,status+': '+(summary||'')]);
+  return result.rows[0];
+ }
+ case 'iterations.ask_question':{
+  const {iteration_id,question}=z.object({iteration_id:uuid,question:z.string().trim().min(5).max(2000)}).parse(params);
+  const found=await pool.query('SELECT id FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
+  if(!found.rowCount)throw rejected('Итерация не найдена',404);
+  const existing=await pool.query("SELECT id FROM iteration_questions WHERE iteration_id=$1 AND status='open' AND lower(question)=lower($2) LIMIT 1",[iteration_id,question]);
+  if(existing.rowCount)return {id:existing.rows[0].id,existing:true};
+  const id=randomUUID();
+  await pool.query('INSERT INTO iteration_questions(id,iteration_id,actor_id,question) VALUES($1,$2,$3,$4)',[id,iteration_id,actorId,question]);
+  return {id,iteration_id,status:'open'};
+ }
  case 'iterations.record_decision':{
   const {iteration_id,question,answer}=z.object({iteration_id:uuid,question:z.string().trim().min(3).max(2000),answer:z.string().trim().min(3).max(5000)}).parse(params);
   return recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);

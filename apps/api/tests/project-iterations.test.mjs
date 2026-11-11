@@ -60,6 +60,12 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
   ]}]};
  const propose=()=>proposeIterationPlan(db,project,actor,proposal);
  await assert.rejects(propose,{statusCode:409});
+ const question=randomUUID();
+ await db.query("INSERT INTO iteration_questions(id,iteration_id,question) VALUES($1,$2,'Какой интервал повторов?')",[question,id]);
+ assert.equal((await request('POST',url+'/approve',{expected_revision:1})).statusCode,409,'open owner questions block approval');
+ const answered=await request('POST',url+'/questions/'+question+'/answer',{answer:'5 минут, настройка через Telegram-бота'});
+ assert.equal(answered.statusCode,200,answered.body);
+ assert.equal((await request('GET',url)).json().questions[0].status,'answered');
  assert.equal((await request('POST',url+'/approve',{expected_revision:1})).statusCode,200);
  assert.equal(toolAllowedForRole('analyst','iterations.prepare_plan'),true);
  assert.equal(toolAllowedForRole('analyst','iterations.recommend_launch'),false);
@@ -73,8 +79,9 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
   assert.equal(projectId,project);
   if(calls===1){
    assert.match(prompt,/Ты системный аналитик/);
-   assert.match(prompt,/Ручное оформление/i);
+   assert.match(prompt,/Согласован объём|Ручное оформление/i);
    assert.match(prompt,/Первый рабочий сценарий/);
+   assert.match(prompt,/5 минут, настройка через Telegram-бота/,'owner answer must reach SA');
    return JSON.stringify({epics:proposal.epics});
   }
   if(calls===2){

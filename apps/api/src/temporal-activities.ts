@@ -1,6 +1,6 @@
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
-import {executeProjectManagerInbox,checkProjectManagerWatch,type ProjectManagerWatch} from './project-manager-inbox.js';
+import {executeProjectManagerInbox,readProjectManagerWatchResume,type ProjectManagerWatch} from './project-manager-inbox.js';
 import {runIterationPlanning} from './project-iterations.js';
 import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
 import pg from 'pg';
@@ -692,6 +692,6 @@ export async function failAutomaticDeployment(runId:string,message:string){await
 export async function runProjectManagerInbox(projectId:string,messageId:string):Promise<ProjectManagerWatch[]>{
  return executeProjectManagerInbox(pool,projectId,messageId,codexUrl,runnerKey);
 }
-export async function readProjectManagerWatch(watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
- return checkProjectManagerWatch(pool,watch);
+export async function readProjectManagerWatch(watch:ProjectManagerWatch):Promise<{status:'pending'|'completed';messageId?:string}>{
+ return readProjectManagerWatchResume(pool,watch);
 }

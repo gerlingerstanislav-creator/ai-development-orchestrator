@@ -16,7 +16,9 @@ test('project manager inbox persists independent turns and safely retries failed
  await db.query([
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
   'CREATE TABLE users(id uuid PRIMARY KEY)',
-  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,created_at timestamptz DEFAULT now())",
+  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,pm_order_id uuid,created_at timestamptz DEFAULT now())",
+  "CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,source_message_id uuid,topic_id uuid,status text DEFAULT 'queued',summary text,updated_at timestamptz DEFAULT now())",
+  "CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text,process_id uuid,created_at timestamptz DEFAULT now())",
   "CREATE TABLE project_chat_topics(id uuid PRIMARY KEY,project_id uuid,title text,status text DEFAULT 'open')",
   'CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id))',
   'CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,title text)',
@@ -44,6 +46,12 @@ test('project manager inbox persists independent turns and safely retries failed
  assert.equal(messages.find(x=>x.id===reply.json().id).reply_to,firstId);
  assert.equal(messages.find(x=>x.id===reply.json().id).topic_id,topic);
  assert.equal(started.length,2);
+ const waitingOrder=(await db.query('SELECT pm_order_id FROM assistant_messages WHERE id=$1',[firstId])).rows[0].pm_order_id;
+ await db.query("UPDATE project_pm_orders SET status='waiting_user' WHERE id=$1",[waitingOrder]);
+ const ownerAnswer=await app.inject({method:'POST',url,payload:{message:'Выбираю 5 минут с настройкой в боте',replyTo:firstId}});
+ assert.equal(ownerAnswer.statusCode,202,ownerAnswer.body);
+ assert.equal((await db.query('SELECT pm_order_id FROM assistant_messages WHERE id=$1',[ownerAnswer.json().id])).rows[0].pm_order_id,waitingOrder,'reply continues the waiting order');
+ assert.equal(started.length,3);
  const invalid=await app.inject({method:'POST',url,payload:{message:'Ответ',replyTo:randomUUID()}});
  assert.equal(invalid.statusCode,400);
  fail=true;
@@ -67,7 +75,9 @@ test('PM reports completed delegated iteration only once and never reports a req
  await db.query('SET search_path TO '+schema+',public');
  await db.query([
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
-  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,role text,body text,channel text,status text)",
+  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,role text,body text,channel text,status text,topic_id uuid,pm_order_id uuid,actor_id uuid)",
+  "CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,source_message_id uuid,topic_id uuid,status text DEFAULT 'queued',summary text,updated_at timestamptz DEFAULT now())",
+  "CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text,process_id uuid,created_at timestamptz DEFAULT now())",
   'CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id))',
   'CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,title text)',
   'CREATE TABLE iteration_planning_runs(id uuid PRIMARY KEY,iteration_id uuid,status text,message text,plan_id uuid,created_at timestamptz DEFAULT now())'
@@ -85,5 +95,16 @@ test('PM reports completed delegated iteration only once and never reports a req
  assert.equal(await checkProjectManagerWatch(pool,watch),'completed');
  const messages=(await db.query('SELECT body FROM assistant_messages')).rows;
  assert.equal(messages.length,1);
- assert.match(messages[0].body,/Черновик готов к согласованию/);
+ assert.match(messages[0].body,/План разработки/);
+ const orderId=randomUUID(),actorId=randomUUID(),secondRun=randomUUID(),secondPlan=randomUUID();
+ await db.query("INSERT INTO project_pm_orders(id,project_id,actor_id,summary) VALUES($1,$2,$3,'Подготовить итерацию')",[orderId,project,actorId]);
+ await db.query("INSERT INTO iteration_planning_runs(id,iteration_id,status,message,plan_id) VALUES($1,$2,'completed','Второй план готов',$3)",[secondRun,iteration,secondPlan]);
+ const resumeWatch={projectId:project,processId:secondRun,kind:'iteration_plan',orderId,actorId};
+ assert.equal(await checkProjectManagerWatch(pool,resumeWatch),'completed');
+ assert.equal(await checkProjectManagerWatch(pool,resumeWatch),'completed');
+ const resumed=(await db.query("SELECT id FROM assistant_messages WHERE channel='pm-internal' AND pm_order_id=$1",[orderId])).rows;
+ assert.equal(resumed.length,1,'system follow-up queued once for the same order');
+ const checkpoint=(await db.query("SELECT detail FROM project_pm_order_events WHERE order_id=$1 AND kind='resume'",[orderId])).rows;
+ assert.equal(checkpoint.length,1);
+ assert.equal(checkpoint[0].detail,resumed[0].id);
 });

@@ -47,6 +47,13 @@ export async function initProjectIterations(db:Db){
   created_at timestamptz NOT NULL DEFAULT now(),published_at timestamptz,result jsonb
  );
  CREATE INDEX IF NOT EXISTS idx_iteration_plans_iteration ON iteration_plans(iteration_id,created_at DESC);
+ CREATE TABLE IF NOT EXISTS iteration_questions(
+  id uuid PRIMARY KEY,iteration_id uuid NOT NULL REFERENCES project_iterations(id) ON DELETE CASCADE,
+  actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  question text NOT NULL,answer text,status text NOT NULL DEFAULT 'open' CHECK(status IN ('open','answered')),
+  created_at timestamptz NOT NULL DEFAULT now(),answered_at timestamptz
+ );
+ CREATE INDEX IF NOT EXISTS idx_iteration_questions ON iteration_questions(iteration_id,status,created_at);
  CREATE TABLE IF NOT EXISTS iteration_owner_decisions(
   id uuid PRIMARY KEY,iteration_id uuid NOT NULL REFERENCES project_iterations(id) ON DELETE CASCADE,
   actor_id uuid REFERENCES users(id) ON DELETE SET NULL,
@@ -107,16 +114,17 @@ function sourceRevision(documents:unknown[]){
 
 export async function readIteration(db:Db,projectId:string,id:string){
  const scope=await iteration(db,projectId,id);
- const [documents,tasks]=await Promise.all([
+ const [documents,tasks,questions]=await Promise.all([
   sourceDocuments(db,id),
   db.query<TaskPlanRow & {stage:string;display_number:number;tags:string[]}>(`SELECT id,title,display_number,type,stage,analysis_state,spec_review_status,spec_version,spec_reviewed_version,
     clarification_questions,parent_id,depends_on_task_id,iteration_item_key,iteration_work_kind,tags,
     (t.depends_on_task_id IS NULL OR EXISTS(SELECT 1 FROM tasks d
      WHERE d.project_id=t.project_id AND d.id=t.depends_on_task_id AND
       (d.stage IN ('deployment','documentation','done') OR (d.stage='merge_queue' AND d.git_branch IS NOT NULL AND d.pr_url IS NOT NULL)))) AS dependency_ready
-   FROM tasks t WHERE project_id=$1 AND iteration_id=$2 ORDER BY position,id`,[projectId,id])
+   FROM tasks t WHERE project_id=$1 AND iteration_id=$2 ORDER BY position,id`,[projectId,id]),
+  db.query('SELECT id,question,answer,status,created_at FROM iteration_questions WHERE iteration_id=$1 ORDER BY CASE WHEN status=\'open\' THEN 0 ELSE 1 END,created_at',[id])
  ]);
- return {...scope,documents,source_revision:sourceRevision(documents),tasks:tasks.rows};
+ return {...scope,documents,source_revision:sourceRevision(documents),tasks:tasks.rows,questions:questions.rows};
 }
 
 export async function saveIteration(db:Db,projectId:string,input:unknown){
@@ -200,7 +208,10 @@ export async function queueIterationPlanning(db:Db,projectId:string,actorId:stri
  const enabled=(await db.query('SELECT enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0]?.enabled;
  if(!enabled)throw problem(409,'Включи AI в настройках проекта');
  const active=(await db.query("SELECT id,status FROM iteration_planning_runs WHERE iteration_id=$1 AND status IN ('queued','running')",[data.iteration_id])).rows[0];
- if(active)return {planning_run_id:active.id,iteration_id:data.iteration_id,status:active.status};
+ if(active){
+  if(active.status==='queued'&&data.request.trim())await db.query("UPDATE iteration_planning_runs SET request_text=left(CASE WHEN position($2 in request_text)>0 THEN request_text ELSE request_text||E'\\n'||$2 END,2000),updated_at=now() WHERE id=$1 AND status='queued'",[active.id,data.request]);
+  return {planning_run_id:active.id,iteration_id:data.iteration_id,status:active.status};
+ }
  const runId=randomUUID(),source=sourceRevision(await sourceDocuments(db,data.iteration_id,true));
  await db.query('INSERT INTO iteration_planning_runs(id,iteration_id,iteration_revision,source_revision,request_text,actor_id) VALUES($1,$2,$3,$4,$5,$6)',
   [runId,data.iteration_id,current.revision,source,data.request,actorId]);
@@ -220,7 +231,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   const started=await db.query("UPDATE iteration_planning_runs SET status='running',message='СА изучает объём, документы и задачи',updated_at=now() WHERE id=$1 AND status='queued'",[runId]);
   if(started.rowCount)await planningEvent(db,run.project_id,runId,'running','СА изучает объём, документы и задачи');
  });
- const [linked,common,rules,profile,ownerDecisions,pmConversation]=await Promise.all([
+ const [linked,common,rules,profile,ownerDecisions,pmConversation,projectDecisions]=await Promise.all([
   pool.query(`SELECT d.title,left(d.body,4500) AS body FROM iteration_documents l JOIN documents d ON d.id=l.document_id
    WHERE l.iteration_id=$1 ORDER BY d.title,d.id`,[run.iteration_id]),
   pool.query(`SELECT d.title,left(d.body,1500) AS body FROM documents d
@@ -234,6 +245,10 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
    // The PM inbox is optional in those environments; production creates it at boot.
    if((error as {code?:string}).code==='42P01')return {rows:[]};
    throw error;
+  }),
+  pool.query("SELECT question,answer,iteration_id,created_at FROM project_pm_decisions WHERE project_id=$1 AND (iteration_id=$2 OR iteration_id IS NULL) ORDER BY created_at DESC LIMIT 70",[run.project_id,run.iteration_id]).catch(error=>{
+   if((error as {code?:string}).code==='42P01')return {rows:[]};
+   throw error;
   })
  ]);
  const prompt=[
@@ -243,6 +258,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Итерация «'+details.title+'»:\n'+details.body.slice(0,8000),
   'Уточнение пользователя:\n'+run.request_text,
   'Подтверждённые ответы владельца через ПМ (сначала новые):\n'+JSON.stringify(ownerDecisions.rows).slice(0,9000),
+  'Единый реестр решений проекта (приоритетнее старой переписки):\n'+JSON.stringify(projectDecisions.rows).slice(0,7000),
   'Предыдущие сообщения владельца и ответы ПМ для восстановления решений (история может содержать устаревшие предположения):\\n'+JSON.stringify(pmConversation.rows).slice(0,11500),
   'Не запрашивай повторно сведения, которые однозначно содержатся в ответах владельца. В случае противоречия решений обозначь его в задаче анализа; не останавливай всю декомпозицию.',
   'Существующие задачи:\n'+JSON.stringify(details.tasks.map(({id,title,type,parent_id,iteration_item_key})=>({id,title,type,parent_id,iteration_item_key}))).slice(0,2200),
@@ -497,14 +513,40 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
   const input=iterationInput.extend({expected_revision:revision}).parse(req.body);
   return transaction(pool,db=>saveIteration(db,id,{...input,iteration_id:iterationId}));
  });
+ app.post(base+'/:iterationId/questions/:questionId/answer',async(req:any,reply)=>{
+  const {id,iterationId,questionId}=scope.extend({questionId:uuid}).parse(req.params);
+  if(!await canWrite(req,reply,id))return;
+  const {answer}=z.object({answer:z.string().trim().min(1).max(5000)}).parse(req.body);
+  const result=await transaction(pool,async db=>{
+   const changed=await db.query("UPDATE iteration_questions q SET status='answered',answer=$4,answered_at=now() WHERE q.id=$3 AND q.iteration_id=$2 AND q.status='open' AND EXISTS(SELECT 1 FROM project_iterations i WHERE i.id=q.iteration_id AND i.project_id=$1) RETURNING q.question",
+    [id,iterationId,questionId,answer]);
+   if(!changed.rowCount)throw problem(409,'Вопрос уже закрыт или не найден');
+   await recordIterationDecision(db,id,iterationId,uid(req),changed.rows[0].question,answer);
+   const current=await iteration(db,id,iterationId);
+   const queued=current.approved_revision===current.revision
+    ?await queueIterationPlanning(db,id,uid(req),{iteration_id:iterationId,request:'Обновить план по новому ответу владельца'})
+    :null;
+   return {answered:true,planning_run_id:queued?.planning_run_id,status:queued?.status};
+  });
+  if(startPlanning&&result.planning_run_id&&result.status==='queued')
+   await startPlanning(result.planning_run_id).catch(error=>req.log.error({error},'Planner will retry'));
+  return result;
+ });
  app.post(base+'/:iterationId/approve',async(req:any,reply)=>{
   const {id,iterationId}=scope.parse(req.params);
   if(!await canWrite(req,reply,id))return;
   const {expected_revision}=z.object({expected_revision:revision}).parse(req.body);
-  const result=await pool.query('UPDATE project_iterations SET approved_revision=revision WHERE project_id=$1 AND id=$2 AND revision=$3 RETURNING id',
-   [id,iterationId,expected_revision]);
-  if(!result.rowCount)throw problem(409,'Итерация изменилась. Проверь её актуальное описание.');
-  return {ok:true};
+  const result=await transaction(pool,async db=>{
+   const open=await db.query("SELECT 1 FROM iteration_questions WHERE iteration_id=$1 AND status='open' LIMIT 1",[iterationId]);
+   if(open.rowCount)throw problem(409,'Сначала ответь на открытые вопросы итерации');
+   const changed=await db.query('UPDATE project_iterations SET approved_revision=revision WHERE project_id=$1 AND id=$2 AND revision=$3 RETURNING id',
+    [id,iterationId,expected_revision]);
+   if(!changed.rowCount)throw problem(409,'Итерация изменилась. Проверь её актуальное описание.');
+   return queueIterationPlanning(db,id,uid(req),{iteration_id:iterationId,request:'Согласован объём. Подготовь актуальный единый план задач.'});
+  });
+  if(startPlanning&&result.status==='queued')
+   await startPlanning(result.planning_run_id).catch(error=>req.log.error({error},'Planner will retry'));
+  return {ok:true,planning_run_id:result.planning_run_id,status:result.status};
  });
  app.post(base+'/:iterationId/prepare',async(req:any,reply)=>{
   const {id,iterationId}=scope.parse(req.params);
