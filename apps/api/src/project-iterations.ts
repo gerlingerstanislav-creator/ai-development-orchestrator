@@ -4,6 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {parseAgentObject} from './structured-agent-response.js';
 import {saveSpecRevision} from './requirements.js';
+import {enqueueIterationWork} from './agent-work-scheduler.js';
 
 type Db=Pick<Pool,'query'>;
 const uuid=z.string().uuid();
@@ -602,6 +603,7 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
   if(current.revision!==expected_revision||current.approved_revision!==expected_revision)
    throw problem(409,'Объём итерации изменился. Проверь актуальную редакцию перед запуском.');
   const tasks=await selection(pool,id,iterationId,task_ids);
+  await enqueueIterationWork(pool,id,iterationId,uid(req),current.revision,task_ids);
   const headers={authorization:String(req.headers.authorization||''),cookie:String(req.headers.cookie||'')};
   const results=[];
   for(const task of tasks){
