@@ -460,6 +460,8 @@ async function runTestJob(job,state){
   });
   const capabilities=probe.stdout.trim().slice(0,2500);
   state.capabilities=capabilities;
+  // Keep complete case data in the isolated workspace instead of embedding a huge JSON in the prompt.
+  await writeFile(join(dir,'.ado-qa-plan.json'),JSON.stringify(job.testPlan||{}),{mode:0o600});
   const prompt=[
    'Ты независимый AI-тестировщик в отдельной временной копии репозитория.',
    'СНАЧАЛА исследуй проект и реальные возможности среды. Затем запусти ВСЕ доступные и относящиеся к ТЗ проверки (сборка, unit, integration, API, пользовательские сценарии, если для них есть инструменты). Записывай фактические команды и результаты.',
@@ -485,7 +487,7 @@ async function runTestJob(job,state){
     'В поле learningSuggestion запиши одно полезное повторно применимое улучшение процесса QA, основанное на фактических проверках этого запуска, или пустую строку. Это предложение на утверждение пользователю, не обязательная инструкция. Не добавляй секреты или персональные данные.',
    'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||['Задача: '+job.title+'\n'+String(job.description).slice(0,6000),'Инструкции: '+String(job.agentInstructions||'').slice(0,1600),'Правила: '+String(job.projectRules||'').slice(0,800),'Документация: '+String(job.knowledgeContext||'').slice(0,900),'Передача: '+String(job.handoffContext||'').slice(0,800)].join('\n\n')),
    'Возможности текущего контейнера, обнаруженные автоматически: '+capabilities,
-   'План тестирования по актуальной версии ТЗ (только кейсы этой задачи): '+JSON.stringify({spec_version:job.testPlan?.spec_version,cases:job.testPlan?.cases||[]}).slice(0,52000),
+   'План тестирования находится в файле .ado-qa-plan.json в корне текущей временной рабочей копии. Прочитай его полностью перед проверками; проверь КАЖДЫЙ case_id, используй шаги и ожидаемые результаты из файла.',
    'Текущий git commit: '+state.testedCommit
   ].join('\n\n');
   state.message='Проверяет код и запускает доступные тесты';
