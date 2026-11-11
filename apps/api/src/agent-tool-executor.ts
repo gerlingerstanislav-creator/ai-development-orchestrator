@@ -5,6 +5,7 @@ import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
 import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
+import {enqueueIterationWork} from './agent-work-scheduler.js';
 import {taskConversationEvidence} from './task-agent-notes.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
@@ -157,6 +158,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  case 'iterations.save':return saveIteration(pool,projectId,params);
  case 'iterations.prepare_plan':return queueIterationPlanning(pool,projectId,actorId,params);
  case 'iterations.recommend_launch':return recommendIterationLaunch(pool,projectId,params);
+ case 'iterations.launch':{
+  if(session.role!=='manager')throw rejected('Запуск итерации доступен только ПМ',403);
+  const data=z.object({iteration_id:uuid,expected_revision:z.number().int().positive()}).parse(params);
+  return enqueueIterationWork(pool,projectId,data.iteration_id,actorId,data.expected_revision);
+ }
  case 'project.context':{
   const [p,stages,rules,github]=await Promise.all([
    pool.query('SELECT id,name,description FROM projects WHERE id=$1',[projectId]),
