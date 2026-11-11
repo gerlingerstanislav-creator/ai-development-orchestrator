@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
+import {roleCapacity} from './project-team.js';
 
 /** Questions remain in task_agent_notes. This queue only tracks delivery and retries. */
 export async function initAgentPeerQueue(pool:Pool){
@@ -39,16 +40,19 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
   const pending=await client.query(`SELECT q.note_id,q.project_id,q.task_id,q.role,q.attempts FROM agent_peer_queue q
    JOIN task_agent_notes n ON n.id=q.note_id
    WHERE q.status='queued' AND q.next_attempt_at<=now() AND n.status='open' AND NOT n.requires_customer
-   AND NOT EXISTS(SELECT 1 FROM agent_peer_queue r WHERE r.role=q.role AND r.status='running')
+   AND NOT EXISTS(SELECT 1 FROM agent_peer_queue r WHERE r.project_id=q.project_id AND r.role=q.role AND r.status='running' AND r.note_id=q.note_id)
    ORDER BY q.next_attempt_at,q.updated_at LIMIT 25`);
   for(const job of pending.rows){
+   const capacity=await roleCapacity(pool,job.project_id,job.role);
+   const peerRunning=await client.query("SELECT count(*)::int AS count FROM agent_peer_queue WHERE project_id=$1 AND role=$2 AND status='running'",[job.project_id,job.role]);
+   if(Number(peerRunning.rows[0]?.count||0)>=capacity)continue;
    let busy=false;
    if(job.role==='manager'||job.role==='analyst')
     busy=!!(await client.query("SELECT 1 FROM agent_sessions WHERE project_id=$1 AND role=$2 AND status='running' AND expires_at>now() LIMIT 1",[job.project_id,job.role])).rowCount;
    if(job.role==='development')
-    busy=!!(await client.query("SELECT 1 FROM ai_task_runs WHERE status IN ('queued','running') LIMIT 1")).rowCount;
+    busy=Number((await client.query("SELECT count(*)::int AS count FROM ai_task_runs WHERE project_id=$1 AND status IN ('queued','running')",[job.project_id])).rows[0]?.count||0)+Number(peerRunning.rows[0]?.count||0)>=capacity;
    if(job.role==='testing')
-    busy=!!(await client.query("SELECT 1 FROM ai_test_runs WHERE status IN ('queued','running') LIMIT 1")).rowCount;
+    busy=Number((await client.query("SELECT count(*)::int AS count FROM ai_test_runs WHERE project_id=$1 AND status IN ('queued','running')",[job.project_id])).rows[0]?.count||0)+Number(peerRunning.rows[0]?.count||0)>=capacity;
    if(job.role==='analysis')
     busy=!!(await client.query("SELECT 1 FROM iteration_planning_runs WHERE status IN ('queued','running') LIMIT 1")).rowCount;
    if(busy)continue;

@@ -115,7 +115,10 @@ function deviceInfo(){
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
-const MAX_PARALLEL_DEVELOPMENT=2;
+const jobChildren=new Map();
+const cancelledJobs=new Set();
+const assertJobActive=id=>{if(cancelledJobs.has(id))throw new Error('Прервано пользователем');};
+const MAX_PARALLEL_DEVELOPMENT=20; // Actual per-project role limits come from signed API jobs.
 const MAX_PARALLEL_PER_ROLE=1;
 const activeByRole=new Map();
 const jobRole=job=>job.kind==='test'?'testing':'development';
@@ -124,22 +127,25 @@ const jobQueue=[];
 const activeBranches=new Set();
 let runningJobs=0;
 let activeChatRequests=0;
-const activeAgentRoles=new Set();
+const activeAgentRoles=new Map();
 function startNextJobs(){
  for(let i=0;i<jobQueue.length && runningJobs<MAX_PARALLEL_DEVELOPMENT;){
   const {job,state}=jobQueue[i];
+  if(cancelledJobs.has(job.id)){jobQueue.splice(i,1);continue;}
   const branchKey=job.repository+':'+job.taskId;
   const role=jobRole(job);
-  if(activeBranches.has(branchKey)||(activeByRole.get(role)||0)>=MAX_PARALLEL_PER_ROLE){i++;continue;}
+  const roleKey=(job.projectId||job.repository)+':'+role;
+  const capacity=Number.isInteger(job.roleCapacity)?Math.min(10,Math.max(1,job.roleCapacity)):MAX_PARALLEL_PER_ROLE;
+  if(activeBranches.has(branchKey)||(activeByRole.get(roleKey)||0)>=capacity){i++;continue;}
   jobQueue.splice(i,1);
   activeBranches.add(branchKey);
   runningJobs++;
-  activeByRole.set(role,(activeByRole.get(role)||0)+1);
+  activeByRole.set(roleKey,(activeByRole.get(roleKey)||0)+1);
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Запуск разработки в изолированной рабочей папке';
-  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
+  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{if(state.status!=='cancelled')state.status='failed';if(state.status!=='cancelled')state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
    activeBranches.delete(branchKey);runningJobs--;
-   activeByRole.set(role,Math.max(0,(activeByRole.get(role)||1)-1));startNextJobs();
+   activeByRole.set(roleKey,Math.max(0,(activeByRole.get(roleKey)||1)-1));startNextJobs();
   });
  }
  for(let i=0;i<jobQueue.length;i++)jobQueue[i].state.message='Ожидает свободного исполнителя своей роли (очередь '+(i+1)+')';
@@ -152,15 +158,18 @@ function authorized(req){
  const a=Buffer.from(supplied),b=Buffer.from(jobKey);
  return a.length===b.length && timingSafeEqual(a,b);
 }
-function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000}={}){
+function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}={}){
  return new Promise((resolve,reject)=>{
+  if(jobId)assertJobActive(jobId);
   const child=spawn(binary,args,{cwd,env:{...process.env,...env},stdio:['ignore','pipe','pipe']});
+  if(jobId)jobChildren.set(jobId,child);
   let output='',errors='',done=false,timedOut=false;
   const timer=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},timeout);
   child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
   child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
   const settle=(err)=>{
    if(done)return;done=true;clearTimeout(timer);
+   if(jobId&&jobChildren.get(jobId)===child)jobChildren.delete(jobId);
    if(err)reject(err);else resolve({stdout:output,stderr:errors});
   };
   child.on('error',settle);
@@ -271,6 +280,7 @@ async function runJob(job,state){
     'Если выявлен один повторно применимый урок для твоей роли, в последней строке укажи LEARNING_SUGGESTION: <конкретное правило с основанием на фактах запуска>; иначе LEARNING_SUGGESTION: none. Это предложение на согласование, не обязательное правило. Не включай секреты или персональные данные.'
   ].join('\n\n');
   const runCodex=async(instruction)=>{
+   assertJobActive(job.id);
    const remaining=timeLeft();
    if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
    const result=await command('codex',[
@@ -279,7 +289,7 @@ async function runJob(job,state){
     // Docker is the isolation boundary. Nested Linux sandbox needs namespaces
     // forbidden by Docker defaults; never expose GitHub token to Codex.
     '--sandbox','danger-full-access',instruction
-   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining});
+   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining,jobId:job.id});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    const parsed=codexJsonResult(result.stdout);
    cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
@@ -306,6 +316,7 @@ async function runJob(job,state){
    }
   }
   const result=attempt.result;
+  assertJobActive(job.id);
   state.message='Создание коммита';
   await git('add','--all');
   const staged=await git('diff','--cached','--name-only');
@@ -313,8 +324,10 @@ async function runJob(job,state){
    throw new Error('Обнаружены потенциально секретные файлы. Коммит отменён');
   await command('git',['-c','user.name=AI Development Orchestrator','-c','user.email=ai-orchestrator@users.noreply.github.com',
    'commit','-m','AI: '+job.title.slice(0,120)],{cwd:dir,env:gitEnv,timeout:30000});
+  assertJobActive(job.id);
   state.message='Отправка ветки GitHub';
   await git('push','-u','origin','HEAD:refs/heads/'+branch);
+  assertJobActive(job.id);
   state.message='Создание черновика Pull Request';
   const existingPr=await fetch('https://api.github.com/repos/'+job.repository+'/pulls?state=open&head='+
    encodeURIComponent(job.repository.split('/')[0]+':'+branch),{
@@ -330,10 +343,10 @@ async function runJob(job,state){
   state.handoffNote=/^(none|нет|отсутствуют)[.!]?$/i.test(handoff)?'':handoff.slice(0,2500);
    const learning=String(attempt.answer||'').match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim()||'';
    state.learningSuggestion=/^(none|нет|отсутствуют)[.!]?$/i.test(learning)?'':learning.slice(0,1600);
+  assertJobActive(job.id);
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
-  state.status='failed';
-  state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);
+  if(state.status!=='cancelled'){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);}
  }finally{
   await rm(workdir,{recursive:true,force:true}).catch(()=>{});
  }
@@ -433,7 +446,7 @@ async function runTestJob(job,state){
    '--json','--ephemeral','--skip-git-repo-check','--sandbox','danger-full-access',
    '--output-schema',schemaPath];
   const firstRun=await command('codex',[...args,prompt],{
-   cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000
+   cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
   });
   let parsed=codexJsonResult(firstRun.stdout);
   state.usage=parsed.usage;
@@ -452,12 +465,13 @@ async function runTestJob(job,state){
     'Предыдущий ответ тестировщика: '+String(parsed.message||'').slice(0,45000)
    ].join('\n\n');
    const second=await command('codex',[...args,correction],{
-    cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000
+    cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000,jobId:job.id
    });
    const corrected=codexJsonResult(second.stdout);
    state.usage=addUsage(state.usage,corrected.usage);
    report=verifyReport(corrected.message||'');
   }
+  assertJobActive(job.id);
   state.verdict=report.verdict;
   state.summary=report.summary.slice(0,3500);
   state.handoffNote=String(report.handoffNote||'').slice(0,2500);
@@ -468,8 +482,7 @@ async function runTestJob(job,state){
   state.status='completed';
   state.message='Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
  }catch(e){
-  state.status='failed';
-  state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);
+  if(state.status!=='cancelled'){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
  }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
 }
 async function runConflictJob(job,state){
@@ -623,7 +636,7 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/agent'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
+   if(activeChatRequests>=20)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
    const data=await readJson(req);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
       !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
@@ -631,8 +644,8 @@ http.createServer(async(req,res)=>{
       typeof data.session_token!=='string'||!/^[a-f0-9]{64}$/.test(data.session_token))
      return reply(res,400,{error:'Неверный агентный запрос'});
    const roleKey=['manager','analyst','business_analyst'].includes(data.agent_role)&&/^[a-f0-9-]{36}$/.test(data.project_id||'')?data.project_id+':'+(data.agent_role==='business_analyst'?'analyst':data.agent_role):null;
-    if(roleKey&&activeAgentRoles.has(roleKey))return reply(res,429,{error:'Исполнитель этой роли занят'});
-    if(roleKey)activeAgentRoles.add(roleKey);
+    if(roleKey&&(activeAgentRoles.get(roleKey)||0)>=(data.role_capacity||1))return reply(res,429,{error:'Исполнитель этой роли занят'});
+    if(roleKey)activeAgentRoles.set(roleKey,(activeAgentRoles.get(roleKey)||0)+1);
     activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
@@ -660,7 +673,7 @@ http.createServer(async(req,res)=>{
     return reply(res,200,{message,usage:parsed.usage});
    }catch(error){
     return reply(res,503,{error:'Агент Codex: '+String(error?.message||error).slice(0,900)});
-   }finally{activeChatRequests--;if(roleKey)activeAgentRoles.delete(roleKey);}
+   }finally{activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
   }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
@@ -698,7 +711,8 @@ http.createServer(async(req,res)=>{
     !['low','medium'].includes(job.reasoning)||
     !Number.isInteger(job.maxRuntimeSeconds)||job.maxRuntimeSeconds<90||job.maxRuntimeSeconds>7200||
     typeof job.token!=='string'||job.token.length<20||
-    typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
+    (job.roleCapacity!==undefined&&(!Number.isInteger(job.roleCapacity)||job.roleCapacity<1||job.roleCapacity>10))||
+     typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
     return reply(res,400,{error:'Некорректные параметры задачи'});
    if(activeJobs.has(job.id))return reply(res,409,{error:'Запуск с таким ID уже существует'});
    const state={id:job.id,status:'queued',message:'Задача принята в очередь',branch:null,baseBranch:job.baseBranch,prUrl:null,createdAt:new Date().toISOString(),startedAt:null};
@@ -707,6 +721,19 @@ http.createServer(async(req,res)=>{
    jobQueue.push({job,state});
    startNextJobs();
    return reply(res,202,state);
+  }
+  if(req.method==='POST'&&/^\/jobs\/[a-f0-9-]{36}\/cancel$/.test(req.url||'')){
+   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
+   const id=req.url.split('/')[2],state=activeJobs.get(id);
+   if(!state)return reply(res,404,{error:'Запуск не найден'});
+   if(!['queued','running'].includes(state.status))return reply(res,409,{error:'Запуск уже завершён'});
+   cancelledJobs.add(id);
+   const index=jobQueue.findIndex(item=>item.job.id===id);
+   if(index>=0)jobQueue.splice(index,1);
+   const child=jobChildren.get(id);if(child)child.kill('SIGKILL');
+   state.status='cancelled';state.message='Остановлено пользователем';
+   startNextJobs();
+   return reply(res,200,{ok:true,status:'cancelled'});
   }
   if(req.method==='GET'&& /^\/jobs\/[a-f0-9-]{36}$/.test(req.url||'')){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});

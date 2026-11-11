@@ -5,7 +5,7 @@ import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import './ProjectTeam.css';
 
 type Responsibility={mission:string;inputs:string[];outcomes:string[];maxConcurrent:number};
-type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string;model:string|null;responsibility:Responsibility|null};
+type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string;model:string|null;responsibility:Responsibility|null;capacity:number};
 type Memory={id:string;role:string;kind:string;body:string;evidence:string;status:string;origin:'agent'|'user';author_email?:string|null;created_at:string;reviewed_at:string|null};
 type Snapshot={agents:Agent[];memory:Memory[]};
 type Revision={id:string;previous_name:string;previous_instructions:string;next_name:string;next_instructions:string;created_at:string};
@@ -47,6 +47,7 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
   if(!selected)return;
   await mutate(()=>request(base+'/model',options('PATCH',{model:value||null})));
  }
+ async function changeCapacity(capacity:number){if(!selected)return;await mutate(()=>request(base+'/capacity',options('PATCH',{capacity})));}
  async function showHistory(){if(!selected)return;setHistoryOpen(true);setError('');try{const result=await request<{history:Revision[]}>(base+'/history');setHistory(result.history);}catch(e){setError(e instanceof Error?e.message:'Не удалось загрузить историю');}}
  return <div className="team-page">
   <div className="team-heading"><div><h2><Users size={20}/> Команда</h2><p className="muted">Настройки ролей, рабочие инструкции и накопленные знания. Утверждённые записи становятся частью контекста агента при следующем запуске.</p></div><button className="secondary" type="button" onClick={()=>void refresh()} disabled={loading}><RefreshCcw size={15}/>{loading?'Обновление…':'Обновить'}</button></div>
@@ -56,7 +57,7 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
     <div className="team-list-heading">Роли <span>{agents.length}</span></div>
     {agents.map(agent=><button type="button" key={agent.id} className={'team-agent '+(selected?.id===agent.id?'selected':'')} aria-current={selected?.id===agent.id?'page':undefined} onClick={()=>{setSelectedId(agent.id);setFilter('all');setEditing(false);setAdding(false);setHistoryOpen(false);}}>
      <span className="team-agent-avatar">{(roleLabels[agent.role]||agent.name).slice(0,2).toUpperCase()}</span>
-     <span className="team-agent-label"><strong title={aiAgentName(agent.name)}>{aiAgentName(agent.name)}</strong><small>{agent.stage}</small></span><ChevronRight size={15}/>
+     <span className="team-agent-label"><strong title={aiAgentName(agent.name)}>{aiAgentName(agent.name)}</strong><small>{agent.stage} · {agent.capacity||1} исп.</small></span><ChevronRight size={15}/>
     </button>)}
     {!agents.length&&<p className="muted">Роли не найдены.</p>}
    </nav>
@@ -73,7 +74,7 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
       </label>
       <p className="muted">Переопределение действует только для выбранной роли. Если не указано — используется модель проекта. Изменение применяется к новым запускам.</p>
      </section>
-     {selected.responsibility&&<section className="team-instruction-block team-responsibility"><h4><ShieldCheck size={16}/> Зона ответственности</h4><p>{selected.responsibility.mission}</p><div className="team-responsibility-grid"><div><strong>Получает</strong><ul>{selected.responsibility.inputs.map(item=><li key={item}>{item}</li>)}</ul></div><div><strong>Обязательный результат</strong><ul>{selected.responsibility.outcomes.map(item=><li key={item}>{item}</li>)}</ul></div></div><small className="team-source">Одновременных исполнений роли: {selected.responsibility.maxConcurrent}. Очередь продолжает работу после освобождения слота.</small></section>}
+     {selected.responsibility&&<section className="team-instruction-block team-responsibility"><h4><ShieldCheck size={16}/> Зона ответственности</h4><p>{selected.responsibility.mission}</p><div className="team-responsibility-grid"><div><strong>Получает</strong><ul>{selected.responsibility.inputs.map(item=><li key={item}>{item}</li>)}</ul></div><div><strong>Обязательный результат</strong><ul>{selected.responsibility.outcomes.map(item=><li key={item}>{item}</li>)}</ul></div></div><div className="team-capacity"><label htmlFor="team-role-capacity">Одновременные исполнители</label><select id="team-role-capacity" aria-label="Количество исполнителей роли" value={selected.capacity||1} disabled={saving||selected.role==='manager'} onChange={e=>void changeCapacity(Number(e.target.value))}>{Array.from({length:selected.role==='manager'?1:10},(_,i)=><option value={i+1} key={i+1}>{i+1}</option>)}</select><small className="muted">{selected.role==='manager'?'Менеджер проекта всегда один.':'Новые задания используют указанный лимит. Уже выполняемая работа не прерывается.'}</small></div></section>}
      <section className="team-instruction-block"><h4><ShieldCheck size={16}/> Системные ограничения</h4><p className="muted">Ограничения безопасности, права инструментов, порядок проверок и слияния PR остаются в коде. Они не редактируются и не могут быть отменены инструкциями проекта. Внутренние промпты провайдера не раскрываются.</p></section>
      <section className="team-instruction-block"><div className="team-section-toolbar"><h4><BookOpen size={16}/> Инструкции роли</h4><div className="team-actions">{!editing&&<><button className="secondary" type="button" onClick={()=>void showHistory()}><History size={14}/> История</button><button className="secondary" type="button" onClick={beginEdit}><Pencil size={14}/> Изменить</button></>}</div></div>
       {editing?<div className="team-editor"><label>Название агента<input maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label><label>Инструкции<textarea rows={12} maxLength={12000} value={draft.instructions} onChange={e=>setDraft({...draft,instructions:e.target.value})}/></label><div className="team-actions"><button className="secondary" type="button" disabled={saving} onClick={()=>setEditing(false)}>Отмена</button><button className="primary" type="button" disabled={saving||!draft.name.trim()} onClick={()=>void saveProfile()}>{saving?'Сохранение…':'Сохранить'}</button></div></div>:

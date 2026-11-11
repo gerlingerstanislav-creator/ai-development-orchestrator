@@ -103,6 +103,7 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS related_task_ids jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS depends_on_task_id uuid REFERENCES tasks(id) ON DELETE SET NULL;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority smallint NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5);
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS dependency_source text NOT NULL DEFAULT 'manual';
  CREATE INDEX IF NOT EXISTS idx_tasks_depends_on ON tasks(project_id,depends_on_task_id);
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS git_branch text;
@@ -1625,7 +1626,7 @@ app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async
 app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const data=parse(z.object({title:z.string().trim().min(1).max(300).optional(),description:z.string().max(20000).optional(),stage:validStages.optional()}),req.body);
+ const data=parse(z.object({title:z.string().trim().min(1).max(300).optional(),description:z.string().max(20000).optional(),stage:validStages.optional(),priority:z.number().int().min(1).max(5).optional()}),req.body);
  const client=await pool.connect();
  let version=0,changed=false;
  try{
@@ -1655,6 +1656,10 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
    await client.query('ROLLBACK');return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
   }
   const title=data.title??t.title,description=data.description??t.description;
+  if(data.priority!==undefined&&data.priority!==t.priority){
+   await client.query('UPDATE tasks SET priority=$2,updated_at=now() WHERE id=$1',[taskId,data.priority]);
+   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'priority_changed',$4)",[randomUUID(),taskId,uid(req),'Приоритет '+data.priority]);
+  }
   if(['documentation','done'].includes(t.stage)&&description!==t.description){
    await client.query('ROLLBACK');
    return reply.code(409).send({error:'PR уже слит. Чтобы изменить завершённую функциональность, создай новую связанную задачу; нельзя переписывать утверждённое ТЗ уже внедрённой версии.'});
@@ -1712,7 +1717,7 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const [imports,developments,tests,merges,analyses,iterationRuns,deployments]=await Promise.all([
+ const [imports,developments,tests,merges,analyses,iterationRuns,deployments,queuedTasks,peerQuestions,pmOrders]=await Promise.all([
   pool.query("SELECT j.id,j.status,j.message,j.source_url,j.request_text,j.source_file_count,j.analyzed_chunks,j.total_chunks,j.saved_documents,j.created_at,j.updated_at,j.result,j.draft_result IS NOT NULL AS has_draft,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id) AS topic_total,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id AND tp.status IN ('complete','conflict')) AS topic_completed FROM document_import_jobs j WHERE j.project_id=$1 ORDER BY j.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
@@ -1721,7 +1726,10 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query(`SELECT r.id,r.status,r.message,r.created_at,r.updated_at,r.plan_id,i.id AS iteration_id,i.title
    FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id
    WHERE i.project_id=$1 ORDER BY r.created_at DESC LIMIT 70`,[id]),
-  pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
+  pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT q.task_id AS id,q.task_id,q.status,q.detail,q.created_at,q.updated_at,t.title,t.display_number,t.priority,t.depends_on_task_id,dep.stage AS dependency_stage FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id LEFT JOIN tasks dep ON dep.id=t.depends_on_task_id WHERE q.project_id=$1 AND q.status IN ('queued','dispatching','cancelled') ORDER BY t.priority,q.created_at LIMIT 120",[id]),
+  pool.query("SELECT q.note_id AS id,q.task_id,q.role,q.status,q.error AS detail,q.updated_at,n.body,t.display_number FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed') ORDER BY q.updated_at DESC LIMIT 60",[id]),
+  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 AND status IN ('queued','working','waiting_agents','waiting_user') ORDER BY updated_at DESC LIMIT 30",[id])
  ]);
  const processes:any[]=[
   ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
@@ -1741,6 +1749,15 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // Reconciliation is already recorded in the development process events.
   processes.push({id:row.id,kind:'analysis',title:'Сверка ТЗ #'+row.display_number+' · '+row.task_title,status:row.status,
    detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,result:{message:row.message}});
+ }
+ for(const row of queuedTasks.rows){
+  processes.push({id:row.id,kind:'development',title:'Очередь разработки #'+row.display_number+' · '+row.title,status:row.status==='dispatching'?'running':row.status,detail:row.detail||(row.depends_on_task_id&&!['merge_queue','deployment','documentation','done'].includes(row.dependency_stage)?'Ожидает завершения зависимости':'Ожидает готовности требований или свободного разработчика'),createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id});
+ }
+ for(const row of peerQuestions.rows){
+  processes.push({id:row.id,kind:'analysis',title:'Вопрос специалисту · задача #'+row.display_number,status:row.status,detail:row.detail||row.body,createdAt:row.updated_at,updatedAt:row.updated_at,taskId:row.task_id});
+ }
+ for(const row of pmOrders.rows){
+  processes.push({id:row.id,kind:'analysis',title:'Поручение ПМ',status:row.status==='working'?'running':row.status==='queued'?'queued':'waiting',detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at});
  }
  for(const row of merges.rows){
   processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
@@ -1778,6 +1795,44 @@ app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,rep
 app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
  const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ // Stop the actual Codex job and its Temporal workflow, without deleting the task or PR.
+ const cancelRunner=async(runId:string)=>{
+  try{
+   await fetch((process.env.CODEX_RUNNER_URL||'http://codex:4300')+'/jobs/'+runId+'/cancel',{
+    method:'POST',headers:{'X-Runner-Secret':process.env.RUNNER_SHARED_SECRET||''},
+    signal:AbortSignal.timeout(8000)
+   });
+  }catch(error){req.log.warn({error,runId},'Codex cancellation needs reconciliation');}
+ };
+ const cancelWorkflow=async(workflowId:string)=>{
+  try{const client=await temporal();await client.workflow.getHandle(workflowId).cancel();}
+  catch(error){req.log.warn({error,workflowId},'Temporal cancellation needs reconciliation');}
+ };
+ const dev=await pool.query("UPDATE ai_task_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
+ if(dev.rowCount){
+  await cancelRunner(processId);
+  await cancelWorkflow('task-cycle-'+(dev.rows[0].cycle_id||processId));
+  await releaseTaskOrchestration(pool,id,dev.rows[0].task_id,dev.rows[0].cycle_id||processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','cancelled','Разработка остановлена пользователем')",[randomUUID(),id,processId]);
+  return {ok:true,status:'cancelled'};
+ }
+ const test=await pool.query("UPDATE ai_test_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
+ if(test.rowCount){
+  await cancelRunner(processId);
+  const cycle=test.rows[0].cycle_id;
+  if(cycle){await cancelWorkflow('task-cycle-'+cycle);await cancelWorkflow('manual-test-'+cycle);}
+  await releaseTaskOrchestration(pool,id,test.rows[0].task_id,cycle||processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'testing','cancelled','Тестирование остановлено пользователем')",[randomUUID(),id,processId]);
+  return {ok:true,status:'cancelled'};
+ }
+ const queue=await pool.query("UPDATE iteration_execution_queue SET status='cancelled',detail='Запуск отменён пользователем',updated_at=now() WHERE project_id=$1 AND task_id=$2 AND status='queued' RETURNING task_id",[id,processId]);
+ if(queue.rowCount)return {ok:true,status:'cancelled'};
+ const planning=await pool.query("UPDATE iteration_planning_runs r SET status='cancelled',message='Прервано пользователем',updated_at=now() FROM project_iterations i WHERE r.id=$2 AND r.iteration_id=i.id AND i.project_id=$1 AND r.status IN ('queued','running') RETURNING r.id",[id,processId]);
+ if(planning.rowCount){
+  await cancelWorkflow('iteration-plan-'+processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'analysis','cancelled','Планирование итерации остановлено')",[randomUUID(),id,processId]);
+  return {ok:true,status:'cancelled'};
+ }
  const stopped=await pool.query(
   "UPDATE document_import_jobs SET status='cancelled',message='Остановлен пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND actor_id=$3 AND status='running' RETURNING id",
   [id,processId,uid(req)]);

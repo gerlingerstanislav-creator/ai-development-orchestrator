@@ -14,7 +14,7 @@ import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -1614,6 +1614,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {(task.tags?.length??0)>3&&<span title={task.tags?.join(', ')}>+{task.tags!.length-3}</span>}
   </span>;
  }
+ function dependencyReady(task:Task){
+  if(!task.depends_on_task_id)return true;
+  const dep=tasks.find(t=>t.id===task.depends_on_task_id);
+  return !!dep&&(['deployment','documentation','done'].includes(dep.stage)||(dep.stage==='merge_queue'&&!!dep.pr_url&&!!dep.git_branch));
+ }
+ function kanbanOrder(a:Task,b:Task){
+  const blockedA=dependencyReady(a)&&!a.awaits_product_owner?0:1,blockedB=dependencyReady(b)&&!b.awaits_product_owner?0:1;
+  return blockedA-blockedB||(a.priority??3)-(b.priority??3)||new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
+ }
+ async function updateTaskPriority(task:Task,priority:number){
+  if(!selected)return;
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({priority})});
+   setTasks(old=>old.map(t=>t.id===task.id?{...t,priority}:t));
+   setActiveTask(old=>old?.id===task.id?{...old,priority}:old);
+  }catch(e){fail(e);}
+ }
  function renderKanbanCard(t:Task,showStage=false){
   if(t.type==='question')return renderDocQuestionCard(t);
   return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
@@ -1622,6 +1639,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <span className="task-card-top"><span className="task-type">{t.type==='question'?'Вопрос к ПО':t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
     <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     {renderTaskPlanningLabels(t)}
+    <small className="task-card-priority">{!dependencyReady(t)?'Ожидает зависимость · ':''}Приоритет {t.priority??3}</small>
     <p>{t.description||'Без описания'}</p>
     {t.awaits_product_owner&&<small className="task-warning">
      Ждёт ответа · {stages.find(stage=>stage.stage===t.stage)?.label||t.stage}
@@ -1642,7 +1660,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  function renderKanbanLane(s:KanbanLane){
   const isQuestions=s.stage===productOwnerLane.stage;
-  const stageTasks=filtered.filter(t=>boardLaneFor(t)===s.stage);
+  const stageTasks=filtered.filter(t=>boardLaneFor(t)===s.stage).sort(kanbanOrder);
   return <div className="lane" key={s.stage}
    onDragOver={isQuestions?undefined:e=>e.preventDefault()}
    onDrop={isQuestions?undefined:e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
@@ -1662,7 +1680,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const ordered=groupTasks.slice().sort((a,b)=>{
    const ai=group.stages.findIndex(stage=>stage.stage===boardLaneFor(a));
    const bi=group.stages.findIndex(stage=>stage.stage===boardLaneFor(b));
-   return ai-bi || new Date(a.created_at).getTime()-new Date(b.created_at).getTime();
+   return ai-bi || kanbanOrder(a,b);
   });
   return <div className="kanban-group-combined">
    {ordered.length?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}</div>:
@@ -1723,6 +1741,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    ]);
    setProjectProcesses(current.processes);setProcessEvents(events);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
+ }
+ async function interruptProcess(process:ProjectProcess){
+  if(!selected||processActionBusy)return;
+  if(!window.confirm('Прервать процесс «'+process.title+'»? Уже сохранённые результаты останутся.'))return;
+  await stopAnalystProcess(process);
  }
  async function retryProcessSave(process:ProjectProcess){
   if(!selected||processActionBusy)return;
@@ -1901,6 +1924,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     return <>
      <div className="process-detail-header"><h3>{process.title}</h3><span className={'process-status '+process.status}>{processStatus(process.status)}</span></div>
      <p className="muted">{process.detail}</p>
+     {['queued','running'].includes(process.status)&&(['development','testing'].includes(process.kind)||process.title.startsWith('План задач'))&&
+      <div className="process-actions"><button type="button" className="secondary" disabled={processActionBusy} onClick={()=>void interruptProcess(process)}>Прервать процесс</button></div>}
      {process.kind==='document_import'&&<div className="process-metrics"><span>Файлов: {process.sourceFileCount??'—'}</span><span>Фрагментов: {process.progress?.completed??0} / {process.progress?.total??'—'}</span><span>Тем готово: {process.topicProgress?.completed??0} / {process.topicProgress?.total||'—'}</span><span>Сохранено страниц: {process.savedDocuments??0}</span></div>}
      {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
      {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
@@ -1929,7 +1954,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {process.kind==='document_import'&&process.status==='cancelled'&&<p className="muted">Работа остановлена. Уже сохранённые страницы и контрольные точки остаются в проекте.</p>}
      {selected&&process.taskId&&<KnowledgeAudit projectId={selected.id} taskId={process.taskId} processId={process.id} request={api}/>}
      <h4>Журнал событий</h4>
-     {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{processEvents.map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
+     {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{[...processEvents].reverse().map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
       <p className="muted">Для этого процесса подробный журнал пока отсутствует или загружается.</p>}
     </>;
    })()}</div>
@@ -2203,7 +2228,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div></div>
    </section>}
   <div className="chat-agent-launchers" role="group" aria-label="Чаты с агентами">
-   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><span className="chat-agent-glyph"><MessageCircle size={32}/><span>ПМ</span></span></button>
+   <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><span className="chat-agent-glyph"><MessageCircle size={32}/></span></button>
 
   </div>
  </>}
@@ -2289,6 +2314,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <><h2>{activeTask.title}</h2><button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
      </div>
      {savingField&&<small className="muted">Сохранение…</small>}
+     <div className="task-top-meta"><span className="task-meta-heading">Теги</span>{activeTask.tags?.length?<div className="task-top-tags">{activeTask.tags.map(tag=><span key={tag}>{tag}</span>)}</div>:<small className="muted">Без тегов</small>}<label className="task-priority-select">Приоритет<select value={activeTask.priority??3} onChange={e=>void updateTaskPriority(activeTask,Number(e.target.value))}>{[1,2,3,4,5].map(n=><option value={n} key={n}>{n} · {n===1?'Критический':n===2?'Высокий':n===3?'Обычный':n===4?'Низкий':'Минимальный'}</option>)}</select></label></div>
      <div className="task-editable task-description-editable">
       <div className="task-field-label">Описание / техническое задание</div>
       {editingField==='description'?
@@ -2297,7 +2323,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <><div className="task-readonly">{activeTask.description||'Описание пока пустое'}</div>
         <button className="pencil" title="Изменить описание" onClick={()=>setEditingField('description')}><Pencil size={15}/></button></>}
      </div>
-     <div className="task-metadata">
+     <details className="task-advanced"><summary>Дополнительные параметры задачи</summary><div className="task-metadata">
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
 
       <span>Модель: <strong>{aiSettings.model}</strong></span>
@@ -2317,6 +2343,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {!!activeTask.related_task_ids?.length&&<p className="muted">Связанные задачи: {activeTask.related_task_ids.map(id=>tasks.find(t=>t.id===id)?('#'+tasks.find(t=>t.id===id)!.display_number+' · '+tasks.find(t=>t.id===id)!.title):id.slice(0,8)).join(', ')}</p>}
      {activeTask.pr_base_branch&&<div className="task-git-ref"><span>База PR</span><code>{activeTask.pr_base_branch}</code></div>}
      {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
+     </details>
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
      {activeTask.stage==='deployment'&&<div><p className="muted">PR слит. Выберите выкладку или явно пропустите этап.</p><div className="row-line"><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'skipped')}>Пропустить выкладку</button><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'manual_confirmed')}>Подтвердить ручную выкладку</button>
     {deploymentMode==='automatic'&&<button type="button" className="primary" disabled={mergeBusy} onClick={()=>{if(!selected)return;const commit=window.prompt('Точный SHA слитого PR:');if(!commit)return;setMergeBusy(true);void api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/deployment/start',{method:'POST',body:JSON.stringify({confirm:true,commit_sha:commit.trim()})}).then(()=>{setMergeReport('Запрос поставлен в Temporal. Статус доступен в Центре процессов.');}).catch(fail).finally(()=>setMergeBusy(false));}}>Запустить GitHub Actions</button>}</div></div>}

@@ -16,7 +16,7 @@ import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
-import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings} from './project-team.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -242,6 +242,7 @@ export async function startDevelopment(args:TaskRef){
  if(await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы агентов, на которые ещё не ответили');
  const record=await pool.query('SELECT status FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,projectId]);
  if(!record.rowCount)throw ApplicationFailure.nonRetryable('Запуск разработки отсутствует');
+ if(record.rows[0].status==='cancelled')throw ApplicationFailure.nonRetryable('Разработка отменена пользователем');
  if(['completed','failed'].includes(record.rows[0].status))return;
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
  const feedback=String(task.test_feedback||'').slice(0,10000);
@@ -249,7 +250,7 @@ export async function startDevelopment(args:TaskRef){
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const developerAi=await resolveRoleAiSettings(pool,projectId,'development',ai);
- const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
+ const job={id:runId,taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
   title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
  await dispatch(job);
@@ -261,6 +262,7 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
  const {projectId,taskId,runId}=args;
  const run=await pool.query('SELECT status,message,model FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,projectId]);
  if(!run.rowCount)throw ApplicationFailure.nonRetryable('Запуск разработки не найден');
+ if(run.rows[0].status==='cancelled')return {status:'failed',message:'Прервано пользователем'};
  if(['completed','failed'].includes(run.rows[0].status))return {status:run.rows[0].status,message:run.rows[0].message};
  let remote:any;
  try{remote=await runner('/jobs/'+runId);}
@@ -321,10 +323,11 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  }
  const record=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const id=record.rows[0].id;
+ if(record.rows[0].status==='cancelled')throw ApplicationFailure.nonRetryable('Тестирование отменено пользователем');
  if(['running','completed','failed'].includes(record.rows[0].status))return id; // Activity retry must not enqueue the same Codex test twice.
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
- await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
+ await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
   title:task.title,description:task.description,projectRules:rules,testPlan,knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
@@ -335,6 +338,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  const {projectId,testId}=args;
  const row=await pool.query('SELECT status,message,task_id,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE id=$1 AND project_id=$2',[testId,projectId]);
  if(!row.rowCount)throw ApplicationFailure.nonRetryable('Запуск тестирования не найден');
+ if(row.rows[0].status==='cancelled')return {status:'failed',message:'Прервано пользователем'};
  if(['completed','failed'].includes(row.rows[0].status)){
   const old=await pool.query('SELECT verdict FROM ai_test_runs WHERE id=$1',[testId]);
   return {status:row.rows[0].status,message:row.rows[0].message,verdict:old.rows[0]?.verdict};
