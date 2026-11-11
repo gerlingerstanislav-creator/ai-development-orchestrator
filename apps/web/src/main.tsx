@@ -114,6 +114,11 @@ function markdownInline(source:string):React.ReactNode[]{
  if(last<source.length)nodes.push(source.slice(last));
  return nodes;
 }
+function pmDisplayText(source:string){
+ // Historic PM responses may contain obsolete, unsupported pseudo-links.
+ // Keep their labels, not misleading paths that have no application route.
+ return source.replace(/\[([^\]]+)\]\(orchestrator:\/\/[^)]+\)/gi,'$1');
+}
 function DocumentMarkdown({source}:{source:string}){
  const rows=source.replace(/\r\n/g,'\n').split('\n');
  const result:React.ReactNode[]=[];
@@ -2225,7 +2230,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.reply_to&&<div className="pm-quoted-message">Ответ на: {projectMessages.find(x=>x.id===m.reply_to)?.body.slice(0,180)||'сообщение из истории'}</div>}
       {m.topic_id&&<small className="pm-message-topic">{m.topic_title||projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
-      <div>{m.body}</div>
+      {m.role==='assistant'?<div className="pm-chat-markdown"><DocumentMarkdown source={pmDisplayText(m.body)}/></div>:<div>{m.body}</div>}
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
       {m.status==='queued'&&<small className="chat-message-status">Поручение сохранено · ожидает запуска</small>}
       {m.status==='processing'&&<small className="chat-message-status">ПМ распределяет поручение…</small>}
