@@ -26,9 +26,9 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
   locked=l.rows[0]?.locked===true;
   if(!locked)return;
   await client.query(`INSERT INTO agent_peer_queue(note_id,project_id,task_id,role)
-   SELECT n.id,n.project_id,n.task_id,n.target_stage FROM task_agent_notes n
+   SELECT n.id,n.project_id,n.task_id,CASE WHEN n.target_stage='all' THEN 'manager' ELSE n.target_stage END FROM task_agent_notes n
    WHERE n.kind='question' AND n.source_kind='agent' AND n.status='open'
-    AND NOT n.requires_customer AND n.target_stage IN ('analysis','development','testing','documentation','deployment')
+    AND NOT n.requires_customer AND n.target_stage IN ('analysis','development','testing','documentation','deployment','analyst','all')
    ON CONFLICT(note_id) DO NOTHING`);
   await client.query(`UPDATE agent_peer_queue q SET status='completed',updated_at=now()
    FROM task_agent_notes n WHERE q.note_id=n.id AND n.status='answered' AND q.status<>'completed'`);
@@ -43,6 +43,8 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
    ORDER BY q.next_attempt_at,q.updated_at LIMIT 25`);
   for(const job of pending.rows){
    let busy=false;
+   if(job.role==='manager'||job.role==='analyst')
+    busy=!!(await client.query("SELECT 1 FROM agent_sessions WHERE project_id=$1 AND role=$2 AND status='running' AND expires_at>now() LIMIT 1",[job.project_id,job.role])).rowCount;
    if(job.role==='development')
     busy=!!(await client.query("SELECT 1 FROM ai_task_runs WHERE status IN ('queued','running') LIMIT 1")).rowCount;
    if(job.role==='testing')
