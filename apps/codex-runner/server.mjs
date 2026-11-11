@@ -448,7 +448,7 @@ async function runTestJob(job,state){
   const probeScript=[
    'for tool in node npm npx python3 pytest git; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: available"; else echo "$tool: unavailable"; fi; done',
    'if node -e "require(\'@playwright/test\')" >/dev/null 2>&1; then echo "playwright: available"; else echo "playwright: unavailable"; fi',
-   'if command -v chromium >/dev/null 2>&1 && timeout 12s chromium --headless --no-sandbox --disable-dev-shm-usage --disable-gpu --dump-dom "data:text/html,<title>ado-qa</title>" 2>/dev/null | grep -q "ado-qa"; then echo "chromium: available"; else echo "chromium: unavailable"; fi',
+   'if command -v chromium >/dev/null 2>&1 && timeout 12s /usr/lib/chromium/chromium --headless --no-sandbox --disable-dev-shm-usage --disable-gpu --dump-dom "data:text/html,<title>ado-qa</title>" 2>/dev/null | grep -q "ado-qa"; then echo "chromium: available"; else echo "chromium: unavailable"; fi',
    'if test -d node_modules; then echo "node_modules: available"; else echo "node_modules: unavailable"; fi',
    'echo "network_policy: npm/PyPI registries and loopback only"'
   ].join('; ');
@@ -471,7 +471,7 @@ async function runTestJob(job,state){
    'Если в проекте есть package-lock.json, используй npm ci; если есть Python-проект, используй python3 -m venv внутри рабочей копии и pip. Запускай unit, integration и API проверки. Записывай фактические команды и коды возврата.',
    'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
    'ВАЖНО: сетевой proxy Codex сбрасывает NO_PROXY для каждой sandbox-команды. Если Node.js fetch, Playwright или тесты обращаются к локальному HTTP-серверу, запускай клиентскую команду с явными NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 (например: env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test). Это исключает только localhost из прокси; произвольные внешние хосты по-прежнему запрещены.',
-   'Для браузерных проверок доступен @playwright/test и системный Chromium, если реальная проверка возможностей среды подтвердила их работоспособность. При запуске Chromium внутри изолированной песочницы используй executablePath=/usr/bin/chromium и args=[--no-sandbox,--disable-dev-shm-usage]. Сохраняй результаты в рабочем каталоге.',
+   'Для браузерных проверок доступен @playwright/test и системный Chromium, если реальная проверка возможностей среды подтвердила их работоспособность. При запуске Chromium внутри изолированной песочницы используй executablePath=/usr/lib/chromium/chromium и args=[--no-sandbox,--disable-dev-shm-usage]. Сохраняй результаты в рабочем каталоге.',
    'Тестовая среда не имеет доступа к Docker-сокету, секретам приложения, внутренним сервисам платформы или произвольному интернету. Все команды выполняются в изоляции.',
    'Сбой Codex CLI — не доказательство отсутствия инструментов и не основание автоматически разрешать пропуск проверок.',
    'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
