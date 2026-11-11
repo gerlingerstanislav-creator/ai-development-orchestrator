@@ -14,6 +14,16 @@ const problem=(e:unknown)=>e instanceof Error?e.message:String(e);
 const requestBody=(method:string,body:unknown)=>({method,body:JSON.stringify(body)});
 const approved=(item:Pick<IterationSummary,'revision'|'approved_revision'>)=>item.approved_revision===item.revision;
 
+const stageDescriptions:Record<string,string>={
+ backlog:'Новые задачи и идеи ожидают утверждённого объёма.',
+ analysis:'Аналитики прорабатывают требования, техническую реализацию и зависимости.',
+ development:'Разработчики реализуют готовые задачи и прикрепляют PR.',
+ testing:'QA проверяет изменения и при необходимости возвращает дефекты.',
+ merge_queue:'Проверенные PR последовательно сливаются в целевую ветку.',
+ deployment:'DevOps выполняет либо согласованно пропускает выкладку.',
+ documentation:'Документация актуализируется по фактической реализации.',
+ done:'Работа завершена, результат и история сохранены.'
+};
 export function ProjectIterations({projectId,iterationId,summaries,documents,request,onSelect,onChange,onChat,documentLink,taskLink,stages,renderBody}:{
  projectId:string;iterationId:string|null;summaries:IterationSummary[];documents:PlanDocument[];request:Request;
  onSelect:(id:string|null)=>void;onChange:()=>Promise<void>;
@@ -74,6 +84,7 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
   </div>{!editing&&(!iterationId||details)&&<button type="button" className="secondary" disabled={busy} onClick={edit}>
    {details?<><Pencil size={15}/> Изменить</>:<><Plus size={15}/> Итерация</>}
   </button>}</header>
+  <div className="iteration-stage-guide" aria-label="Этапы разработки">{stages.map((stage,index)=><div key={stage.stage} className="iteration-stage-guide-item"><small>{index+1}</small><strong>{stage.label}</strong><span>{stageDescriptions[stage.stage]||'Этап работы участников проекта.'}</span></div>)}</div>
   {loading&&<p className="muted" role="status">Загрузка…</p>}
   {error&&<p className="error" role="alert">{error}</p>}
   {notice&&<p role="status">{notice}</p>}
