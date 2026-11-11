@@ -1,7 +1,14 @@
 import {mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 
-const profile='ado-task';
+const defaultProfile='ado-task';
+const qaProfile='ado-qa';
+// These hosts are deliberately fixed in the Runner, never supplied by
+// untrusted project instructions or a PM/QA model.
+export const qaAllowedDomains=Object.freeze([
+ 'registry.npmjs.org','pypi.org','files.pythonhosted.org',
+ 'localhost','127.0.0.1'
+]);
 const setting=(key,value)=>['-c',key+'='+JSON.stringify(value)];
 const tomlTable=entries=>'{'+Object.entries(entries).map(([key,value])=>JSON.stringify(key)+'='+
  (typeof value==='string'?JSON.stringify(value):tomlTable(value))).join(',')+'}';
@@ -22,7 +29,8 @@ export function gitEnvironment(token){
  };
 }
 
-export async function createTaskPolicy(workDirectory,{writable=true}={}){
+export async function createTaskPolicy(workDirectory,{writable=true,qa=false}={}){
+ const profile=qa?qaProfile:defaultProfile;
  const scratch=join(workDirectory,'scratch');
  await mkdir(scratch,{recursive:true,mode:0o700});
  const args=[
@@ -40,12 +48,28 @@ export async function createTaskPolicy(workDirectory,{writable=true}={}){
    ':minimal':'read','/usr/local/bin':'read','/usr/local/lib/node_modules':'read',[scratch]:'write',
    ':workspace_roots':{'.':writable?'write':'read','.git':'read','.codex':'read','.agents':'read'},
   }),
-  ...setting('permissions.'+profile+'.network.enabled',false),
+  ...(qa?[
+   // Both controls are required: network.enabled alone would grant unrestricted
+   // egress. The proxy enforces this narrow public-registry + loopback allowlist.
+   ...setting('features.network_proxy',true),
+   ...setting('permissions.'+profile+'.network.enabled',true),
+   ...setting('permissions.'+profile+'.network.allow_local_binding',false),
+   ...setting('permissions.'+profile+'.network.allow_upstream_proxy',false),
+   '-c','permissions.'+profile+'.network.domains='+tomlTable(Object.fromEntries(qaAllowedDomains.map(host=>[host,'allow'])))
+  ]:[...setting('permissions.'+profile+'.network.enabled',false)]),
   ...setting('shell_environment_policy.inherit','none'),
   ...setting('shell_environment_policy.set.PATH','/usr/local/bin:/usr/bin:/bin'),
   ...setting('shell_environment_policy.set.HOME',scratch),
   ...setting('shell_environment_policy.set.TMPDIR',scratch),
-  ...setting('shell_environment_policy.set.LANG','C.UTF-8')
+  ...setting('shell_environment_policy.set.LANG','C.UTF-8'),
+  ...(qa?[
+   ...setting('shell_environment_policy.set.NODE_PATH','/usr/local/lib/node_modules'),
+   ...setting('shell_environment_policy.set.CHROMIUM_BIN','/usr/bin/chromium'),
+   ...setting('shell_environment_policy.set.npm_config_registry','https://registry.npmjs.org/'),
+   ...setting('shell_environment_policy.set.PIP_INDEX_URL','https://pypi.org/simple'),
+   ...setting('shell_environment_policy.set.XDG_CACHE_HOME',scratch),
+   ...setting('shell_environment_policy.set.XDG_CONFIG_HOME',scratch)
+  ]:[])
  ];
  return {
   execArgs:['--strict-config','--ignore-user-config','--ignore-rules',...args],
