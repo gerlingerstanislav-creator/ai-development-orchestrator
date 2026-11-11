@@ -388,6 +388,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [qaResultBusy,setQaResultBusy]=useState(false);
  const [qaWaiverReason,setQaWaiverReason]=useState('');
  const [qaWaiverAcknowledged,setQaWaiverAcknowledged]=useState(false);
+ useEffect(()=>{setQaWaiverReason('');setQaWaiverAcknowledged(false);},[activeTask?.id]);
  const [requirements,setRequirements]=useState<RequirementInfo|null>(null);
  const [requirementsBusy,setRequirementsBusy]=useState(false);
  const [taskAgentNotes,setTaskAgentNotes]=useState<AgentTaskNote[]>([]);
@@ -2443,6 +2444,45 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.git_branch&&<div className="task-git-ref"><span>Ветка</span><code>{activeTask.git_branch}</code></div>}
      </details>
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
+
+     {activeTask.stage==='testing'&&newestTaskTest?.status==='failed'&&
+      <div className="qa-waiver-panel" role="status">
+       <strong>Тестировщик не смог завершить работу</strong>
+       <p>Это сбой исполнителя, а не подтверждённая нехватка средств тестирования. Пропуск недоступен: необходимо исправить причину и повторить QA.</p>
+      </div>}
+     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver&&
+      <section className="qa-waiver-panel" aria-label="Решение по недоступным тестам">
+       <strong>Часть тестирования не выполнена</strong>
+       <p className="qa-waiver-counts">Проверено: {qaWaiver.assessment.passed} из {qaWaiver.assessment.total}. Не проверено: {qaWaiver.assessment.unverified.length}.</p>
+       <div className="qa-waiver-cases">
+        {qaWaiver.assessment.unverified.map(test=><div className="qa-waiver-case" key={test.id}>
+         <b>{test.title}</b><span>{test.evidence}</span>
+        </div>)}
+       </div>
+       {qaWaiver.assessment.eligible&&!qaWaiver.approval?<>
+        <p>Можно продолжить без этих конкретных проверок только с твоего согласия. Они останутся непроверенными; требования к текущему PR и GitHub CI сохраняются.</p>
+        <label className="qa-waiver-reason">Причина принятия риска
+         <textarea value={qaWaiverReason} maxLength={3000} rows={3} onChange={event=>setQaWaiverReason(event.target.value)}
+          placeholder="Почему допускаешь слияние без перечисленных проверок (минимум 20 символов)"/>
+        </label>
+        <label className="qa-waiver-confirm"><input type="checkbox" checked={qaWaiverAcknowledged}
+          onChange={event=>setQaWaiverAcknowledged(event.target.checked)}/>
+         <span>Понимаю, какие сценарии не проверены, и принимаю риск.</span>
+        </label>
+        <button type="button" className="secondary" disabled={qaWaiverBusy||qaWaiverReason.trim().length<20||!qaWaiverAcknowledged}
+         onClick={()=>void approveQaWaiver()}>{qaWaiverBusy?'Согласование…':'Разрешить переход к слиянию с непроверенными сценариями'}</button>
+       </>:qaWaiver.approval?
+        <p>Исключение уже согласовано. Результаты непроверенных сценариев сохранены в истории.</p>:
+        <div className="qa-waiver-blockers">
+         <strong>Согласовать пропуск пока нельзя:</strong>
+         {qaWaiver.assessment.blockers.map((reason,index)=><p key={index}>{reason}</p>)}
+        </div>}
+       {qaWaiver.assessment.capabilities&&<details className="qa-waiver-capabilities">
+        <summary>Какие инструменты доступны тестировщику</summary>
+        <pre>{qaWaiver.assessment.capabilities}</pre>
+       </details>}
+      </section>}
+
      {activeTask.stage==='deployment'&&<div><p className="muted">PR слит. Выберите выкладку или явно пропустите этап.</p><div className="row-line"><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'skipped')}>Пропустить выкладку</button><button type="button" className="secondary" disabled={mergeBusy} onClick={()=>void resolveDeployment(activeTask,'manual_confirmed')}>Подтвердить ручную выкладку</button>
     {deploymentMode==='automatic'&&<button type="button" className="primary" disabled={mergeBusy} onClick={()=>{if(!selected)return;const commit=window.prompt('Точный SHA слитого PR:');if(!commit)return;setMergeBusy(true);void api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/deployment/start',{method:'POST',body:JSON.stringify({confirm:true,commit_sha:commit.trim()})}).then(()=>{setMergeReport('Запрос поставлен в Temporal. Статус доступен в Центре процессов.');}).catch(fail).finally(()=>setMergeBusy(false));}}>Запустить GitHub Actions</button>}</div></div>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
@@ -2456,8 +2496,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {!managerState?.messages.length&&<p className="assistant-hint">Вопросы и решения по этой задаче отображаются здесь вместе с именем автора.</p>}
       <details className="manager-internal-log">
        <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
-       {deferredQa.map(request=><button key={request.id} type="button" className="secondary" disabled={managerBusy}
-        onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить слияние без визуальных проверок</button>)}
        {timeline(activeTask.id).slice(-90).map(item=><div className="manager-internal-entry" key={item.id}>
         <strong>{item.title|| (item.kind==='user'?'Историческое сообщение пользователя':item.kind==='assistant'?'Предыдущий AI-помощник':'Этап работы')}</strong>
         <small>{new Date(item.time).toLocaleString('ru-RU')}</small>
@@ -2512,10 +2550,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         </div>
        </details>}
        {decisions.map(request=><React.Fragment key={request.id}>
-        {request.kind==='qa_visual'&&<>
-         <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить без визуальных проверок</button>
-         <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'wait_for_tools')}>Ждать инструменты</button>
-        </>}
+        {request.kind==='qa_visual'&&<small className="muted">Согласование недоступных проверок — в описании задачи слева или через ПМ в общем чате.</small>}
         {request.kind==='requirements'&&<details className="manager-answer-popover" open>
          <summary>Аналитик · согласование требований</summary>
          <div className="manager-answer-body">

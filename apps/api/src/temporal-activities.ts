@@ -15,7 +15,7 @@ import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
 import {recordTaskAgentNote,taskNotesContext,taskConversationEvidence,pendingAgentQuestions,resolveAgentQuestionsForReview} from './task-agent-notes.js';
-import {managerSnapshot} from './project-manager.js';
+import {managerSnapshot,syncManagerInbox} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
@@ -647,6 +647,8 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
  await pool.query("UPDATE tasks SET stage='testing',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",[taskId,projectId,msg]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_tools_unavailable',msg.slice(0,2400)]);
  await event(projectId,testId,'testing','awaiting_manual_qa_decision','Проверки ограничены средой. Согласование исключений доступно только при подтверждённой недоступности инструментов.','warning');
+ // Materialize the owner decision without requiring the owner to open the task first.
+ await syncManagerInbox(pool,projectId,taskId);
 }
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string}){
  if(await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
