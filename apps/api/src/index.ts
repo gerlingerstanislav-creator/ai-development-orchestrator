@@ -103,6 +103,7 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS related_task_ids jsonb NOT NULL DEFAULT '[]'::jsonb;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS depends_on_task_id uuid REFERENCES tasks(id) ON DELETE SET NULL;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS priority smallint NOT NULL DEFAULT 3 CHECK(priority BETWEEN 1 AND 5);
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS dependency_source text NOT NULL DEFAULT 'manual';
  CREATE INDEX IF NOT EXISTS idx_tasks_depends_on ON tasks(project_id,depends_on_task_id);
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS git_branch text;
@@ -1625,7 +1626,7 @@ app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async
 app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const data=parse(z.object({title:z.string().trim().min(1).max(300).optional(),description:z.string().max(20000).optional(),stage:validStages.optional()}),req.body);
+ const data=parse(z.object({title:z.string().trim().min(1).max(300).optional(),description:z.string().max(20000).optional(),stage:validStages.optional(),priority:z.number().int().min(1).max(5).optional()}),req.body);
  const client=await pool.connect();
  let version=0,changed=false;
  try{
@@ -1655,6 +1656,10 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
    await client.query('ROLLBACK');return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
   }
   const title=data.title??t.title,description=data.description??t.description;
+  if(data.priority!==undefined&&data.priority!==t.priority){
+   await client.query('UPDATE tasks SET priority=$2,updated_at=now() WHERE id=$1',[taskId,data.priority]);
+   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'priority_changed',$4)",[randomUUID(),taskId,uid(req),'Приоритет '+data.priority]);
+  }
   if(['documentation','done'].includes(t.stage)&&description!==t.description){
    await client.query('ROLLBACK');
    return reply.code(409).send({error:'PR уже слит. Чтобы изменить завершённую функциональность, создай новую связанную задачу; нельзя переписывать утверждённое ТЗ уже внедрённой версии.'});
