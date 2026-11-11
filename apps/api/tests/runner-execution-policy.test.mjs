@@ -53,8 +53,8 @@ test('QA alone receives a proxy-enforced registry/loopback allowlist',async t=>{
  for(const domain of qaAllowedDomains)assert.ok(options.includes('"'+domain+'"="allow"'),domain+' is missing');
  for(const disallowed of ['api','db','*','example.com','auth.openai.com'])
   assert.ok(!qaAllowedDomains.includes(disallowed),'unexpected QA permission '+disallowed);
- assert.match(options,/NODE_PATH/);
- assert.match(options,/CHROMIUM_BIN/);
+ assert.match(options,/PIP_INDEX_URL/);
+ assert.match(options,/npm_config_registry/);
  assert.match(dev.execArgs.join('\n'),/permissions\.ado-task\.network\.enabled=false/);
  assert.ok(!dev.execArgs.some(arg=>arg.includes('network_proxy=true')));
  assert.ok(!qa.execArgs.some(arg=>arg.includes('RUNNER_SHARED_SECRET')));
