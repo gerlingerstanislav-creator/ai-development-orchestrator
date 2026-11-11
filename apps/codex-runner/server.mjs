@@ -697,7 +697,7 @@ http.createServer(async(req,res)=>{
     return reply(res,200,{message,usage:parsed.usage});
    }catch(error){
     return reply(res,503,{error:'Codex: '+String(error?.message||error).slice(0,900)});
-   }finally{activeChatRequests--;}
+   }finally{activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
   }
   if(req.url==='/jobs'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
