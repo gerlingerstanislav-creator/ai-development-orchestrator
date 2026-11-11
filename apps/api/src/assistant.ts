@@ -461,7 +461,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
  app.get('/api/projects/:id/assistant/topics',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
-  return (await pool.query("SELECT t.id,t.title,t.status,t.created_at,t.closed_at FROM project_chat_topics t WHERE t.project_id=$1 AND EXISTS(SELECT 1 FROM assistant_messages m WHERE m.project_id=t.project_id AND m.topic_id=t.id AND m.channel='project') ORDER BY t.status ASC,t.created_at DESC",[id])).rows;
+  return (await pool.query("SELECT t.id,t.title,t.status,t.created_at,t.closed_at FROM project_chat_topics t WHERE t.project_id=$1 AND t.status='open' AND EXISTS(SELECT 1 FROM assistant_messages m WHERE m.project_id=t.project_id AND m.topic_id=t.id AND m.channel='project') ORDER BY t.created_at DESC",[id])).rows;
  });
  app.post('/api/projects/:id/assistant/topics',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
@@ -483,7 +483,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
   const {mode}=z.object({mode:z.enum(['project','documentation']).default('project')}).parse(req.query);
-  return (await pool.query('SELECT id,role,body,status,reply_to,topic_id,pm_request_id AS request_id,created_task_id,created_document_id,created_at,documentation_reset_requested,owner_question_cleanup_requested FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel=$2 ORDER BY created_at DESC,role ASC,id DESC LIMIT 100',[id,mode])).rows.reverse();
+  return (await pool.query('SELECT m.id,m.role,m.body,m.status,m.reply_to,m.topic_id,t.title AS topic_title,m.pm_request_id AS request_id,m.created_task_id,m.created_document_id,m.created_at,m.documentation_reset_requested,m.owner_question_cleanup_requested FROM assistant_messages m LEFT JOIN project_chat_topics t ON t.id=m.topic_id AND t.project_id=m.project_id WHERE m.project_id=$1 AND m.task_id IS NULL AND m.channel=$2 ORDER BY m.created_at DESC,m.role ASC,m.id DESC LIMIT 150',[id,mode])).rows.reverse();
  });
  app.get('/api/projects/:id/document-import/:jobId',async(req:any,reply)=>{
   const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);

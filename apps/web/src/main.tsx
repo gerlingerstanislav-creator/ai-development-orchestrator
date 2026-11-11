@@ -83,7 +83,7 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantMessage={id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;topic_title?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
  messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
@@ -466,8 +466,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [projectReplyTo,setProjectReplyTo]=useState<string|null>(null);
  const [projectTopics,setProjectTopics]=useState<Array<{id:string;title:string;status:'open'|'closed'}>>([]);
  const [projectTopicId,setProjectTopicId]=useState('');
- const [projectNewTopic,setProjectNewTopic]=useState('');
- const [projectTopicBusy,setProjectTopicBusy]=useState(false);
+ const knownPmMessageIds=useRef(new Map<string,Set<string>>());
+ const [unreadPmTopicIds,setUnreadPmTopicIds]=useState<string[]>([]);
+ function selectPmTopic(topicId:string){
+  setProjectTopicId(topicId);setProjectReplyTo(null);
+  setUnreadPmTopicIds(ids=>ids.filter(id=>id!==selectedProjectId+':'+topicId));
+ }
  function onProjectScroll(){
   const node=projectThreadRef.current;if(!node)return;
   projectAtBottom.current=node.scrollHeight-node.scrollTop-node.clientHeight<75;
@@ -504,6 +508,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const {messages:projectMessages,pendingId:projectPendingId,jobId:projectImportJobId,input:projectInput,progress:projectImportProgress,
   historyLoaded:projectHistoryLoaded,error:projectChatError}=getProjectChat(projectChatMode);
+ const visibleProjectMessages=projectChatMode==='project'&&projectTopicId
+  ?projectMessages.filter(message=>message.topic_id===projectTopicId):projectMessages;
  const projectChatBusy=projectPendingId!==null && projectChatMode==='documentation';
  const {files:analystFiles,documentId:analystDocumentId}=getProjectChat('documentation');
  function setProjectInput(input:string){
@@ -814,8 +820,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(!projectHistoryLoaded)return;
   const node=projectThreadRef.current;if(!node)return;
   const key=selectedProjectId+':'+projectChatMode+':'+projectTopicId;
-  const visibleMessages=projectMessages.filter(message=>(message.topic_id||'')===projectTopicId);
-  const last=visibleMessages.at(-1)?.id||null;
+  const last=visibleProjectMessages.at(-1)?.id||null;
   if(projectVisibleThread.current!==key){
    projectVisibleThread.current=key;
    const saved=projectScrollPositions.current.get(key);
@@ -886,6 +891,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    try{
     const messages=await api<AssistantMessage[]>('/projects/'+selectedProjectId+'/assistant/messages?mode='+projectChatMode,{signal:controller.signal});
     if(controller.signal.aborted)return;
+    if(projectChatMode==='project'){
+     const known=knownPmMessageIds.current.get(chatKey);
+     if(known){
+      const newlyAnswered=messages.filter(message=>message.role==='assistant'&&message.topic_id&&!known.has(message.id));
+      if(newlyAnswered.length)setUnreadPmTopicIds(old=>[...new Set([...old,...newlyAnswered.map(message=>selectedProjectId+':'+message.topic_id)])]);
+     }
+     knownPmMessageIds.current.set(chatKey,new Set(messages.map(message=>message.id)));
+    }
     updateProjectChat(chatKey,chat=>chat.pendingId&&projectChatMode==='documentation'||chat.jobId?chat:{
      ...chat,historyLoaded:true,messages:[...messages,...chat.messages.filter(message=>
       (message.failed||message.pending||message.awaitingHistory)&&!messages.some(saved=>
@@ -910,29 +923,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   async function refresh(){
    try{
     const topics=await api<Array<{id:string;title:string;status:'open'|'closed'}>>('/projects/'+selectedProjectId+'/assistant/topics');
-    if(alive)setProjectTopics(topics);
+    if(alive){
+     const openTopics=topics.filter(topic=>topic.status==='open');
+     setProjectTopics(openTopics);
+     setProjectTopicId(current=>current&&!openTopics.some(topic=>topic.id===current)?'':current);
+     setUnreadPmTopicIds(ids=>ids.filter(id=>!id.startsWith(selectedProjectId+':')||openTopics.some(topic=>id===selectedProjectId+':'+topic.id)));
+    }
    }catch{/* Keep the chat usable when topics cannot be loaded. */}
   }
   void refresh();const timer=window.setInterval(()=>void refresh(),6000);
   return()=>{alive=false;window.clearInterval(timer);};
  },[selectedProjectId,projectChatOpen]);
- async function createProjectTopic(){
-  if(!selectedProjectId||projectNewTopic.trim().length<3)return;
-  setProjectTopicBusy(true);
-  try{
-   const topic=await api<{id:string;title:string;status:'open'}>('/projects/'+selectedProjectId+'/assistant/topics',{method:'POST',body:JSON.stringify({title:projectNewTopic.trim()})});
-   setProjectTopics(old=>[topic,...old]);setProjectTopicId(topic.id);setProjectNewTopic('');
-  }catch(e){fail(e);}finally{setProjectTopicBusy(false);}
- }
- async function toggleProjectTopic(topic:{id:string;status:'open'|'closed'}){
-  if(!selectedProjectId)return;
-  try{
-   const status=topic.status==='open'?'closed':'open';
-   await api('/projects/'+selectedProjectId+'/assistant/topics/'+topic.id,{method:'PATCH',body:JSON.stringify({status})});
-   setProjectTopics(old=>old.map(x=>x.id===topic.id?{...x,status}:x));
-   if(status==='closed'&&projectTopicId===topic.id)setProjectTopicId('');
-  }catch(e){fail(e);}
- }
  useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -1360,7 +1361,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const files=projectChatMode==='documentation'?analystFiles:[];
   if(!selected||(!projectInput.trim()&&!files.length)||projectChatBusy)return;
   const requestId=crypto.randomUUID();
-  const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+requestId,replyTo=projectReplyTo,topicId=projectTopicId||null;
+  const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+requestId,replyTo=projectReplyTo;
+  const quoted=projectMessages.find(message=>message.id===replyTo);
+  const quotedTopic=quoted?.topic_id&&projectTopics.some(topic=>topic.id===quoted.topic_id)?quoted.topic_id:null;
+  const topicId=projectTopicId||quotedTopic||null;
   const message=projectInput.trim()||'Подготовь ТЗ по приложенным материалам.';
   const chatKey=projectChatKey(projectId,mode);
   const sentAt=new Date().toISOString();
@@ -2204,20 +2208,22 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="pm-chat-body">
    <aside className="pm-topic-sidebar" aria-label="Темы обсуждений с ПМ">
     <strong className="pm-topic-sidebar-title">Обсуждения</strong>
-    <button type="button" className={'pm-topic-item '+(!projectTopicId?'active':'')} onClick={()=>{setProjectTopicId('');setProjectReplyTo(null);}}>Общий чат</button>
+    <button type="button" className={'pm-topic-item '+(!projectTopicId?'active':'')} onClick={()=>selectPmTopic('')}>Общий чат</button>
     {projectTopics.map(topic=><div key={topic.id} className={'pm-topic-entry '+(projectTopicId===topic.id?'active':'')}>
-     <button className="pm-topic-item" type="button" title={topic.title} onClick={()=>{setProjectTopicId(topic.id);setProjectReplyTo(null);}}>{topic.status==='closed'?'✓ ':''}{topic.title}</button>
-
+     <button className="pm-topic-item" type="button" title={topic.title} onClick={()=>selectPmTopic(topic.id)}>{topic.title}
+      {unreadPmTopicIds.includes(selectedProjectId+':'+topic.id)&&<span className="pm-topic-unread" aria-label="Новый ответ ПМ" title="Новый ответ ПМ"/>}
+     </button>
     </div>)}
-    <small className="pm-topic-managed-hint">Темы создаёт и закрывает ПМ</small>
+    {!projectTopics.length&&<small className="pm-topic-managed-hint">Открытых вопросов нет</small>}
+
    </aside>
    <div className="pm-chat-conversation">
    <div className="pm-thread-wrap">
    <div ref={projectThreadRef} onScroll={onProjectScroll} className="assistant-thread" role="log" aria-live="polite">
-    {projectMessages.filter(m=>(m.topic_id||'')===projectTopicId).length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Обсуди со мной идеи, бизнес-логику и требования. Я не создаю задачи без твоего решения. После согласования передай пакет системному аналитику.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
-    {projectMessages.filter(m=>(m.topic_id||'')===projectTopicId).map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
+    {visibleProjectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Обсуди со мной идеи, бизнес-логику и требования. Я не создаю задачи без твоего решения. После согласования передай пакет системному аналитику.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
+    {visibleProjectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
       {m.reply_to&&<div className="pm-quoted-message">Ответ на: {projectMessages.find(x=>x.id===m.reply_to)?.body.slice(0,180)||'сообщение из истории'}</div>}
-      {m.topic_id&&<small className="pm-message-topic">{projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
+      {m.topic_id&&<small className="pm-message-topic">{m.topic_title||projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       <div>{m.body}</div>
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}

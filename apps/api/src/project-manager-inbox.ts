@@ -311,7 +311,8 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    await client.query('BEGIN');
    const finished=await client.query("UPDATE assistant_messages SET status='completed' WHERE id=$1 AND status='processing' AND pm_dispatch_attempt=$2 RETURNING id",[messageId,attempt]);
    if(finished.rowCount){
-    if(effectiveTopic)await client.query("UPDATE assistant_messages SET topic_id=$2 WHERE id=$1",[messageId,effectiveTopic]);
+    // Keep the original question in the main chat when the PM opens a topic.
+    // Only the PM's answer is assigned to the new topic; both remain visible in the main timeline.
     await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id,created_task_id,created_document_id,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5,$6,$7,$8,$9)",
      [randomUUID(),projectId,data.message,effectiveTopic,orderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
    }
