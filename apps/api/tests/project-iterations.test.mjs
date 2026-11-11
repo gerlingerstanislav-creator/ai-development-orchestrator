@@ -42,6 +42,8 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  await db.query('INSERT INTO projects VALUES($1),($2)',[project,other]);
  await db.query('INSERT INTO project_ai_settings VALUES($1,true)',[project]);
  await db.query("INSERT INTO documents(id,project_id,title) VALUES($1,$2,'ТЗ'),($3,$4,'Чужое ТЗ')",[source,project,foreignSource,other]);
+ await db.query('UPDATE documents SET body=$2 WHERE id=$1',[source,'Согласованные требования и детали реализации. '.repeat(1500)]);
+ await db.query("INSERT INTO assistant_messages(project_id,task_id,channel,role,body) VALUES($1,NULL,'project','user',$2)",[project,'Длинная история обсуждения. '.repeat(2000)]);
  const pool={query:db.query.bind(db),connect:async()=>({query:db.query.bind(db),release(){}})};
  registerProjectIterationRoutes(app,{pool,uid:()=>actor,access:async()=>true,requireAdmin:async()=>true});
  const path='/api/projects/'+project+'/iterations';
@@ -76,6 +78,7 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  const complete=()=>runIterationPlanning(pool,runId,async(prompt,projectId)=>{
   calls++;
   assert.equal(projectId,project);
+  assert.ok(prompt.length<=23000,'Every role prompt must fit the Runner request limit');
   if(calls===1){
    assert.match(prompt,/Ты системный аналитик/);
    assert.match(prompt,/Согласован объём|Ручное оформление/i);
