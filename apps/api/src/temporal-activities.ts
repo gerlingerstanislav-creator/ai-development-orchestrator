@@ -120,7 +120,7 @@ async function taskHandoffContext(projectId:string,taskId:string,stage:string){
  const assignment=responsibility?'Этап '+stage+'. Условия старта: '+responsibility.trigger+' Ожидаемый результат: '+responsibility.result+'\n\n':'';
  return assignment+'Реплики пользователя в этой задаче:\n'+conversation.slice(-900)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-1200);
 }
-async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string):Promise<string>{
+async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string,processId?:string):Promise<string>{
  const setup=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
  const stage:KnowledgeStage=operation.includes('qa')||operation.includes('test')?'testing':operation.includes('documentation')?'documentation':'analysis';
@@ -133,6 +133,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
   scope:'Проект '+projectId+', задача '+taskId,
   context:knowledge.documents.slice(0,1300)+'\n'+knowledge.modules.slice(0,850)
  });
+ await recordAgentPrompt(pool,{projectId,processId:processId||taskId,role:stage,operation,prompt:composed}).catch(()=>{});
  return askRunnerAssistant(composed,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai));
 }
 async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000):Promise<string>{
@@ -184,16 +185,16 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
   const instructions=(await pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='analysis'",[projectId])).rows[0];
   const prompt=[
    'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
-   'Изучи исходное ТЗ, документацию и всю историю обсуждений. Нельзя придумывать продуктовые решения вместо владельца.',
+   'Используй актуальное ТЗ и приложенные относящиеся к задаче сведения. Не придумывай продуктовые решения вместо владельца.',
    'Если техническое описание достаточно для разработки, верни outcome="ready", уточнённое исполнимое ТЗ и конкретное краткое резюме.',
    'Если без решения пользователя реализация неоднозначна, верни outcome="needs_input" и вопросы, которые действительно нельзя разрешить по документации.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
-   'Обсуждения и ответы: '+history.slice(0,7500)
+   'Ключевые ответы и замечания: '+history.slice(-1200)
   ].join('\n\n');
-  const output=parseTaskAnalysisResult(await assistantCompletion(prompt,projectId,taskId,'task_analysis'));
+  const output=parseTaskAnalysisResult(await assistantCompletion(prompt,projectId,taskId,'task_analysis',runId));
   if(output.outcome==='ready'&&output.questions.length)throw Error('Аналитик завершил задачу с неразрешёнными вопросами');
   if(output.outcome==='needs_input'&&!output.questions.length)throw Error('Аналитик запросил уточнение без вопроса');
   const client=await pool.connect();
@@ -345,8 +346,14 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
   const handoff=await taskHandoffContext(projectId,taskId,'testing');
   const count=await prepareQaDocumentation(pool,{...args,implementationEvidence:evidence.patch},async(prompt)=>{
    const taskContext='\n\nПеред вопросом о требованиях проверь ответы в задаче. Переписка не подтверждает прохождение теста.\n'+handoff;
-   const bounded=runnerAssistantPrompt(prompt,taskContext.slice(0,3200),'Применимые инструкции:\n'+qaKnowledge.modules,
-    'Утверждённые знания:\n'+qaKnowledge.documents,'Память QA:\n'+await agentMemoryContext(pool,projectId,'testing'));
+   const bounded=composeAgentPrompt({
+    role:'QA-инженер — проектирование проверок',
+    objective:prompt,
+    tools:'Только составление тест-кейсов; выполнение тестов позже выполняет Codex в изолированном runner.',
+    context:taskContext.slice(0,1100)+'\n'+qaKnowledge.documents.slice(0,900),
+    instructions:qaKnowledge.modules.slice(0,900)
+   });
+   await recordAgentPrompt(pool,{projectId,processId:runId,role:'testing',operation:'qa_plan',prompt:bounded}).catch(()=>{});
    const response=await fetch(codexUrl+'/assistant',{method:'POST',
     headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
     body:JSON.stringify({prompt:bounded,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning}),
@@ -437,7 +444,7 @@ export async function startDevelopment(args:TaskRef){
   WHERE id=$1 AND status IN ('queued','running') AND COALESCE(runner_spec_version,$2)=$2 RETURNING id`,[runId,task.spec_version]);
  if(!pinned.rowCount)throw ApplicationFailure.nonRetryable('Попытка разработки изменилась или отменена');
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
- const feedback=String(task.test_feedback||'').slice(0,10000);
+ const feedback=String(task.test_feedback||'').slice(0,3800);
  if(task.spec_review_status==='pending'||task.spec_review_status==='needs_approval')throw ApplicationFailure.nonRetryable('Требования ожидают проверки аналитиком или согласования');
  const beforeStart=!args.recovery&&!attempt&&record.rows[0].status==='queued'&&record.rows[0].approved_spec!=null?async()=>{
   if(!feedback&&await finishExistingTaskBranch(args,{repository:repo.repository,baseBranch,token,title:task.title},record.rows[0].triggered_by))return false;
@@ -451,7 +458,7 @@ export async function startDevelopment(args:TaskRef){
   if(!pulls.ok)throw Error('Не удалось проверить доступ к PR: GitHub HTTP '+pulls.status);
   return true;
  }:undefined;
- const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
+ const description=String(task.description||'').slice(0,10500)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const developerAi=await resolveRoleAiSettings(pool,projectId,'development',ai);
  const agentInstructions=(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules;
