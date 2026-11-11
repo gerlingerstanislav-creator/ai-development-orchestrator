@@ -421,7 +421,7 @@ app.addHook('preHandler',async(req,reply)=>{
 // Requests reach it only after the ordinary application session check.
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
 async function codexCall(path:string,method:'GET'|'POST'='GET') {
- const response=await fetch(codexUrl+path,{method,signal:AbortSignal.timeout(path==='/test'?125000:15000)});
+ const response=await fetch(codexUrl+path,{method,headers:{'X-Runner-Secret':runnerKey},signal:AbortSignal.timeout(path==='/test'?125000:15000)});
  const body=await response.json().catch(()=>({error:'Некорректный ответ Codex'}));
  if(!response.ok)throw Error(body.error||'Codex недоступен');
  return body;
@@ -549,6 +549,7 @@ const projectAiSchema=z.object({
 const aiDefaults={model:'gpt-6-luna',reasoning:'low',enabled:false};
 const runnerKey=process.env.RUNNER_SHARED_SECRET||'';
 if(!runnerKey || runnerKey.length<32)throw Error('Set RUNNER_SHARED_SECRET (32+ chars)');
+if(runnerKey===process.env.JWT_SECRET)throw Error('RUNNER_SHARED_SECRET must differ from JWT_SECRET');
 async function agentCall(path:string,method:'GET'|'POST'='GET',body?:unknown){
  const resp=await fetch(codexUrl+path,{
   method,

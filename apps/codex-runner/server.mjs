@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import {jobIdentity,openJobJournal,recoveryAction} from './job-journal.mjs';
+import {conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -37,7 +38,8 @@ proxyServer.on('connect',(req,client,head)=>{
 });
 proxyServer.listen(4399,'127.0.0.1');
 const proxyUrl='http://127.0.0.1:4399';
-const cliEnv={...process.env,CODEX_HOME:home,SSL_CERT_FILE:'/etc/ssl/certs/ca-certificates.crt',HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
+const baseEnv=runnerEnvironment();
+const cliEnv={...baseEnv,HOME:process.env.HOME||'/home/node',CODEX_HOME:home,SSL_CERT_FILE:'/etc/ssl/certs/ca-certificates.crt',HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
 const codexDotenv=join(home,'.env');
 // The Codex binary can load proxy settings from its own .env; provide
 // the same loopback proxy there in addition to the child environment.
@@ -179,7 +181,7 @@ function authorized(req){
 function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}={}){
  return new Promise((resolve,reject)=>{
   if(jobId)assertJobActive(jobId);
-  const child=spawn(binary,args,{cwd,env:{...process.env,...env},stdio:['ignore','pipe','pipe']});
+  const child=spawn(binary,args,{cwd,env:{...baseEnv,...env},stdio:['ignore','pipe','pipe']});
   if(jobId)jobChildren.set(jobId,child);
   let output='',errors='',done=false,timedOut=false;
   const timer=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},timeout);
@@ -197,6 +199,12 @@ function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}=
    settle();
   });
  });
+}
+async function isolatedTaskPolicy(workdir,dir,jobId,writable=true){
+ const policy=await createTaskPolicy(workdir,{writable});
+ try{await command('codex',[...policy.sandboxArgs,'--','/bin/true'],{cwd:dir,env:cliEnv,jobId,timeout:15000});}
+ catch(error){throw Error('Изоляция Runner недоступна: '+error.message);}
+ return policy;
 }
 async function createPullRequest(job,branch,summary){
  const response=await fetch('https://api.github.com/repos/'+job.repository+'/pulls',{
@@ -262,10 +270,7 @@ async function runJob(job,state){
  let cumulativeUsage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
  const workdir=await mkdtemp(join(tmpdir(),'ado-run-'));
  const dir=join(workdir,'repo');
- const auth=Buffer.from('x-access-token:'+job.token).toString('base64');
- const gitEnv={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',
-  GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',
-  GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+auth};
+ const gitEnv=gitEnvironment(job.token);
  const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000});
  // Stable branch identity: one Git branch per task; different agents cannot
  // work in that branch concurrently (startNextJobs locks repository+taskId).
@@ -325,17 +330,15 @@ async function runJob(job,state){
    'В самом конце ответа отдельной строкой укажи HANDOFF_NOTE: <краткие конкретные нюансы реализации для аналитика и тестировщика, которые не должны попадать в документацию>. Если таких нюансов нет, напиши HANDOFF_NOTE: none. Не включай пароли, секреты и токены.',
     'Если выявлен один повторно применимый урок для твоей роли, в последней строке укажи LEARNING_SUGGESTION: <конкретное правило с основанием на фактах запуска>; иначе LEARNING_SUGGESTION: none. Это предложение на согласование, не обязательное правило. Не включай секреты или персональные данные.'
   ].join('\n\n');
+  const policy=await isolatedTaskPolicy(workdir,dir,job.id);
   const runCodex=async(instruction)=>{
    assertJobActive(job.id);
    const remaining=timeLeft();
    if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
    const result=await command('codex',[
     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-    '--json','--ephemeral','--skip-git-repo-check',
-    // Docker is the isolation boundary. Nested Linux sandbox needs namespaces
-    // forbidden by Docker defaults; never expose GitHub token to Codex.
-    '--sandbox','danger-full-access',instruction
-   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining,jobId:job.id});
+    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,instruction
+   ],{cwd:dir,env:cliEnv,timeout:remaining,jobId:job.id});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    const parsed=codexJsonResult(result.stdout);
    cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
@@ -402,10 +405,7 @@ async function runJob(job,state){
 async function runTestJob(job,state){
  const workdir=await mkdtemp(join(tmpdir(),'ado-test-'));
  const dir=join(workdir,'repo');
- const auth=Buffer.from('x-access-token:'+job.token).toString('base64');
- const gitEnv={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',
-  GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',
-  GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+auth};
+ const gitEnv=gitEnvironment(job.token);
  try{
   state.message='Получение ветки для независимой проверки';
   await command('git',['clone','--depth','1','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],
@@ -488,11 +488,12 @@ async function runTestJob(job,state){
     throw Error('В отчёте отсутствуют результаты части тест-кейсов');
    return data;
   };
+  const policy=await isolatedTaskPolicy(workdir,dir,job.id);
   const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-   '--json','--ephemeral','--skip-git-repo-check','--sandbox','danger-full-access',
+   '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,
    '--output-schema',schemaPath];
   const firstRun=await command('codex',[...args,prompt],{
-   cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
+   cwd:dir,env:cliEnv,timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
   });
   let parsed=codexJsonResult(firstRun.stdout);
   state.usage=parsed.usage;
@@ -511,7 +512,7 @@ async function runTestJob(job,state){
     'Предыдущий ответ тестировщика: '+String(parsed.message||'').slice(0,45000)
    ].join('\n\n');
    const second=await command('codex',[...args,correction],{
-    cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000,jobId:job.id
+    cwd:dir,env:cliEnv,timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000,jobId:job.id
    });
    const corrected=codexJsonResult(second.stdout);
    state.usage=addUsage(state.usage,corrected.usage);
@@ -534,10 +535,7 @@ async function runTestJob(job,state){
 async function runConflictJob(job,state){
  const workspace=await mkdtemp(join(tmpdir(),'ado-conflict-'));
  const dir=join(workspace,'repo');
- const auth=Buffer.from('x-access-token:'+job.token).toString('base64');
- const gitEnv={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',
-  GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',
-  GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+auth};
+ const gitEnv=gitEnvironment(job.token);
  const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,jobId:job.id,timeout:90000});
  try{
   state.message='Получение свежих веток PR и целевой ветки';
@@ -572,10 +570,11 @@ async function runConflictJob(job,state){
     'Требования: '+job.description.slice(0,12000),
     'Конфликтующие файлы: '+conflicts.join(', ').slice(0,5000)
    ].join('\n\n');
+   const policy=await isolatedTaskPolicy(workspace,dir,job.id);
    const result=await command('codex',[
      'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-     '--json','--ephemeral','--skip-git-repo-check','--sandbox','danger-full-access',prompt
-   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
+     '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,prompt
+   ],{cwd:dir,env:cliEnv,jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
    const parsed=codexJsonResult(result.stdout);
    state.usage=parsed.usage;
    const answer=parsed.message||'';
@@ -672,8 +671,8 @@ function safeRateWindow(w){
 
 http.createServer(async(req,res)=>{
  try {
+  if(!authorized(req))return reply(res,403,{error:'Forbidden'});
   if(req.method==='GET'&&req.url==='/usage-limits'){
-   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи ChatGPT в Codex CLI'});
    try{return reply(res,200,await readCodexRateLimits());}
    catch(error){return reply(res,503,{error:String(error?.message||error).slice(0,250)});}
@@ -692,7 +691,6 @@ http.createServer(async(req,res)=>{
    return reply(res,200,{connected:false});
   }
   if(req.url==='/agent'&&req.method==='POST'){
-   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    if(activeChatRequests>=20)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
    const data=await readJson(req);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
@@ -718,7 +716,7 @@ http.createServer(async(req,res)=>{
      // This MCP server only exposes tools authorized by the project-scoped API session.
      // Operations that require a human decision use separate application endpoints.
      '-c','mcp_servers.orchestrator.default_tools_approval_mode="approve"',
-     '--json','--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
+     '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,data.prompt
     ],{cwd:'/opt/codex-runner',
      env:{...cliEnv,ADO_AGENT_SESSION_TOKEN:data.session_token,
       ADO_AGENT_API_URL:process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools'},
@@ -733,7 +731,6 @@ http.createServer(async(req,res)=>{
    }finally{activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
   }
   if(req.url==='/assistant'&&req.method==='POST'){
-   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});
    const data=await readJson(req);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
@@ -745,7 +742,7 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
     const result=await command('codex',[
       'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-      '--json','--ephemeral','--skip-git-repo-check','--sandbox','read-only',data.prompt
+      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,data.prompt
     ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:240000,maxOutputChars:500000});
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
@@ -757,7 +754,6 @@ http.createServer(async(req,res)=>{
    }finally{activeChatRequests--;}
   }
   if(req.url==='/jobs'&&req.method==='POST'){
-   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    const job=await readJson(req);
    if(job.kind && !['resolve-conflict','test'].includes(job.kind))return reply(res,400,{error:'Недопустимый тип задания'});
    if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
@@ -789,7 +785,6 @@ http.createServer(async(req,res)=>{
    return reply(res,202,state);
   }
   if(req.method==='POST'&&/^\/jobs\/[a-f0-9-]{36}\/cancel$/.test(req.url||'')){
-   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    const id=req.url.split('/')[2],record=readJob(id),state=record?.state;
    if(!state)return reply(res,404,{error:'Запуск не найден'});
    if(!['queued','running','interrupted'].includes(state.status))return reply(res,409,{error:'Запуск уже завершён'});
@@ -804,7 +799,6 @@ http.createServer(async(req,res)=>{
    return reply(res,200,{ok:true,status:'cancelled'});
   }
   if(req.method==='GET'&& /^\/jobs\/[a-f0-9-]{36}$/.test(req.url||'')){
-   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
    const job=readJob(req.url.slice(6));
    return job?reply(res,200,job.state):reply(res,404,{error:'Задача не найдена (возможно, исполнитель перезапущен)'});
   }
@@ -814,7 +808,7 @@ http.createServer(async(req,res)=>{
    // prints "Reading additional input from stdin..." instead of starting.
    // Explicitly disable stdin for unattended execution.
    const result=await new Promise((resolve,reject)=>{
-    const child=spawn('codex',['exec','--ephemeral','--skip-git-repo-check','--sandbox','read-only','Ответь ровно: подключение работает'],{
+    const child=spawn('codex',['exec','--ephemeral','--skip-git-repo-check',...conversationPolicy,'Ответь ровно: подключение работает'],{
      cwd:'/opt/codex-runner',env:cliEnv,stdio:['ignore','pipe','pipe']
     });
     let stdout='',stderr='',finished=false,timedOut=false;

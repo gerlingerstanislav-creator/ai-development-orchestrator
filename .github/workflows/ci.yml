@@ -21,3 +21,24 @@ jobs:
       - run: npm run build
       - run: node --check apps/codex-runner/server.mjs
       - run: node --test apps/api/tests/agent-mentions.test.mjs
+  runner-isolation:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: local-ci-postgres
+      ADMIN_EMAIL: runner-ci@example.test
+      ADMIN_PASSWORD: local-ci-admin
+      JWT_SECRET: local-ci-jwt-secret-not-for-production
+      RUNNER_SHARED_SECRET: local-ci-runner-secret-not-for-production
+      CREDENTIALS_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose build codex
+      - name: Verify project command isolation
+        run: |
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ]; then
+            sudo apparmor_parser -r docker/runner-userns.apparmor
+            export RUNNER_APPARMOR_PROFILE=ado-runner-userns
+          fi
+          docker compose run --no-deps --rm -T --entrypoint node \
+            -v "$PWD/apps/codex-runner/isolation-smoke.mjs:/opt/codex-runner/isolation-smoke.mjs:ro" \
+            codex /opt/codex-runner/isolation-smoke.mjs
