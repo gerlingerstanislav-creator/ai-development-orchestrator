@@ -757,7 +757,9 @@ http.createServer(async(req,res)=>{
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
       !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
       !['low','medium'].includes(data.reasoning))
-     return reply(res,400,{error:'Некорректные параметры AI-запроса'});
+     return reply(res,400,{error:typeof data.prompt==='string'&&data.prompt.length>24000
+      ?'AI-запрос слишком большой: '+data.prompt.length+' символов при лимите 24000'
+      :'Некорректные параметры AI-запроса'});
    activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
