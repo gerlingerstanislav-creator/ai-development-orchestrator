@@ -60,10 +60,11 @@ export async function initQaWaiverSchema(pool:Pool){
 export async function latestQaWaiver(pool:Pool,projectId:string,taskId:string){
  const [run,approved]=await Promise.all([
   pool.query('SELECT id,task_id,status,verdict,qa_spec_version,qa_plan_snapshot,report FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]),
-  pool.query('SELECT id,test_run_id,justification,commit_sha,spec_version,approved_by,unverified_cases,created_at FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId])
+  pool.query('SELECT id,test_run_id,justification,commit_sha,spec_version,approved_by,unverified_cases,created_at FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 30',[projectId,taskId])
  ]);
  const current=run.rows[0] as QaRunRow|undefined;
- return {run_id:current?.id||null,assessment:qaWaiverAssessment(current),approval:approved.rows[0]||null};
+ const currentApproval=approved.rows.find(row=>row.test_run_id===current?.id)||null;
+ return {run_id:current?.id||null,assessment:qaWaiverAssessment(current),approval:currentApproval};
 }
 
 export function registerQaWaiverRoutes(app:FastifyInstance,{pool,access,requireAdmin,uid,decryptToken}:Dependencies){
