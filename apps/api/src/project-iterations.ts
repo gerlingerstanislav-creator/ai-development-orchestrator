@@ -231,7 +231,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   const started=await db.query("UPDATE iteration_planning_runs SET status='running',message='СА изучает объём, документы и задачи',updated_at=now() WHERE id=$1 AND status='queued'",[runId]);
   if(started.rowCount)await planningEvent(db,run.project_id,runId,'running','СА изучает объём, документы и задачи');
  });
- const [linked,common,rules,profile,ownerDecisions,pmConversation]=await Promise.all([
+ const [linked,common,rules,profile,ownerDecisions,pmConversation,projectDecisions]=await Promise.all([
   pool.query(`SELECT d.title,left(d.body,4500) AS body FROM iteration_documents l JOIN documents d ON d.id=l.document_id
    WHERE l.iteration_id=$1 ORDER BY d.title,d.id`,[run.iteration_id]),
   pool.query(`SELECT d.title,left(d.body,1500) AS body FROM documents d
@@ -245,6 +245,10 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
    // The PM inbox is optional in those environments; production creates it at boot.
    if((error as {code?:string}).code==='42P01')return {rows:[]};
    throw error;
+  }),
+  pool.query("SELECT question,answer,iteration_id,created_at FROM project_pm_decisions WHERE project_id=$1 AND (iteration_id=$2 OR iteration_id IS NULL) ORDER BY created_at DESC LIMIT 70",[run.project_id,run.iteration_id]).catch(error=>{
+   if((error as {code?:string}).code==='42P01')return {rows:[]};
+   throw error;
   })
  ]);
  const prompt=[
@@ -254,6 +258,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Итерация «'+details.title+'»:\n'+details.body.slice(0,8000),
   'Уточнение пользователя:\n'+run.request_text,
   'Подтверждённые ответы владельца через ПМ (сначала новые):\n'+JSON.stringify(ownerDecisions.rows).slice(0,9000),
+  'Единый реестр решений проекта (приоритетнее старой переписки):\n'+JSON.stringify(projectDecisions.rows).slice(0,7000),
   'Предыдущие сообщения владельца и ответы ПМ для восстановления решений (история может содержать устаревшие предположения):\\n'+JSON.stringify(pmConversation.rows).slice(0,11500),
   'Не запрашивай повторно сведения, которые однозначно содержатся в ответах владельца. В случае противоречия решений обозначь его в задаче анализа; не останавливай всю декомпозицию.',
   'Существующие задачи:\n'+JSON.stringify(details.tasks.map(({id,title,type,parent_id,iteration_item_key})=>({id,title,type,parent_id,iteration_item_key}))).slice(0,2200),
