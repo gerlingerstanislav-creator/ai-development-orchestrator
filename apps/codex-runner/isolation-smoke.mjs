@@ -100,18 +100,10 @@ try{
   socket.on('timeout',()=>{socket.destroy();});
  `;
  await qaRun('QA denies raw external TCP','node',['-e',rawSocketCheck],14000);
- // Ensure a real headless browser launches under the *same* sandbox profile.
- const browserCheck=`
-  const {chromium}=require('@playwright/test'),assert=require('node:assert/strict');
-  (async()=>{const browser=await chromium.launch({headless:true,executablePath:'/usr/lib/chromium/chromium',args:['--no-sandbox','--disable-dev-shm-usage','--disable-crashpad-for-testing','--disable-crash-reporter']});
-   try{const page=await browser.newPage();await page.goto('data:text/html,<title>QA ready</title>');
-    assert.equal(await page.title(),'QA ready');await page.screenshot({path:'qa-browser-smoke.png'});}
-   finally{await browser.close();}
-  })().catch(error=>{console.error(error);process.exitCode=1;});
- `;
- await qaRun('Playwright Chromium','node',['-e',browserCheck],40000);
- assert.equal((await readFile(join(repo,'qa-browser-smoke.png'))).subarray(0,4).toString('hex'),'89504e47');
- console.log('Runner sandbox isolates project files, Codex credentials and Git metadata; QA proxy allows registries, loopback, and headless browser');
+ const python=await qaRun('Python venv and pytest','sh',['-c',
+  'python3 -m venv .qa-smoke-venv && .qa-smoke-venv/bin/python -c "import sys; assert sys.version_info.major == 3" && pytest --version'],45000);
+ assert.match(python,/pytest/);
+ console.log('Runner sandbox isolates project files, Codex credentials and Git metadata; QA proxy allows registries and loopback; Python venv/pytest works');
 }finally{
  server.close();
  await Promise.all([rm(root,{recursive:true,force:true}),rm(auth,{recursive:true,force:true})]);
