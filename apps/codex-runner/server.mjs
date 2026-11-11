@@ -115,6 +115,9 @@ function deviceInfo(){
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
+const jobChildren=new Map();
+const cancelledJobs=new Set();
+const assertJobActive=id=>{if(cancelledJobs.has(id))throw new Error('Прервано пользователем');};
 const MAX_PARALLEL_DEVELOPMENT=20; // Actual per-project role limits come from signed API jobs.
 const MAX_PARALLEL_PER_ROLE=1;
 const activeByRole=new Map();
@@ -128,6 +131,7 @@ const activeAgentRoles=new Map();
 function startNextJobs(){
  for(let i=0;i<jobQueue.length && runningJobs<MAX_PARALLEL_DEVELOPMENT;){
   const {job,state}=jobQueue[i];
+  if(cancelledJobs.has(job.id)){jobQueue.splice(i,1);continue;}
   const branchKey=job.repository+':'+job.taskId;
   const role=jobRole(job);
   const roleKey=(job.projectId||job.repository)+':'+role;
@@ -139,7 +143,7 @@ function startNextJobs(){
   activeByRole.set(roleKey,(activeByRole.get(roleKey)||0)+1);
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Запуск разработки в изолированной рабочей папке';
-  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
+  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{if(state.status!=='cancelled')state.status='failed';if(state.status!=='cancelled')state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
    activeBranches.delete(branchKey);runningJobs--;
    activeByRole.set(roleKey,Math.max(0,(activeByRole.get(roleKey)||1)-1));startNextJobs();
   });
@@ -154,15 +158,18 @@ function authorized(req){
  const a=Buffer.from(supplied),b=Buffer.from(jobKey);
  return a.length===b.length && timingSafeEqual(a,b);
 }
-function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000}={}){
+function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}={}){
  return new Promise((resolve,reject)=>{
+  if(jobId)assertJobActive(jobId);
   const child=spawn(binary,args,{cwd,env:{...process.env,...env},stdio:['ignore','pipe','pipe']});
+  if(jobId)jobChildren.set(jobId,child);
   let output='',errors='',done=false,timedOut=false;
   const timer=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},timeout);
   child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
   child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
   const settle=(err)=>{
    if(done)return;done=true;clearTimeout(timer);
+   if(jobId&&jobChildren.get(jobId)===child)jobChildren.delete(jobId);
    if(err)reject(err);else resolve({stdout:output,stderr:errors});
   };
   child.on('error',settle);
@@ -273,6 +280,7 @@ async function runJob(job,state){
     'Если выявлен один повторно применимый урок для твоей роли, в последней строке укажи LEARNING_SUGGESTION: <конкретное правило с основанием на фактах запуска>; иначе LEARNING_SUGGESTION: none. Это предложение на согласование, не обязательное правило. Не включай секреты или персональные данные.'
   ].join('\n\n');
   const runCodex=async(instruction)=>{
+   assertJobActive(job.id);
    const remaining=timeLeft();
    if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
    const result=await command('codex',[
@@ -281,7 +289,7 @@ async function runJob(job,state){
     // Docker is the isolation boundary. Nested Linux sandbox needs namespaces
     // forbidden by Docker defaults; never expose GitHub token to Codex.
     '--sandbox','danger-full-access',instruction
-   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining});
+   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:remaining,jobId:job.id});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    const parsed=codexJsonResult(result.stdout);
    cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
@@ -308,6 +316,7 @@ async function runJob(job,state){
    }
   }
   const result=attempt.result;
+  assertJobActive(job.id);
   state.message='Создание коммита';
   await git('add','--all');
   const staged=await git('diff','--cached','--name-only');
@@ -315,8 +324,10 @@ async function runJob(job,state){
    throw new Error('Обнаружены потенциально секретные файлы. Коммит отменён');
   await command('git',['-c','user.name=AI Development Orchestrator','-c','user.email=ai-orchestrator@users.noreply.github.com',
    'commit','-m','AI: '+job.title.slice(0,120)],{cwd:dir,env:gitEnv,timeout:30000});
+  assertJobActive(job.id);
   state.message='Отправка ветки GitHub';
   await git('push','-u','origin','HEAD:refs/heads/'+branch);
+  assertJobActive(job.id);
   state.message='Создание черновика Pull Request';
   const existingPr=await fetch('https://api.github.com/repos/'+job.repository+'/pulls?state=open&head='+
    encodeURIComponent(job.repository.split('/')[0]+':'+branch),{
@@ -435,7 +446,7 @@ async function runTestJob(job,state){
    '--json','--ephemeral','--skip-git-repo-check','--sandbox','danger-full-access',
    '--output-schema',schemaPath];
   const firstRun=await command('codex',[...args,prompt],{
-   cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000
+   cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
   });
   let parsed=codexJsonResult(firstRun.stdout);
   state.usage=parsed.usage;
@@ -454,7 +465,7 @@ async function runTestJob(job,state){
     'Предыдущий ответ тестировщика: '+String(parsed.message||'').slice(0,45000)
    ].join('\n\n');
    const second=await command('codex',[...args,correction],{
-    cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000
+    cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000,jobId:job.id
    });
    const corrected=codexJsonResult(second.stdout);
    state.usage=addUsage(state.usage,corrected.usage);
@@ -710,6 +721,19 @@ http.createServer(async(req,res)=>{
    jobQueue.push({job,state});
    startNextJobs();
    return reply(res,202,state);
+  }
+  if(req.method==='POST'&&/^\/jobs\/[a-f0-9-]{36}\/cancel$/.test(req.url||'')){
+   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
+   const id=req.url.split('/')[2],state=activeJobs.get(id);
+   if(!state)return reply(res,404,{error:'Запуск не найден'});
+   if(!['queued','running'].includes(state.status))return reply(res,409,{error:'Запуск уже завершён'});
+   cancelledJobs.add(id);
+   const index=jobQueue.findIndex(item=>item.job.id===id);
+   if(index>=0)jobQueue.splice(index,1);
+   const child=jobChildren.get(id);if(child)child.kill('SIGKILL');
+   state.status='cancelled';state.message='Остановлено пользователем';
+   startNextJobs();
+   return reply(res,200,{ok:true,status:'cancelled'});
   }
   if(req.method==='GET'&& /^\/jobs\/[a-f0-9-]{36}$/.test(req.url||'')){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
