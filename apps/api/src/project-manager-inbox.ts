@@ -233,13 +233,14 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
  try{
   // No project-wide task snapshots or chat history on each PM turn.
   // Current order and explicit reply are sufficient; tools provide everything else.
-  const [configResult,projectResult,replyResult,topicResult,orderResult,eventResult]=await Promise.all([
+  const [configResult,projectResult,replyResult,topicResult,orderResult,eventResult,recentResult]=await Promise.all([
    pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
    pool.query('SELECT name,description FROM projects WHERE id=$1',[projectId]),
    turn.reply_to?pool.query("SELECT role,body FROM assistant_messages WHERE project_id=$1 AND id=$2",[projectId,turn.reply_to]):Promise.resolve({rows:[]}),
    turn.topic_id?pool.query('SELECT title,status FROM project_chat_topics WHERE project_id=$1 AND id=$2',[projectId,turn.topic_id]):Promise.resolve({rows:[]}),
    orderId?pool.query('SELECT summary,status,topic_id FROM project_pm_orders WHERE project_id=$1 AND id=$2',[projectId,orderId]):Promise.resolve({rows:[]}),
-   orderId?pool.query('SELECT kind,detail,process_id FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 3',[orderId]):Promise.resolve({rows:[]})
+   orderId?pool.query('SELECT kind,detail,process_id FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 3',[orderId]):Promise.resolve({rows:[]}),
+   !turn.reply_to?pool.query("SELECT role,left(body,450) AS body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND id<>$2 AND ((topic_id=$3) OR ($3::uuid IS NULL AND topic_id IS NULL)) ORDER BY created_at DESC,id DESC LIMIT 3",[projectId,messageId,turn.topic_id||null]):Promise.resolve({rows:[]})
   ]);
   const config=await resolveRoleAiSettings(pool,projectId,'manager',configResult.rows[0]);
   if(!config?.enabled)throw Error('AI выключен в настройках проекта');
@@ -252,7 +253,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const prompt=composeAgentPrompt({
    role:'Менеджер проекта AI Development Orchestrator. Один логический ПМ, независимые поручения.',
    objective:String(turn.body),
-   tools:'MCP orchestrator. Получай задачи через tasks.list/read, процессы через processes.list, решения через pm.decisions.list, итерации через iterations.list/read. Вызывай инструмент только когда информация нужна для текущего сообщения; не читай весь проект автоматически.',
+   tools:'MCP orchestrator. Получай задачи через tasks.list/read, процессы через processes.list, решения через pm.decisions.list, историю по необходимости через discussions.read/history.search, итерации через iterations.list/read. Вызывай инструмент только когда информация нужна для текущего сообщения; не читай весь проект автоматически.',
    instructions:[
     instructions.slice(0,3200),
     'Координируй работу специалистов; не подменяй аналитика, разработчика, QA или DevOps.',
@@ -267,7 +268,8 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    continuation:[
     ownerQuestion?'Вопрос, на который отвечает пользователь: '+JSON.stringify(ownerQuestion):'',
     replyResult.rows[0]?'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]).slice(0,1600):'',
-    eventResult.rows.length?'Последние события этого поручения: '+JSON.stringify(eventResult.rows).slice(0,1100):''
+    eventResult.rows.length?'Последние события этого поручения: '+JSON.stringify(eventResult.rows).slice(0,1000):'',
+    recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,950):''
    ].filter(Boolean).join('\n\n'),
    output:'Ответь по-русски кратко. При действиях назови подтверждённый результат; при ожидании — конкретную причину.'
   });
