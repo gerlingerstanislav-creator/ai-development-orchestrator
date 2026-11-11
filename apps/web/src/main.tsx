@@ -451,6 +451,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   node.scrollTop=node.scrollHeight;taskAtBottom.current=true;setTaskShowScrollBottom(false);
  }
  const projectAtBottom=useRef(true);const projectLastMessage=useRef<string|null>(null);
+ // The floating chat unmounts when closed; preserve the user's reading position per topic.
+ const projectScrollPositions=useRef(new Map<string,number>());
+ const projectVisibleThread=useRef<string|null>(null);
  const [projectShowScrollBottom,setProjectShowScrollBottom]=useState(false);
  const [projectReplyTo,setProjectReplyTo]=useState<string|null>(null);
  const [projectTopics,setProjectTopics]=useState<Array<{id:string;title:string;status:'open'|'closed'}>>([]);
@@ -460,11 +463,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  function onProjectScroll(){
   const node=projectThreadRef.current;if(!node)return;
   projectAtBottom.current=node.scrollHeight-node.scrollTop-node.clientHeight<75;
+  if(projectVisibleThread.current)projectScrollPositions.current.set(projectVisibleThread.current,projectAtBottom.current?Infinity:node.scrollTop);
   setProjectShowScrollBottom(!projectAtBottom.current);
  }
  function scrollProjectToBottom(){
   const node=projectThreadRef.current;if(!node)return;
   node.scrollTop=node.scrollHeight;projectAtBottom.current=true;setProjectShowScrollBottom(false);
+  if(projectVisibleThread.current)projectScrollPositions.current.set(projectVisibleThread.current,Infinity);
  }
  const projectInputRef=useRef<HTMLTextAreaElement|null>(null);
  const [openChatProjectId,setOpenChatProjectId]=useState<string|null>(null);
@@ -797,12 +802,27 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  },[token,selected?.id,section]);
 
  useLayoutEffect(()=>{
-  if(!projectChatOpen)return;
-  const last=projectMessages.at(-1)?.id||null;
-  const hasNewMessage=last!==projectLastMessage.current;
-  if(hasNewMessage&&(projectLastMessage.current===null||projectAtBottom.current))scrollProjectToBottom();
+  if(!projectChatOpen){projectVisibleThread.current=null;return;}
+  if(!projectHistoryLoaded)return;
+  const node=projectThreadRef.current;if(!node)return;
+  const key=selectedProjectId+':'+projectChatMode+':'+projectTopicId;
+  const visibleMessages=projectMessages.filter(message=>(message.topic_id||'')===projectTopicId);
+  const last=visibleMessages.at(-1)?.id||null;
+  if(projectVisibleThread.current!==key){
+   projectVisibleThread.current=key;
+   const saved=projectScrollPositions.current.get(key);
+   if(saved===undefined||saved===Infinity)scrollProjectToBottom();
+   else{
+    node.scrollTop=Math.min(saved,Math.max(0,node.scrollHeight-node.clientHeight));
+    projectAtBottom.current=node.scrollHeight-node.scrollTop-node.clientHeight<75;
+    setProjectShowScrollBottom(!projectAtBottom.current);
+   }
+   projectLastMessage.current=last;
+   return;
+  }
+  if(last!==projectLastMessage.current&&projectAtBottom.current)scrollProjectToBottom();
   projectLastMessage.current=last;
- },[projectMessages,projectChatOpen]);
+ },[projectMessages,projectChatOpen,projectChatMode,projectTopicId,projectHistoryLoaded,selectedProjectId]);
  useEffect(()=>{taskLastMessage.current=null;taskAtBottom.current=true;setTaskShowScrollBottom(false);},[activeTask?.id]);
  useLayoutEffect(()=>{
   const latest=chatEntries.at(-1)?.id||null;
@@ -875,7 +895,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   setBaHandoffOpen(false);setBaHandoffNotice('');
  },[selectedProjectId]);
  useEffect(()=>{if(!token)setProjectChats({});},[token]);
- useEffect(()=>{projectLastMessage.current=null;projectAtBottom.current=true;setProjectShowScrollBottom(false);setProjectReplyTo(null);setProjectTopicId('');},[selectedProjectId]);
+ useEffect(()=>{projectLastMessage.current=null;projectAtBottom.current=true;projectVisibleThread.current=null;projectScrollPositions.current.clear();setProjectShowScrollBottom(false);setProjectReplyTo(null);setProjectTopicId('');},[selectedProjectId]);
  useEffect(()=>{
   if(!selectedProjectId||!projectChatOpen)return;
   let alive=true;
