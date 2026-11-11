@@ -1,4 +1,4 @@
-import type {Pool,PoolClient} from 'pg';
+import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
@@ -176,7 +176,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
  case 'iterations.publish_plan':{
   const {iteration_id,plan_id,preview_revision,selected_changes}=z.object({iteration_id:uuid,plan_id:uuid,preview_revision:z.string().length(64),selected_changes:z.array(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,79}$/)).max(95)}).parse(params);
-  return publishIterationPlanViaManager(pool as PoolClient,projectId,iteration_id,plan_id,actorId,preview_revision,selected_changes);
+  return publishIterationPlanViaManager(pool,projectId,iteration_id,plan_id,actorId,preview_revision,selected_changes);
  }
  case 'iterations.list':return listIterations(pool,projectId);
  case 'iterations.read':{
@@ -194,7 +194,15 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  case 'iterations.launch':{
   if(session.role!=='manager')throw rejected('Запуск итерации доступен только ПМ',403);
   const data=z.object({iteration_id:uuid,expected_revision:z.number().int().positive()}).parse(params);
-  return enqueueDevelopment(pool,projectId,actorId,{iterationId:data.iteration_id,revision:data.expected_revision});
+  const launched=await enqueueDevelopment(pool,projectId,actorId,{iterationId:data.iteration_id,revision:data.expected_revision});
+  const queue=await readDevelopmentQueue(pool,projectId);
+  const selectedIds=new Set(launched.tasks.map(task=>task.id));
+  const blocked=queue.filter(task=>selectedIds.has(task.task_id)&&task.reason)
+   .map(({task_id,reason,detail})=>({task_id,reason,detail}));
+  return {...launched,blocked,github_required:blocked.some(item=>item.reason==='github'),
+   message:blocked.some(item=>item.reason==='github')
+    ?'Задачи есть на доске и поставлены в очередь, но разработка ждёт подключения GitHub. Проверь подключение репозитория и права токена.'
+    :'Очередь разработки создана. Выполняются только готовые задачи без блокировок.'};
  }
  case 'project.context':{
   const [p,stages,rules,github]=await Promise.all([
