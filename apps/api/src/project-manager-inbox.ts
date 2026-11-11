@@ -166,11 +166,11 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
-  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','discussions.open','iterations.ask_question','pm.orders.update')",[projectId,session.id]);
+  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
-   const kind:ProjectManagerWatch['kind']=row.tool==='iterations.prepare_plan'?'iteration_plan':row.tool==='workflow.approve_development'?'development':'document_import';
+   const kind:ProjectManagerWatch['kind']=['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':row.tool==='workflow.approve_development'?'development':'document_import';
    const id=kind==='iteration_plan'?row.result?.planning_run_id:kind==='development'?row.result?.id:row.result?.import_job_id;
    if(typeof id!=='string'||seen.has(id))return [];
    seen.add(id);
@@ -190,7 +190,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    if(orderId){
     const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question');
     const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===orderId);
-    const status=watchers.length?'waiting_agents':hasOpenQuestion?'waiting_user':turn.channel==='pm-internal'?'completed':'waiting_user';
+    const status=watchers.length?'waiting_agents':hasOpenQuestion?'waiting_user':'completed';
     if(!explicitlySet||watchers.length)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[orderId,status,effectiveTopic]);
     else await client.query('UPDATE project_pm_orders SET topic_id=COALESCE($2,topic_id),updated_at=now() WHERE id=$1',[orderId,effectiveTopic]);
     await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'pm_step',$3)",[randomUUID(),orderId,'ПМ завершил шаг; статус '+status]);

@@ -104,8 +104,14 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const id=randomUUID();
   const saved=await pool.query("INSERT INTO project_pm_decisions(id,project_id,order_id,source_message_id,iteration_id,question,answer) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,source_message_id,question) WHERE source_message_id IS NOT NULL DO NOTHING RETURNING id",
    [id,projectId,parent,source_message_id,iteration_id||null,question,answer]);
-  if(saved.rowCount&&iteration_id)await recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
-  return {id:saved.rows[0]?.id||null,recorded:!!saved.rowCount,iteration_id:iteration_id||null};
+  let planning:{planning_run_id?:string;status?:string}|null=null;
+  if(saved.rowCount&&iteration_id){
+   await recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
+   const scope=await pool.query('SELECT revision,approved_revision FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
+   if(scope.rows[0]?.revision===scope.rows[0]?.approved_revision)
+    planning=await queueIterationPlanning(pool,projectId,actorId,{iteration_id,request:'Перепроверь план с новым подтверждённым решением: '+question.slice(0,250)});
+  }
+  return {id:saved.rows[0]?.id||null,recorded:!!saved.rowCount,iteration_id:iteration_id||null,planning_run_id:planning?.planning_run_id,status:planning?.status};
  }
  case 'pm.orders.list':{
   return {orders:(await pool.query("SELECT id,summary,status,topic_id,updated_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[projectId])).rows};
