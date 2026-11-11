@@ -64,10 +64,10 @@ export const agentToolCatalog=[
  tool('workflow.approve_development','Запустить разработку по явно подтверждённому поручению владельца через стандартный API; проверяет требования и блокировки.',{task_id:id},['task_id']),
  tool('approvals.list','Прочитать ожидающие решения владельца согласования по задачам (требования, вопросы агентов, QA).',{}),
  tool('discussions.list','Список тем ПМ проекта с открытыми и закрытыми обсуждениями.',{}),
- tool('discussions.open','Создать тему обсуждения с владельцем. Повторно используй уже открытую тему с тем же смыслом.',{title:str},['title']),
+ tool('discussions.open','Создать тему обсуждения с владельцем и сразу отправить первый вопрос или сообщение. Повторно используй открытую тему с тем же смыслом.',{title:str,opening_message:str,awaiting_reply:field('boolean','Нужен ответ владельца. По умолчанию да.')},['title','opening_message']),
  tool('discussions.close','Закрыть обсуждение после ответа владельца и передачи решения. Можно открыть повторно через discussions.reopen.',{topic_id:id},['topic_id']),
  tool('discussions.reopen','Открыть закрытую тему для дополнительных уточнений.',{topic_id:id},['topic_id']),
- tool('processes.list','Получить текущие и завершённые процессы проекта.',{}),
+ tool('processes.list','Получить текущие и завершённые процессы проекта, включая QA и сверку ТЗ.',{task_id:id}),
  tool('processes.report','Зафиксировать прогресс автономного агента в журнале.',{stage:str,message:str},['stage','message']),
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
  tool('memory.record','Сохранить опыт либо предложить улучшение инструкции. Опыт не становится автоматически обязательным правилом.',{kind:field('string','observation или instruction_suggestion'),text:str,evidence:str,idempotency_key:idem},['kind','text'])

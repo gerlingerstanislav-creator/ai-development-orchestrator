@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
-import {conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
+import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -216,7 +216,10 @@ function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}=
   child.on('error',settle);
   child.on('close',(code)=>{
    if(timedOut)return settle(new Error(binary+' превысил ограничение времени'));
-   if(code!==0)return settle(new Error(binary+' завершился с кодом '+code+': '+errors.slice(-1200)));
+   if(code!==0){
+    const detail=binary==='codex'?codexFailureDetail(output,errors):errors.slice(-1200);
+    return settle(new Error(binary+' завершился с кодом '+code+(detail?': '+detail:'')));
+   }
    settle();
   });
  });
@@ -325,7 +328,7 @@ async function runJob(job,state){
    throw new Error('Не удалось проверить ветку задачи: GitHub HTTP '+remoteBranch.status);
   }
   state.branch=branch;
-  state.message='Codex изменяет код';
+  state.message='Изменяет код';
   const prompt=[
    'Ты AI-разработчик, работаешь в настоящей локальной копии GitHub-репозитория.',
    'Рабочая директория является корнем репозитория. У тебя ЕСТЬ доступ на чтение и запись файлов в этой директории.',
@@ -371,7 +374,7 @@ async function runJob(job,state){
    if(timeLeft()<45000)throw new Error('Codex завершил первую попытку без изменений. Недостаточно времени для повторного запуска.');
    const assistantText=(attempt.answer||'').slice(-1500);
    const diagnostics=(attempt.result.stderr||'').slice(-1200);
-   state.message='Codex не создал файлы. Повторная попытка с явным требованием изменить репозиторий.';
+   state.message='Файлы не изменились. Повторная попытка с явным требованием изменить репозиторий.';
    // One focused retry handles cases where Codex interpreted the task as a request
    // for advice rather than a request to create real source files.
    attempt=await runCodex(prompt+'\n\nПОВТОРНЫЙ ЗАПУСК: предыдущий ответ не изменил ни одного файла. '+ 
@@ -473,10 +476,10 @@ async function runTestJob(job,state){
    'Перед вопросом о требованиях проверь ТЗ, ответы пользователя и коллег в задаче. Они помогают понять требования, а результат проверки подтверждается выполнением тестов.',
    'Контекст задачи: '+String(job.handoffContext||'[]').slice(0,8500)
   ].join('\n\n');
-  state.message='Codex выполняет независимую проверку кода и доступных тестов';
+  state.message='Проверяет код и запускает доступные тесты';
   const reportSchema={
    type:'object',additionalProperties:false,
-   required:['verdict','summary','handoffNote','findings','checks','caseResults'],
+   required:['verdict','summary','handoffNote','learningSuggestion','findings','checks','caseResults'],
    properties:{
     verdict:{type:'string',enum:['passed','failed','blocked']},
     summary:{type:'string'},
@@ -513,7 +516,7 @@ async function runTestJob(job,state){
   const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,
    '--output-schema',schemaPath];
-  const firstRun=await command('codex',[...args,prompt],{
+  const firstRun=await command('codex',[...args,prompt+'\n\nПоле learningSuggestion: краткий вывод или пустая строка.'],{
    cwd:dir,env:cliEnv,timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
   });
   let parsed=codexJsonResult(firstRun.stdout);

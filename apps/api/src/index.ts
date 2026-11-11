@@ -863,10 +863,14 @@ app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
  catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message});}
 });
 
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+function developmentProcessDetail(message:string){
+ return message.replace('Codex изменяет код','Изменяет код').replace('Codex не создал файлы.','Файлы не изменились.');
+}
+
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
- const [developments,imports,accessibleProjects,tests,merges,analyses,iterationRuns]=await Promise.all([
+ const [developments,imports,tests,merges,analyses,iterationRuns,taskAnalyses]=await Promise.all([
   pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.title AS task_title,t.display_number,a.status,a.message,a.created_at,a.cycle_id
     FROM ai_task_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
     JOIN tasks t ON t.id=a.task_id
@@ -876,20 +880,27 @@ app.get('/api/background-processes',async(req:any)=>{
     FROM document_import_jobs j JOIN projects p ON p.id=j.project_id
     JOIN memberships m ON m.project_id=j.project_id AND m.user_id=$1
     WHERE j.status IN ('queued','running') ORDER BY j.created_at DESC LIMIT 50`,[userId]),
-  pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId]),
-  pool.query("SELECT t.id,t.project_id,t.message,t.created_at,p.name AS project_name FROM ai_test_runs t JOIN projects p ON p.id=t.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE t.status IN ('queued','running') ORDER BY t.created_at DESC LIMIT 50",[userId]),
+  pool.query("SELECT t.id,t.project_id,t.task_id,t.status,t.message,t.created_at,p.name AS project_name FROM ai_test_runs t JOIN projects p ON p.id=t.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE t.status IN ('queued','running') ORDER BY t.created_at DESC LIMIT 50",[userId]),
   pool.query("SELECT j.id,j.project_id,j.status,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status IN ('queued','running') ORDER BY j.created_at DESC LIMIT 50",[userId]),
-  pool.query("SELECT r.id,r.project_id,r.task_id,r.message,r.created_at,t.title,p.name AS project_name FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id JOIN projects p ON p.id=r.project_id JOIN memberships m ON m.project_id=r.project_id AND m.user_id=$1 WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50",[userId]),
+  pool.query(`SELECT r.id,r.project_id,r.task_id,r.status,r.message,r.created_at,t.title,p.name AS project_name,phase.stage
+   FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id JOIN projects p ON p.id=r.project_id
+   JOIN memberships m ON m.project_id=r.project_id AND m.user_id=$1
+   LEFT JOIN LATERAL (SELECT e.stage FROM process_events e WHERE e.project_id=r.project_id AND e.process_id=r.id
+    AND e.stage IN ('review_started','test_design_started') ORDER BY e.created_at DESC,e.id DESC LIMIT 1) phase ON true
+   WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50`,[userId]),
   pool.query(`SELECT r.id,r.status,r.message,r.created_at,i.id AS iteration_id,i.project_id,i.title,p.name AS project_name
    FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id JOIN projects p ON p.id=i.project_id
    JOIN memberships m ON m.project_id=i.project_id AND m.user_id=$1
-   WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50`,[userId])
+   WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50`,[userId]),
+  pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.display_number,t.title,a.status,a.message,a.created_at
+   FROM agent_analysis_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
+   JOIN tasks t ON t.id=a.task_id WHERE a.status IN ('queued','running') ORDER BY a.created_at DESC LIMIT 50`,[userId])
  ]);
  const processes:BackgroundProcess[]=[];
  for(const row of developments.rows){
-  let status:string=row.status,detail:string=row.message||'Codex работает над задачей';
+  let status:string=row.status,detail:string=developmentProcessDetail(row.message||'Работа над задачей');
   if(row.cycle_id){
-   processes.push({id:'development:'+row.id,kind:'development',projectId:row.project_id,projectName:row.project_name,
+   processes.push({id:'development:'+row.id,kind:'development',role:'development',projectId:row.project_id,projectName:row.project_name,
     taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
     detail,status:status==='queued'?'queued':'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
    continue; // Temporal owns reconciliation; do not bypass tests and move to merge queue.
@@ -900,7 +911,7 @@ app.get('/api/background-processes',async(req:any)=>{
   try{
    const remote=await agentCall('/jobs/'+row.id);
    status=String(remote.status||status);
-   detail=String(remote.message||detail).slice(0,250);
+   detail=developmentProcessDetail(String(remote.message||detail)).slice(0,250);
    if(['completed','failed'].includes(status)){
     await pool.query("UPDATE ai_task_runs SET status=$2,message=$3,branch=COALESCE($4,branch),pr_url=COALESCE($5,pr_url),completed_at=now() WHERE id=$1 AND status IN ('running','queued')",
      [row.id,status,detail,remote.branch||null,remote.prUrl||null]).catch(()=>{});
@@ -929,32 +940,37 @@ app.get('/api/background-processes',async(req:any)=>{
    await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development',$4,$5)",
     [randomUUID(),row.project_id,row.id,status,detail]).catch(()=>{});
   }
-  processes.push({id:'development:'+row.id,kind:'development',projectId:row.project_id,projectName:row.project_name,
+  processes.push({id:'development:'+row.id,kind:'development',role:'development',projectId:row.project_id,projectName:row.project_name,
    taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
    detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  for(const row of imports.rows){
-  processes.push({id:'import:'+row.id,kind:'document_import',projectId:row.project_id,projectName:row.project_name,
+  processes.push({id:'import:'+row.id,kind:'document_import',role:'analyst',projectId:row.project_id,projectName:row.project_name,
    title:'Импорт документации',detail:String(row.message||'Обработка Markdown-документов').slice(0,250),
-   status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
+   status:row.status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  for(const row of tests.rows){
-  processes.push({id:'test:'+row.id,kind:'testing',projectId:row.project_id,projectName:row.project_name,
-   title:'AI-тестирование',detail:row.message||'Проверка задачи',status:'running',
+  processes.push({id:'test:'+row.id,kind:'testing',role:'testing',taskId:row.task_id,projectId:row.project_id,projectName:row.project_name,
+   title:'AI-тестирование',detail:row.message||'Проверка задачи',status:row.status,
    createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  for(const row of analyses.rows){
-  if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // A Temporal review already appears within its development cycle.
-  processes.push({id:'analysis:'+row.id,kind:'analysis',projectId:row.project_id,projectName:row.project_name,
-   taskId:row.task_id,title:'Сверка требований · '+row.title,detail:row.message||'AI-аналитик работает',status:'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
+  const preparingTests=row.stage==='test_design_started';
+  processes.push({id:'analysis:'+row.id,kind:preparingTests?'testing':'analysis',role:preparingTests?'testing':'analysis',projectId:row.project_id,projectName:row.project_name,
+   taskId:row.task_id,title:(preparingTests?'Подготовка тест-плана · ':'Сверка требований · ')+row.title,detail:row.message||'Проверка задачи',status:row.status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
+ }
+ for(const row of taskAnalyses.rows){
+  processes.push({id:'task-analysis:'+row.id,kind:'analysis',role:'analysis',projectId:row.project_id,projectName:row.project_name,
+   taskId:row.task_id,title:'Анализ #'+row.display_number+' · '+row.title,detail:row.message||'Подготовка требований к разработке',
+   status:row.status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  for(const row of iterationRuns.rows){
-  processes.push({id:'iteration-plan:'+row.id,kind:'analysis',projectId:row.project_id,projectName:row.project_name,
+  processes.push({id:'iteration-plan:'+row.id,kind:'analysis',role:'analysis',projectId:row.project_id,projectName:row.project_name,
    title:'План задач · '+row.title,detail:row.message,status:row.status,createdAt:row.created_at,
    url:'/projects/'+row.project_id+'/docs/plan/'+row.iteration_id});
  }
  for(const row of merges.rows){
-  processes.push({id:'merge:'+row.id,kind:'merge',projectId:row.project_id,projectName:row.project_name,
+  processes.push({id:'merge:'+row.id,kind:'merge',role:'platform',projectId:row.project_id,projectName:row.project_name,
    title:'Последовательное слияние PR',detail:row.message||'Обработка PR',status:row.status==='queued'?'queued':'running',
    createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }

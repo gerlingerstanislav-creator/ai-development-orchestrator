@@ -87,7 +87,7 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
   const result=await pool.query(
    "INSERT INTO manager_requests(id,project_id,task_id,source_key,kind,source_id,payload) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(task_id,source_key) DO NOTHING RETURNING id",
    [randomUUID(),projectId,taskId,source,kind,sourceId,JSON.stringify(payload)]);
-  if(result.rowCount){
+  if(result.rowCount&&kind==='qa_visual'){
    await pool.query("INSERT INTO manager_messages(id,project_id,task_id,role,body) VALUES($1,$2,$3,'manager',$4)",
     [randomUUID(),projectId,taskId,managerRequestText(kind,payload)]);
   }

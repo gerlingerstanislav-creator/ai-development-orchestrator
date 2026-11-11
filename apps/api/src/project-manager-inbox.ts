@@ -35,7 +35,7 @@ export function pmInboxWorkflowId(turn:PendingTurn){
  return prefix+turn.id+(turn.pm_dispatch_attempt>1?'-retry-'+turn.pm_dispatch_attempt:'');
 }
 
-/** Deliver explicit owner questions even when no PM turn is running. */
+/** Normalize old task questions and deliver explicit non-analyst requests to the PM chat. */
 export async function publishOwnerQuestionsToPmChat(pool:Pick<Pool,'query'>){
  // Older analyses stored their owner questions directly on the task.
  // Move them into the same reply flow without changing the wording.
@@ -72,6 +72,7 @@ export async function publishOwnerQuestionsToPmChat(pool:Pick<Pool,'query'>){
    JOIN tasks t ON t.id=n.task_id AND t.project_id=n.project_id AND t.stage<>'done'
    JOIN projects p ON p.id=n.project_id AND p.deleted_at IS NULL
    WHERE n.kind='question' AND n.status='open' AND n.requires_customer
+    AND n.author_stage NOT IN ('analysis','analyst','business_analyst')
     AND NOT EXISTS(SELECT 1 FROM project_pm_process_reports r WHERE r.project_id=n.project_id AND r.process_id=n.id)
    ORDER BY n.created_at,n.id LIMIT 25
   ), claimed AS (
@@ -260,7 +261,8 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    ownerQuestion?'Это ответ на конкретный вопрос: '+JSON.stringify(ownerQuestion)+'. Если решение явно дано и вопрос открыт, сохрани его через approvals.answer_question с указанными ID. Если владелец просит уточнить вопрос, ответь и оставь поручение в waiting_user.':'',
    'НОВОЕ СООБЩЕНИЕ ВЛАДЕЛЬЦА: '+String(turn.body),
    'При завершении процесса ты будешь вызван повторно системой. Продолжай исходное поручение, а не просто пересказывай событие. Используй iterations.preview_plan и iterations.publish_plan при планировании. После прямой команды владельца «приступай к разработке» используй iterations.launch для утверждённой итерации, не пингуй разработчиков по каждой задаче.',
-   'При необходимости задавай вопрос в отдельной теме через discussions.open и помечай поручение как waiting_user через pm.orders.update. Пока ответ не получен, не считай его закрытым.',
+   'Если тебе самому нужно решение по поручению, создай тему через discussions.open с первым сообщением и пометь поручение waiting_user. Вопросы и предложения аналитика оставляй в карточке задачи. Для статуса укажи ссылку на карточку.',
+   'На вопросы о состоянии читай processes.list по задаче. Объясняй конкретную стадию, причину ожидания и следующий шаг по фактам системы.',
    'Если пользователь просит дозапустить, проверь processes.list и development_queue. Существующие поручения с актуальной ревизией подхватит диспетчер; сообщи конкретные причины ожидания. Устаревший запуск требует новой явной команды владельца на актуальную итерацию.',
    'Когда пользователь уже дал ответ, используй сохранённые решения вместо повторного вопроса. Зафиксируй новое решение через pm.decisions.record с ID сообщения пользователя, если оно влияет на требования/итерацию.',
    'Твоя работа: оперативно распределять поручения через инструменты, отслеживать статусы, собирать результаты, не подменять собой разработчика, БА, СА, QA или DevOps.',
@@ -268,7 +270,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    'У тебя есть MCP orchestrator. Реальные операции выполняй только через доступные инструменты. Не заявляй о создании задач или запуске процессов, если инструмент этого не подтвердил.',
    'Согласования этапов: покажи владельцу конкретную задачу, текущий и следующий этап, критерии, риски и ссылку на нужный экран/процесс. Не обходи обязательные проверки. Если доступный инструмент не поддерживает подтверждение, сообщи об этом и предложи конкретное действие в интерфейсе, но не выдавай согласование за выполненное.',
    'Вопросы агентов: прежде чем спрашивать владельца, прочитай задачи и принятые решения. Владелец может отвечать на вопросы других агентов через ПМ. Не выдумывай ответы на нерешённые вопросы.',
-   'Обсуждения: соблюдай тему и контекст сообщения, на которое пользователь отвечает. При закрытии вопроса рекомендуй завершить тему. Не закрывай сам без доступного инструмента.',
+   'Обсуждения: соблюдай тему и контекст ответа. Когда вопрос разрешён и решение записано, закрой тему через discussions.close. При наличии нерешённого вопроса сохрани waiting_user.',
    'Инструкции ПМ: '+instructions.slice(0,4400),
    'Накопленные знания: '+learned.slice(0,3200),
    'Проект: '+JSON.stringify(projectResult.rows[0]||{}).slice(0,1500),
@@ -314,12 +316,17 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
      [randomUUID(),projectId,data.message,effectiveTopic,orderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
    }
    if(orderId&&finished.rowCount){
-    const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question');
+    const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question'||row.tool==='discussions.open'&&row.result?.awaiting_reply===true);
     const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===orderId);
     const questionOpen=ownerQuestion&&!!(await client.query("SELECT 1 FROM task_agent_notes WHERE id=$1 AND status IN ('open','processing')",[ownerQuestion.id])).rowCount;
-    const status=questionOpen?'waiting_user':watchers.length?'waiting_agents':hasOpenQuestion?'waiting_user':'completed';
-    if(!explicitlySet||watchers.length||ownerQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[orderId,status,effectiveTopic]);
+    const status=questionOpen||hasOpenQuestion?'waiting_user':watchers.length?'waiting_agents':'completed';
+    if(!explicitlySet||watchers.length||ownerQuestion||hasOpenQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[orderId,status,effectiveTopic]);
     else await client.query('UPDATE project_pm_orders SET topic_id=COALESCE($2,topic_id),updated_at=now() WHERE id=$1',[orderId,effectiveTopic]);
+    if(effectiveTopic)await client.query(`UPDATE project_chat_topics t SET status='closed',closed_at=now()
+     WHERE t.id=$1 AND t.project_id=$2 AND t.status='open'
+      AND EXISTS(SELECT 1 FROM project_pm_orders o WHERE o.id=$3 AND o.status='completed')
+      AND NOT EXISTS(SELECT 1 FROM project_pm_orders o WHERE o.project_id=t.project_id AND o.topic_id=t.id
+       AND o.status IN ('queued','working','waiting_agents','waiting_user'))`,[effectiveTopic,projectId,orderId]);
     await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'pm_step',$3)",[randomUUID(),orderId,'ПМ завершил шаг; статус '+status]);
    }
    await client.query('COMMIT');

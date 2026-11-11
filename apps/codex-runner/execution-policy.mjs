@@ -66,3 +66,16 @@ export const conversationPolicy=[
  ...setting('web_search','disabled'),
  ...setting('shell_environment_policy.inherit','none')
 ];
+
+export function codexFailureDetail(output,stderr){
+ const events=[];
+ for(const line of output.split('\n')){
+  try{
+   const entry=JSON.parse(line);
+   const message=entry.type==='turn.failed'?entry.error?.message:entry.type==='error'?entry.message:undefined;
+   if(typeof message==='string'&&message.trim())events.push(message.trim());
+  }catch{/* Codex may emit ordinary text alongside JSON events. */}
+ }
+ const diagnostics=stderr.split('\n').filter(line=>!/^reading (additional )?input from stdin/i.test(line.trim())).join('\n').trim();
+ return [...new Set(events)].slice(-2).join(' · ').slice(-1200)||diagnostics.slice(-1200);
+}
