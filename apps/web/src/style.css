@@ -1158,3 +1158,25 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 
 .task-thread-wrap{position:relative;display:flex;flex-direction:column;flex:1;min-height:0}
 .task-thread-wrap .assistant-thread{flex:1;min-height:0}
+
+/* Dedicated planning tab and compact, persistent PM discussion sidebar. */
+.project-plan-page{flex:1;min-height:0;min-width:0;overflow:auto}
+.project-plan-page .iteration-workspace{width:100%;box-sizing:border-box}
+.project-chat{width:min(860px,calc(100vw - 28px))}
+.pm-chat-body{display:flex;flex:1;min-width:0;min-height:0}
+.pm-topic-sidebar{width:205px;flex:0 0 205px;display:flex;flex-direction:column;gap:4px;padding:12px 8px;border-right:1px solid #e7eaf2;overflow-y:auto}
+.pm-topic-sidebar-title{padding:2px 7px 7px;font-size:11px;color:#8491a7}
+.pm-topic-item{flex:1;min-width:0;border:0;border-radius:7px;background:transparent;color:#4c5b74;text-align:left;font-size:12px;padding:8px 7px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-topic-item.active,.pm-topic-entry.active{background:#edf0ff;color:#4656be;font-weight:700}
+.pm-topic-entry{display:flex;align-items:center;min-width:0;border-radius:7px}
+.pm-topic-entry:hover{background:#f4f6ff}
+.pm-topic-toggle{background:transparent;border:0;color:#8c98aa;padding:3px 6px;cursor:pointer}
+.pm-topic-sidebar .pm-new-topic{padding:8px 0 0;gap:4px}
+.pm-chat-conversation{display:flex;flex:1;min-width:0;min-height:0;flex-direction:column}
+.iteration-question{display:grid;gap:7px;padding:10px;border:1px solid #e7eaf1;border-radius:8px}
+.iteration-question textarea{min-height:70px;font-size:12px}
+.iteration-plan-tree{list-style:none;padding:0;margin:0;display:grid;gap:5px}
+.iteration-plan-tree li{padding:4px 0}
+.iteration-plan-tree details summary{cursor:pointer}
+.iteration-plan-tree .iteration-child{margin-left:20px;padding-left:12px;border-left:1px solid #e3e8f2}
+@media(max-width:650px){.project-chat{width:calc(100vw - 20px)}.pm-topic-sidebar{width:125px;flex-basis:125px;padding:8px 5px}.pm-topic-item{padding:7px 5px;font-size:11px}}
