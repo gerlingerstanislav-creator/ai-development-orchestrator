@@ -245,3 +245,41 @@ export async function prepareProjectSpecification(jobId:string):Promise<void>{
  try{await analyst.runProjectSpecification(jobId);}
  catch{await steps.failProjectSpecification(jobId);}
 }
+
+export async function mergeReadyBatch(batchId:string):Promise<void>{
+ try{
+  const tasks=await steps.pendingMergeTasks(batchId);
+  for(const taskId of tasks){
+   let result:Awaited<ReturnType<typeof activities.tryMergeBatchTask>>|undefined;
+   let executionError:string|undefined;
+   try{
+    for(let attempt=0;attempt<3;attempt++){
+     result=await steps.tryMergeBatchTask(batchId,taskId);
+     if(result.status==='merged'||result.status==='skipped'||attempt===2)break;
+     if(result.status==='conflict'){
+      let completed=false;
+      for(let poll=0;poll<150;poll++){
+       const conflict=await steps.pollMergeConflict(batchId,taskId,attempt);
+       if(conflict.status==='completed'){completed=true;break;}
+       if(conflict.status==='failed'){executionError=conflict.message||'Не удалось разрешить конфликт';break;}
+       await sleep('8 seconds');
+      }
+      if(!completed){executionError??='Истекло время ожидания разрешения конфликта';break;}
+     }
+     await sleep('3 seconds');
+    }
+   }catch(error){
+    let cause=error;
+    while(cause instanceof Error&&cause.cause instanceof Error)cause=cause.cause;
+    executionError=cause instanceof Error?cause.message:String(cause);
+   }
+   const status=executionError?'failed':result?.status==='merged'?'merged':'skipped';
+   const reason=executionError??result?.reason;
+   await steps.recordMergeBatchResult(batchId,{taskId,status,...(reason?{reason}:{})});
+  }
+ }catch(error){
+  await steps.completeMergeBatch(batchId,String(error));
+  throw error;
+ }
+ await steps.completeMergeBatch(batchId);
+}
