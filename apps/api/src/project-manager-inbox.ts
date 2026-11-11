@@ -34,16 +34,27 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
   }
   const messageId=randomUUID();
 
-  const orderId=randomUUID();
   const client=await pool.connect();
+  let orderId:string='';
+
   try{
    await client.query('BEGIN');
-   await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id) VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6)",
-    [messageId,id,uid(req),message,replyTo||null,topicId||null]);
-   await client.query("INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,topic_id,summary) VALUES($1,$2,$3,$4,$5,$6)",
-    [orderId,id,uid(req),messageId,topicId||null,message.slice(0,500)]);
-   await client.query('UPDATE assistant_messages SET pm_order_id=$2 WHERE id=$1',[messageId,orderId]);
-   await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'created',$3)",[randomUUID(),orderId,'Поручение принято от владельца']);
+
+   // A reply within a topic resumes the waiting order rather than opening
+   // an unrelated order and losing its decision context.
+   const parent=replyTo?(await client.query("SELECT pm_order_id FROM assistant_messages WHERE id=$1 AND project_id=$2",[replyTo,id])).rows[0]?.pm_order_id:null;
+   const waiting=topicId?(await client.query("SELECT id FROM project_pm_orders WHERE project_id=$1 AND topic_id=$2 AND status='waiting_user' ORDER BY updated_at DESC LIMIT 1",[id,topicId])).rows[0]?.id:null;
+   const existing=parent?(await client.query("SELECT id FROM project_pm_orders WHERE id=$1 AND project_id=$2 AND status='waiting_user'",[parent,id])).rows[0]?.id:null;
+   orderId=existing||waiting||randomUUID();
+   await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7)",
+    [messageId,id,uid(req),message,replyTo||null,topicId||null,orderId]);
+   if(existing||waiting)
+    await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[orderId]);
+   else
+    await client.query("INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,topic_id,summary) VALUES($1,$2,$3,$4,$5,$6)",
+     [orderId,id,uid(req),messageId,topicId||null,message.slice(0,500)]);
+   await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)",
+    [randomUUID(),orderId,existing||waiting?'owner_reply':'created',existing||waiting?'Владелец ответил на вопрос ПМ':'Поручение принято от владельца']);
    await client.query('COMMIT');
   }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   try{await start(id,messageId);}
@@ -59,7 +70,7 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const changed=await pool.query("UPDATE assistant_messages SET status='queued' WHERE project_id=$1 AND id=$2 AND channel='project' AND role='user' AND status='failed' RETURNING id",[id,messageId]);
   if(!changed.rowCount)return reply.code(409).send({error:'Повторить можно только сообщение с ошибкой'});
-  await pool.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE source_message_id=$1",[messageId]);
+  await pool.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=(SELECT pm_order_id FROM assistant_messages WHERE id=$1)",[messageId]);
   await start(id,messageId).catch(error=>req.log.warn({error,messageId},'PM retry will be recovered'));
   return reply.code(202).send({id:messageId,status:'queued'});
  });
@@ -171,8 +182,8 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    const finished=await client.query("UPDATE assistant_messages SET status='completed' WHERE id=$1 AND status='processing' RETURNING id",[messageId]);
    if(finished.rowCount){
     if(effectiveTopic)await client.query("UPDATE assistant_messages SET topic_id=$2 WHERE id=$1",[messageId,effectiveTopic]);
-    await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,created_task_id,created_document_id,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5,$6,$7,$8)",
-     [randomUUID(),projectId,data.message,effectiveTopic,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
+    await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id,created_task_id,created_document_id,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5,$6,$7,$8,$9)",
+     [randomUUID(),projectId,data.message,effectiveTopic,orderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
    }
    if(orderId){
     const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question');
