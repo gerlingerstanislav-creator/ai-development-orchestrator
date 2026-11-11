@@ -88,8 +88,19 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
    "INSERT INTO manager_requests(id,project_id,task_id,source_key,kind,source_id,payload) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(task_id,source_key) DO NOTHING RETURNING id",
    [randomUUID(),projectId,taskId,source,kind,sourceId,JSON.stringify(payload)]);
   if(result.rowCount&&kind==='qa_visual'){
+   const details=managerRequestText(kind,payload);
    await pool.query("INSERT INTO manager_messages(id,project_id,task_id,role,body) VALUES($1,$2,$3,'manager',$4)",
-    [randomUUID(),projectId,taskId,managerRequestText(kind,payload)]);
+    [randomUUID(),projectId,taskId,details]);
+   // Surface actionable QA limitations in PM's main chat. Use the task ID for
+   // the existing "Открыть задачу" action; no separate temporary topic.
+   const taskInfo=(await pool.query('SELECT title,display_number FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId])).rows[0];
+   const assessment=payload.assessment;
+   const notification='QA по задаче #'+String(taskInfo?.display_number??'')+' «'+String(taskInfo?.title??'')+'»: подтверждено '+
+    String(assessment.passed)+' из '+String(assessment.total)+' сценариев. '+String(assessment.unverified.length)+
+    ' не выполнено из-за ограничений инструментов. Открой карточку задачи, чтобы увидеть причины, или попроси меня показать доступные решения. '+
+    'Пропуск возможен только после твоего явного согласия; сбой Codex и найденные дефекты не являются основанием для пропуска.';
+   await pool.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,created_task_id) VALUES($1,$2,'assistant',$3,'project','completed',$4)",
+    [randomUUID(),projectId,notification,taskId]);
   }
  };
  if(task.stage==='analysis'&&Array.isArray(task.clarification_questions)&&task.clarification_questions.length){
