@@ -64,7 +64,7 @@ export async function createTaskPolicy(workDirectory,{writable=true,qa=false}={}
   ...setting('shell_environment_policy.set.LANG','C.UTF-8'),
   ...(qa?[
    ...setting('shell_environment_policy.set.NODE_PATH','/usr/local/lib/node_modules'),
-   ...setting('shell_environment_policy.set.CHROMIUM_BIN','/usr/bin/chromium'),
+   ...setting('shell_environment_policy.set.CHROMIUM_BIN','/usr/lib/chromium/chromium'),
    ...setting('shell_environment_policy.set.npm_config_registry','https://registry.npmjs.org/'),
    ...setting('shell_environment_policy.set.PIP_INDEX_URL','https://pypi.org/simple'),
    ...setting('shell_environment_policy.set.XDG_CACHE_HOME',scratch),
