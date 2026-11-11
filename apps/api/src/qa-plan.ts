@@ -1,3 +1,4 @@
+import {composeAgentPrompt} from './agent-prompt.js';
 import type { Pool } from 'pg';
 import { createHash,randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -45,9 +46,9 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  const [task,stage,rules,docs,existing]=await Promise.all([
   pool.query('SELECT title,description,analysis_state,spec_version,spec_reviewed_version,spec_review_status FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='testing'",[projectId]),
-  pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 50',[projectId]),
-  pool.query("SELECT title,body FROM documents WHERE project_id=$1 AND (document_kind='functional' OR implementation_status='implemented') ORDER BY updated_at DESC LIMIT 6",[projectId]),
-  pool.query("SELECT id,title,area,description,priority,category FROM qa_test_cases WHERE project_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT 70",[projectId])
+  pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 8',[projectId]),
+  pool.query("SELECT title,body FROM documents WHERE project_id=$1 AND (document_kind='functional' OR implementation_status='implemented') ORDER BY updated_at DESC LIMIT 2",[projectId]),
+  pool.query("SELECT id,title,area,description,priority,category FROM qa_test_cases WHERE project_id=$1 AND status='active' ORDER BY updated_at DESC LIMIT 16",[projectId])
  ]);
  if(!task.rowCount)throw new Error('Задача для подготовки QA не найдена');
  if(task.rows[0].analysis_state!=='approved')throw new Error('Сначала требуется утвердить анализ задачи');
@@ -61,23 +62,21 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   const count=await pool.query('SELECT count(*)::int AS count FROM qa_plan_cases WHERE plan_id=$1',[plan.rows[0].id]);
   if(count.rows[0].count>0)return count.rows[0].count;
  }
- const prompt=[
-  'Ты независимый QA-инженер. Создай или актуализируй тестовую документацию ПЕРЕД тестированием, ПОСЛЕ сверки ТЗ аналитиком.',
-  'Никогда не подстраивай ожидаемое поведение под текущий код. Не придумывай реализованные возможности.',
-  'Сформируй 1–6 пользовательских сценариев и 1–12 конкретных тест-кейсов: позитивные, негативные, крайние условия, права доступа (где уместно).',
-  'Для каждого тест-кейса укажи чёткие действия и ожидаемые результаты, чтобы проверить его мог человек или AI.',
-  'Обозначай execution_mode как automated, manual или hybrid. Используй осмысленные названия областей area; не дублируй существующие кейсы.',
-  'Выбери подходящие существующие регрессионные кейсы по UUID; только из предоставленного списка.',
-  'Ответь строго JSON: {"summary":"...","flows":[{"title":"...","description":"...","preconditions":"...","steps":["..."]}],"cases":[{"title":"...","area":"...","flow_title":"название flow","description":"...","preconditions":"...","steps":[{"action":"...","expected":"..."}],"priority":"critical|high|normal|low","category":"smoke|regression|functional","execution_mode":"automated|manual|hybrid"}],"regression_case_ids":["uuid"]}.',
-  'Роль агента: '+String(stage.rows[0]?.agent_name||'AI-тестировщик'),
-  'Задача: '+row.title+'\n'+String(row.description||'').slice(0,17000),
-  'Правила проекта: '+rulesText.slice(0,2200),
-  'Инструкции агента: '+instructions.slice(0,2000),
-  'Рабочие комментарии разработчика и аналитика, адресованные QA (не являются ТЗ): '+(await taskNotesContext(pool,projectId,taskId,'testing')).slice(0,2200),
-  'Реализованные изменения (используй для выбора проверок, но НЕ подгоняй ожидаемый результат под код): '+String(args.implementationEvidence||'').slice(0,6000),
-  'Существующая функциональная документация (сжатый контекст): '+JSON.stringify(docs.rows.map((d:any)=>({title:d.title,body:String(d.body).slice(0,2400)}))).slice(0,16000),
-  'Существующий каталог тест-кейсов: '+JSON.stringify(existing.rows).slice(0,14000)
- ].join('\n\n');
+ const prompt=composeAgentPrompt({
+  role:String(stage.rows[0]?.agent_name||'Независимый QA-инженер'),
+  objective:'Подготовь 1–6 сценариев и 1–12 конкретных тест-кейсов по актуальному ТЗ. Не подгоняй ожидаемые результаты под код.\nЗадача: '+row.title+'\n'+String(row.description||'').slice(0,8500),
+  instructions:instructions.slice(0,1600),
+  scope:'Проект '+projectId+', задача '+taskId+', версия ТЗ '+row.spec_version,
+  tools:'Это составление тест-плана, а не выполнение тестов. Не утверждай, что тесты запускались.',
+  context:[
+   'Правила проекта: '+rulesText.slice(0,800),
+   'Комментарии специалистов: '+(await taskNotesContext(pool,projectId,taskId,'testing')).slice(0,850),
+   'Изменения реализации для выбора проверок (не менять ожидаемое поведение): '+String(args.implementationEvidence||'').slice(0,1200),
+   'Связанные требования: '+JSON.stringify(docs.rows.map((d:any)=>({title:d.title,body:String(d.body).slice(0,480)}))).slice(0,1100),
+   'Существующие регрессионные кейсы для выбора: '+JSON.stringify(existing.rows.map((x:any)=>({id:x.id,title:x.title,category:x.category}))).slice(0,1800)
+  ].join('\n'),
+  output:'Верни строго JSON: {"summary":"...","flows":[{"title":"...","description":"...","preconditions":"...","steps":["..."]}],"cases":[{"title":"...","area":"...","flow_title":"...","description":"...","preconditions":"...","steps":[{"action":"...","expected":"..."}],"priority":"critical|high|normal|low","category":"smoke|regression|functional","execution_mode":"automated|manual|hybrid"}],"regression_case_ids":["uuid"]}. Включи позитивные, негативные и крайние случаи.'
+ });
  const produced=parseResponse(await ask(prompt));
  const client=await pool.connect();
  try{
