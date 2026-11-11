@@ -4,7 +4,8 @@ import {aiAgentName} from './agent-labels.js';
 import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import './ProjectTeam.css';
 
-type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string};
+type Responsibility={mission:string;inputs:string[];outcomes:string[];maxConcurrent:number};
+type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string;responsibility:Responsibility|null};
 type Memory={id:string;role:string;kind:string;body:string;evidence:string;status:string;origin:'agent'|'user';author_email?:string|null;created_at:string;reviewed_at:string|null};
 type Snapshot={agents:Agent[];memory:Memory[]};
 type Revision={id:string;previous_name:string;previous_instructions:string;next_name:string;next_instructions:string;created_at:string};
@@ -57,6 +58,7 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
    </nav>
    <div className="team-detail">
     {selected?<><header className="team-detail-heading"><div><span className="team-kicker">{selected.type==='conversation'?'Диалоговый агент':selected.type==='specialist'?'Специалист':'Роль workflow'}</span><h3>{aiAgentName(selected.name)}</h3><p className="muted">{selected.stage}</p></div></header>
+     {selected.responsibility&&<section className="team-instruction-block team-responsibility"><h4><ShieldCheck size={16}/> Зона ответственности</h4><p>{selected.responsibility.mission}</p><div className="team-responsibility-grid"><div><strong>Получает</strong><ul>{selected.responsibility.inputs.map(item=><li key={item}>{item}</li>)}</ul></div><div><strong>Обязательный результат</strong><ul>{selected.responsibility.outcomes.map(item=><li key={item}>{item}</li>)}</ul></div></div><small className="team-source">Одновременных исполнений роли: {selected.responsibility.maxConcurrent}. Очередь продолжает работу после освобождения слота.</small></section>}
      <section className="team-instruction-block"><h4><ShieldCheck size={16}/> Системные ограничения</h4><p className="muted">Ограничения безопасности, права инструментов, порядок проверок и слияния PR остаются в коде. Они не редактируются и не могут быть отменены инструкциями проекта. Внутренние промпты провайдера не раскрываются.</p></section>
      <section className="team-instruction-block"><div className="team-section-toolbar"><h4><BookOpen size={16}/> Инструкции роли</h4><div className="team-actions">{!editing&&<><button className="secondary" type="button" onClick={()=>void showHistory()}><History size={14}/> История</button><button className="secondary" type="button" onClick={beginEdit}><Pencil size={14}/> Изменить</button></>}</div></div>
       {editing?<div className="team-editor"><label>Название агента<input maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label><label>Инструкции<textarea rows={12} maxLength={12000} value={draft.instructions} onChange={e=>setDraft({...draft,instructions:e.target.value})}/></label><div className="team-actions"><button className="secondary" type="button" disabled={saving} onClick={()=>setEditing(false)}>Отмена</button><button className="primary" type="button" disabled={saving||!draft.name.trim()} onClick={()=>void saveProfile()}>{saving?'Сохранение…':'Сохранить'}</button></div></div>:
