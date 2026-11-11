@@ -38,7 +38,7 @@ export async function createTaskPolicy(workDirectory,{writable=true}={}){
   ...setting('web_search','disabled'),
   '-c','permissions.'+profile+'.filesystem='+tomlTable({
    ':minimal':'read','/usr/local/bin':'read','/usr/local/lib/node_modules':'read',[scratch]:'write',
-   ':workspace_roots':{'.':writable?'write':'read','.git':'read','.codex':'deny','.agents':'deny'},
+   ':workspace_roots':{'.':writable?'write':'read','.git':'read','.codex':'read','.agents':'read'},
   }),
   ...setting('permissions.'+profile+'.network.enabled',false),
   ...setting('shell_environment_policy.inherit','none'),
