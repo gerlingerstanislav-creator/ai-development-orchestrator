@@ -82,6 +82,16 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(!updated.rowCount)throw rejected('Тема не найдена',404);
   return {topic:updated.rows[0]};
  }
+ case 'iterations.ask_question':{
+  const {iteration_id,question}=z.object({iteration_id:uuid,question:z.string().trim().min(5).max(2000)}).parse(params);
+  const found=await pool.query('SELECT id FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
+  if(!found.rowCount)throw rejected('Итерация не найдена',404);
+  const existing=await pool.query("SELECT id FROM iteration_questions WHERE iteration_id=$1 AND status='open' AND lower(question)=lower($2) LIMIT 1",[iteration_id,question]);
+  if(existing.rowCount)return {id:existing.rows[0].id,existing:true};
+  const id=randomUUID();
+  await pool.query('INSERT INTO iteration_questions(id,iteration_id,actor_id,question) VALUES($1,$2,$3,$4)',[id,iteration_id,actorId,question]);
+  return {id,iteration_id,status:'open'};
+ }
  case 'iterations.record_decision':{
   const {iteration_id,question,answer}=z.object({iteration_id:uuid,question:z.string().trim().min(3).max(2000),answer:z.string().trim().min(3).max(5000)}).parse(params);
   return recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
