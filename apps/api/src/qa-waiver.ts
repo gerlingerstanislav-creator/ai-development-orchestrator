@@ -45,6 +45,13 @@ export function qaWaiverAssessment(run:QaRunRow|null|undefined){
   unverified.push({id:c.id,title:c.title,priority:String(c.priority||'normal'),reason,evidence});
  }
  if(!unverified.length)blockers.push('Нет сценариев, которые необходимо явно исключить из проверки.');
+ // Python is a supported part of our runner image. Its absence is a broken
+ // deployment, not a valid reason to skip verification even with owner approval.
+ const runtime=String(run?.report?.capabilities||'');
+ const pythonNeeded=checks.some(c=>/python|pytest/i.test(String(c.name||''))&&c.result==='not_run')||
+  unverified.some(c=>/python|pytest|интерпретатор/i.test(c.evidence));
+ if(pythonNeeded&&/python3:\\s*unavailable|python3_runtime:\\s*unavailable/i.test(runtime))
+  blockers.push('QA запускается без Python 3, хотя он предусмотрен в образе Runner. Пересобери Codex Runner и повтори QA; пропуск таких проверок недопустим.');
  return {eligible:blockers.length===0,blockers,passed,total:cases.length,unverified,checks,
   summary:String(run?.report?.summary||''),capabilities:String(run?.report?.capabilities||''),commit:String(run?.report?.commit||''),spec_version:run?.qa_spec_version??null};
 }
