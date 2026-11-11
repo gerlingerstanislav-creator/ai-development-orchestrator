@@ -1,6 +1,6 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {ProjectTeam} from './ProjectTeam.js';
@@ -15,7 +15,7 @@ import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
 type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
-type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string};
+type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
  const tail=/(?:^|\s)@([a-z]*)$/i.exec(value);
@@ -203,7 +203,8 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Object.assign(Error(data.error||'Ошибка запроса'),{status:response.status});
  return data as T;
 }
-type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'settings';
+const workflowRoleLabels:Record<string,string>={manager:'ПМ',analysis:'Системный аналитик',development:'Разработчик',testing:'QA',documentation:'Технический писатель',devops:'DevOps'};
+type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'workflow'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string;planning?:boolean;iterationId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function parseAppRoute(pathname:string):AppRoute{
@@ -213,7 +214,7 @@ function parseAppRoute(pathname:string):AppRoute{
  if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
   const projectId=parts[1];
   if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
-  if(parts.length===3&&['overview','tasks','plan','docs','qa','processes','team','settings'].includes(parts[2]))
+  if(parts.length===3&&['overview','tasks','plan','docs','qa','processes','team','workflow','settings'].includes(parts[2]))
    return {kind:'project',projectId,section:parts[2] as ProjectSection};
   if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
    return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
@@ -953,7 +954,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      mode:workflowModal.mode,agent_name:workflowModal.agent_name.trim(),agent_instructions:workflowModal.agent_instructions
     })
    });
-   setStages(old=>old.map(stage=>stage.stage===updated.stage?updated:stage));
+   setStages(old=>old.map(stage=>stage.stage===updated.stage?{...stage,...updated}:stage));
    setWorkflowModal(null);
   }catch(e){fail(e);}finally{setWorkflowSaving(false);}
  }
@@ -1811,7 +1812,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <div className="sidebar-nav">
   {selected?<><div className="sidebar-label">ПРОЕКТ</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['plan','План разработки',ClipboardList],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['plan','План разработки',ClipboardList],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['workflow','Workflow',Workflow],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
   </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
   </div>
   <div className="sidebar-bottom">
@@ -1820,7 +1821,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
   </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='plan'?'План разработки':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':'Настройки'}</strong></>}<div className="top-right">
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='plan'?'План разработки':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':section==='workflow'?'Workflow':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
     <div className="quota-popover" role="tooltip">
@@ -1957,7 +1958,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     return <>
      <div className="process-detail-header"><h3>{process.title}</h3><span className={'process-status '+process.status}>{processStatus(process.status)}</span></div>
      <p className="muted">{process.detail}</p>
-     {['queued','running'].includes(process.status)&&(['development','testing'].includes(process.kind)||process.title.startsWith('План задач'))&&
+     {['queued','running'].includes(process.status)&&(['development','testing'].includes(process.kind)||process.title.startsWith('План задач')||process.title.startsWith('Анализ задачи'))&&
       <div className="process-actions"><button type="button" className="secondary" disabled={processActionBusy} onClick={()=>void interruptProcess(process)}>Прервать процесс</button></div>}
      {process.kind==='document_import'&&<div className="process-metrics"><span>Файлов: {process.sourceFileCount??'—'}</span><span>Фрагментов: {process.progress?.completed??0} / {process.progress?.total??'—'}</span><span>Тем готово: {process.topicProgress?.completed??0} / {process.topicProgress?.total||'—'}</span><span>Сохранено страниц: {process.savedDocuments??0}</span></div>}
      {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
@@ -2097,7 +2098,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>}
  {section==='qa'&&<QaPanel projectId={selected.id} api={api} onError={fail}/>}
  {section==='team'&&<ProjectTeam projectId={selected.id} request={api}/>}
- {section==='settings'&&<section className="panel workflow-settings-panel">
+ {section==='workflow'&&<section className="panel workflow-settings-panel">
   <div className="row-line">
    <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы посмотреть его назначение или настроить агента.</p></div>
    <span className="workflow-key"><span className="workflow-key-line"/> Переходы</span>
@@ -2143,7 +2144,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      })()}
     </div>}
   </div>
-  <p className="muted workflow-note">Схема отображает основные этапы и предусмотренный возврат на доработку. Редактирование имени агента и инструкций не изменяет самостоятельно правила переходов Temporal.</p>
+
  </section>}
  {section==='settings'&&<section className="panel">
   <h3>AI · Настройки выполнения</h3>
@@ -2229,7 +2230,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.request_id&&m.pending&&<small className="chat-message-status">Сохраняем поручение…</small>}
       {m.failed&&m.request_id&&<small className="chat-message-status chat-message-failed">Не удалось подтвердить отправку. <button type="button" className="textbtn" onClick={()=>{if(m.request_id)void sendPmMessage(selectedProjectId,{...m,request_id:m.request_id});}}>Повторить</button></small>}
       {m.failed&&!m.request_id&&<small className="chat-message-status chat-message-failed">Не удалось отправить. <button type="button" className="textbtn" disabled={projectChatBusy} onClick={()=>{setProjectInput(m.body.replace(/\n\nМатериалы: [^\n]+$/,'').trim());projectInputRef.current?.focus();}}>Повторить сообщение</button></small>}
-      {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть созданную задачу</button>}
+      {m.created_task_id&&<button className="textbtn" onClick={()=>{const t=tasks.find(t=>t.id===m.created_task_id);if(t)void openTask(t);}}>Открыть задачу</button>}
       {selected&&m.documentation_reset_requested&&<DocumentationReset projectId={selected.id} request={api} onReset={()=>reloadAfterDocumentationReset(selected.id)}/>}
       {selected&&m.owner_question_cleanup_requested&&<OwnerQuestionCleanup projectId={selected.id} request={api}
        onDeleted={()=>loadProject(selected.id)} onOpenTask={id=>navigate(projectUrl(selected.id,'tasks')+'/'+id)}/>}
@@ -2271,6 +2272,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <div className="dialog workflow-stage-dialog" role="dialog" aria-modal="true" aria-label={'Настройки этапа '+workflowModal.label} onMouseDown={e=>e.stopPropagation()}>
    <div className="modal-heading"><h2>{workflowModal.label}</h2><button className="task-close" type="button" onClick={()=>setWorkflowModal(null)} aria-label="Закрыть"><X size={19}/></button></div>
    <p className="muted workflow-modal-subtitle">Этап <code>{workflowModal.stage}</code> · Порядок в процессе: {workflowModal.position+1}</p>
+   {workflowModal.responsibility&&<>
+    <div className="workflow-detail-field"><strong>Когда начинается работа</strong><p>{workflowModal.responsibility.trigger}</p></div>
+    <div className="workflow-detail-field"><strong>Результат этапа</strong><p>{workflowModal.responsibility.result}</p></div>
+    {(workflowModal.responsibility.role||workflowModal.responsibility.participants?.length)&&<div className="workflow-detail-field">
+     <strong>Роли</strong>
+     {workflowModal.responsibility.role&&<p>Ответственный — {workflowRoleLabels[workflowModal.responsibility.role]}</p>}
+     {workflowModal.responsibility.participants?.map(({role,assignment})=><p key={role}>{workflowRoleLabels[role]} — {assignment}</p>)}
+     <a href={projectUrl(selected.id,'team')} onClick={e=>{setWorkflowModal(null);followLink(e,projectUrl(selected.id,'team'));}}>Открыть команду</a>
+    </div>}
+   </>}
    {serviceStages[workflowModal.stage]?<p className="workflow-transition-description">{serviceStages[workflowModal.stage]}</p>:<>
    <div className="workflow-detail-field">
     <div className="workflow-field-heading"><strong>Имя агента</strong>

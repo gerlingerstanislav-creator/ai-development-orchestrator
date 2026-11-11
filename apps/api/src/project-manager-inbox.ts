@@ -1,3 +1,4 @@
+import {workflowResponsibility} from './workflow-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
@@ -32,6 +33,67 @@ export async function initProjectManagerInbox(pool:Pick<Pool,'query'>){
 export function pmInboxWorkflowId(turn:PendingTurn){
  const prefix=turn.channel==='pm-internal'?'pm-resume-':'project-pm-';
  return prefix+turn.id+(turn.pm_dispatch_attempt>1?'-retry-'+turn.pm_dispatch_attempt:'');
+}
+
+/** Deliver explicit owner questions even when no PM turn is running. */
+export async function publishOwnerQuestionsToPmChat(pool:Pick<Pool,'query'>){
+ // Older analyses stored their owner questions directly on the task.
+ // Move them into the same reply flow without changing the wording.
+ await pool.query(`
+  WITH legacy AS (
+   SELECT t.id,t.project_id,t.spec_version,t.clarification_questions
+   FROM tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
+   WHERE t.stage='analysis' AND t.type='task' AND t.analysis_state NOT IN ('paused','failed')
+    AND jsonb_array_length(t.clarification_questions)>0
+   ORDER BY t.updated_at,t.id LIMIT 25 FOR UPDATE OF t SKIP LOCKED
+  ), copied AS (
+   INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status,requires_customer)
+   SELECT gen_random_uuid(),t.project_id,t.id,'analysis','Системный аналитик','all','question',
+    left(trim(q.body),3000),'agent','legacy-clarification:'||t.spec_version||':'||md5(trim(q.body)),'open',true
+   FROM legacy t CROSS JOIN LATERAL jsonb_array_elements_text(t.clarification_questions) AS q(body)
+   WHERE trim(q.body)<>'' AND NOT EXISTS(
+    SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id
+     AND n.kind='question' AND n.status='open' AND n.requires_customer AND n.body=left(trim(q.body),3000))
+   ON CONFLICT(task_id,source_key) DO NOTHING
+   RETURNING task_id
+  )
+  UPDATE tasks t SET clarification_questions='[]'::jsonb,analysis_state=CASE
+   WHEN EXISTS(SELECT 1 FROM copied c WHERE c.task_id=t.id)
+    OR EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id
+     AND n.kind='question' AND n.status IN ('open','processing'))
+   THEN 'waiting_questions' ELSE 'new' END,updated_at=now()
+  FROM legacy l WHERE t.id=l.id
+ `);
+ await pool.query(`
+  WITH pending AS (
+   SELECT n.id AS note_id,n.project_id,n.task_id,n.body,p.owner_id,t.display_number,t.title,
+    gen_random_uuid() AS order_id,gen_random_uuid() AS message_id
+   FROM task_agent_notes n
+   JOIN tasks t ON t.id=n.task_id AND t.project_id=n.project_id AND t.stage<>'done'
+   JOIN projects p ON p.id=n.project_id AND p.deleted_at IS NULL
+   WHERE n.kind='question' AND n.status='open' AND n.requires_customer
+    AND NOT EXISTS(SELECT 1 FROM project_pm_process_reports r WHERE r.project_id=n.project_id AND r.process_id=n.id)
+   ORDER BY n.created_at,n.id LIMIT 25
+  ), claimed AS (
+   INSERT INTO project_pm_process_reports(project_id,process_id,kind)
+   SELECT project_id,note_id,'owner_question' FROM pending
+   ON CONFLICT DO NOTHING RETURNING project_id,process_id
+  ), orders AS (
+   INSERT INTO project_pm_orders(id,project_id,actor_id,status,summary)
+   SELECT p.order_id,p.project_id,p.owner_id,'waiting_user',left(p.body,500)
+   FROM pending p JOIN claimed c ON c.project_id=p.project_id AND c.process_id=p.note_id
+   RETURNING id
+  ), events AS (
+   INSERT INTO project_pm_order_events(id,order_id,kind,detail,process_id)
+   SELECT gen_random_uuid(),p.order_id,'owner_question','Ожидается ответ владельца',p.note_id
+   FROM pending p JOIN orders o ON o.id=p.order_id
+  )
+  INSERT INTO assistant_messages(id,project_id,role,body,channel,status,pm_order_id,created_task_id)
+  SELECT p.message_id,p.project_id,'assistant',
+   'По задаче #'||p.display_number||' «'||p.title||'» нужно твоё решение.'||chr(10)||chr(10)||p.body,
+   'project','completed',p.order_id,p.task_id
+  FROM pending p JOIN orders o ON o.id=p.order_id
+ `);
 }
 
 export async function deliverProjectManagerInbox(pool:Pick<Pool,'query'>,start:RouteDeps['start'],onError:(error:unknown,turn:PendingTurn)=>void){
@@ -172,7 +234,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    pool.query('SELECT name,description FROM projects WHERE id=$1',[projectId]),
    pool.query('SELECT stage,label,agent_name,mode FROM workflow_stages WHERE project_id=$1 ORDER BY position',[projectId]),
    pool.query("SELECT id,title,stage,analysis_state,spec_review_status FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 45",[projectId]),
-   pool.query("SELECT id,task_id,author_stage,body,status FROM task_agent_notes WHERE project_id=$1 AND kind='question' AND status='open' ORDER BY created_at DESC LIMIT 35",[projectId]),
+   pool.query("SELECT id,task_id,author_stage,body,status,requires_customer FROM task_agent_notes WHERE project_id=$1 AND kind='question' AND status='open' ORDER BY requires_customer DESC,created_at DESC LIMIT 35",[projectId]),
    pool.query("SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND id<>$2 AND status='completed' ORDER BY created_at DESC LIMIT 16",[projectId,messageId]),
    turn.reply_to?pool.query("SELECT role,body FROM assistant_messages WHERE project_id=$1 AND id=$2",[projectId,turn.reply_to]):Promise.resolve({rows:[]}),
    turn.topic_id?pool.query('SELECT title,status FROM project_chat_topics WHERE project_id=$1 AND id=$2',[projectId,turn.topic_id]):Promise.resolve({rows:[]})
@@ -186,14 +248,20 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   ]);
   const [orders,orderEvents,decisions]=await Promise.all([
    pool.query("SELECT id,summary,status,topic_id FROM project_pm_orders WHERE project_id=$1 AND status NOT IN ('completed','failed') ORDER BY updated_at DESC LIMIT 15",[projectId]),
-   orderId?pool.query('SELECT kind,detail,created_at FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 25',[orderId]):Promise.resolve({rows:[]}),
+   orderId?pool.query('SELECT kind,detail,process_id,created_at FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 25',[orderId]):Promise.resolve({rows:[]}),
    pool.query("SELECT i.title,d.question,d.answer,d.created_at FROM iteration_owner_decisions d JOIN project_iterations i ON i.id=d.iteration_id WHERE i.project_id=$1 ORDER BY d.created_at DESC LIMIT 35",[projectId])
   ]);
+  const ownerQuestion=orderId?(await pool.query(`SELECT n.id,n.task_id,n.body,n.status FROM project_pm_order_events e
+   JOIN task_agent_notes n ON n.id=e.process_id AND n.project_id=$2
+   WHERE e.order_id=$1 AND e.kind='owner_question' LIMIT 1`,[orderId,projectId])).rows[0]:null;
   const prompt=[
    'Ты ПМ проекта AI Development Orchestrator. Ты единственная точка взаимодействия владельца с агентами.',
    'Текущее поручение: '+String(orderId||'не задано')+'. Сохраняй связь с ним при уточнениях и продолжении после событий. Не считай поручение выполненным, пока работа не проверена.',
+   ownerQuestion?'Это ответ на конкретный вопрос: '+JSON.stringify(ownerQuestion)+'. Если решение явно дано и вопрос открыт, сохрани его через approvals.answer_question с указанными ID. Если владелец просит уточнить вопрос, ответь и оставь поручение в waiting_user.':'',
+   'НОВОЕ СООБЩЕНИЕ ВЛАДЕЛЬЦА: '+String(turn.body),
    'При завершении процесса ты будешь вызван повторно системой. Продолжай исходное поручение, а не просто пересказывай событие. Используй iterations.preview_plan и iterations.publish_plan при планировании. После прямой команды владельца «приступай к разработке» используй iterations.launch для утверждённой итерации, не пингуй разработчиков по каждой задаче.',
    'При необходимости задавай вопрос в отдельной теме через discussions.open и помечай поручение как waiting_user через pm.orders.update. Пока ответ не получен, не считай его закрытым.',
+   'Если пользователь просит дозапустить, проверь processes.list и development_queue. Существующие поручения с актуальной ревизией подхватит диспетчер; сообщи конкретные причины ожидания. Устаревший запуск требует новой явной команды владельца на актуальную итерацию.',
    'Когда пользователь уже дал ответ, используй сохранённые решения вместо повторного вопроса. Зафиксируй новое решение через pm.decisions.record с ID сообщения пользователя, если оно влияет на требования/итерацию.',
    'Твоя работа: оперативно распределять поручения через инструменты, отслеживать статусы, собирать результаты, не подменять собой разработчика, БА, СА, QA или DevOps.',
    'Обрабатывай этот запрос независимо от других сообщений. Не ожидай окончания других процессов и не запускай работу агента у себя синхронно.',
@@ -204,7 +272,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    'Инструкции ПМ: '+instructions.slice(0,4400),
    'Накопленные знания: '+learned.slice(0,3200),
    'Проект: '+JSON.stringify(projectResult.rows[0]||{}).slice(0,1500),
-   'Workflow: '+JSON.stringify(contextResult.rows).slice(0,3500),
+   'Workflow: '+JSON.stringify(contextResult.rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)}))).slice(0,4200),
    'Задачи: '+JSON.stringify(tasksResult.rows).slice(0,6500),
    'Вопросы от агентов: '+JSON.stringify(questionsResult.rows).slice(0,4800),
    'Тема: '+JSON.stringify(topicResult.rows[0]||null),
@@ -214,8 +282,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    'Реестр принятых решений проекта: '+JSON.stringify((await pool.query('SELECT question,answer,iteration_id FROM project_pm_decisions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 40',[projectId])).rows).slice(0,6000),
    'ID текущего сообщения владельца: '+String(turn.channel==='project'?messageId:'внутреннее системное событие'),
    'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]||null).slice(0,2500),
-   'Недавняя история: '+JSON.stringify(historyResult.rows.reverse()).slice(0,5500),
-   'НОВОЕ СООБЩЕНИЕ ВЛАДЕЛЬЦА: '+String(turn.body)
+   'Недавняя история: '+JSON.stringify(historyResult.rows.reverse()).slice(0,5500)
   ].join('\n\n').slice(0,22500);
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
@@ -249,8 +316,9 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    if(orderId&&finished.rowCount){
     const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question');
     const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===orderId);
-    const status=watchers.length?'waiting_agents':hasOpenQuestion?'waiting_user':'completed';
-    if(!explicitlySet||watchers.length)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[orderId,status,effectiveTopic]);
+    const questionOpen=ownerQuestion&&!!(await client.query("SELECT 1 FROM task_agent_notes WHERE id=$1 AND status IN ('open','processing')",[ownerQuestion.id])).rowCount;
+    const status=questionOpen?'waiting_user':watchers.length?'waiting_agents':hasOpenQuestion?'waiting_user':'completed';
+    if(!explicitlySet||watchers.length||ownerQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[orderId,status,effectiveTopic]);
     else await client.query('UPDATE project_pm_orders SET topic_id=COALESCE($2,topic_id),updated_at=now() WHERE id=$1',[orderId,effectiveTopic]);
     await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'pm_step',$3)",[randomUUID(),orderId,'ПМ завершил шаг; статус '+status]);
    }

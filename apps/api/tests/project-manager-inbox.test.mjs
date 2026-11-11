@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import {setTimeout as delay} from 'node:timers/promises';
 import pg from 'pg';
-import {registerProjectManagerInbox,checkProjectManagerWatch,initProjectManagerInbox,deliverProjectManagerInbox,pmInboxWorkflowId,failProjectManagerInbox} from '../dist/project-manager-inbox.js';
+import {registerProjectManagerInbox,checkProjectManagerWatch,initProjectManagerInbox,deliverProjectManagerInbox,pmInboxWorkflowId,failProjectManagerInbox,publishOwnerQuestionsToPmChat} from '../dist/project-manager-inbox.js';
 
 test('project manager inbox acknowledges durable turns, deduplicates submissions and recovers dispatch', {timeout:15000},async t=>{
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
@@ -16,9 +16,11 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  await db.query('CREATE SCHEMA '+schema);
  await db.query('SET search_path TO '+schema+',public');
  await db.query([
-  'CREATE TABLE projects(id uuid PRIMARY KEY)',
+  'CREATE TABLE projects(id uuid PRIMARY KEY,owner_id uuid,deleted_at timestamptz)',
   'CREATE TABLE users(id uuid PRIMARY KEY)',
-  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,pm_order_id uuid,created_at timestamptz DEFAULT now())",
+  "CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,display_number int,stage text DEFAULT 'analysis',type text DEFAULT 'task',analysis_state text DEFAULT 'new',spec_version int DEFAULT 1,clarification_questions jsonb DEFAULT '[]',updated_at timestamptz DEFAULT now())",
+  "CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,author_stage text,author_name text,target_stage text,kind text,body text,source_kind text,source_key text,status text,requires_customer boolean,created_at timestamptz DEFAULT now(),UNIQUE(task_id,source_key))",
+  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,pm_order_id uuid,created_task_id uuid,created_at timestamptz DEFAULT now())",
   "CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,source_message_id uuid,topic_id uuid,status text DEFAULT 'queued',summary text,updated_at timestamptz DEFAULT now())",
   "CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text,process_id uuid,created_at timestamptz DEFAULT now())",
   "CREATE TABLE project_chat_topics(id uuid PRIMARY KEY,project_id uuid,title text,status text DEFAULT 'open')",
@@ -106,6 +108,24 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  assert.equal(deliveries.at(-1),'project-pm-'+id+'-retry-2');
  await failProjectManagerInbox(pool,project,id,1);
  assert.equal((await read(id)).status,'queued','older workflow cannot fail the new attempt');
+ const taskId=randomUUID();
+ await db.query('UPDATE projects SET owner_id=$2 WHERE id=$1',[project,user]);
+ await db.query("INSERT INTO tasks(id,project_id,title,display_number,clarification_questions) VALUES($1,$2,'Расписание',11,$3::jsonb)",
+  [taskId,project,JSON.stringify(['Какой часовой пояс выбрать?'])]);
+ await db.query("INSERT INTO task_agent_notes(id,project_id,task_id,kind,body,source_key,status,requires_customer) VALUES($1,$2,$3,'question','Внутренний вопрос','internal','open',false)",[randomUUID(),project,taskId]);
+ await Promise.all([publishOwnerQuestionsToPmChat(pool),publishOwnerQuestionsToPmChat(pool)]);
+ await publishOwnerQuestionsToPmChat(pool);
+ const questions=(await db.query("SELECT id,body,pm_order_id FROM assistant_messages WHERE created_task_id=$1",[taskId])).rows;
+ assert.equal(questions.length,1,'explicit owner question is published once, internal question stays private');
+ assert.match(questions[0].body,/#11.*Расписание/s);
+ assert.match(questions[0].body,/Какой часовой пояс выбрать/);
+ const linked=(await db.query("SELECT n.body,o.actor_id,o.status FROM project_pm_order_events e JOIN task_agent_notes n ON n.id=e.process_id JOIN project_pm_orders o ON o.id=e.order_id WHERE e.order_id=$1",[questions[0].pm_order_id])).rows[0];
+ assert.deepEqual(linked,{body:'Какой часовой пояс выбрать?',actor_id:user,status:'waiting_user'});
+ const task=(await db.query('SELECT analysis_state,clarification_questions FROM tasks WHERE id=$1',[taskId])).rows[0];
+ assert.deepEqual(task,{analysis_state:'waiting_questions',clarification_questions:[]});
+ const response=await send({message:'По часовому поясу пользователя',replyTo:questions[0].id});
+ assert.equal(response.statusCode,202,response.body);
+ assert.equal(response.json().order_id,questions[0].pm_order_id,'reply resumes the exact question order');
 });
 
 test('PM reports completed delegated iteration only once and never reports a requeued draft as ready',async t=>{

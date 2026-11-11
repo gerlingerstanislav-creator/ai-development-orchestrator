@@ -5,10 +5,11 @@ import {hashSecret,type AgentSession} from './agent-tools.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
 import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
-import {enqueueDevelopment} from './agent-work-scheduler.js';
+import {enqueueDevelopment,readDevelopmentQueue} from './agent-work-scheduler.js';
 import {taskConversationEvidence} from './task-agent-notes.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
+import {workflowResponsibility} from './workflow-responsibilities.js';
 
 const uuid=z.string().uuid();
 const createDoc=z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:uuid,
@@ -57,7 +58,13 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const changed=await pool.query("UPDATE task_agent_notes SET status='answered',answer=$4,answered_at=now(),answered_by=$5,answer_author='Владелец через ПМ' WHERE project_id=$1 AND task_id=$2 AND id=$3 AND kind='question' AND status='open' AND requires_customer=true RETURNING id",[projectId,task_id,note_id,answer,actorId]);
   if(!changed.rowCount)throw rejected('Вопрос уже закрыт или не запрашивал решение владельца',409);
   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",[randomUUID(),task_id,actorId,'Ответ владельца через ПМ: '+answer.slice(0,1600)]);
-  return {answered:true,task_id,note_id,requires_requirements_recheck:true,message:'Ответ сохранён. До повторной сверки СА запуск разработки не подтверждён.'};
+  // Reconcile the analyst assignment when the last owner question is answered.
+  const resumed=await pool.query(`UPDATE tasks SET analysis_state='new',updated_at=now()
+   WHERE project_id=$1 AND id=$2 AND stage='analysis' AND analysis_state='waiting_questions'
+    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$2 AND n.kind='question' AND n.status IN ('open','processing'))
+   RETURNING id`,[projectId,task_id]);
+  return {answered:true,task_id,note_id,analyst_resumed:!!resumed.rowCount,requires_requirements_recheck:true,
+   message:'Ответ сохранён в задаче. После получения всех ответов СА продолжит работу автоматически.'};
  }
  case 'approvals.list':{
   const pending=await pool.query("SELECT r.id AS request_id,r.task_id,r.kind,r.status,r.payload,r.created_at,t.title,t.stage FROM manager_requests r JOIN tasks t ON t.id=r.task_id AND t.project_id=r.project_id WHERE r.project_id=$1 AND r.status IN ('open','waiting') ORDER BY r.created_at DESC LIMIT 80",[projectId]);
@@ -175,7 +182,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[projectId]),
    pool.query('SELECT repository,target_branch,default_branch FROM project_git_repositories WHERE project_id=$1',[projectId])
   ]);
-  return {project:p.rows[0],workflow:stages.rows,rules:rules.rows.map(r=>r.body),github:github.rows[0]||null};
+  return {project:p.rows[0],workflow:stages.rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)})),rules:rules.rows.map(r=>r.body),github:github.rows[0]||null};
  }
  case 'documents.list':{
   const r=await pool.query('SELECT id,title,parent_id,system_key,updated_at,import_source FROM documents WHERE project_id=$1 ORDER BY title LIMIT 400',[projectId]);
@@ -330,11 +337,12 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {import_job_id:jobId,status:'queued',kind:name};
  }
  case 'processes.list':{
-  const [a,b]=await Promise.all([
+  const [a,b,queue]=await Promise.all([
    pool.query('SELECT id,status,message,created_at,updated_at FROM document_import_jobs WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30',[projectId]),
-   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[projectId])
+   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[projectId]),
+   readDevelopmentQueue(pool,projectId)
   ]);
-  return {documentation:a.rows,development:b.rows};
+  return {documentation:a.rows,development:b.rows,development_queue:queue.map(({task_id,display_number,title,status,reason,detail})=>({task_id,display_number,title,status,reason,detail}))};
  }
  case 'processes.report':{
   const {stage,message}=z.object({stage:z.string().trim().min(2).max(80),message:z.string().trim().min(3).max(2000)}).parse(params);
