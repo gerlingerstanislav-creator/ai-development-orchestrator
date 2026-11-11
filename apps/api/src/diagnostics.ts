@@ -39,6 +39,11 @@ export async function initDiagnosticSchema(pool:Pool){
   "CREATE INDEX IF NOT EXISTS idx_diagnostic_events_project ON diagnostic_events(project_id,created_at DESC);"
  );
  await pool.query("DELETE FROM diagnostic_events WHERE created_at < now()-interval '14 days'");
+ // A long-running server also enforces retention; no manual cleanup required.
+ setInterval(()=>{
+  void pool.query("DELETE FROM diagnostic_events WHERE created_at < now()-interval '14 days'")
+   .catch(()=>{ /* retry at the next interval */ });
+ },6*60*60*1000).unref();
 }
 
 function projectInfo(request:any){
