@@ -227,7 +227,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
   const {capacity}=z.object({capacity:z.number().int().min(1).max(10)}).parse(req.body);
   if(role==='manager'&&capacity!==1)return reply.code(409).send({error:'Менеджер проекта всегда один'});
   if(!await roleExists(pool,id,role))return reply.code(404).send({error:'Роль не найдена'});
-  const actualRole=role==='deployment'?'devops':role;
+  const actualRole=role;
   await pool.query("INSERT INTO project_role_capacity(project_id,role,capacity) VALUES($1,$2,$3) ON CONFLICT(project_id,role) DO UPDATE SET capacity=EXCLUDED.capacity,updated_at=now()",[id,actualRole,capacity]);
   return {role:actualRole,capacity};
  });
