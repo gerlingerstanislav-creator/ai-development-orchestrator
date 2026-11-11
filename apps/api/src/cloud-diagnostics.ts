@@ -59,7 +59,7 @@ function cloudRow(source:Source,row:Record<string,any>){
  const cleaned=redactDiagnostic(details) as Record<string,unknown>;
  const serialized=JSON.stringify(cleaned);
  return {
-  event_key:source+':'+String(id),
+  event_key:source+':'+String(id)+(source==='development'||source==='testing'||source==='pm'?':'+new Date(event_at).getTime().toString(36):''),
   project_id,
   project_name:String(project_name).slice(0,200),
   kind:source,
