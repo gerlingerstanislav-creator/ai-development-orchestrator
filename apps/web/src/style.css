@@ -1266,3 +1266,13 @@ body:has(.tasks-page){overflow:hidden}
 /* PM topics are temporary; unread activity is visible without hiding messages from the main feed. */
 .pm-topic-unread{display:inline-block;flex:0 0 7px;width:7px;height:7px;margin-left:auto;border-radius:50%;background:#6679e7}
 .pm-topic-item:has(.pm-topic-unread){display:flex;align-items:center;gap:7px}
+
+/* PM responses are Markdown, not plain text; keep conversational density. */
+.pm-chat-markdown .docs-markdown{font-size:12px;line-height:1.5;color:inherit;max-width:none;white-space:normal}
+.pm-chat-markdown .docs-markdown p{margin:0 0 10px}
+.pm-chat-markdown .docs-markdown p:last-child,
+.pm-chat-markdown .docs-markdown ul:last-child,
+.pm-chat-markdown .docs-markdown ol:last-child{margin-bottom:0}
+.pm-chat-markdown .docs-markdown ul,.pm-chat-markdown .docs-markdown ol{margin:0 0 10px;padding-left:20px}
+.pm-chat-markdown .docs-markdown li{margin-bottom:3px}
+.pm-chat-markdown .docs-heading{font-size:13px!important;margin:12px 0 6px}

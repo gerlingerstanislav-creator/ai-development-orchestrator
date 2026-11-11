@@ -220,7 +220,7 @@ export async function failProjectManagerInbox(pool:Pick<Pool,'query'>,projectId:
    WHERE o.id=f.pm_order_id AND o.status IN ('working','queued')`,[projectId,messageId,attempt]);
 }
 
-export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution';orderId?:string;topicId?:string|null;actorId?:string};
+export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution'|'testing';orderId?:string;topicId?:string|null;actorId?:string};
 export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string,attempt=1):Promise<ProjectManagerWatch[]>{
  const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel IN ('project','pm-internal') AND role='user' AND pm_dispatch_attempt=$3 AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id,pm_order_id,channel",[messageId,projectId,attempt]);
  if(!claim.rowCount)return [];
@@ -261,13 +261,14 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    ownerQuestion?'Это ответ на конкретный вопрос: '+JSON.stringify(ownerQuestion)+'. Если решение явно дано и вопрос открыт, сохрани его через approvals.answer_question с указанными ID. Если владелец просит уточнить вопрос, ответь и оставь поручение в waiting_user.':'',
    'НОВОЕ СООБЩЕНИЕ ВЛАДЕЛЬЦА: '+String(turn.body),
    'При завершении процесса ты будешь вызван повторно системой. Продолжай исходное поручение, а не просто пересказывай событие. Используй iterations.preview_plan и iterations.publish_plan при планировании. После прямой команды владельца «приступай к разработке» используй iterations.launch для утверждённой итерации, не пингуй разработчиков по каждой задаче.',
-   'Если тебе самому нужно решение по поручению, создай тему через discussions.open с первым сообщением и пометь поручение waiting_user. Вопросы и предложения аналитика оставляй в карточке задачи. Для статуса укажи ссылку на карточку.',
+   'Если тебе самому нужно решение по поручению, создай тему через discussions.open с первым сообщением и пометь поручение waiting_user. Вопросы и предложения аналитика оставляй в карточке задачи. Для статуса укажи номер задачи и реальную ссылку GitHub, если она известна. Не придумывай orchestrator:// или другие псевдоссылки: для поручений отдельного адреса нет.',
    'На вопросы о состоянии читай processes.list по задаче. Объясняй конкретную стадию, причину ожидания и следующий шаг по фактам системы.',
-   'Если пользователь просит дозапустить, проверь processes.list и development_queue. Существующие поручения с актуальной ревизией подхватит диспетчер; сообщи конкретные причины ожидания. Устаревший запуск требует новой явной команды владельца на актуальную итерацию.',
+   'Если владелец просит повторить провалившийся QA для существующего PR, прочитай processes.list и tasks.read, затем вызови qa.retry для каждой подходящей задачи. Не запускай итерацию заново ради QA. Сначала дождись результата действующего QA; API сам запрещает параллельные проверки. После qa.retry следи за процессом, не помечай тесты прошедшими до проверенного отчёта.',
+   'Если пользователь просит дозапустить разработку, проверь processes.list и development_queue. Существующие поручения с актуальной ревизией подхватит диспетчер; сообщи конкретные причины ожидания. Устаревший запуск требует новой явной команды владельца на актуальную итерацию.',
    'Когда пользователь уже дал ответ, используй сохранённые решения вместо повторного вопроса. Зафиксируй новое решение через pm.decisions.record с ID сообщения пользователя, если оно влияет на требования/итерацию.',
    'Твоя работа: оперативно распределять поручения через инструменты, отслеживать статусы, собирать результаты, не подменять собой разработчика, БА, СА, QA или DevOps.',
    'Обрабатывай этот запрос независимо от других сообщений. Не ожидай окончания других процессов и не запускай работу агента у себя синхронно.',
-   'У тебя есть MCP orchestrator. Реальные операции выполняй только через доступные инструменты. Не заявляй о создании задач или запуске процессов, если инструмент этого не подтвердил.',
+   'У тебя есть MCP orchestrator. Реальные операции выполняй только через доступные инструменты. Не заявляй о создании задач или запуске процессов, если инструмент этого не подтвердил. Не оставляй поручение ждать агентов, если не запущен процесс или не зафиксирована конкретная очередь с причиной ожидания; если инструмента нет, сообщи о блокировке и зафиксируй failed, а не waiting_agents.',
    'Согласования этапов: покажи владельцу конкретную задачу, текущий и следующий этап, критерии, риски и ссылку на нужный экран/процесс. Не обходи обязательные проверки. Если доступный инструмент не поддерживает подтверждение, сообщи об этом и предложи конкретное действие в интерфейсе, но не выдавай согласование за выполненное.',
    'Вопросы агентов: прежде чем спрашивать владельца, прочитай задачи и принятые решения. Владелец может отвечать на вопросы других агентов через ПМ. Не выдумывай ответы на нерешённые вопросы.',
    'Обсуждения: соблюдай тему и контекст ответа. Когда вопрос разрешён и решение записано, закрой тему через discussions.close. При наличии нерешённого вопроса сохрани waiting_user.',
@@ -294,12 +295,12 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
-  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','iterations.launch','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
+  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','qa.retry','iterations.launch','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
-   const kind:ProjectManagerWatch['kind']=row.tool==='iterations.launch'?'iteration_execution':['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':row.tool==='workflow.approve_development'?'development':'document_import';
-   const id=kind==='iteration_execution'?row.result?.iteration_id:kind==='iteration_plan'?row.result?.planning_run_id:kind==='development'?row.result?.id:row.result?.import_job_id;
+   const kind:ProjectManagerWatch['kind']=row.tool==='qa.retry'?'testing':row.tool==='iterations.launch'?'iteration_execution':['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':row.tool==='workflow.approve_development'?'development':'document_import';
+   const id=kind==='testing'?row.result?.cycle_id:kind==='iteration_execution'?row.result?.iteration_id:kind==='iteration_plan'?row.result?.planning_run_id:kind==='development'?row.result?.id:row.result?.import_job_id;
    if(typeof id!=='string'||seen.has(id))return [];
    seen.add(id);
    return [{projectId,processId:id,kind,orderId:orderId||undefined,topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
@@ -374,6 +375,50 @@ async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch
 /** Polling is a short database activity; the waiting happens in Temporal,
  * not in the PM AI session or an HTTP request. */
 export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
+ if(watch.kind==='testing'){
+  // A QA retry is a Temporal manualTesting cycle. The workflow owner is
+  // durable even if QA planning fails before ai_test_runs is created.
+  const run=await pool.query(`SELECT o.state,t.title AS name,t.stage,
+    q.status AS qa_status,q.message AS qa_message,q.verdict AS qa_verdict,
+    q.report->>'summary' AS qa_summary
+   FROM task_orchestration_owners o
+   JOIN tasks t ON t.id=o.task_id AND t.project_id=o.project_id
+   LEFT JOIN LATERAL (
+     SELECT status,message,verdict,report FROM ai_test_runs
+     WHERE project_id=o.project_id AND task_id=o.task_id AND cycle_id=o.owner_id
+     ORDER BY created_at DESC,id DESC LIMIT 1
+   ) q ON true
+   WHERE o.project_id=$1 AND o.owner_id=$2 AND o.kind='testing'`,[watch.projectId,watch.processId]);
+  if(!run.rowCount)return 'completed';
+  const qa=run.rows[0];
+  if(qa.state==='active')return 'pending';
+  // Use the common reporting/resume path, never a second QA launch.
+  const outcome=qa.qa_status==='completed'&&qa.qa_verdict==='passed'?'completed':'failed';
+  const explanation=qa.qa_status==='completed'
+   ?'Вердикт QA: '+String(qa.qa_verdict||'не установлен')+'. '+String(qa.qa_summary||qa.qa_message||'')
+   :String(qa.qa_message||'QA завершился до получения подтверждённого отчёта. Проверь журнал процесса.');
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const mark=await client.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,'testing') ON CONFLICT DO NOTHING RETURNING process_id",
+    [watch.projectId,watch.processId]);
+   if(!mark.rowCount){await client.query('ROLLBACK');return 'completed';}
+   const message='Повторная проверка QA задачи «'+String(qa.name)+'» завершена: '+(outcome==='completed'?'тестирование пройдено. ':'требуется внимание. ')+explanation.slice(0,2100);
+   await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",
+    [randomUUID(),watch.projectId,message,watch.topicId||null,watch.orderId||null]);
+   if(watch.orderId&&watch.actorId){
+    const next=randomUUID();
+    await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'pm-internal','queued',$5,$6)",
+     [next,watch.projectId,watch.actorId,'СИСТЕМНОЕ СОБЫТИЕ: '+message+' Проанализируй результат QA и продолжи исходное поручение. Не запускай бесконечные повторы, не объявляй непроверенное успешным.',watch.topicId||null,watch.orderId]);
+    await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail,process_id) VALUES($1,$2,'resume',$3,$4)",
+     [randomUUID(),watch.orderId,next,watch.processId]);
+    await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[watch.orderId]);
+   }
+   await client.query('COMMIT');
+   return 'completed';
+  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
+  finally{client.release();}
+ }
  if(watch.kind==='iteration_execution'){
   const status=await pool.query(`SELECT count(*)::int AS total,count(*) FILTER (WHERE t.stage='done' OR q.status IN ('cancelled','stale'))::int AS finished,count(*) FILTER (WHERE q.status='stale')::int AS stale FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.iteration_id=$2`,[watch.projectId,watch.processId]);
   const total=Number(status.rows[0]?.total||0),finished=Number(status.rows[0]?.finished||0);
