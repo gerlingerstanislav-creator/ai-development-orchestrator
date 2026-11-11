@@ -343,10 +343,10 @@ async function runJob(job,state){
   state.handoffNote=/^(none|нет|отсутствуют)[.!]?$/i.test(handoff)?'':handoff.slice(0,2500);
    const learning=String(attempt.answer||'').match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim()||'';
    state.learningSuggestion=/^(none|нет|отсутствуют)[.!]?$/i.test(learning)?'':learning.slice(0,1600);
+  assertJobActive(job.id);
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
-  state.status='failed';
-  state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);
+  if(state.status!=='cancelled'){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);}
  }finally{
   await rm(workdir,{recursive:true,force:true}).catch(()=>{});
  }
@@ -471,6 +471,7 @@ async function runTestJob(job,state){
    state.usage=addUsage(state.usage,corrected.usage);
    report=verifyReport(corrected.message||'');
   }
+  assertJobActive(job.id);
   state.verdict=report.verdict;
   state.summary=report.summary.slice(0,3500);
   state.handoffNote=String(report.handoffNote||'').slice(0,2500);
@@ -481,8 +482,7 @@ async function runTestJob(job,state){
   state.status='completed';
   state.message='Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
  }catch(e){
-  state.status='failed';
-  state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);
+  if(state.status!=='cancelled'){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
  }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
 }
 async function runConflictJob(job,state){
