@@ -336,6 +336,9 @@ function App(){
 
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
  const [projectProcesses,setProjectProcesses]=useState<ProjectProcess[]>([]);
+  const [diagnosticHours,setDiagnosticHours]=useState(24);
+  const [diagnosticIncludeMessages,setDiagnosticIncludeMessages]=useState(false);
+  const [diagnosticExporting,setDiagnosticExporting]=useState(false);
  const [selectedProcessId,setSelectedProcessId]=useState<string|null>(null);
  useEffect(()=>{
   const id=new URLSearchParams(window.location.search).get('process');
@@ -1004,7 +1007,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadKnowledgeDetails(selected.id,doc.id);
   }catch(e){fail(e);}finally{setDocBusy(false);}
  }
- async function exportSpecification(){
+ async function downloadDiagnostics(){
+   if(!selected||diagnosticExporting)return;
+   setDiagnosticExporting(true);
+   try{
+    const report=await api<Record<string,unknown>>('/projects/'+selected.id+'/diagnostics/export?hours='+diagnosticHours+'&includeMessages='+diagnosticIncludeMessages);
+    const url=URL.createObjectURL(new Blob([JSON.stringify(report,null,2)],{type:'application/json;charset=utf-8'}));
+    const a=document.createElement('a');
+    a.href=url;a.download='ado-diagnostics-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+   }catch(e){fail(e);}finally{setDiagnosticExporting(false);}
+  }
+  async function exportSpecification(){
   if(!selected)return;
   try{
    const data=await api<{filename:string;markdown:string}>('/projects/'+selected.id+'/knowledge/spec/export');
@@ -1943,7 +1958,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  })}
  </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='processes'&&<div className="process-center">
-  <div className="process-center-heading"><div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div></div>
+  <div className="process-center-heading">
+    <div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div>
+    <div className="row-line" style={{gap:8,flexWrap:'wrap'}}>
+     <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}>Логи за
+      <select value={diagnosticHours} onChange={e=>setDiagnosticHours(Number(e.target.value))}>
+       <option value={1}>1 час</option><option value={24}>24 часа</option><option value={72}>3 дня</option><option value={168}>7 дней</option>
+      </select>
+     </label>
+     <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13}} title="Добавляет тексты сообщений в чатах проекта, ПМ и задач. Перед отправкой проверь скачанный файл.">
+      <input type="checkbox" checked={diagnosticIncludeMessages} onChange={e=>setDiagnosticIncludeMessages(e.target.checked)}/>
+      Переписка
+     </label>
+     <button type="button" className="secondary" disabled={diagnosticExporting} onClick={()=>void downloadDiagnostics()}>
+      <FileDown size={15}/> {diagnosticExporting?'Подготовка…':'Скачать логи'}
+     </button>
+    </div>
+   </div>
   <div className="process-center-filters">{([['all','Все'],['active','Активные'],['failed','Ошибки'],['completed','Завершённые']] as const).map(([value,label])=>
    <button key={value} className={processFilter===value?'selected':''} type="button" onClick={()=>setProcessFilter(value)}>{label}</button>)}</div>
   <div className="process-center-grid">
