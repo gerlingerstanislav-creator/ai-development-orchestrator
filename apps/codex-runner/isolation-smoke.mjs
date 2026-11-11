@@ -74,6 +74,19 @@ try{
   });
  `;
  await qaRun('QA loopback server','node',['-e',localCheck],30000);
+ // Arbitrary public destinations must remain denied, even though registry
+ // downloads succeeded and loopback is available.
+ const deniedCheck=`
+  const assert=require('node:assert/strict');
+  (async()=>{try{
+   const response=await fetch('https://example.com',{signal:AbortSignal.timeout(7000)});
+   assert.ok(response.status===403,'Unapproved external host reached (HTTP '+response.status+')');
+  }catch(error){
+   if(error.code==='ERR_ASSERTION')throw error;
+   // An enforced proxy may reject the socket instead of returning HTTP 403.
+  }})().catch(error=>{console.error(error);process.exitCode=1;});
+ `;
+ await qaRun('QA deny unapproved domain','node',['-e',deniedCheck],17000);
  // Ensure a real headless browser launches under the *same* sandbox profile.
  const browserCheck=`
   const {chromium}=require('@playwright/test'),assert=require('node:assert/strict');
