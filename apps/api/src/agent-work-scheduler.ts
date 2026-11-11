@@ -137,6 +137,16 @@ const reasonText:Record<string,string>={
  capacity:'Ожидается свободный слот разработчика.'
 };
 
+/** Carry an explicit launch through analysis of the same task and approved iteration revision. */
+export async function carryDevelopmentAuthorizationAfterAnalysis(db:Db,input:{projectId:string;taskId:string;iterationId:string|null;previousVersion:number;version:number}){
+ const result=await db.query(`UPDATE iteration_execution_queue q SET spec_version=$4,updated_at=now()
+  FROM project_iterations i WHERE q.project_id=$1 AND q.task_id=$2 AND q.status='queued'
+   AND q.spec_version=$3 AND q.iteration_id=$5 AND i.id=q.iteration_id
+   AND i.project_id=q.project_id AND i.revision=q.approved_revision AND i.approved_revision=q.approved_revision`,
+ [input.projectId,input.taskId,input.previousVersion,input.version,input.iterationId]);
+ return !!result.rowCount;
+}
+
 export async function readDevelopmentQueue(db:Db,projectId:string){
  const rows=await db.query(`SELECT * FROM (${queueState} WHERE q.project_id=$1
   AND q.status IN ('queued','dispatching','cancelled','stale')) work

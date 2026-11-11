@@ -1,3 +1,5 @@
+import {workflowResponsibility} from './workflow-responsibilities.js';
+import {carryDevelopmentAuthorizationAfterAnalysis} from './agent-work-scheduler.js';
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
 import {executeProjectManagerInbox,failProjectManagerInbox,readProjectManagerWatchResume,type ProjectManagerWatch} from './project-manager-inbox.js';
@@ -16,6 +18,8 @@ import {managerSnapshot} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
+import {saveSpecRevision} from './requirements.js';
+import {z} from 'zod';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
@@ -109,7 +113,9 @@ async function taskHandoffContext(projectId:string,taskId:string,stage:string){
  const [notes,conversation]=await Promise.all([
   taskNotesContext(pool,projectId,taskId,stage),taskConversationEvidence(pool,projectId,taskId)
  ]);
- return 'Реплики пользователя в этой задаче:\n'+conversation.slice(-3200)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-4800);
+ const responsibility=workflowResponsibility(stage);
+ const assignment=responsibility?'Этап '+stage+'. Условия старта: '+responsibility.trigger+' Ожидаемый результат: '+responsibility.result+'\n\n':'';
+ return assignment+'Реплики пользователя в этой задаче:\n'+conversation.slice(-3200)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-4800);
 }
 async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string):Promise<string>{
  const setup=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
@@ -135,6 +141,93 @@ async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|n
  }
  return data.message;
 }
+const taskAnalysisResult=z.object({
+ outcome:z.enum(['ready','needs_input']),
+ summary:z.string().trim().min(8).max(1500),
+ refined_description:z.string().trim().min(20).max(16000),
+ questions:z.array(z.string().trim().min(5).max(650)).max(8).default([])
+}).strict();
+function parseTaskAnalysisResult(text:string){
+ const cleaned=text.trim().replace(/^\x60{3}(?:json)?\s*/i,'').replace(/\s*\x60{3}$/,'');
+ const start=cleaned.indexOf('{'),end=cleaned.lastIndexOf('}');
+ if(start<0||end<start)throw Error('Аналитик не вернул структурированный результат');
+ return taskAnalysisResult.parse(JSON.parse(cleaned.slice(start,end+1)));
+}
+/** A worker-owned task is analyzed once until it reaches an explicit result.
+ * The analyst can hand off an approved specification without PM micromanagement.
+ */
+export async function runTaskStageAnalysis(runId:string):Promise<void>{
+ const run=(await pool.query("SELECT id,project_id,task_id,spec_version,status FROM agent_analysis_runs WHERE id=$1",[runId])).rows[0];
+ if(!run||['completed','waiting','failed','cancelled'].includes(run.status))return;
+ const active=await pool.query("UPDATE agent_analysis_runs SET status='running',updated_at=now() WHERE id=$1 AND status IN ('queued','running') RETURNING id",[runId]);
+ if(!active.rowCount)return;
+ const {project_id:projectId,task_id:taskId}=run;
+ try{
+  const [record,history]=await Promise.all([
+   pool.query("SELECT id,project_id,title,description,stage,analysis_state,clarification_questions,spec_review_status,spec_version,iteration_work_kind FROM tasks WHERE project_id=$1 AND id=$2",[projectId,taskId]),
+   taskHandoffContext(projectId,taskId,'analysis')
+  ]);
+  const task=record.rows[0];
+  if(!task||task.stage!=='analysis'||task.spec_version!==run.spec_version||task.analysis_state!=='processing'){
+   await pool.query("UPDATE agent_analysis_runs SET status='completed',message='Состояние задачи изменилось, старая работа пропущена',updated_at=now() WHERE id=$1",[runId]);
+   return;
+  }
+  const instructions=(await pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='analysis'",[projectId])).rows[0];
+  const prompt=[
+   'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
+   'Изучи исходное ТЗ, документацию и всю историю обсуждений. Нельзя придумывать продуктовые решения вместо владельца.',
+   'Если техническое описание достаточно для разработки, верни outcome="ready", уточнённое исполнимое ТЗ и конкретное краткое резюме.',
+   'Если без решения пользователя реализация неоднозначна, верни outcome="needs_input" и вопросы, которые действительно нельзя разрешить по документации.',
+   'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
+   'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."]}.',
+   'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
+   'Задача: '+task.title+'\n'+task.description,
+   'Обсуждения и ответы: '+history.slice(0,7500)
+  ].join('\n\n');
+  const output=parseTaskAnalysisResult(await assistantCompletion(prompt,projectId,taskId,'task_analysis'));
+  if(output.outcome==='ready'&&output.questions.length)throw Error('Аналитик завершил задачу с неразрешёнными вопросами');
+  if(output.outcome==='needs_input'&&!output.questions.length)throw Error('Аналитик запросил уточнение без вопроса');
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const stillActive=await client.query("SELECT status FROM agent_analysis_runs WHERE id=$1 FOR UPDATE",[runId]);
+   const latest=(await client.query("SELECT * FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[projectId,taskId])).rows[0];
+   if(stillActive.rows[0]?.status==='cancelled'||!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||latest.spec_version!==run.spec_version){
+    await client.query("UPDATE agent_analysis_runs SET status='completed',message='Задача изменилась до сохранения результата',updated_at=now() WHERE id=$1 AND status<>'cancelled'",[runId]);
+    await client.query('COMMIT');return;
+   }
+   if(output.outcome==='ready'){
+    const version=await saveSpecRevision(client,latest,{title:latest.title,description:output.refined_description,origin:'analyst',reason:output.summary,reviewStatus:'current'});
+    const questions=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND kind='question' AND status IN ('open','processing') LIMIT 1",[taskId]);
+    if(questions.rowCount||latest.clarification_questions?.length){
+     await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
+    }else{
+     await client.query("UPDATE tasks SET analysis_state='ready_for_development',updated_at=now() WHERE id=$1",[taskId]);
+     await carryDevelopmentAuthorizationAfterAnalysis(client,{projectId,taskId,iterationId:latest.iteration_id,previousVersion:run.spec_version,version});
+     await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed',$3)",[randomUUID(),taskId,output.summary]);
+    }
+    await client.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status) VALUES($1,$2,$3,'analysis',$4,'development','handoff',$5,'agent',$6,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING",
+     [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',output.summary,'task-analysis:'+runId]);
+   }else{
+    await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
+    for(let index=0;index<output.questions.length;index++){
+     await client.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status,requires_customer) VALUES($1,$2,$3,'analysis',$4,'all','question',$5,'agent',$6,'open',true) ON CONFLICT(task_id,source_key) DO NOTHING",
+      [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',output.questions[index],'task-analysis:'+runId+':question:'+index]);
+    }
+    await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_blocked',$3)",[randomUUID(),taskId,'Аналитик запросил решения: '+output.questions.join('; ').slice(0,1200)]);
+   }
+   await client.query("UPDATE agent_analysis_runs SET status=$2,message=$3,updated_at=now() WHERE id=$1",[runId,output.outcome==='ready'?'completed':'waiting',output.summary]);
+   await client.query('COMMIT');
+  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  await event(projectId,runId,'analysis',output.outcome==='ready'?'completed':'waiting',output.summary);
+ }catch(error){
+  const message=String(error).slice(0,650);
+  await pool.query("UPDATE agent_analysis_runs SET status='failed',message=$2,updated_at=now() WHERE id=$1 AND status IN ('queued','running')",[runId,message]);
+  await pool.query("UPDATE tasks SET analysis_state='failed',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='analysis' AND analysis_state='processing' AND spec_version=$3 AND EXISTS(SELECT 1 FROM agent_analysis_runs WHERE id=$4 AND status='failed')",[taskId,projectId,run.spec_version,runId]);
+  await event(projectId,runId,'analysis','failed',message,'error');
+ }
+}
+
 export async function prepareIterationPlanDraft(runId:string){
  await runIterationPlanning(pool,runId,async(prompt,projectId,role)=>{
   const ai=(await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0];

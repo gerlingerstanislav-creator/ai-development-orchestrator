@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {enqueueDevelopment,initAgentWorkQueue,readDevelopmentQueue,reconcileAgentWorkQueue} from '../dist/agent-work-scheduler.js';
+import {carryDevelopmentAuthorizationAfterAnalysis,enqueueDevelopment,initAgentWorkQueue,readDevelopmentQueue,reconcileAgentWorkQueue} from '../dist/agent-work-scheduler.js';
 import {initTaskOrchestrationSchema,releaseTaskOrchestration} from '../dist/task-orchestration.js';
 
 test('development queue binds approval, skips blocked tasks and retries one stable Temporal start',async t=>{
@@ -69,6 +69,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  assert.equal((await status(legacy)).status,'stale');
  await launch({iterationId:iteration,revision:1,taskIds:[first]});
  await db.query('UPDATE project_iterations SET revision=2,approved_revision=2 WHERE id=$1',[iteration]);
+ assert.equal(await carryDevelopmentAuthorizationAfterAnalysis(db,{projectId:project,taskId:first,iterationId:iteration,previousVersion:1,version:2}),false);
  await dispatch();
  assert.equal(starts.length,0,'approving a new revision must not launch a prior request');
  assert.equal((await status(first)).status,'stale');
@@ -98,6 +99,8 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  assert.equal((await db.query('SELECT count(*)::int AS total FROM ai_task_runs')).rows[0].total,1);
 
  await launch({iterationId:iteration,revision:2,taskIds:[second]});
+ await db.query('UPDATE tasks SET spec_version=2,spec_reviewed_version=2 WHERE id=$1',[second]);
+ assert.equal(await carryDevelopmentAuthorizationAfterAnalysis(db,{projectId:project,taskId:second,iterationId:iteration,previousVersion:1,version:2}),true);
  assert.match((await readDevelopmentQueue(db,project)).find(row=>row.task_id===second).detail,/слот разработчика/);
  await dispatch();
  assert.equal(starts.length,2);
