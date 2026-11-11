@@ -203,7 +203,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Error(data.error||'Ошибка запроса');
  return data as T;
 }
-type ProjectSection='overview'|'tasks'|'docs'|'qa'|'processes'|'team'|'settings';
+type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string;planning?:boolean;iterationId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 function parseAppRoute(pathname:string):AppRoute{
@@ -213,12 +213,14 @@ function parseAppRoute(pathname:string):AppRoute{
  if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
   const projectId=parts[1];
   if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
-  if(parts.length===3&&['overview','tasks','docs','qa','processes','team','settings'].includes(parts[2]))
+  if(parts.length===3&&['overview','tasks','plan','docs','qa','processes','team','settings'].includes(parts[2]))
    return {kind:'project',projectId,section:parts[2] as ProjectSection};
   if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
    return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
+  if(parts[2]==='plan'&&parts.length===4&&uuidPattern.test(parts[3]))
+   return {kind:'project',projectId,section:'plan',planning:true,iterationId:parts[3]};
   if(parts[2]==='docs'&&parts[3]==='plan'&&(parts.length===4||parts.length===5&&uuidPattern.test(parts[4])))
-   return {kind:'project',projectId,section:'docs',planning:true,iterationId:parts[4]};
+   return {kind:'project',projectId,section:'plan',planning:true,iterationId:parts[4]};
   if(parts.length===4&&parts[2]==='docs'&&uuidPattern.test(parts[3]))
    return {kind:'project',projectId,section:'docs',docId:parts[3]};
  }
@@ -1753,7 +1755,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <div className="sidebar-nav">
   {selected?<><div className="sidebar-label">ПРОЕКТ</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
+   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['plan','План разработки',ClipboardList],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
   </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
   </div>
   <div className="sidebar-bottom">
@@ -1762,7 +1764,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
   </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':'Настройки'}</strong></>}<div className="top-right">
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='plan'?'План разработки':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
     <div className="quota-popover" role="tooltip">
@@ -1903,7 +1905,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
      {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
      {process.result&&<div className="process-result"><strong>Результат</strong><p>{process.result.message||'Операция завершена'}</p>
-      {process.iterationId&&selected&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'docs')+'/plan/'+process.iterationId)}>Открыть итерацию</button>}
+      {process.iterationId&&selected&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'plan')+'/'+process.iterationId)}>Открыть итерацию</button>}
       {process.result.created_document_id&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'docs')+'/'+process.result!.created_document_id)}>Открыть документацию</button>}
       {process.result.verdict&&<p><strong>Вердикт: {process.result.verdict==='passed'?'Проверки пройдены':process.result.verdict==='failed'?'Обнаружены ошибки':'Не удалось проверить'}</strong></p>}
       {process.result.commit&&<small>Проверенный коммит: {process.result.commit}</small>}
@@ -1933,12 +1935,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    })()}</div>
   </div>
  </div>}
+ {section==='plan'&&<section className="panel project-plan-page">
+ <ProjectIterations key={selected.id+':'+(route.iterationId??'list')} projectId={selected.id}
+    iterationId={route.iterationId??null} summaries={iterations} documents={docs} request={api}
+    onSelect={id=>navigate(projectUrl(selected.id,'plan')+(id?'/'+id:''))}
+    onChange={()=>refreshIterationTasks(selected.id)} onChat={(mode,message)=>openProjectChat(mode,message)}
+    documentLink={id=>projectUrl(selected.id,'docs')+'/'+id} taskLink={id=>projectUrl(selected.id,'tasks')+'/'+id}
+    stages={stages} renderBody={body=><DocumentMarkdown source={body}/>}/>
+ </section>}
  {section==='docs'&&<div className="docs">
   <aside className="panel docs-list">
    <div className="docs-list-heading"><b>Страницы проекта</b><div className="docs-actions">
      <button type="button" disabled={docBusy} title="Добавить страницу в исходные материалы" onClick={()=>void addDoc()}><Plus size={18}/></button></div></div>
-   <a className={'docs-plan-link '+(route.planning?'selected':'')} href={projectUrl(selected.id,'docs')+'/plan'}
-    onClick={e=>followLink(e,projectUrl(selected.id,'docs')+'/plan')}><ClipboardList size={16}/> План разработки</a>
    <input className="docs-search-field" aria-label="Поиск по дереву документации" placeholder="Найти документ..." value={docSearch} onChange={e=>setDocSearch(e.target.value)}/><div className="doc-tree">{renderDocTree(null)}{!docs.length&&<p className="muted docs-tree-empty">Создай первую страницу документации.</p>}</div>
    <div className="docs-list-footer">
     <button className="secondary" type="button" title="Скачать ТЗ (Markdown)" aria-label="Скачать ТЗ (Markdown)" onClick={()=>void exportSpecification()}><FileDown size={16}/> ТЗ</button>
@@ -1946,13 +1954,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>
   </aside>
   <section className="panel docs-reading">
-   {route.planning?<ProjectIterations key={selected.id+':'+(route.iterationId??'list')} projectId={selected.id}
-    iterationId={route.iterationId??null} summaries={iterations} documents={docs} request={api}
-    onSelect={id=>navigate(projectUrl(selected.id,'docs')+'/plan'+(id?'/'+id:''))}
-    onChange={()=>refreshIterationTasks(selected.id)} onChat={(mode,message)=>openProjectChat(mode,message)}
-    documentLink={id=>projectUrl(selected.id,'docs')+'/'+id} taskLink={id=>projectUrl(selected.id,'tasks')+'/'+id}
-    stages={stages} renderBody={body=><DocumentMarkdown source={body}/>}/>:
-    selectedDocId&&docs.some(d=>d.id===selectedDocId)?(()=>{
+   {selectedDocId&&docs.some(d=>d.id===selectedDocId)?(()=>{
     const doc=docs.find(d=>d.id===selectedDocId)!;
     return <>
      {knowledgeMeta&&<details className="panel knowledge-document-panel">
@@ -2142,21 +2144,24 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <button type="button" className="primary" disabled={baHandoffBusy||baHandoffTitle.trim().length<5||baHandoffBody.trim().length<20} onClick={()=>void sendBaHandoff()}>Согласовать и передать СА</button></div>
    </div>}
    {projectChatMode==='documentation'&&baHandoffNotice&&<p className="ba-handoff-notice">{baHandoffNotice}</p>}
-   <div className="pm-topic-bar">
-    <select aria-label="Тема обсуждения" value={projectTopicId} onChange={e=>setProjectTopicId(e.target.value)}>
-     <option value="">Общий чат</option>
-     {projectTopics.map(topic=><option key={topic.id} value={topic.id} disabled={topic.status==='closed'}>{topic.status==='closed'?'✓ ':''}{topic.title}</option>)}
-    </select>
-    {projectTopicId&&<button className="secondary" type="button" onClick={()=>{const topic=projectTopics.find(x=>x.id===projectTopicId);if(topic)void toggleProjectTopic(topic);}}>Закрыть</button>}
-   </div>
-   <form className="pm-new-topic" onSubmit={e=>{e.preventDefault();void createProjectTopic();}}>
-    <input aria-label="Название новой темы" value={projectNewTopic} placeholder="Новая тема обсуждения…" onChange={e=>setProjectNewTopic(e.target.value)}/>
-    <button type="submit" className="secondary" disabled={projectTopicBusy||projectNewTopic.trim().length<3}><Plus size={15}/> Тема</button>
-   </form>
+   <div className="pm-chat-body">
+   <aside className="pm-topic-sidebar" aria-label="Темы обсуждений с ПМ">
+    <strong className="pm-topic-sidebar-title">Обсуждения</strong>
+    <button type="button" className={'pm-topic-item '+(!projectTopicId?'active':'')} onClick={()=>{setProjectTopicId('');setProjectReplyTo(null);}}>Общий чат</button>
+    {projectTopics.map(topic=><div key={topic.id} className={'pm-topic-entry '+(projectTopicId===topic.id?'active':'')}>
+     <button className="pm-topic-item" type="button" title={topic.title} onClick={()=>{setProjectTopicId(topic.id);setProjectReplyTo(null);}}>{topic.status==='closed'?'✓ ':''}{topic.title}</button>
+     <button className="pm-topic-toggle" type="button" title={topic.status==='open'?'Закрыть':'Открыть'} onClick={()=>void toggleProjectTopic(topic)}>{topic.status==='open'?'×':'↺'}</button>
+    </div>)}
+    <form className="pm-new-topic" onSubmit={e=>{e.preventDefault();void createProjectTopic();}}>
+     <input aria-label="Название новой темы" value={projectNewTopic} placeholder="Новая тема…" onChange={e=>setProjectNewTopic(e.target.value)}/>
+     <button type="submit" className="secondary" title="Создать тему" disabled={projectTopicBusy||projectNewTopic.trim().length<3}><Plus size={15}/></button>
+    </form>
+   </aside>
+   <div className="pm-chat-conversation">
    <div className="pm-thread-wrap">
    <div ref={projectThreadRef} onScroll={onProjectScroll} className="assistant-thread" role="log" aria-live="polite">
-    {projectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Обсуди со мной идеи, бизнес-логику и требования. Я не создаю задачи без твоего решения. После согласования передай пакет системному аналитику.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
-    {projectMessages.map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
+    {projectMessages.filter(m=>(m.topic_id||'')===projectTopicId).length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Обсуди со мной идеи, бизнес-логику и требования. Я не создаю задачи без твоего решения. После согласования передай пакет системному аналитику.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
+    {projectMessages.filter(m=>(m.topic_id||'')===projectTopicId).map(m=><div className={'assistant-bubble '+(m.role==='user'?'mine':'bot')} key={m.id}>
       {m.reply_to&&<div className="pm-quoted-message">Ответ на: {projectMessages.find(x=>x.id===m.reply_to)?.body.slice(0,180)||'сообщение из истории'}</div>}
       {m.topic_id&&<small className="pm-message-topic">{projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
@@ -2195,10 +2200,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <strong>@{option.alias}</strong><small>{aiAgentName(stages.find(s=>s.stage===option.stage)?.agent_name||option.alias)}</small></button>)}
      </div>}
      <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Обсудить продукт, сценарии и требования…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение бизнес-аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
-    <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||(!projectInput.trim()&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
+    <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!!(projectTopicId&&projectTopics.find(t=>t.id===projectTopicId)?.status==='closed')||(!projectInput.trim()&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
-  </section>}
+  </div></div>
+   </section>}
   <div className="chat-agent-launchers" role="group" aria-label="Чаты с агентами">
    <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><span className="chat-agent-glyph"><MessageCircle size={32}/><span>ПМ</span></span></button>
 
