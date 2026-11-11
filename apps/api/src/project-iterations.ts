@@ -208,7 +208,10 @@ export async function queueIterationPlanning(db:Db,projectId:string,actorId:stri
  const enabled=(await db.query('SELECT enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0]?.enabled;
  if(!enabled)throw problem(409,'Включи AI в настройках проекта');
  const active=(await db.query("SELECT id,status FROM iteration_planning_runs WHERE iteration_id=$1 AND status IN ('queued','running')",[data.iteration_id])).rows[0];
- if(active)return {planning_run_id:active.id,iteration_id:data.iteration_id,status:active.status};
+ if(active){
+  if(active.status==='queued'&&data.request.trim())await db.query("UPDATE iteration_planning_runs SET request_text=left(CASE WHEN position($2 in request_text)>0 THEN request_text ELSE request_text||E'\\n'||$2 END,2000),updated_at=now() WHERE id=$1 AND status='queued'",[active.id,data.request]);
+  return {planning_run_id:active.id,iteration_id:data.iteration_id,status:active.status};
+ }
  const runId=randomUUID(),source=sourceRevision(await sourceDocuments(db,data.iteration_id,true));
  await db.query('INSERT INTO iteration_planning_runs(id,iteration_id,iteration_revision,source_revision,request_text,actor_id) VALUES($1,$2,$3,$4,$5,$6)',
   [runId,data.iteration_id,current.revision,source,data.request,actorId]);

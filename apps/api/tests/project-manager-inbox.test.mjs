@@ -16,7 +16,9 @@ test('project manager inbox persists independent turns and safely retries failed
  await db.query([
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
   'CREATE TABLE users(id uuid PRIMARY KEY)',
-  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,created_at timestamptz DEFAULT now())",
+  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,pm_order_id uuid,created_at timestamptz DEFAULT now())",
+  "CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,source_message_id uuid,topic_id uuid,status text DEFAULT 'queued',summary text,updated_at timestamptz DEFAULT now())",
+  "CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text,process_id uuid,created_at timestamptz DEFAULT now())",
   "CREATE TABLE project_chat_topics(id uuid PRIMARY KEY,project_id uuid,title text,status text DEFAULT 'open')",
   'CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id))',
   'CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,title text)',
@@ -67,7 +69,7 @@ test('PM reports completed delegated iteration only once and never reports a req
  await db.query('SET search_path TO '+schema+',public');
  await db.query([
   'CREATE TABLE projects(id uuid PRIMARY KEY)',
-  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,role text,body text,channel text,status text)",
+  "CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,role text,body text,channel text,status text,topic_id uuid,pm_order_id uuid)",
   'CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id))',
   'CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,title text)',
   'CREATE TABLE iteration_planning_runs(id uuid PRIMARY KEY,iteration_id uuid,status text,message text,plan_id uuid,created_at timestamptz DEFAULT now())'

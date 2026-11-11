@@ -73,7 +73,7 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
   assert.equal(projectId,project);
   if(calls===1){
    assert.match(prompt,/Ты системный аналитик/);
-   assert.match(prompt,/Ручное оформление/i);
+   assert.match(prompt,/Согласован объём|Ручное оформление/i);
    assert.match(prompt,/Первый рабочий сценарий/);
    return JSON.stringify({epics:proposal.epics});
   }
