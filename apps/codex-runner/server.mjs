@@ -218,14 +218,14 @@ function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}=
    if(timedOut)return settle(new Error(binary+' превысил ограничение времени'));
    if(code!==0){
     const detail=binary==='codex'?codexFailureDetail(output,errors):errors.slice(-1200);
-    return settle(new Error(binary+' завершился с кодом '+code+(detail?': '+detail:'')));
+    return settle(new Error(binary+' завершился с кодом '+code+': '+(detail||'Codex CLI не вернул причину ошибки. Проверь авторизацию Codex и подробный журнал Runner.')));
    }
    settle();
   });
  });
 }
-async function isolatedTaskPolicy(workdir,dir,jobId,writable=true){
- const policy=await createTaskPolicy(workdir,{writable});
+async function isolatedTaskPolicy(workdir,dir,jobId,writable=true,qa=false){
+ const policy=await createTaskPolicy(workdir,{writable,qa});
  try{await command('codex',[...policy.sandboxArgs,'--','/bin/true'],{cwd:dir,env:cliEnv,jobId,timeout:15000});}
  catch(error){throw Error('Изоляция Runner недоступна: '+error.message);}
  return policy;
@@ -441,11 +441,21 @@ async function runTestJob(job,state){
   assertJobActive(job.id);
   state.testedCommit=commit;
   saveJob(job,state);
-  // Probe the real runner, not the model's assumptions about what tools may exist.
-  const probe=await command('sh',['-c',
-   'for tool in node npm npx python3 pytest git chromium chromium-browser google-chrome playwright docker; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: available"; else echo "$tool: unavailable"; fi; done; if test -d node_modules; then echo "node_modules: available"; else echo "node_modules: unavailable"; fi'
-  ],{cwd:dir,timeout:8000,jobId:job.id});
-  const capabilities=probe.stdout.trim().slice(0,1500);
+  // Probe from INSIDE the actual QA sandbox; a tool installed on the host may
+  // not be runnable under bubblewrap. A browser is "available" only when a
+  // headless process really starts, not just when "which chromium" succeeds.
+  const policy=await isolatedTaskPolicy(workdir,dir,job.id,true,true);
+  const probeScript=[
+   'for tool in node npm npx python3 pytest git; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: available"; else echo "$tool: unavailable"; fi; done',
+   'if node -e "require(\'@playwright/test\')" >/dev/null 2>&1; then echo "playwright: available"; else echo "playwright: unavailable"; fi',
+   'if command -v chromium >/dev/null 2>&1 && timeout 12s chromium --headless --no-sandbox --disable-dev-shm-usage --disable-gpu --dump-dom "data:text/html,<title>ado-qa</title>" 2>/dev/null | grep -q "ado-qa"; then echo "chromium: available"; else echo "chromium: unavailable"; fi',
+   'if test -d node_modules; then echo "node_modules: available"; else echo "node_modules: unavailable"; fi',
+   'echo "network_policy: npm/PyPI registries and loopback only"'
+  ].join('; ');
+  const probe=await command('codex',[...policy.sandboxArgs,'--','sh','-c',probeScript],{
+   cwd:dir,env:cliEnv,timeout:25000,maxOutputChars:6000,jobId:job.id
+  });
+  const capabilities=probe.stdout.trim().slice(0,2500);
   state.capabilities=capabilities;
   const prompt=[
    'Ты независимый AI-тестировщик в отдельной временной копии репозитория.',
@@ -457,8 +467,13 @@ async function runTestJob(job,state){
    'Для недоступного сценария evidence должно назвать отсутствующий инструмент или среду, конкретную проверку, которая не запускалась, и почему. Не заменяй это общими фразами.',
    'Невозможность установить отсутствующую зависимость из сети — ограничение среды, а не дефект приложения. Указывай такие проверки в checks как not_run; найденную настоящую ошибку проверенного кода показывай как failed.',
    'Массив findings используй ТОЛЬКО для подтверждённых дефектов приложения, а не для отсутствующих инструментов; последние описывай в caseResults.',
-   'НЕ устанавливай зависимости из интернета, НЕ запускай развертывание, НЕ читай секреты, НЕ меняй GitHub.',
-   'Это ограниченное тестирование без отдельного стенда и браузера. Не заявляй, что провёл E2E-тесты, если их реально не запускал.',
+   'Разрешено устанавливать зависимости проекта через npm и pip только из разрешённых registry.npmjs.org и PyPI в рабочую копию проекта или локальный venv. Не устанавливай глобальные пакеты, не меняй GitHub, не читай секреты и не пытайся обойти сетевую политику.',
+   'Если в проекте есть package-lock.json, используй npm ci; если есть Python-проект, используй python3 -m venv внутри рабочей копии и pip. Запускай unit, integration и API проверки. Записывай фактические команды и коды возврата.',
+   'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
+   'Для браузерных проверок доступен @playwright/test и системный Chromium, если реальная проверка возможностей среды подтвердила их работоспособность. При запуске Chromium внутри изолированной песочницы используй executablePath=/usr/bin/chromium и args=[--no-sandbox,--disable-dev-shm-usage]. Сохраняй результаты в рабочем каталоге.',
+   'Тестовая среда не имеет доступа к Docker-сокету, секретам приложения, внутренним сервисам платформы или произвольному интернету. Все команды выполняются в изоляции.',
+   'Сбой Codex CLI — не доказательство отсутствия инструментов и не основание автоматически разрешать пропуск проверок.',
+   'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
    'При невозможности проверки не скрывай её. Если все реально доступные проверки выполнены без ошибок, но несколько сценариев недоступны, верни verdict=blocked и точный список таких сценариев. НЕ разрешай слияние самостоятельно — его может согласовать только пользователь.',
    'Если инструмент есть и проверку можно провести, обязательно попробуй. Отсутствие времени, ошибка теста или неподтверждённый результат НЕ является доказательством, что инструмент недоступен.',
    'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","handoffNote":"процедурное замечание другому агенту, не часть документации; пустая строка если замечаний нет","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","reason":"executed|tool_unavailable|environment_unavailable|manual_only|unknown","evidence":"команда и результат или причина недоступности"}]}.',
@@ -512,7 +527,6 @@ async function runTestJob(job,state){
     throw Error('В отчёте отсутствуют результаты части тест-кейсов');
    return data;
   };
-  const policy=await isolatedTaskPolicy(workdir,dir,job.id);
   const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,
    '--output-schema',schemaPath];
