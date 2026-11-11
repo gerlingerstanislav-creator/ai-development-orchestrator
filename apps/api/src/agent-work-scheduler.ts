@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
 import {acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
+import {roleCapacity} from './project-team.js';
 
 /** An approved iteration launch is a durable intent, not a one-shot batch of HTTP requests.
  * Only tasks explicitly launched by the owner or the project manager are eligible.
@@ -68,14 +69,10 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    }
    return;
   }
-  // One active development run system-wide. QA already runs independently in Codex Runner.
-  const busy=await db.query("SELECT 1 FROM ai_task_runs WHERE status IN ('queued','running') LIMIT 1");
-  if(busy.rowCount)return;
-  const peer=await db.query("SELECT 1 FROM agent_peer_queue WHERE role='development' AND status='running' LIMIT 1");
-  if(peer.rowCount)return;
+  // Each project has a separately configured developer pool; don't globally block other projects.
   const pending=await db.query(`SELECT q.project_id,q.iteration_id,q.task_id,q.requested_by,t.stage,t.analysis_state,
     t.spec_review_status,t.clarification_questions,t.depends_on_task_id,t.pr_base_branch,
-    t.spec_version,i.revision,i.approved_revision,settings.model,settings.enabled,
+    t.spec_version,t.priority,i.revision,i.approved_revision,settings.model,settings.enabled,
     dep.stage AS dependency_stage,dep.git_branch AS dependency_branch,dep.pr_url AS dependency_pr,
     EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing')) AS open_questions
    FROM iteration_execution_queue q
@@ -84,8 +81,12 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    JOIN project_ai_settings settings ON settings.project_id=q.project_id
    LEFT JOIN tasks dep ON dep.id=t.depends_on_task_id AND dep.project_id=t.project_id
    WHERE q.status='queued' AND i.approved_revision=i.revision
-   ORDER BY q.created_at,q.task_id LIMIT 80`);
+   ORDER BY t.priority ASC, CASE WHEN t.depends_on_task_id IS NULL THEN 0 ELSE 1 END, q.created_at,q.task_id LIMIT 80`);
   for(const t of pending.rows){
+   const capacity=await roleCapacity(pool,t.project_id,'development');
+   const active=await db.query("SELECT count(*)::int AS count FROM ai_task_runs WHERE project_id=$1 AND status IN ('queued','running')",[t.project_id]);
+   const peer=await db.query("SELECT count(*)::int AS count FROM agent_peer_queue WHERE project_id=$1 AND role='development' AND status='running'",[t.project_id]);
+   if(Number(active.rows[0]?.count||0)+Number(peer.rows[0]?.count||0)>=capacity)continue;
    if(!t.enabled||t.open_questions||t.clarification_questions?.length||['pending','needs_approval'].includes(t.spec_review_status))continue;
    if(t.stage==='analysis'&&(t.analysis_state!=='ready_for_development'||t.spec_review_status!=='current'))continue;
    if(t.stage==='development'&&t.analysis_state!=='approved')continue;
