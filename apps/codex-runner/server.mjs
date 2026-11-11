@@ -677,7 +677,7 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});
+   if(activeChatRequests>=20)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});
    const data=await readJson(req);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
       !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
