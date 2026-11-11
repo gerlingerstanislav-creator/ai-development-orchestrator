@@ -75,12 +75,17 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {topics:topics.rows};
  }
  case 'discussions.open':{
-  const {title}=z.object({title:z.string().trim().min(3).max(180)}).parse(params);
+  const {title,opening_message,awaiting_reply}=z.object({
+   title:z.string().trim().min(3).max(180),opening_message:z.string().trim().min(3).max(4000),awaiting_reply:z.boolean().default(true)
+  }).parse(params);
+  await pool.query('SELECT id FROM projects WHERE id=$1 FOR UPDATE',[projectId]);
   const existing=await pool.query("SELECT id,title,status FROM project_chat_topics WHERE project_id=$1 AND status='open' AND lower(title)=lower($2) LIMIT 1",[projectId,title]);
-  if(existing.rowCount)return {topic:existing.rows[0],existing:true};
-  const id=randomUUID();
-  const inserted=await pool.query("INSERT INTO project_chat_topics(id,project_id,title) VALUES($1,$2,$3) RETURNING id,title,status",[id,projectId,title]);
-  return {topic:inserted.rows[0],existing:false};
+  const topic=existing.rows[0]??(await pool.query("INSERT INTO project_chat_topics(id,project_id,title) VALUES($1,$2,$3) RETURNING id,title,status",[randomUUID(),projectId,title])).rows[0];
+  await pool.query(`INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id)
+   SELECT $1,$2,'assistant',$3,'project','completed',$4
+   WHERE NOT EXISTS(SELECT 1 FROM assistant_messages WHERE project_id=$2 AND topic_id=$4 AND channel='project')`,
+   [randomUUID(),projectId,opening_message,topic.id]);
+  return {topic,existing:!!existing.rowCount,awaiting_reply};
  }
  case 'discussions.close':
  case 'discussions.reopen':{
@@ -337,12 +342,15 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {import_job_id:jobId,status:'queued',kind:name};
  }
  case 'processes.list':{
-  const [a,b,queue]=await Promise.all([
+  const {task_id}=z.object({task_id:uuid.optional()}).parse(params);
+  const [a,b,queue,testing,reviews]=await Promise.all([
    pool.query('SELECT id,status,message,created_at,updated_at FROM document_import_jobs WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30',[projectId]),
-   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 30',[projectId]),
-   readDevelopmentQueue(pool,projectId)
+   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
+   readDevelopmentQueue(pool,projectId),
+   pool.query('SELECT id,task_id,status,verdict,message,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
+   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM requirement_review_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null])
   ]);
-  return {documentation:a.rows,development:b.rows,development_queue:queue.map(({task_id,display_number,title,status,reason,detail})=>({task_id,display_number,title,status,reason,detail}))};
+  return {documentation:task_id?[]:a.rows,development:b.rows,testing:testing.rows,requirements:reviews.rows,development_queue:queue.filter(row=>!task_id||row.task_id===task_id).map(({task_id,display_number,title,status,reason,detail})=>({task_id,display_number,title,status,reason,detail}))};
  }
  case 'processes.report':{
   const {stage,message}=z.object({stage:z.string().trim().min(2).max(80),message:z.string().trim().min(3).max(2000)}).parse(params);

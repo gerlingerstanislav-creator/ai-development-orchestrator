@@ -70,11 +70,11 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   'Выбери подходящие существующие регрессионные кейсы по UUID; только из предоставленного списка.',
   'Ответь строго JSON: {"summary":"...","flows":[{"title":"...","description":"...","preconditions":"...","steps":["..."]}],"cases":[{"title":"...","area":"...","flow_title":"название flow","description":"...","preconditions":"...","steps":[{"action":"...","expected":"..."}],"priority":"critical|high|normal|low","category":"smoke|regression|functional","execution_mode":"automated|manual|hybrid"}],"regression_case_ids":["uuid"]}.',
   'Роль агента: '+String(stage.rows[0]?.agent_name||'AI-тестировщик'),
-  'Инструкции агента: '+instructions,
   'Задача: '+row.title+'\n'+String(row.description||'').slice(0,17000),
-  'Реализованные изменения (используй для выбора проверок, но НЕ подгоняй ожидаемый результат под код): '+String(args.implementationEvidence||'').slice(0,13000),
-  'Правила проекта: '+rulesText,
-  'Рабочие комментарии разработчика и аналитика, адресованные QA (не являются ТЗ): '+await taskNotesContext(pool,projectId,taskId,'testing'),
+  'Правила проекта: '+rulesText.slice(0,2200),
+  'Инструкции агента: '+instructions.slice(0,2000),
+  'Рабочие комментарии разработчика и аналитика, адресованные QA (не являются ТЗ): '+(await taskNotesContext(pool,projectId,taskId,'testing')).slice(0,2200),
+  'Реализованные изменения (используй для выбора проверок, но НЕ подгоняй ожидаемый результат под код): '+String(args.implementationEvidence||'').slice(0,6000),
   'Существующая функциональная документация (сжатый контекст): '+JSON.stringify(docs.rows.map((d:any)=>({title:d.title,body:String(d.body).slice(0,2400)}))).slice(0,16000),
   'Существующий каталог тест-кейсов: '+JSON.stringify(existing.rows).slice(0,14000)
  ].join('\n\n');

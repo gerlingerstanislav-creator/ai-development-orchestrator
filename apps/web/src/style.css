@@ -500,7 +500,8 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .background-process-item-title strong{font-size:12px;overflow-wrap:anywhere}
 .background-process-pulse{width:7px;height:7px;flex:0 0 7px;background:#6f91dd;border-radius:50%;animation:process-pulse 1.5s ease-in-out infinite}
 @keyframes process-pulse{0%,100%{opacity:.42}50%{opacity:1}}
-.background-process-project{font-size:11px;color:#8490a3}
+.background-process-project{font-size:11px;color:#64738a}
+.background-process-role{font-weight:650}
 .background-process-detail{font-size:11px;color:#63718a;line-height:1.45;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
 .background-process-warning{display:block;border-top:1px solid #edf0f5;padding:8px;color:#ad5361;white-space:normal}
 @media(prefers-reduced-motion:reduce){.background-process-pulse{animation:none}}

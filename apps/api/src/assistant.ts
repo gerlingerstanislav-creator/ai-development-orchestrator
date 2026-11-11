@@ -461,7 +461,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
  app.get('/api/projects/:id/assistant/topics',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
-  return (await pool.query("SELECT id,title,status,created_at,closed_at FROM project_chat_topics WHERE project_id=$1 ORDER BY status ASC,created_at DESC",[id])).rows;
+  return (await pool.query("SELECT t.id,t.title,t.status,t.created_at,t.closed_at FROM project_chat_topics t WHERE t.project_id=$1 AND EXISTS(SELECT 1 FROM assistant_messages m WHERE m.project_id=t.project_id AND m.topic_id=t.id AND m.channel='project') ORDER BY t.status ASC,t.created_at DESC",[id])).rows;
  });
  app.post('/api/projects/:id/assistant/topics',async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);

@@ -3,7 +3,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from '../../codex-runner/execution-policy.mjs';
+import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from '../../codex-runner/execution-policy.mjs';
 
 test('the subprocess environment is explicit and Git credentials stay with Runner Git commands',()=>{
  const base=runnerEnvironment({PATH:'/usr/bin',LANG:'C',RUNNER_SHARED_SECRET:'runner',JWT_SECRET:'jwt',CODEX_HOME:'/auth',GITHUB_TOKEN:'github'});
@@ -31,4 +31,10 @@ test('each task gets its own restricted workspace and scratch directory',async t
  assert.notDeepEqual(first.execArgs,second.execArgs);
  assert.ok(conversationPolicy.includes('features.shell_tool=false'));
  assert.ok(conversationPolicy.includes('features.unified_exec=false'));
+});
+
+test('Codex diagnostics prefer structured failures over the stdin notice',()=>{
+ const events=JSON.stringify({type:'turn.failed',error:{message:'Invalid schema for the QA report'}});
+ assert.equal(codexFailureDetail(events,'Reading additional input from stdin...'),'Invalid schema for the QA report');
+ assert.equal(codexFailureDetail('', 'Reading additional input from stdin...\nSandbox failed'),'Sandbox failed');
 });

@@ -1,4 +1,5 @@
 import {workflowResponsibility} from './workflow-responsibilities.js';
+import {runnerAssistantPrompt} from './runner-assistant-prompt.js';
 import {carryDevelopmentAuthorizationAfterAnalysis} from './agent-work-scheduler.js';
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
@@ -130,7 +131,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
 async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000):Promise<string>{
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-  body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
+  body:JSON.stringify({prompt:runnerAssistantPrompt(prompt),model:ai.model,reasoning:ai.reasoning}),
   signal:AbortSignal.timeout(timeoutMs)});
  const data=await response.json().catch(()=>({})) as any;
  if(!response.ok||typeof data.message!=='string')throw Error(String(data.error||'Codex не вернул результат').slice(0,500));
@@ -266,11 +267,17 @@ export async function reconcileRequirements(args:{projectId:string;taskId:string
  const {projectId,taskId,runId,mode}=args;
  const version=await pool.query('SELECT spec_version FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
  if(!version.rowCount)throw Error('Задача не найдена');
- await pool.query("INSERT INTO requirement_review_runs(id,project_id,task_id,spec_version,status,message) VALUES($1,$2,$3,$4,'running','AI-аналитик сверяет изменения') ON CONFLICT(id) DO UPDATE SET status='running',message=EXCLUDED.message,spec_version=EXCLUDED.spec_version,completed_at=NULL",
-  [runId,projectId,taskId,version.rows[0].spec_version]);
- await event(projectId,runId,'analysis','review_started',mode==='handoff'?'Сверка реализации с утверждённым ТЗ перед тестированием':'Анализ изменения требований');
  try{
   const evidence=await prEvidence(projectId,taskId);
+  const cached=evidence.commitSha&&(await pool.query(
+   "SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2 AND spec_review_status='current' AND spec_reviewed_version=spec_version AND spec_reviewed_commit=$3",
+   [taskId,projectId,evidence.commitSha])).rowCount;
+  await pool.query(`INSERT INTO requirement_review_runs(id,project_id,task_id,spec_version,status,message,completed_at)
+   VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $5='completed' THEN now() END)
+   ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,message=EXCLUDED.message,spec_version=EXCLUDED.spec_version,completed_at=EXCLUDED.completed_at`,
+  [runId,projectId,taskId,version.rows[0].spec_version,cached?'completed':'running',cached?'Использована сверка для текущих ТЗ и коммита':'Аналитик сверяет изменения']);
+  if(cached)return 'current';
+  await event(projectId,runId,'analysis','review_started',mode==='handoff'?'Сверка реализации с утверждённым ТЗ перед тестированием':'Анализ изменения требований');
   const notes=await taskHandoffContext(projectId,taskId,'analysis');
   const result=await reconcileTaskRequirements(pool,{projectId,taskId,commitSha:evidence.commitSha,prEvidence:evidence.patch,developerSummary:evidence.summary,taskContext:notes},prompt=>assistantCompletion(prompt,projectId,taskId,'requirements_review'));
   const latest=await pool.query('SELECT summary,questions FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
@@ -330,12 +337,12 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
   const qaKnowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',runId));
   const handoff=await taskHandoffContext(projectId,taskId,'testing');
   const count=await prepareQaDocumentation(pool,{...args,implementationEvidence:evidence.patch},async(prompt)=>{
-   prompt+='\\n\\nУтверждённые знания:\\n'+qaKnowledge.documents+'\\n\\nПрименимые инструкции:\\n'+qaKnowledge.modules+'\\n\\nПамять QA:\\n'+await agentMemoryContext(pool,projectId,'testing');
    const taskContext='\n\nПеред вопросом о требованиях проверь ответы в задаче. Переписка не подтверждает прохождение теста.\n'+handoff;
-   prompt+=taskContext.slice(0,Math.min(3200,Math.max(0,24000-prompt.length)));
+   const bounded=runnerAssistantPrompt(prompt,taskContext.slice(0,3200),'Применимые инструкции:\n'+qaKnowledge.modules,
+    'Утверждённые знания:\n'+qaKnowledge.documents,'Память QA:\n'+await agentMemoryContext(pool,projectId,'testing'));
    const response=await fetch(codexUrl+'/assistant',{method:'POST',
     headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-    body:JSON.stringify({prompt,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning}),
+    body:JSON.stringify({prompt:bounded,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning}),
     signal:AbortSignal.timeout(105000)});
    const data=await response.json().catch(()=>({})) as any;
    if(!response.ok)throw new Error(String(data.error||'Не удалось получить QA-план от Codex'));
@@ -675,13 +682,15 @@ export async function rejectTestedTask(args:{projectId:string;taskId:string;cycl
  return saved.rows[0].id;
 }
 /** A failed analyst or QA preparation must not force fresh development of already finished code. */
-export async function noteHandoffFailure(args:{projectId:string;taskId:string;runId:string;message:string;stage:string}){
+export async function noteHandoffFailure(args:{projectId:string;taskId:string;runId:string;message:string;stage:string;qaRun?:{cycleId:string;attempt:number}}){
  const message=args.message.slice(0,2200);
+ if(args.qaRun)await pool.query("UPDATE ai_test_runs SET status='failed',message=$5,completed_at=now() WHERE project_id=$1 AND task_id=$2 AND cycle_id=$3 AND attempt=$4 AND status='queued'",
+  [args.projectId,args.taskId,args.qaRun.cycleId,args.qaRun.attempt,message]);
  await pool.query("UPDATE tasks SET test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",
  [args.taskId,args.projectId,message]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',
   [randomUUID(),args.taskId,'handoff_blocked',(args.stage+': '+message).slice(0,2200)]);
- await event(args.projectId,args.runId,'analysis',args.stage,message,'error');
+ await event(args.projectId,args.runId,args.stage.startsWith('qa_')||args.stage==='testing'?'testing':'analysis',args.stage,message,'error');
 }
 export async function noteCycleFailure(args:{projectId:string;taskId:string;message:string;stage:string}){
  if(args.stage==='development'){

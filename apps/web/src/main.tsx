@@ -63,7 +63,7 @@ type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
 type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};topicProgress?:{completed:number;total:number};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
 type DocumentationQuestion={id:string;topic_key:string;question:string;status:'open'|'answered';answer:string|null;document_id:string;document_title:string;created_at:string};
@@ -203,7 +203,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Object.assign(Error(data.error||'Ошибка запроса'),{status:response.status});
  return data as T;
 }
-const workflowRoleLabels:Record<string,string>={manager:'ПМ',analysis:'Системный аналитик',development:'Разработчик',testing:'QA',documentation:'Технический писатель',devops:'DevOps'};
+const workflowRoleLabels:Record<string,string>={manager:'ПМ',analyst:'Бизнес-аналитик',platform:'Система',analysis:'Системный аналитик',development:'Разработчик',testing:'QA',documentation:'Технический писатель',devops:'DevOps'};
 type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'workflow'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string;planning?:boolean;iterationId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -1847,7 +1847,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <a key={process.id} href={process.url} className="background-process-item"
         onClick={e=>{setBackgroundProcessMenuOpen(false);followLink(e,process.url);}}>
         <span className="background-process-item-title"><span className="background-process-pulse"/><strong>{process.title}</strong></span>
-        <span className="background-process-project">{process.projectName} · {process.status==='queued'?'В очереди':'Выполняется'}</span>
+        <span className="background-process-project"><strong className="background-process-role">{workflowRoleLabels[process.role]}</strong> · {process.projectName} · {process.status==='queued'?'В очереди':'Выполняется'}</span>
         <span className="background-process-detail">{process.detail}</span>
        </a>)}</div>}
      {backgroundProcessesError&&<small className="background-process-warning">{backgroundProcessesError}</small>}
@@ -2402,9 +2402,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <header><MessageCircle size={17}/><strong>Менеджер проекта</strong>
       <small>{decisions.length?'Ожидает вашего решения':activeAgentRuns.length||managerWorking?'Команда работает':'Контролирует процесс'}</small>
      </header>
+     {activeTask.stage==='testing'&&activeTask.test_feedback&&!managerState?.owner&&!managerWorking&&!activeAgentRuns.length&&!decisions.length&&!deferredQa.length&&
+      <div className="manager-message-error">{activeTask.test_feedback}
+       <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>Повторить сверку ТЗ и QA</button>
+      </div>}
      <div className="task-thread-wrap">
      <div ref={taskThreadRef} onScroll={onTaskScroll} className="assistant-thread manager-thread" role="log" aria-live="polite">
-      {!managerState?.messages.length&&<p className="assistant-hint">Менеджер проекта координирует аналитика, разработчика и тестировщика. Все вопросы и решения для вас поступают только от него.</p>}
+      {!managerState?.messages.length&&<p className="assistant-hint">Вопросы и решения по этой задаче отображаются здесь вместе с именем автора.</p>}
       <details className="manager-internal-log">
        <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
        <p>Здесь отображаются рабочие сообщения и технические события команды.</p>
@@ -2470,16 +2474,21 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
          <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить без визуальных проверок</button>
          <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'wait_for_tools')}>Ждать инструменты</button>
         </>}
-        {request.kind==='requirements'&&<>
+        {request.kind==='requirements'&&<details className="manager-answer-popover" open>
+         <summary>Аналитик · согласование требований</summary>
+         <div className="manager-answer-body">
+         <p>{String(request.payload?.summary||'')}</p>
+         <p>{String(request.payload?.proposed_description||'')}</p>
          <button className="primary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'approve_requirements')}>Согласовать изменение ТЗ</button>
          <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void decideAsManager(request,'reject_requirements')}>Отклонить изменение</button>
-        </>}
+         </div>
+        </details>}
         {request.kind==='question'&&<details className="manager-answer-popover">
-         <summary>Ответить менеджеру</summary>
+         <summary>Ответить на вопрос · {String(request.payload?.author||'Агент')}</summary>
          <div className="manager-answer-body">
-          <strong>Менеджер проекта спрашивает</strong>
+          <strong>{String(request.payload?.author||'Агент')} спрашивает</strong>
           <p>{String(request.payload?.question||'')}</p>
-          <textarea value={managerAnswer} rows={3} onChange={e=>setManagerAnswer(e.target.value)} placeholder="Ваш ответ менеджеру проекта"/>
+          <textarea value={managerAnswer} rows={3} onChange={e=>setManagerAnswer(e.target.value)} placeholder="Ответ по задаче"/>
           <button className="primary" type="button" disabled={managerBusy||managerAnswer.trim().length<3} onClick={()=>void decideAsManager(request,'answer')}>Отправить ответ</button>
          </div>
         </details>}

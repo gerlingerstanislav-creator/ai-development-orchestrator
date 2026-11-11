@@ -116,7 +116,14 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Не удалось актуализировать тестовую документацию: '+String(error),stage:'qa_preparation'});
    return 'qa_plan_failed';
   }
-  const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt});
+  let testId:string;
+  try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt});}
+  catch(error){
+   if(!patched('record-qa-start-failure'))throw error;
+   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,
+    message:'Не удалось запустить тестирование: '+String((error instanceof Error?error.cause:null)||error),stage:'qa_start',qaRun:{cycleId:input.runId,attempt}});
+   return 'qa_start_failed';
+  }
   let testing;
   while(true){
    testing=await steps.checkTesting({projectId:input.projectId,taskId:input.taskId,testId});
@@ -164,7 +171,14 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,message:'Не удалось подготовить QA-документацию: '+String(error),stage:'qa_preparation'});
   return 'qa_plan_failed';
  }
- const testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0});
+ let testId:string;
+ try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0});}
+ catch(error){
+  if(!patched('record-qa-start-failure'))throw error;
+  await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,
+   message:'Не удалось запустить тестирование: '+String((error instanceof Error?error.cause:null)||error),stage:'qa_start',qaRun:{cycleId:input.cycleId,attempt:0}});
+  return 'qa_start_failed';
+ }
  let testing;
  while(true){
   testing=await steps.checkTesting({projectId:input.projectId,taskId:input.taskId,testId});

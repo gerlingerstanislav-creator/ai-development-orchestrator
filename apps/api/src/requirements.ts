@@ -81,15 +81,15 @@ export async function reconcileTaskRequirements(pool:Pool,args:{projectId:string
   'Не заявляй, что визуальная реализация проверена по diff. Визуальные тесты выполняет независимый тестировщик.',
   'Ответь только JSON {"classification":"aligned|clarification|material_change|uncertain|qa_validation","summary":"...","proposed_description":"...","questions":["..."]}.',
   'Агент: '+String(stage.rows[0]?.agent_name||'AI-аналитик'),
-  'Инструкции аналитика: '+String(stage.rows[0]?.agent_instructions||'').slice(0,5500),
   'Название задачи: '+row.title,
-  'Реплики и рабочие ответы в задаче:\n'+String(args.taskContext||'').slice(0,5200),
+  'SHA кода: '+(commitSha||'PR пока отсутствует'),
+  'Реплики и рабочие ответы в задаче:\n'+String(args.taskContext||'').slice(0,3200),
   'Актуальная версия ТЗ '+version+':\n'+String(row.description).slice(0,16000),
+  'Изменения PR (или отсутствие PR): '+prEvidence.slice(0,6500),
+  'Инструкции аналитика: '+String(stage.rows[0]?.agent_instructions||'').slice(0,2500),
   'Предыдущие версии: '+JSON.stringify(previous.rows.slice(1)).slice(0,9000),
   'Правила проекта: '+rules.rows.map((x:any)=>x.body).join('\n').slice(0,6500),
-  'Разработчик: '+String(args.developerSummary||'Нет отдельного отчёта').slice(0,2400),
-  'SHA кода: '+(commitSha||'PR пока отсутствует'),
-  'Изменения PR (или отсутствие PR): '+prEvidence.slice(0,17000)
+  'Разработчик: '+String(args.developerSummary||'Нет отдельного отчёта').slice(0,2400)
  ].join('\n\n');
  const raw=await ask(prompt);
  const first=raw.indexOf('{'),last=raw.lastIndexOf('}');

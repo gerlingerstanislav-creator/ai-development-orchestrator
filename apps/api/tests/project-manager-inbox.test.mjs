@@ -5,6 +5,7 @@ import Fastify from 'fastify';
 import {setTimeout as delay} from 'node:timers/promises';
 import pg from 'pg';
 import {registerProjectManagerInbox,checkProjectManagerWatch,initProjectManagerInbox,deliverProjectManagerInbox,pmInboxWorkflowId,failProjectManagerInbox,publishOwnerQuestionsToPmChat} from '../dist/project-manager-inbox.js';
+import {executeAgentTool} from '../dist/agent-tool-executor.js';
 
 test('project manager inbox acknowledges durable turns, deduplicates submissions and recovers dispatch', {timeout:15000},async t=>{
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
@@ -115,17 +116,20 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  await db.query("INSERT INTO task_agent_notes(id,project_id,task_id,kind,body,source_key,status,requires_customer) VALUES($1,$2,$3,'question','Внутренний вопрос','internal','open',false)",[randomUUID(),project,taskId]);
  await Promise.all([publishOwnerQuestionsToPmChat(pool),publishOwnerQuestionsToPmChat(pool)]);
  await publishOwnerQuestionsToPmChat(pool);
- const questions=(await db.query("SELECT id,body,pm_order_id FROM assistant_messages WHERE created_task_id=$1",[taskId])).rows;
- assert.equal(questions.length,1,'explicit owner question is published once, internal question stays private');
- assert.match(questions[0].body,/#11.*Расписание/s);
- assert.match(questions[0].body,/Какой часовой пояс выбрать/);
- const linked=(await db.query("SELECT n.body,o.actor_id,o.status FROM project_pm_order_events e JOIN task_agent_notes n ON n.id=e.process_id JOIN project_pm_orders o ON o.id=e.order_id WHERE e.order_id=$1",[questions[0].pm_order_id])).rows[0];
- assert.deepEqual(linked,{body:'Какой часовой пояс выбрать?',actor_id:user,status:'waiting_user'});
+ const questions=(await db.query("SELECT body FROM assistant_messages WHERE created_task_id=$1",[taskId])).rows;
+ assert.equal(questions.length,0,'analyst and internal questions stay in the task');
+ const notes=(await db.query("SELECT body,author_stage FROM task_agent_notes WHERE task_id=$1 AND requires_customer",[taskId])).rows;
+ assert.deepEqual(notes,[{body:'Какой часовой пояс выбрать?',author_stage:'analysis'}]);
  const task=(await db.query('SELECT analysis_state,clarification_questions FROM tasks WHERE id=$1',[taskId])).rows[0];
  assert.deepEqual(task,{analysis_state:'waiting_questions',clarification_questions:[]});
- const response=await send({message:'По часовому поясу пользователя',replyTo:questions[0].id});
- assert.equal(response.statusCode,202,response.body);
- assert.equal(response.json().order_id,questions[0].pm_order_id,'reply resumes the exact question order');
+ const session={project_id:project,actor_id:user,role:'manager'};
+ const open=(args)=>executeAgentTool(pool,session,'discussions.open',args,async()=>{});
+ await assert.rejects(open({title:'Пустая тема'}),/opening_message/);
+ const firstTopic=await open({title:'Проверка решения',opening_message:'Как подтвердить этот вариант?'});
+ const sameTopic=await open({title:'Проверка решения',opening_message:'Повтор'});
+ assert.equal(firstTopic.topic.id,sameTopic.topic.id);
+ assert.deepEqual((await db.query("SELECT body FROM assistant_messages WHERE topic_id=$1",[firstTopic.topic.id])).rows,
+  [{body:'Как подтвердить этот вариант?'}]);
 });
 
 test('PM reports completed delegated iteration only once and never reports a requeued draft as ready',async t=>{
