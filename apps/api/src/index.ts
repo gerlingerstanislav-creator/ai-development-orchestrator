@@ -66,6 +66,16 @@ const workflowDefaults = [
   ['documentation','Документация','manual'],
   ['done','Готово','manual']
 ] as const;
+const workflowStageDescriptions:Record<string,string>={
+ "backlog": "Новые задачи и идеи ожидают утверждённого объёма.",
+ "analysis": "Аналитики прорабатывают требования, техническую реализацию и зависимости.",
+ "development": "Разработчики реализуют готовые задачи и прикрепляют PR.",
+ "testing": "QA проверяет изменения и при необходимости возвращает дефекты.",
+ "merge_queue": "Проверенные PR последовательно сливаются в целевую ветку.",
+ "deployment": "DevOps выполняет либо согласованно пропускает выкладку.",
+ "documentation": "Документация актуализируется по фактической реализации.",
+ "done": "Работа завершена, результат и история сохранены."
+};
 const workflowAgentDefaults:Record<string,{name:string;instructions:string}>={
  backlog:{name:'',instructions:agentInstructions.backlog},
  analysis:{name:'Системный аналитик',instructions:agentInstructions.analysis},
@@ -92,6 +102,7 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
  ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS agent_name text NOT NULL DEFAULT '';
  ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS agent_instructions text NOT NULL DEFAULT '';
+ ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';
 
  CREATE TABLE IF NOT EXISTS tasks (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, description text not null default '', type text not null default 'task', stage text not null default 'backlog', parent_id uuid references tasks(id) on delete set null, position int not null default 0, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
  -- Keep UUID as the internal stable identifier; expose a monotonic human task number.
@@ -331,6 +342,13 @@ async function dbInit() {
 
  ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
+ const stageDefaults=Object.entries(workflowStageDescriptions);
+ await pool.query(
+  'UPDATE workflow_stages s SET description=d.description FROM (VALUES '+
+   stageDefaults.map((_,i)=>'($'+(2*i+1)+'::text,$'+(2*i+2)+'::text)').join(',')+
+  ') AS d(stage,description) WHERE s.stage=d.stage AND s.description=\'\'',
+  stageDefaults.flat()
+ );
  await initDocumentationSystem(pool);
  await initDocumentationReset(pool);
  await pool.query("UPDATE workflow_stages SET agent_name='Системный аналитик' WHERE stage='analysis' AND agent_name='AI-аналитик'");
@@ -1066,7 +1084,7 @@ app.post('/api/projects',async(req,reply)=>{
  try{await client.query('BEGIN');
  await client.query('INSERT INTO projects(id,name,description,owner_id) VALUES($1,$2,$3,$4)',[id,name,description,uid(req)]);
  await client.query('INSERT INTO memberships(project_id,user_id,role) VALUES($1,$2,$3)',[id,uid(req),'admin']);
- for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions) VALUES($1,$2,$3,$4,$5,$6,$7)',[id,stage,label,mode,i,agent?.name??'',agent?.instructions??'']);}
+ for(let i=0;i<workflowDefaults.length;i++){const [stage,label,mode]=workflowDefaults[i];const agent=workflowAgentDefaults[stage];await client.query('INSERT INTO workflow_stages(project_id,stage,label,mode,position,agent_name,agent_instructions,description) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',[id,stage,label,mode,i,agent?.name??'',agent?.instructions??'',workflowStageDescriptions[stage]??'']);}
  await client.query("INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions) VALUES($1,'devops','AI-DevOps',$2) ON CONFLICT DO NOTHING",[id,agentInstructions.devops]);
  await client.query(`INSERT INTO project_conversation_agents(project_id,role,agent_name,agent_instructions)
   VALUES($1,'manager','Менеджер проекта',$2),($1,'analyst','Бизнес-аналитик',$3)
@@ -1132,12 +1150,13 @@ app.post('/api/projects/:id/tasks/:taskId/deployment/resolve',async(req:any,repl
   return {stage:'documentation',deployment_status:outcome};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 });
-app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)}));});
+app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position,agent_name,agent_instructions,description FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)}));});
 app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
  const {id,stage}=parse(z.object({id:z.string().uuid(),stage:validStages}),req.params);
  if(!await access(req,reply,id))return;
  if(!await requireAdmin(req,reply))return;
- const {mode,agent_name,agent_instructions}=parse(z.object({
+ const {mode,agent_name,agent_instructions,description}=parse(z.object({
+  description:z.string().trim().max(320).optional(),
   mode:validMode.optional(),
   agent_name:z.string().trim().min(1).max(100).optional(),
   agent_instructions:z.string().max(12000).optional()
@@ -1146,8 +1165,8 @@ app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
  try{
   await client.query('BEGIN');
   const updated=await client.query(
-   'UPDATE workflow_stages SET mode=COALESCE($1,mode),agent_name=COALESCE($2,agent_name),agent_instructions=COALESCE($3,agent_instructions) WHERE project_id=$4 AND stage=$5 RETURNING stage,label,mode,position,agent_name,agent_instructions',
-   [mode??null,agent_name??null,agent_instructions??null,id,stage]);
+   'UPDATE workflow_stages SET mode=COALESCE($1,mode),agent_name=COALESCE($2,agent_name),agent_instructions=COALESCE($3,agent_instructions),description=COALESCE($4,description) WHERE project_id=$5 AND stage=$6 RETURNING stage,label,mode,position,agent_name,agent_instructions,description',
+   [mode??null,agent_name??null,agent_instructions??null,description??null,id,stage]);
   if(!updated.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Этап не найден'});}
   if(stage==='deployment'&&(agent_name!==undefined||agent_instructions!==undefined)){
    const current=updated.rows[0];
