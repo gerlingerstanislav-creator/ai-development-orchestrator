@@ -222,7 +222,7 @@ export async function queueIterationPlanning(db:Db,projectId:string,actorId:stri
  return {planning_run_id:runId,iteration_id:data.iteration_id,status:'queued'};
 }
 
-export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:string,projectId:string,role?:'analysis'|'development'|'manager')=>Promise<string>){
+export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:string,projectId:string,role?:'analysis'|'development'|'manager')=>Promise<string>,options:{autoPublish?:boolean}={}){
  const run=(await pool.query(`SELECT r.*,i.project_id FROM iteration_planning_runs r
   JOIN project_iterations i ON i.id=r.iteration_id WHERE r.id=$1`,[runId])).rows[0];
  if(!run||run.status==='completed'||run.status==='failed')return;
@@ -293,7 +293,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
  await planningEvent(pool,run.project_id,runId,'manager','ПМ объединяет требования СА и технические предложения разработчика');
  const managerPrompt=boundedIterationPrompt([
   'Ты ПМ. Собери единый черновик. Эпики, задачи и критерии СА обязательны и не могут быть удалены или переписаны. Добавь уместные предложения разработчика внутрь существующих эпиков; не создавай задачи вне итерации.',
-  'Не публикуй карточки и не запускай разработку: требуется отдельное подтверждение владельца.',
+  'Формируй карточки для согласованного объёма: система сама атомарно разместит новые задачи на доске. Это не разрешает запуск разработки. Не меняй уже работающие задачи без отдельного согласования.',
   'Ответ строго JSON {"epics":[{"key":"...","title":"...","description":"...","tasks":[{"key":"...","title":"...","description":"...","kind":"development","tags":[],"depends_on":"optional"}]}]}.',
   'СА: '+JSON.stringify(analyst).slice(0,20000),
   'Предложения разработчика: '+JSON.stringify(proposals).slice(0,14000),
@@ -321,8 +321,19 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
    return;
   }
   const result=await proposeIterationPlan(db,run.project_id,run.actor_id,{...planScope,...finalized});
-  await db.query("UPDATE iteration_planning_runs SET status='completed',message='Черновик готов к предпросмотру',plan_id=$2,updated_at=now() WHERE id=$1",[runId,result.id]);
-  await planningEvent(db,run.project_id,runId,'completed','Черновик декомпозиции готов к предпросмотру');
+  // Preparation and publication are one durable operation. The iteration's
+  // scope has already been approved, so creating NEW backlog cards requires
+  // no second owner approval. Keep changes to existing cards out of this
+  // automatic path, particularly cards with ongoing development or PRs.
+  const publication=options.autoPublish===false?null:await publishPlan(
+   db,run.project_id,run.iteration_id,result.id,run.actor_id,
+   sourceRevision(await currentPlanItems(db,run.project_id,run.iteration_id,true)),[]);
+  const created=publication?.created.length??0;
+  const message=publication
+   ?'План опубликован: создано '+created+' карточек. Разработка не запущена.'
+   :'Черновик готов к предпросмотру';
+  await db.query("UPDATE iteration_planning_runs SET status='completed',message=$3,plan_id=$2,updated_at=now() WHERE id=$1",[runId,result.id,message]);
+  await planningEvent(db,run.project_id,runId,'completed',message);
  });
 }
 
@@ -397,9 +408,15 @@ async function publishPlan(db:PoolClient,projectId:string,id:string,planId:strin
  if(sourceRevision(current)!==previewRevision)throw problem(409,'Состав задач изменился. Открой предпросмотр заново.');
  const {items}=planItems(plan,current);
  const differences=planDiff(items);
- const selected=new Set(selectedChanges);
- if(selected.size!==selectedChanges.length||selectedChanges.some(k=>!differences.some(i=>i.key===k&&i.existing&&i.changes.length)))
-  throw problem(409,'Изменения плана устарели. Открой предпросмотр заново.');
+ // The plan creates every new card, regardless of selected_changes.
+ // Historically, PM passed the keys of new cards here, causing 409 even for
+ // fresh previews with stale=false. Ignore those known keys; selections only
+ // authorize modifications to EXISTING cards.
+ const knownKeys=new Set(differences.map(item=>item.key));
+ if(selectedChanges.some(itemKey=>!knownKeys.has(itemKey)))
+  throw problem(409,'В плане больше нет указанных позиций. Открой предпросмотр заново.');
+ const selected=new Set(differences.filter(item=>item.existing&&item.changes.length)
+  .map(item=>item.key).filter(itemKey=>selectedChanges.includes(itemKey)));
  const ids=new Map(items.map(item=>[item.key,item.existing?.id??randomUUID()]));
  const inserted=items.filter(item=>!item.existing);
  const names=new Set<string>();
@@ -626,8 +643,10 @@ export async function previewIterationPlanViaManager(db:Db,projectId:string,iter
   sourceRevision(await sourceDocuments(db,iterationId))!==plan.source_revision;
  return {plan_id:planId,items:planDiff(items),unmentioned,stale,preview_revision:sourceRevision(tasks),published_at:record.published_at};
 }
-export async function publishIterationPlanViaManager(db:PoolClient,projectId:string,iterationId:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
- return publishPlan(db,projectId,iterationId,planId,actorId,previewRevision,selectedChanges);
+export async function publishIterationPlanViaManager(pool:Pool,projectId:string,iterationId:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
+ // The MCP tool previously cast a Pool to PoolClient; a partial failure could
+ // commit some tasks but no published plan. Use the same transaction as UI.
+ return transaction(pool,db=>publishPlan(db,projectId,iterationId,planId,actorId,previewRevision,selectedChanges));
 }
 export async function recordIterationDecision(db:Db,projectId:string,iterationId:string,actorId:string,question:string,answer:string){
  const found=await db.query('SELECT id FROM project_iterations WHERE id=$1 AND project_id=$2',[iterationId,projectId]);
