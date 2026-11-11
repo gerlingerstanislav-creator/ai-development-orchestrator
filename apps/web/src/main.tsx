@@ -2150,12 +2150,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <button type="button" className={'pm-topic-item '+(!projectTopicId?'active':'')} onClick={()=>{setProjectTopicId('');setProjectReplyTo(null);}}>Общий чат</button>
     {projectTopics.map(topic=><div key={topic.id} className={'pm-topic-entry '+(projectTopicId===topic.id?'active':'')}>
      <button className="pm-topic-item" type="button" title={topic.title} onClick={()=>{setProjectTopicId(topic.id);setProjectReplyTo(null);}}>{topic.status==='closed'?'✓ ':''}{topic.title}</button>
-     <button className="pm-topic-toggle" type="button" title={topic.status==='open'?'Закрыть':'Открыть'} onClick={()=>void toggleProjectTopic(topic)}>{topic.status==='open'?'×':'↺'}</button>
+
     </div>)}
-    <form className="pm-new-topic" onSubmit={e=>{e.preventDefault();void createProjectTopic();}}>
-     <input aria-label="Название новой темы" value={projectNewTopic} placeholder="Новая тема…" onChange={e=>setProjectNewTopic(e.target.value)}/>
-     <button type="submit" className="secondary" title="Создать тему" disabled={projectTopicBusy||projectNewTopic.trim().length<3}><Plus size={15}/></button>
-    </form>
+    <small className="pm-topic-managed-hint">Темы создаёт и закрывает ПМ</small>
    </aside>
    <div className="pm-chat-conversation">
    <div className="pm-thread-wrap">

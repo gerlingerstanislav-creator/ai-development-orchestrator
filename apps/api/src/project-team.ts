@@ -188,7 +188,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
  const canWrite=async(req:any,reply:any,id:string)=>await access(req,reply,id)&&await requireAdmin(req,reply);
  app.get('/api/projects/:id/team',async(req:any,reply)=>{
   const {id}=param.parse(req.params);if(!await access(req,reply,id))return;
-  const [stages,specialists,conversations,memory,models]=await Promise.all([
+  const [stages,specialists,conversations,models,memory]=await Promise.all([
    pool.query('SELECT stage,label,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=ANY($2::text[]) ORDER BY position',[id,stageRoles]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 ORDER BY role',[id]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 ORDER BY CASE role WHEN \'manager\' THEN 0 ELSE 1 END',[id]),

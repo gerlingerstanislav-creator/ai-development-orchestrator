@@ -1180,3 +1180,13 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .iteration-plan-tree details summary{cursor:pointer}
 .iteration-plan-tree .iteration-child{margin-left:20px;padding-left:12px;border-left:1px solid #e3e8f2}
 @media(max-width:650px){.project-chat{width:calc(100vw - 20px)}.pm-topic-sidebar{width:125px;flex-basis:125px;padding:8px 5px}.pm-topic-item{padding:7px 5px;font-size:11px}}
+
+/* PM topics are compact rows. The manager exclusively owns topic lifecycle. */
+.pm-topic-sidebar{justify-content:flex-start!important;align-items:stretch}
+.pm-topic-sidebar>.pm-topic-item{flex:0 0 auto!important;height:34px;min-height:34px;max-height:34px;display:flex;align-items:center}
+.pm-topic-sidebar>.pm-topic-entry{flex:0 0 auto!important;min-height:34px;height:34px;max-height:34px;width:100%}
+.pm-topic-sidebar .pm-topic-entry .pm-topic-item{display:block;height:34px;min-height:34px;max-height:34px;line-height:18px;flex:1 1 auto}
+.pm-topic-managed-hint{font-size:10px;color:#8390a5;padding:10px 7px;line-height:1.35}
+.team-model-settings label{display:grid;gap:6px;max-width:340px;font-size:12px}
+.team-model-settings select{width:100%;min-width:0;padding:9px 10px;border-radius:7px;border:1px solid #dbe2ed;background:white;color:#35445d;font-size:13px}
+.team-model-settings p{font-size:11px;margin:6px 0 0}

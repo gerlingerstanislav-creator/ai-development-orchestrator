@@ -4,7 +4,7 @@ import {aiAgentName} from './agent-labels.js';
 import {KnowledgeInstructions} from './KnowledgeInstructions.js';
 import './ProjectTeam.css';
 
-type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string};
+type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string;model:string|null};
 type Memory={id:string;role:string;kind:string;body:string;evidence:string;status:string;origin:'agent'|'user';author_email?:string|null;created_at:string;reviewed_at:string|null};
 type Snapshot={agents:Agent[];memory:Memory[]};
 type Revision={id:string;previous_name:string;previous_instructions:string;next_name:string;next_instructions:string;created_at:string};
@@ -42,6 +42,10 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
  async function addMemory(){if(!selected||!memoryText.trim())return;await mutate(async()=>{await request(base+'/memory',options('POST',{body:memoryText.trim(),evidence:memoryEvidence.trim()}));setAdding(false);setMemoryText('');setMemoryEvidence('');});}
  async function reviewMemory(id:string,status:'approved'|'rejected'){await mutate(()=>request(base+'/memory/'+id,options('PATCH',{status})));}
  async function removeMemory(id:string){if(!window.confirm('Удалить пользовательскую инструкцию?'))return;await mutate(()=>request(base+'/memory/'+id,options('DELETE')));}
+ async function changeModel(value:string){
+  if(!selected)return;
+  await mutate(()=>request(base+'/model',options('PATCH',{model:value||null})));
+ }
  async function showHistory(){if(!selected)return;setHistoryOpen(true);setError('');try{const result=await request<{history:Revision[]}>(base+'/history');setHistory(result.history);}catch(e){setError(e instanceof Error?e.message:'Не удалось загрузить историю');}}
  return <div className="team-page">
   <div className="team-heading"><div><h2><Users size={20}/> Команда</h2><p className="muted">Настройки ролей, рабочие инструкции и накопленные знания. Утверждённые записи становятся частью контекста агента при следующем запуске.</p></div><button className="secondary" type="button" onClick={()=>void refresh()} disabled={loading}><RefreshCcw size={15}/>{loading?'Обновление…':'Обновить'}</button></div>
@@ -57,6 +61,17 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
    </nav>
    <div className="team-detail">
     {selected?<><header className="team-detail-heading"><div><span className="team-kicker">{selected.type==='conversation'?'Диалоговый агент':selected.type==='specialist'?'Специалист':'Роль workflow'}</span><h3>{aiAgentName(selected.name)}</h3><p className="muted">{selected.stage}</p></div></header>
+     <section className="team-instruction-block team-model-settings"><h4>Модель агента</h4>
+      <label>Исполнитель
+       <select value={selected.model??''} disabled={saving} onChange={e=>void changeModel(e.target.value)}>
+        <option value="">Наследовать модель проекта</option>
+        <option value="gpt-6-luna">GPT-6 Luna</option>
+        <option value="gpt-6-sol">GPT-6 Sol</option>
+        <option value="gpt-6.1-sol">GPT-6.1 Sol</option>
+       </select>
+      </label>
+      <p className="muted">Переопределение действует только для выбранной роли. Если не указано — используется модель проекта. Изменение применяется к новым запускам.</p>
+     </section>
      <section className="team-instruction-block"><h4><ShieldCheck size={16}/> Системные ограничения</h4><p className="muted">Ограничения безопасности, права инструментов, порядок проверок и слияния PR остаются в коде. Они не редактируются и не могут быть отменены инструкциями проекта. Внутренние промпты провайдера не раскрываются.</p></section>
      <section className="team-instruction-block"><div className="team-section-toolbar"><h4><BookOpen size={16}/> Инструкции роли</h4><div className="team-actions">{!editing&&<><button className="secondary" type="button" onClick={()=>void showHistory()}><History size={14}/> История</button><button className="secondary" type="button" onClick={beginEdit}><Pencil size={14}/> Изменить</button></>}</div></div>
       {editing?<div className="team-editor"><label>Название агента<input maxLength={120} value={draft.name} onChange={e=>setDraft({...draft,name:e.target.value})}/></label><label>Инструкции<textarea rows={12} maxLength={12000} value={draft.instructions} onChange={e=>setDraft({...draft,instructions:e.target.value})}/></label><div className="team-actions"><button className="secondary" type="button" disabled={saving} onClick={()=>setEditing(false)}>Отмена</button><button className="primary" type="button" disabled={saving||!draft.name.trim()} onClick={()=>void saveProfile()}>{saving?'Сохранение…':'Сохранить'}</button></div></div>:
