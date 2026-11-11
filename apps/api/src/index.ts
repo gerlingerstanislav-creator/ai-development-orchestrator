@@ -1442,6 +1442,9 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.updated_at,t.title,t.display_number FROM agent_analysis_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
+ const promptRecords=await pool.query(
+  'SELECT * FROM (SELECT DISTINCT ON (process_id) process_id AS id,role,operation,created_at FROM agent_prompt_audit WHERE project_id=$1 ORDER BY process_id,created_at DESC) entries ORDER BY created_at DESC LIMIT 50',
+  [id]);
  const processes:any[]=[
   ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
    status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,taskId:r.task_id,
@@ -1477,6 +1480,13 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  }
  for(const row of merges.rows){
   processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
+ }
+ const visibleIds=new Set(processes.map(p=>p.id));
+ for(const entry of promptRecords.rows){
+  if(visibleIds.has(entry.id))continue;
+  processes.push({id:entry.id,kind:'analysis',title:'AI-запрос · '+entry.role,
+   status:'logged',detail:'Запрос отправлен модели ('+entry.operation+'); результат смотри в соответствующем чате.',
+   createdAt:entry.created_at,updatedAt:entry.created_at});
  }
  processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
  return {processes,checkedAt:new Date().toISOString()};
