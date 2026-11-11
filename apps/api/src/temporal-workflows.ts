@@ -46,6 +46,10 @@ export async function automaticDeployment(runId:string):Promise<void>{
   await steps.failAutomaticDeployment(runId,cause instanceof Error?cause.message:String(cause));
  }
 }
+export async function processPeerQuestionWork(noteId:string):Promise<void>{
+ try{await steps.runPeerQuestionWork(noteId);}
+ catch(error){await steps.failPeerQuestionWork(noteId,String(error));}
+}
 export async function prepareIterationPlan(runId:string):Promise<void>{
  try{await planningSteps.prepareIterationPlanDraft(runId);}
  catch(error){
