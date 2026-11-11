@@ -5,7 +5,7 @@ QA использует тот же `apps/codex-runner`, что и разраб�
 ## Что доступно
 
 - Node.js и npm, Python 3, pip, venv и pytest.
-- Системный Chromium и `@playwright/test` (через `NODE_PATH=/usr/local/lib/node_modules`). Для Playwright с системным Chromium указывайте `executablePath: '/usr/lib/chromium/chromium'` и `args: ['--no-sandbox', '--disable-dev-shm-usage']` — это внутри внешней песочницы Codex, а не запуск браузера на хосте. Прямой бинарник, в отличие от Debian launcher `/usr/bin/chromium`, не требует чтения скрытого в песочнице `/proc/cpuinfo`.
+- Системный Chromium и `@playwright/test` (через `NODE_PATH=/usr/local/lib/node_modules`). Для Playwright с системным Chromium указывайте `executablePath: '/usr/lib/chromium/chromium'` и `args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-crashpad-for-testing', '--disable-crash-reporter']` — это внутри внешней песочницы Codex, а не запуск браузера на хосте. Прямой бинарник, в отличие от Debian launcher `/usr/bin/chromium`, не требует чтения скрытого в песочнице `/proc/cpuinfo`.
 - Установка зависимостей **в рабочую копию**: `npm ci` при наличии lockfile, `npm install` в остальных случаях, `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 - Запуск локального HTTP-сервера и клиентских тестов внутри QA sandbox. Временный сервер следует запускать и завершать в одном тестовом сценарии (`trap` для shell).
 - Реальная проверка доступности браузера **внутри QA sandbox** перед запуском QA, а не по предположению модели.
