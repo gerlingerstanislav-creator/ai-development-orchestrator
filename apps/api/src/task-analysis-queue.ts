@@ -12,7 +12,7 @@ export async function initTaskAnalysisQueue(pool:Pool){
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
   spec_version integer NOT NULL,
-  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','waiting','failed')),
+  status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','waiting','failed','cancelled')),
   message text NOT NULL DEFAULT '',
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -46,7 +46,7 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
-    AND (t.iteration_work_kind IS NULL OR t.iteration_work_kind='development')
+
    ORDER BY t.priority,t.created_at LIMIT 10`);
   for(const t of ready.rows){
    const updated=await db.query(`UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now()
