@@ -6,6 +6,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import pg from 'pg';
 import {registerProjectManagerInbox,checkProjectManagerWatch,initProjectManagerInbox,deliverProjectManagerInbox,pmInboxWorkflowId,failProjectManagerInbox,publishOwnerQuestionsToPmChat} from '../dist/project-manager-inbox.js';
 import {executeAgentTool} from '../dist/agent-tool-executor.js';
+import {toolsForRole} from '../dist/agent-tools.js';
 
 test('project manager inbox acknowledges durable turns, deduplicates submissions and recovers dispatch', {timeout:15000},async t=>{
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
@@ -173,4 +174,47 @@ test('PM reports completed delegated iteration only once and never reports a req
  const checkpoint=(await db.query("SELECT detail FROM project_pm_order_events WHERE order_id=$1 AND kind='resume'",[orderId])).rows;
  assert.equal(checkpoint.length,1);
  assert.equal(checkpoint[0].detail,resumed[0].id);
+});
+
+test('QA retry is available to PM only and delegates to the protected testing endpoint',()=>{
+ assert.ok(toolsForRole('manager').some(tool=>tool.name==='qa.retry'));
+ assert.ok(!toolsForRole('analyst').some(tool=>tool.name==='qa.retry'));
+ assert.ok(!toolsForRole('business_analyst').some(tool=>tool.name==='qa.retry'));
+});
+
+test('PM observes QA retry cycle once and resumes after an infrastructure failure',async t=>{
+ const db=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await db.connect();
+ const schema='pmqa_'+randomUUID().replaceAll('-','');
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await pool.end();await db.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await db.end();});
+ await db.query('CREATE SCHEMA '+schema);
+ await db.query('SET search_path TO '+schema+',public');
+ await db.query(`
+  CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,stage text);
+  CREATE TABLE task_orchestration_owners(task_id uuid,project_id uuid,owner_id uuid,kind text,state text);
+  CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,cycle_id uuid,status text,message text,verdict text,report jsonb,created_at timestamptz DEFAULT now());
+  CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,role text,body text,channel text,status text,topic_id uuid,pm_order_id uuid);
+  CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,status text,updated_at timestamptz DEFAULT now());
+  CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text,process_id uuid,created_at timestamptz DEFAULT now());
+  CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id));
+ `);
+ const project=randomUUID(),actor=randomUUID(),task=randomUUID(),cycle=randomUUID(),order=randomUUID(),run=randomUUID();
+ await db.query("INSERT INTO tasks VALUES($1,$2,'Расписание','testing')",[task,project]);
+ await db.query("INSERT INTO task_orchestration_owners VALUES($1,$2,$3,'testing','active')",[task,project,cycle]);
+ await db.query("INSERT INTO project_pm_orders VALUES($1,'waiting_agents',now())",[order]);
+ const watch={projectId:project,processId:cycle,kind:'testing',orderId:order,actorId:actor};
+ assert.equal(await checkProjectManagerWatch(pool,watch),'pending');
+ await db.query("INSERT INTO ai_test_runs(id,project_id,task_id,cycle_id,status,message) VALUES($1,$2,$3,$4,'failed','Codex завершился с кодом 1')",[run,project,task,cycle]);
+ await db.query("UPDATE task_orchestration_owners SET state='finished' WHERE owner_id=$1",[cycle]);
+ assert.equal(await checkProjectManagerWatch(pool,watch),'completed');
+ assert.equal(await checkProjectManagerWatch(pool,watch),'completed');
+ const messages=(await db.query('SELECT role,body,channel FROM assistant_messages ORDER BY role')).rows;
+ assert.equal(messages.length,2,'one visible report and one internal PM followup');
+ assert.equal(messages.filter(m=>m.role==='assistant'&&m.channel==='project').length,1);
+ assert.match(messages.find(m=>m.role==='assistant').body,/Codex завершился с кодом 1/);
+ assert.equal(messages.filter(m=>m.channel==='pm-internal').length,1);
+ assert.equal((await db.query("SELECT status FROM project_pm_orders WHERE id=$1",[order])).rows[0].status,'queued');
+ const rows=(await db.query("SELECT * FROM project_pm_order_events WHERE kind='resume'")).rows;
+ assert.equal(rows.length,1,'one durable PM wakeup for each QA cycle');
 });
