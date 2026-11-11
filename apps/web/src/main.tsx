@@ -15,7 +15,7 @@ import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
 type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
-type Stage={stage:string,label:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
+type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
  const tail=/(?:^|\s)@([a-z]*)$/i.exec(value);
@@ -69,6 +69,13 @@ type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'devel
 type DocumentationQuestion={id:string;topic_key:string;question:string;status:'open'|'answered';answer:string|null;document_id:string;document_title:string;created_at:string};
 type DocumentationProposal={id:string;job_id:string;topic_key:string;document_id:string;title:string;proposed_body:string;status:string;document_title:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
+function compactProcessDescription(detail:string):string{
+ const normalized=detail.replace(/\s+/g,' ').trim();
+ if(!normalized)return 'Подробности доступны справа.';
+ if(normalized.length<=110)return normalized;
+ const boundary=normalized.lastIndexOf(' ',110);
+ return normalized.slice(0,boundary>=65?boundary:110).trimEnd()+'…';
+}
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
@@ -282,7 +289,7 @@ function App(){
  },[selected?.id,token]);
 
  const [workflowModal,setWorkflowModal]=useState<Stage|null>(null);
- const [workflowEditing,setWorkflowEditing]=useState<'agent'|'mode'|'instructions'|null>(null);
+ const [workflowEditing,setWorkflowEditing]=useState<'description'|'agent'|'mode'|'instructions'|null>(null);
  const [workflowSaving,setWorkflowSaving]=useState(false);
  const [deploymentMode,setDeploymentMode]=useState<'skip'|'manual'|'automatic'>('skip');
  const [deploymentHealthUrl,setDeploymentHealthUrl]=useState('');
@@ -951,7 +958,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    if(workflowModal.stage==='deployment')await api('/projects/'+selected.id+'/deployment/settings',{method:'PUT',body:JSON.stringify({mode:deploymentMode,health_url:deploymentHealthUrl,environment:deploymentEnvironment})});
    const updated=await api<Stage>('/projects/'+selected.id+'/workflow/'+workflowModal.stage,{
     method:'PATCH',body:JSON.stringify({
-     mode:workflowModal.mode,agent_name:workflowModal.agent_name.trim(),agent_instructions:workflowModal.agent_instructions
+     ...(serviceStages[workflowModal.stage]?{}:{mode:workflowModal.mode,agent_name:workflowModal.agent_name.trim(),agent_instructions:workflowModal.agent_instructions}),
+     description:workflowModal.description
     })
    });
    setStages(old=>old.map(stage=>stage.stage===updated.stage?{...stage,...updated}:stage));
@@ -1501,17 +1509,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }catch(error){setManagerFeedback(error instanceof Error?error.message:'Менеджер проекта не смог выполнить решение');}
   finally{setManagerBusy(false);}
  }
- async function resumeAsManager(){
-  if(!selected||!activeTask||managerBusy)return;
-  const projectId=selected.id,taskId=activeTask.id;
-  setManagerBusy(true);setManagerFeedback('');
-  try{
-   await api('/projects/'+projectId+'/tasks/'+taskId+'/manager/continue',{method:'POST',body:'{}'});
-   await refreshTaskActivity(projectId,taskId);
-   await loadProject(projectId);
-  }catch(error){setManagerFeedback(error instanceof Error?error.message:'Не удалось продолжить задачу');}
-  finally{setManagerBusy(false);}
- }
  async function retryManagerMessage(messageId:string){
   if(!selected||!activeTask||managerBusy)return;
   setManagerBusy(true);setManagerFeedback('');
@@ -1948,7 +1945,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <span className="agent-equalizer" aria-label="Тестировщик выполняет проверку" role="status"><i/><i/><i/></span>:
        <span className={'process-dot '+process.status}/>}<strong>{process.title}</strong></span>
       <small>{processStatus(process.status)} · {new Date(process.createdAt).toLocaleString('ru-RU')}</small>
-      <span>{process.detail}</span>
+      <span className="process-list-summary">{compactProcessDescription(process.detail)}</span>
      </button>)}
     {!projectProcesses.length&&<p className="muted process-empty">Процессов пока нет</p>}
    </div>
@@ -2116,6 +2113,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <button type="button" className={'workflow-stage-card workflow-stage-'+stage.stage} onClick={()=>{setWorkflowModal({...stage});setWorkflowEditing(null);}}
        title={'Настройки этапа «'+stage.label+'»'}>
        <span className="workflow-stage-label">{stage.label}</span>
+       <span className="workflow-stage-description">{stage.description||'Описание не задано'}</span>
        <span className="workflow-stage-agent">{serviceStages[stage.stage]?'Служебный этап':stage.agent_name?aiAgentName(stage.agent_name):'Исполнитель не указан'}</span>
        <span className="workflow-stage-mode">{stage.stage==='deployment'?(deploymentMode==='skip'?'Пропуск без окружения':deploymentMode==='automatic'?'GitHub Actions + проверка':'Ручное подтверждение'):stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
        <Settings2 size={14} className="workflow-stage-icon"/>
@@ -2272,6 +2270,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   <div className="dialog workflow-stage-dialog" role="dialog" aria-modal="true" aria-label={'Настройки этапа '+workflowModal.label} onMouseDown={e=>e.stopPropagation()}>
    <div className="modal-heading"><h2>{workflowModal.label}</h2><button className="task-close" type="button" onClick={()=>setWorkflowModal(null)} aria-label="Закрыть"><X size={19}/></button></div>
    <p className="muted workflow-modal-subtitle">Этап <code>{workflowModal.stage}</code> · Порядок в процессе: {workflowModal.position+1}</p>
+   <div className="workflow-detail-field">
+    <div className="workflow-field-heading"><strong>Краткое описание этапа</strong>
+     <button type="button" className="workflow-field-pencil" onClick={()=>setWorkflowEditing(workflowEditing==='description'?null:'description')}
+      aria-label="Редактировать краткое описание этапа" title="Редактировать описание"><Pencil size={15}/></button>
+    </div>
+    {workflowEditing==='description'?<textarea autoFocus rows={3} maxLength={320} value={workflowModal.description}
+     onChange={e=>setWorkflowModal({...workflowModal,description:e.target.value})} placeholder="Кратко: что происходит на этапе"/>:
+     <div className="workflow-field-value">{workflowModal.description||'Описание пока не задано'}</div>}
+   </div>
    {workflowModal.responsibility&&<>
     <div className="workflow-detail-field"><strong>Когда начинается работа</strong><p>{workflowModal.responsibility.trigger}</p></div>
     <div className="workflow-detail-field"><strong>Результат этапа</strong><p>{workflowModal.responsibility.result}</p></div>
@@ -2321,7 +2328,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {workflowModal.stage==='testing'&&<p className="workflow-transition-description"><RotateCcw size={14}/> Если обнаружены ошибки, задача вернётся в разработку с замечаниями. Затем тесты выполнятся повторно.</p>}
    {workflowModal.stage==='development'&&<p className="workflow-transition-description">После успешной разработки задача передаётся на тестирование.</p>}
    <footer><button className="secondary" type="button" onClick={()=>setWorkflowModal(null)}>Закрыть</button>
-    {!serviceStages[workflowModal.stage]&&<button className="primary" type="button" disabled={workflowSaving||!workflowModal.agent_name.trim()} onClick={()=>void saveWorkflowStage()}>{workflowSaving?'Сохранение…':'Сохранить'}</button>}</footer>
+    <button className="primary" type="button" disabled={workflowSaving||(!serviceStages[workflowModal.stage]&&!workflowModal.agent_name.trim())} onClick={()=>void saveWorkflowStage()}>{workflowSaving?'Сохранение…':'Сохранить'}</button></footer>
   </div>
  </div>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
@@ -2402,18 +2409,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <header><MessageCircle size={17}/><strong>Менеджер проекта</strong>
       <small>{decisions.length?'Ожидает вашего решения':activeAgentRuns.length||managerWorking?'Команда работает':'Контролирует процесс'}</small>
      </header>
-     {activeTask.stage==='testing'&&activeTask.test_feedback&&!managerState?.owner&&!managerWorking&&!activeAgentRuns.length&&!decisions.length&&!deferredQa.length&&
-      <div className="manager-message-error">{activeTask.test_feedback}
-       <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>Повторить сверку ТЗ и QA</button>
-      </div>}
      <div className="task-thread-wrap">
      <div ref={taskThreadRef} onScroll={onTaskScroll} className="assistant-thread manager-thread" role="log" aria-live="polite">
       {!managerState?.messages.length&&<p className="assistant-hint">Вопросы и решения по этой задаче отображаются здесь вместе с именем автора.</p>}
       <details className="manager-internal-log">
        <summary>Внутренняя переписка команды и технический журнал ({timeline(activeTask.id).length})</summary>
-       <p>Здесь отображаются рабочие сообщения и технические события команды.</p>
-       {['testing','development'].includes(activeTask.stage)&&!managerState?.owner&&!managerWorking&&!activeAgentRuns.length&&!decisions.length&&!deferredQa.length&&
-        <button className="secondary" type="button" disabled={managerBusy} onClick={()=>void resumeAsManager()}>Продолжить / восстановить работу</button>}
        {deferredQa.map(request=><button key={request.id} type="button" className="secondary" disabled={managerBusy}
         onClick={()=>void decideAsManager(request,'approve_without_visual')}>Разрешить слияние без визуальных проверок</button>)}
        {timeline(activeTask.id).slice(-90).map(item=><div className="manager-internal-entry" key={item.id}>
