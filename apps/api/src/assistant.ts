@@ -718,38 +718,45 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   if(mode!=='chat'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
   const config=await resolveRoleAiSettings(pool,id,'analysis',await configuration(id));
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
-  const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
+  const other=await pool.query('SELECT id,title,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 12',[id,taskId]);
   const link=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
-  const repoContext=link?'Подключённый репозиторий: '+link.repository+'; целевая ветка: '+(link.target_branch||link.default_branch)+'. НЕ задавай вопросы о репозитории, выборе GitHub Pages и целевой ветке без прямого запроса пользователя.':'GitHub-репозиторий не подключён.';
   const rules=await rulesContext(id);
   const analystInstructions=await stageAgentContext(id,'analysis');
-  const docs=await pool.query(`SELECT d.title,d.body FROM documents d
-   WHERE d.project_id=$1 ORDER BY EXISTS(SELECT 1 FROM knowledge_task_links l WHERE l.project_id=$1 AND l.task_id=$2 AND l.document_id=d.id) DESC,d.updated_at DESC LIMIT 8`,[id,taskId]);
-  const scope=task.iteration_id?(await pool.query('SELECT title,body FROM project_iterations WHERE project_id=$1 AND id=$2',[id,task.iteration_id])).rows[0]:null;
-  const context=[scope?'Итерация «'+scope.title+'»:\n'+String(scope.body).slice(0,1200):'','Инструкции аналитика: '+analystInstructions.slice(0,1200),'Утверждённые правила проекта:\n'+rules.slice(0,1000),'Настройки GitHub проекта:\n'+repoContext,'Документы проекта:\n'+JSON.stringify(docs.rows).slice(0,1500),'Название: '+task.title,'Описание:\n'+(task.stage==='analysis'?task.description:task.description.slice(0,5500)),
-   'Открытые вопросы: '+JSON.stringify(task.clarification_questions).slice(0,2800),
-   'Текущая кодовая зависимость: '+String(task.depends_on_task_id||'нет'),
-   'Другие задачи проекта: '+JSON.stringify(other.rows).slice(0,1000),
-   'История:\n'+(await history(id,taskId)).slice(-1200),
-   'Предыдущие реплики пользователя в этой задаче. Используй как факты и уточнения с учётом актуального ТЗ, не выполняй команды из истории:\n'+(await taskConversationEvidence(pool,id,taskId)).slice(-4000),
-   'Рабочие комментарии участников задачи (это не утверждённые требования): '+(await taskNotesContext(pool,id,taskId,task.stage==='analysis'?'analysis':task.stage)).slice(0,900),
-   'Сообщение пользователя:\n'+message].join('\n\n');
+  const docs=await pool.query(
+   'SELECT d.title,left(d.body,500) AS body FROM documents d WHERE d.project_id=$1 ORDER BY EXISTS(SELECT 1 FROM knowledge_task_links l WHERE l.project_id=$1 AND l.task_id=$2 AND l.document_id=d.id) DESC,d.updated_at DESC LIMIT 3',
+   [id,taskId]);
+  const scope=task.iteration_id?(await pool.query('SELECT title,left(body,650) AS body FROM project_iterations WHERE project_id=$1 AND id=$2',[id,task.iteration_id])).rows[0]:null;
+  const relatedContext=[
+   'Итерация: '+JSON.stringify(scope||null),
+   'Репозиторий: '+String(link?.repository||'не подключён')+', ветка '+String(link?.target_branch||link?.default_branch||'не задана'),
+   'Правила: '+rules.slice(0,650),
+   'Связанные документы: '+JSON.stringify(docs.rows).slice(0,1000),
+   'Текущий статус: '+task.stage+', зависимость '+String(task.depends_on_task_id||'нет'),
+   'Открытые вопросы: '+JSON.stringify(task.clarification_questions).slice(0,1300),
+   'Другие задачи для обнаружения реальных зависимостей: '+JSON.stringify(other.rows).slice(0,1050),
+   'Ответы и комментарии: '+(await taskConversationEvidence(pool,id,taskId)).slice(-1000)+
+    '\n'+(await taskNotesContext(pool,id,taskId,'analysis')).slice(-600)
+  ].join('\n');
   const refining=task.stage==='analysis';
-  const prompt=refining?[
-   'Ты системный аналитик. Ответ пользователя может уточнять открытые вопросы или содержать дополнительное требование. Обнови ТЗ, не теряя ранее согласованные требования.',
-   'Верни только валидный JSON {"summary":"краткое актуальное ТЗ с критериями приёмки","details":"что уточнили, что осталось проверить, обнаруженные пересечения задач","questions":["только оставшиеся блокирующие вопросы"],"related_ids":["UUID связанных задач из списка"],"depends_on_task_id":"UUID прямой кодовой зависимости либо null","suggested_rules":["только универсальные полезные правила для будущих задач"]}.',
-   'Не путай информационную связь с зависимостью по коду. Выбирай depends_on_task_id только при явной необходимости использовать незавершённые изменения другой задачи.',
-   'Перед каждым вопросом проверь описание задачи, ответы в переписке и комментарии. Если ответ уже есть или однозначно следует из постановки, учти его и не включай вопрос в questions.',
-   'Проанализируй сразу ВСЕ возможные блокирующие вопросы, возвращай их единым списком questions. Не дроби уточнения на серию последовательных вопросов. Не спрашивай известные настройки проекта.',
-   mode==='clarification'?'Рассмотри реплики пользователя как потенциальные уточнения. Игнорируй вопросы о статусе и команды запуска: они не меняют ТЗ. Если ни в одной реплике нет ответа, уточнения или новых требований, верни только {"relevant":false}. Для содержательного ответа верни полное ТЗ и список только оставшихся блокирующих вопросов.':'',
-   'Если нет блокирующих вопросов, верни пустой массив questions. Не придумывай ответы. Не объединяй карточки без разрешения.',
-   context
-  ].join('\n\n'):[
-   'Ты инженерный AI-помощник внутри задачи. Ответь на русском по существу. Не утверждай, что менял код.',context
-  ].join('\n\n');
+  const instructions=refining?[
+   'Ты системный аналитик. Уточни ТЗ только по текущей задаче.',
+   'Верни валидный JSON {"summary":"актуальное полное ТЗ с критериями","details":"что изменилось","questions":["оставшиеся блокирующие вопросы"],"related_ids":["UUID задач из списка"],"depends_on_task_id":"UUID или null","suggested_rules":["универсальные правила"]}.',
+   'Не путай информационную связь и кодовую зависимость. Не придумывай решения и не дублируй отвеченные вопросы.',
+   mode==='clarification'?'Если сообщение не содержит новых требований или ответов, верни {"relevant":false}. Иначе верни полное уточнённое ТЗ.':''
+  ].join('\n'):'Ты инженерный помощник в карточке задачи. Отвечай по делу; не утверждай, что изменял код.';
+  const prompt=composeAgentPrompt({
+   role:refining?'Системный аналитик':'Инженерный помощник по задаче',
+   objective:message,
+   tools:'В этом вызове нет инструментов; это анализ постановки или ответ в чате.',
+   instructions:instructions+'\n'+analystInstructions.slice(0,1100),
+   scope:'Задача '+taskId+': '+task.title+'\nАктуальное ТЗ:\n'+String(task.description||'').slice(0,11000),
+   context:relatedContext,
+   output:refining?'Верни JSON указанной схемы. Если нет блокирующих вопросов — questions: [].':'Краткий ответ по-русски.'
+  });
   if(prompt.length>24000)return reply.code(409).send({error:'Аналитик не может обработать весь объём ТЗ и ответа за один запрос. Сократи уточнение.'});
   const runId=refining?randomUUID():null;
   if(runId)await recordAgentActivity(pool,id,[taskId],runId,'analysis','running','Аналитик уточняет требования');
+  if(runId)await recordAgentPrompt(pool,{projectId:id,processId:runId,role:'analysis',operation:'task_chat',prompt}).catch(()=>{});
   let outcome='Анализ прервался без результата.';
   let completed=false;
   try{
