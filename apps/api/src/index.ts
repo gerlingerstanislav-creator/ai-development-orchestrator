@@ -1883,7 +1883,16 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,sta
  const user=(await pool.query('SELECT email FROM users WHERE id=$1',[session.actor_id])).rows[0];
  if(!user)throw Object.assign(Error('Пользователь не найден'),{statusCode:403});
  const id=z.string().uuid();
- const taskId=id.parse(args.task_id);
+ if(name==='tasks.update_dependency'){
+   const taskId=id.parse(args.task_id);
+   const parentId=z.string().uuid().nullable().parse(args.depends_on_task_id);
+   const reason=z.string().trim().min(10).max(1200).parse(args.reason);
+   const result=await updateDependency(projectId,taskId,parentId,session.actor_id);
+   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pm_dependency_decision',$4)",
+    [randomUUID(),taskId,session.actor_id,reason]);
+   return result;
+  }
+  const taskId=id.parse(args.task_id);
  const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
  if(!task)throw Object.assign(Error('Задача не найдена'),{statusCode:404});
  const token=await accessToken(session.actor_id,user.email);
