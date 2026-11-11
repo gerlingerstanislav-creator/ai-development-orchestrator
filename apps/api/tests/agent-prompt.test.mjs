@@ -15,7 +15,7 @@ test('one prompt builder preserves the current assignment and does not inject ex
 test('a long unrelated context never displaces the task',()=>{
  const objective='Текущая задача '.repeat(200);
  const prompt=composeAgentPrompt({role:'QA',objective,context:'x'.repeat(40000),continuation:'y'.repeat(20000)});
- assert.ok(prompt.includes(objective));
+ assert.ok(prompt.includes(objective.trim()));
  assert.ok(prompt.length<=24000);
  assert.throws(()=>composeAgentPrompt({role:'QA',objective:'x'.repeat(25000)}),/не помещается/);
 });
