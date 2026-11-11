@@ -12,10 +12,16 @@ const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'
 const watchSteps=proxyActivities<Pick<typeof activities,'readProjectManagerWatch'>>({
  startToCloseTimeout:'30 seconds',retry:{maximumAttempts:3,initialInterval:'2 seconds'}
 });
-export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'}):Promise<void>{
+export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development';orderId?:string;topicId?:string|null;actorId?:string}):Promise<void>{
  for(let count=0;count<20160;count++){
   const status=await watchSteps.readProjectManagerWatch(watch);
-  if(status==='completed')return;
+  if(status.status==='completed'){
+   if(status.messageId){
+    try{await startChild(processProjectManagerInbox,{workflowId:'pm-resume-'+status.messageId,args:[watch.projectId,status.messageId],parentClosePolicy:ParentClosePolicy.ABANDON});}
+    catch(error){if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error).name))throw error;}
+   }
+   return;
+  }
   await sleep('30 seconds');
  }
 }

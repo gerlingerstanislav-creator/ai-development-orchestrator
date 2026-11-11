@@ -82,6 +82,16 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(!updated.rowCount)throw rejected('Тема не найдена',404);
   return {topic:updated.rows[0]};
  }
+ case 'pm.orders.list':{
+  return {orders:(await pool.query("SELECT id,summary,status,topic_id,updated_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[projectId])).rows};
+ }
+ case 'pm.orders.update':{
+  const {order_id,status,summary}=z.object({order_id:uuid,status:z.enum(['working','waiting_agents','waiting_user','completed','failed']),summary:z.string().trim().max(1000).optional()}).parse(params);
+  const result=await pool.query("UPDATE project_pm_orders SET status=$3,summary=COALESCE($4,summary),updated_at=now() WHERE project_id=$1 AND id=$2 RETURNING id,status",[projectId,order_id,status,summary??null]);
+  if(!result.rowCount)throw rejected('Поручение не найдено',404);
+  await pool.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'status',$3)",[randomUUID(),order_id,status+': '+(summary||'')]);
+  return result.rows[0];
+ }
  case 'iterations.ask_question':{
   const {iteration_id,question}=z.object({iteration_id:uuid,question:z.string().trim().min(5).max(2000)}).parse(params);
   const found=await pool.query('SELECT id FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
