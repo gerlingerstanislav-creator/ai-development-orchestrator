@@ -11,6 +11,7 @@ import { timingSafeEqual } from 'node:crypto';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
+import {withRunnerImages} from './chat-images.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -653,11 +654,11 @@ async function runConflictJob(job,state){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(error?.message||error).replaceAll(job.token,'[REDACTED]').slice(0,1800);}
  }finally{await rm(workspace,{recursive:true,force:true}).catch(()=>{});}
 }
-async function readJson(req){
+async function readJson(req,maxLength=50000){
  let text='';
  for await(const chunk of req){
   text+=chunk.toString();
-  if(text.length>50000)throw Error('Слишком большой запрос');
+  if(text.length>maxLength)throw Error('Слишком большой запрос');
  }
  return JSON.parse(text);
 }
@@ -738,7 +739,7 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/agent'&&req.method==='POST'){
    if(activeChatRequests>=20)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
-   const data=await readJson(req);
+   const data=await readJson(req,9*1024*1024);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
       !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
       !['low','medium'].includes(data.reasoning)||
@@ -752,7 +753,7 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
     // Token is supplied only in the child process environment; it is never
     // embedded into the instruction, Codex configuration or CLI argv.
-    const result=await command('codex',[
+    const result=await withRunnerImages(data.images,imageArgs=>command('codex',[
      'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
      '-c','mcp_servers.orchestrator.command="node"',
      '-c','mcp_servers.orchestrator.args=["/opt/codex-runner/agent-mcp.mjs"]',
@@ -762,11 +763,11 @@ http.createServer(async(req,res)=>{
      // This MCP server only exposes tools authorized by the project-scoped API session.
      // Operations that require a human decision use separate application endpoints.
      '-c','mcp_servers.orchestrator.default_tools_approval_mode="approve"',
-     '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,data.prompt
+     '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...imageArgs,data.prompt
     ],{cwd:'/opt/codex-runner',
      env:{...cliEnv,ADO_AGENT_SESSION_TOKEN:data.session_token,
       ADO_AGENT_API_URL:process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools'},
-     timeout:240000,maxOutputChars:500000});
+     timeout:240000,maxOutputChars:500000}));
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Агент не вернул итоговое сообщение'});
@@ -778,7 +779,7 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});
-   const data=await readJson(req);
+   const data=await readJson(req,9*1024*1024);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
       !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
       !['low','medium'].includes(data.reasoning))
@@ -788,10 +789,10 @@ http.createServer(async(req,res)=>{
    activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
-    const result=await command('codex',[
+    const result=await withRunnerImages(data.images,imageArgs=>command('codex',[
       'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,data.prompt
-    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:240000,maxOutputChars:500000});
+      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...imageArgs,data.prompt
+    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:240000,maxOutputChars:500000}));
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});

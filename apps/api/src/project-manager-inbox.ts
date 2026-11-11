@@ -4,6 +4,7 @@ import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
+import {chatImagesSchema,validateChatImages,saveChatImages,readChatImages} from './chat-images.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from './agent-tools.js';
 import {agentLearnedContext} from './agent-tools.js';
 import {conversationInstructions,resolveRoleAiSettings,roleCapacity} from './project-team.js';
@@ -130,18 +131,20 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
    .catch(error=>app.log.error({error},'PM inbox recovery failed'))
    .finally(()=>{recovering=false;});
  };
- app.post('/api/projects/:id/manager/inbox',async(req:any,reply)=>{
+ app.post('/api/projects/:id/manager/inbox',{bodyLimit:9*1024*1024},async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {message,replyTo=null,topicId=null,requestId}=z.object({
-   message:z.string().trim().min(1).max(4000),
+  const {message,replyTo=null,topicId=null,requestId,images}=z.object({
+   message:z.string().trim().max(4000),
+   images:chatImagesSchema,
    replyTo:z.string().uuid().nullable().optional(),
    topicId:z.string().uuid().nullable().optional(),
    requestId:z.string().uuid().optional()
-  }).parse(req.body);
+  }).refine(value=>!!value.message||value.images.length>0,{message:'Добавь сообщение или изображение'}).parse(req.body);
+  const validatedImages=validateChatImages(images);
   const actorId=uid(req);
   const messageId=randomUUID();
-  const digest=requestId?createHash('sha256').update(JSON.stringify([message,replyTo,topicId])).digest('hex'):null;
+  const digest=requestId?createHash('sha256').update(JSON.stringify([message,replyTo,topicId,images.map(image=>createHash('sha256').update(image.data).digest('hex'))])).digest('hex'):null;
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -180,6 +183,7 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
    await client.query(`INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id,pm_order_id,pm_request_id,pm_request_digest)
     VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7,$8,$9)`,
     [messageId,id,actorId,message,replyTo,topicId,orderId,requestId??null,digest]);
+   await saveChatImages(client,{projectId:id,actorId,messageId,scope:'assistant'},validatedImages);
    if(!waiting)await client.query('UPDATE project_pm_orders SET source_message_id=$2 WHERE id=$1',[orderId,messageId]);
    await client.query('INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)',
     [randomUUID(),orderId,waiting?'owner_reply':'created',waiting?'Владелец ответил на вопрос ПМ':'Поручение принято от владельца']);
@@ -250,9 +254,10 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const ownerQuestion=orderId?(await pool.query(
    "SELECT n.id,n.task_id,n.body,n.status FROM project_pm_order_events e JOIN task_agent_notes n ON n.id=e.process_id AND n.project_id=$2 WHERE e.order_id=$1 AND e.kind='owner_question' LIMIT 1",
    [orderId,projectId])).rows[0]:null;
+  const images=await readChatImages(pool,projectId,messageId,'assistant');
   const prompt=composeAgentPrompt({
    role:'Менеджер проекта AI Development Orchestrator. Один логический ПМ, независимые поручения.',
-   objective:String(turn.body),
+   objective:String(turn.body||'Изучи приложенные изображения'),
    tools:'MCP orchestrator. Получай задачи через tasks.list/read, процессы через processes.list, решения через pm.decisions.list, историю по необходимости через discussions.read/history.search, итерации через iterations.list/read. Вызывай инструмент только когда информация нужна для текущего сообщения; не читай весь проект автоматически.',
    instructions:[
     instructions.slice(0,3200),
@@ -269,14 +274,15 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
     ownerQuestion?'Вопрос, на который отвечает пользователь: '+JSON.stringify(ownerQuestion):'',
     replyResult.rows[0]?'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]).slice(0,1600):'',
     eventResult.rows.length?'Последние события этого поручения: '+JSON.stringify(eventResult.rows).slice(0,1000):'',
-    recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,950):''
+    recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,950):'',
+     images.length?'Приложены изображения: '+images.map(image=>image.name).join(', ')+'. Рассмотри их визуальное содержимое.':''
    ].filter(Boolean).join('\n\n'),
    output:'Ответь по-русски кратко. При действиях назови подтверждённый результат; при ожидании — конкретную причину.'
   });
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1}),
+   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
