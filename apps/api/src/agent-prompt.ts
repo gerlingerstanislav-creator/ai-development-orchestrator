@@ -29,9 +29,9 @@ export function composeAgentPrompt(input:AgentPromptParts):string{
  for(const section of [
   part('Обязательные инструкции роли',input.instructions,5500),
   part('Область работы',input.scope,1800),
+  part('Текущее продолжение',input.continuation,1700),
   part('Ожидаемый результат',input.output,2600),
-  part('Связанный контекст',input.context,3800),
-  part('Текущее продолжение',input.continuation,1700)
+  part('Связанный контекст',input.context,3800)
  ]){
   if(!section)continue;
   const remaining=max-result.length-2;
