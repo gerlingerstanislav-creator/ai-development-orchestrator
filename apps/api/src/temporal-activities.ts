@@ -51,10 +51,11 @@ function runnerUnavailable(error:unknown){
  if(status&&status<500)throw error;
  return {status:'running' as const,message:'Ожидается восстановление связи с Codex Runner'};
 }
-async function trackRunnerWait(kind:'development'|'testing',projectId:string,id:string,error?:unknown){
+async function trackRunnerWait(kind:'development'|'testing',projectId:string,id:string,error?:unknown,recoveryDetail?:string){
  const status=(error as {statusCode?:number})?.statusCode;
  if(status&&status<500)return failRunnerRun(kind,projectId,id,(error as Error).message);
- const message=error?'Ожидается восстановление связи с Codex Runner':'Восстанавливается задание в Codex Runner';
+ const message=error?'Ожидается восстановление связи с Codex Runner':
+  recoveryDetail?recoveryDetail.slice(0,1200):'Восстанавливается задание в Codex Runner';
  const table=kind==='development'?'ai_task_runs':'ai_test_runs';
  const change=await pool.query(`UPDATE ${table} SET message=$2
   WHERE id=$1 AND status IN ('queued','running') AND message IS DISTINCT FROM $2 RETURNING id`,[id,message]);
@@ -465,13 +466,14 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   },actor))return {status:'completed',message:'PR восстановлен из GitHub'};
   return failRunnerRun('development',projectId,runId,'У запуска нет сохранённого состояния. Проверьте ветку перед новым запуском.');
  }
+ if(remote.status==='cancelled')return failRunnerRun('development',projectId,runId,'Исполнитель подтвердил остановку разработки');
  if(remote.status==='interrupted'){
   try{await startDevelopment({...args,recovery:true});}
   catch(error){
    if(error instanceof ApplicationFailure&&error.nonRetryable)return failRunnerRun('development',projectId,runId,error.message);
    return trackRunnerWait('development',projectId,runId,error);
   }
-  return trackRunnerWait('development',projectId,runId);
+  return trackRunnerWait('development',projectId,runId,undefined,remote.message);
  }
  const status=String(remote.status||'running'),message=String(remote.message||'').slice(0,3000);
  if(!['completed','failed'].includes(status)&&message!==run.rows[0].message){
@@ -562,6 +564,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   if((error as {statusCode?:number}).statusCode!==404)return trackRunnerWait('testing',projectId,testId,error);
   remote={status:'interrupted'};
  }
+ if(remote.status==='cancelled')return failRunnerRun('testing',projectId,testId,'Исполнитель подтвердил остановку тестирования');
  if(remote.status==='interrupted'){
   const test=row.rows[0];
   if(!test.cycle_id)return failRunnerRun('testing',projectId,testId,'У старого QA-прогона отсутствует идентификатор цикла');
@@ -570,7 +573,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
    if(error instanceof ApplicationFailure&&error.nonRetryable)return failRunnerRun('testing',projectId,testId,error.message);
    return trackRunnerWait('testing',projectId,testId,error);
   }
-  return trackRunnerWait('testing',projectId,testId);
+  return trackRunnerWait('testing',projectId,testId,undefined,remote.message);
  }
  const status=String(remote.status||'running'),message=String(remote.message||'').slice(0,2500);
  if(status==='completed'||status==='failed'){

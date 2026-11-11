@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
-import {jobIdentity,openJobJournal,recoveryAction} from './job-journal.mjs';
+import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 
 const execFileAsync=promisify(execFile);
@@ -124,7 +124,17 @@ const readJob=id=>activeJobs.get(id)||journal.read(id);
 function saveJob(job,state){journal.save({identity:jobIdentity(job),state},job.token);}
 const jobChildren=new Map();
 const cancelledJobs=new Set();
-const assertJobActive=id=>{if(cancelledJobs.has(id))throw new Error('Прервано пользователем');};
+const assertJobActive=id=>{if(cancelledJobs.has(id))throw new Error('Выполнение остановлено');};
+function stopCommand(child){
+ if(!child?.pid)return;
+ try{process.kill(-child.pid,'SIGKILL');}
+ catch(error){
+  if(error.code!=='ESRCH'){
+   process.stderr.write('Не удалось остановить группу процессов: '+error.code+'\n');
+   child.kill('SIGKILL');
+  }
+ }
+}
 const MAX_PARALLEL_DEVELOPMENT=20; // Actual per-project role limits come from signed API jobs.
 const MAX_PARALLEL_PER_ROLE=1;
 const activeByRole=new Map();
@@ -161,7 +171,18 @@ function startNextJobs(){
   runningJobIds.add(job.id);
   runningJobs++;
   activeByRole.set(roleKey,(activeByRole.get(roleKey)||0)+1);
-  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{if(state.status!=='cancelled')state.status='failed';if(state.status!=='cancelled')state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
+  let expiredPhase;
+  const deadline=setTimeout(()=>{
+   if(state.status!=='running')return;
+   expiredPhase=state.message;
+   state.message='Остановка по таймауту · '+expiredPhase;
+   cancelledJobs.add(job.id);
+   stopCommand(jobChildren.get(job.id));
+  },job.maxRuntimeSeconds*1000).unref();
+  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}}).finally(()=>{
+   clearTimeout(deadline);
+   if(expiredPhase&&state.status!=='cancelled'&&state.status!=='completed')
+    Object.assign(state,runtimeLimitResult(state,expiredPhase,job.maxRuntimeSeconds));
    try{saveJob(job,state);activeJobs.delete(job.id);}
    catch(error){process.stderr.write('Не удалось сохранить результат задания '+job.id+': '+error.message+'\n');}
    activeBranches.delete(branchKey);runningJobIds.delete(job.id);cancelledJobs.delete(job.id);runningJobs--;
@@ -181,10 +202,10 @@ function authorized(req){
 function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}={}){
  return new Promise((resolve,reject)=>{
   if(jobId)assertJobActive(jobId);
-  const child=spawn(binary,args,{cwd,env:{...baseEnv,...env},stdio:['ignore','pipe','pipe']});
+  const child=spawn(binary,args,{cwd,env:{...baseEnv,...env},stdio:['ignore','pipe','pipe'],detached:true});
   if(jobId)jobChildren.set(jobId,child);
   let output='',errors='',done=false,timedOut=false;
-  const timer=setTimeout(()=>{timedOut=true;child.kill('SIGKILL');},timeout);
+  const timer=setTimeout(()=>{timedOut=true;stopCommand(child);},timeout);
   child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
   child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
   const settle=(err)=>{
@@ -271,14 +292,14 @@ async function runJob(job,state){
  const workdir=await mkdtemp(join(tmpdir(),'ado-run-'));
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
- const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000});
+ const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000,jobId:job.id});
  // Stable branch identity: one Git branch per task; different agents cannot
  // work in that branch concurrently (startNextJobs locks repository+taskId).
  const branch=job.taskId;
  try{
   state.message='Клонирование репозитория';
   await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
-   {cwd:workdir,env:gitEnv,timeout:75000});
+   {cwd:workdir,env:gitEnv,timeout:75000,jobId:job.id});
   if(await resumePublishedCommit(job,state,git)){
    state.prUrl=await ensureTaskPullRequest(job,branch,state.checkpoint.commit,'Изменения восстановлены после перезапуска.');
    state.branch=branch;
@@ -390,7 +411,7 @@ async function runJob(job,state){
   assertJobActive(job.id);
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
-  if(state.status!=='cancelled'){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);}
+  if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);}
  }finally{
   await rm(workdir,{recursive:true,force:true}).catch(()=>{});
  }
@@ -409,8 +430,8 @@ async function runTestJob(job,state){
  try{
   state.message='Получение ветки для независимой проверки';
   await command('git',['clone','--depth','1','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],
-   {cwd:workdir,env:gitEnv,timeout:90000});
-  const rev=await command('git',['rev-parse','HEAD'],{cwd:dir,timeout:10000});
+   {cwd:workdir,env:gitEnv,timeout:90000,jobId:job.id});
+  const rev=await command('git',['rev-parse','HEAD'],{cwd:dir,timeout:10000,jobId:job.id});
   const commit=rev.stdout.trim();
   if((job.expectedCommit&&commit!==job.expectedCommit)||(state.testedCommit&&commit!==state.testedCommit))
    throw Error('Ветка PR изменилась. Требуется сверка нового коммита перед QA.');
@@ -420,7 +441,7 @@ async function runTestJob(job,state){
   // Probe the real runner, not the model's assumptions about what tools may exist.
   const probe=await command('sh',['-c',
    'for tool in node npm npx python3 pytest git chromium chromium-browser google-chrome playwright docker; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: available"; else echo "$tool: unavailable"; fi; done; if test -d node_modules; then echo "node_modules: available"; else echo "node_modules: unavailable"; fi'
-  ],{cwd:dir,timeout:8000});
+  ],{cwd:dir,timeout:8000,jobId:job.id});
   const capabilities=probe.stdout.trim().slice(0,1500);
   state.capabilities=capabilities;
   const prompt=[
@@ -529,7 +550,7 @@ async function runTestJob(job,state){
   state.status='completed';
   state.message='Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
  }catch(e){
-  if(state.status!=='cancelled'){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
+  if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
  }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
 }
 async function runConflictJob(job,state){
@@ -604,7 +625,7 @@ async function runConflictJob(job,state){
   state.status='completed';state.message='Конфликты устранены, ветка PR обновлена';
   state.branch=job.taskId;state.resolvedFiles=conflicts;
  }catch(error){
-  if(state.status!=='cancelled'){state.status='failed';state.message=String(error?.message||error).replaceAll(job.token,'[REDACTED]').slice(0,1800);}
+  if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(error?.message||error).replaceAll(job.token,'[REDACTED]').slice(0,1800);}
  }finally{await rm(workspace,{recursive:true,force:true}).catch(()=>{});}
 }
 async function readJson(req){
@@ -791,7 +812,7 @@ http.createServer(async(req,res)=>{
    cancelledJobs.add(id);
    const index=jobQueue.findIndex(item=>item.job.id===id);
    const [queued]=index>=0?jobQueue.splice(index,1):[];
-   const child=jobChildren.get(id);if(child)child.kill('SIGKILL');
+   const child=jobChildren.get(id);stopCommand(child);
    state.status='cancelled';state.message='Остановлено пользователем';
    journal.save({identity:record.identity,state},record.secret??queued?.job.token);
    if(!child&&!runningJobIds.has(id)){activeJobs.delete(id);cancelledJobs.delete(id);}

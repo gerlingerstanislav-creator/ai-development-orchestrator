@@ -47,3 +47,13 @@ export function recoveryAction(checkpoint,remoteHead){
  if(remoteHead===checkpoint.previous)return 'run';
  return 'changed';
 }
+
+export function runtimeLimitResult(state,phase,seconds){
+ const retry=(state.runtimeLimitRetries||0)<1&&(state.restarts||0)<2;
+ return {
+  status:retry?'interrupted':'failed',
+  runtimeLimitRetries:(state.runtimeLimitRetries||0)+1,
+  message:'Превышено время выполнения ('+seconds+' сек.). Последний шаг: '+phase+
+   (retry?' · будет одна попытка восстановления':' · попытка восстановления исчерпана')
+ };
+}

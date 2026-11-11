@@ -4,7 +4,7 @@ import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
-import {jobIdentity,openJobJournal,recoveryAction} from '../../codex-runner/job-journal.mjs';
+import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from '../../codex-runner/job-journal.mjs';
 
 test('Runner recovers only nonterminal jobs and matches the pushed commit before repeating work',t=>{
  const directory=mkdtempSync(join(tmpdir(),'ado-journal-test-'));
@@ -29,4 +29,21 @@ test('Runner recovers only nonterminal jobs and matches the pushed commit before
  assert.equal(recoveryAction(saved,checkpoint.commit),'published');
  assert.equal(recoveryAction(saved,checkpoint.previous),'run');
  assert.equal(recoveryAction(saved,'c'.repeat(40)),'changed');
+});
+
+test('a time limit allows one recovery with the original checkpoint and then fails',t=>{
+ const directory=mkdtempSync(join(tmpdir(),'ado-journal-timeout-'));
+ t.after(()=>rmSync(directory,{recursive:true,force:true}));
+ const journal=openJobJournal(directory);
+ const identity=jobIdentity({repository:'example/repo',taskId:randomUUID(),baseBranch:'main'});
+ const state={id:randomUUID(),status:'running',checkpoint:{previous:'a'.repeat(40),commit:'b'.repeat(40)}};
+ Object.assign(state,runtimeLimitResult(state,'Создание Pull Request',900));
+ journal.save({identity,state});
+ assert.equal(state.status,'interrupted');
+ assert.match(state.message,/900.*Создание Pull Request.*одна попытка/);
+ const restored=journal.read(state.id).state;
+ assert.equal(recoveryAction(restored.checkpoint,state.checkpoint.commit),'published');
+ Object.assign(restored,runtimeLimitResult(restored,'Проверка',900));
+ assert.equal(restored.status,'failed');
+ assert.match(restored.message,/попытка восстановления исчерпана/);
 });
