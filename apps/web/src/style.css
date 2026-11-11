@@ -1213,3 +1213,9 @@ body:has(.tasks-page){overflow:hidden}
 .task-advanced>summary{font-size:12px;font-weight:650;cursor:pointer;color:#62708a}
 .task-advanced[open]>summary{margin-bottom:12px}
 .chat-agent-glyph>span{display:none!important}
+
+.iteration-stage-guide{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:6px;margin:9px 0 16px}
+.iteration-stage-guide-item{display:flex;flex-direction:column;gap:4px;padding:10px 11px;border:1px solid #e7eaf2;border-radius:8px;background:#f8faff}
+.iteration-stage-guide-item small{font-size:10px;color:#71819c}
+.iteration-stage-guide-item strong{font-size:12px;color:#33435c}
+.iteration-stage-guide-item span{font-size:11px;line-height:1.45;color:#68768c}
