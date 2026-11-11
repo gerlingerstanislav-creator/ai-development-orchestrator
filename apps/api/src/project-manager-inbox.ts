@@ -102,7 +102,7 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
  app.addHook('onClose',async()=>{if(timer)clearInterval(timer);});
 }
 
-export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development';orderId?:string;topicId?:string|null;actorId?:string};
+export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution';orderId?:string;topicId?:string|null;actorId?:string};
 export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string):Promise<ProjectManagerWatch[]>{
  const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel IN ('project','pm-internal') AND role='user' AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id,pm_order_id,channel",[messageId,projectId]);
  if(!claim.rowCount)return [];
@@ -137,7 +137,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const prompt=[
    'Ты ПМ проекта AI Development Orchestrator. Ты единственная точка взаимодействия владельца с агентами.',
    'Текущее поручение: '+String(orderId||'не задано')+'. Сохраняй связь с ним при уточнениях и продолжении после событий. Не считай поручение выполненным, пока работа не проверена.',
-   'При завершении процесса ты будешь вызван повторно системой. Продолжай исходное поручение, а не просто пересказывай событие. Используй инструменты iterations.preview_plan, iterations.publish_plan и workflow.approve_development в рамках согласований.',
+   'При завершении процесса ты будешь вызван повторно системой. Продолжай исходное поручение, а не просто пересказывай событие. Используй iterations.preview_plan и iterations.publish_plan при планировании. После прямой команды владельца «приступай к разработке» используй iterations.launch для утверждённой итерации, не пингуй разработчиков по каждой задаче.',
    'При необходимости задавай вопрос в отдельной теме через discussions.open и помечай поручение как waiting_user через pm.orders.update. Пока ответ не получен, не считай его закрытым.',
    'Когда пользователь уже дал ответ, используй сохранённые решения вместо повторного вопроса. Зафиксируй новое решение через pm.decisions.record с ID сообщения пользователя, если оно влияет на требования/итерацию.',
    'Твоя работа: оперативно распределять поручения через инструменты, отслеживать статусы, собирать результаты, не подменять собой разработчика, БА, СА, QA или DevOps.',
@@ -170,12 +170,12 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
-  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
+  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','iterations.launch','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
-   const kind:ProjectManagerWatch['kind']=['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':row.tool==='workflow.approve_development'?'development':'document_import';
-   const id=kind==='iteration_plan'?row.result?.planning_run_id:kind==='development'?row.result?.id:row.result?.import_job_id;
+   const kind:ProjectManagerWatch['kind']=row.tool==='iterations.launch'?'iteration_execution':['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':row.tool==='workflow.approve_development'?'development':'document_import';
+   const id=kind==='iteration_execution'?row.result?.iteration_id:kind==='iteration_plan'?row.result?.planning_run_id:kind==='development'?row.result?.id:row.result?.import_job_id;
    if(typeof id!=='string'||seen.has(id))return [];
    seen.add(id);
    return [{projectId,processId:id,kind,orderId:orderId||undefined,topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
@@ -214,9 +214,34 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
  return watchers;
 }
 
+async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch,total:number,finished:number):Promise<'completed'>{
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const mark=await client.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,'iteration_execution') ON CONFLICT DO NOTHING RETURNING process_id",[watch.projectId,watch.processId]);
+  if(mark.rowCount){
+   const message='Обработка задач итерации завершена: '+finished+' из '+total+'. Проверь результаты, тесты и оставшиеся исключения, затем сообщи владельцу.';
+   await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",[randomUUID(),watch.projectId,message,watch.topicId||null,watch.orderId||null]);
+   if(watch.orderId&&watch.actorId){
+    const next=randomUUID();
+    await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'pm-internal','queued',$5,$6)",[next,watch.projectId,watch.actorId,'СИСТЕМНОЕ СОБЫТИЕ: '+message,watch.topicId||null,watch.orderId]);
+    await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail,process_id) VALUES($1,$2,'resume',$3,$4)",[randomUUID(),watch.orderId,next,watch.processId]);
+    await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[watch.orderId]);
+   }
+  }
+  await client.query('COMMIT');return 'completed';
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+}
+
 /** Polling is a short database activity; the waiting happens in Temporal,
  * not in the PM AI session or an HTTP request. */
 export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
+ if(watch.kind==='iteration_execution'){
+  const status=await pool.query(`SELECT count(*)::int AS total,count(*) FILTER (WHERE t.stage='done' OR q.status='cancelled')::int AS finished FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.iteration_id=$2`,[watch.projectId,watch.processId]);
+  const total=Number(status.rows[0]?.total||0),finished=Number(status.rows[0]?.finished||0);
+  if(!total||finished!==total)return 'pending';
+  return reportIterationExecutionWatch(pool,watch,total,finished);
+ }
  const where=watch.kind==='iteration_plan'?'r.id=$1 AND i.project_id=$2':'r.id=$1 AND r.project_id=$2';
  const sql=watch.kind==='iteration_plan'
   ? "SELECT r.id,r.status,r.message,r.plan_id,i.title AS name,i.id AS iteration_id FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id WHERE "+where
