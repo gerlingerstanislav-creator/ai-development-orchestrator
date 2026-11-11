@@ -74,9 +74,6 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
   </div>{!editing&&(!iterationId||details)&&<button type="button" className="secondary" disabled={busy} onClick={edit}>
    {details?<><Pencil size={15}/> Изменить</>:<><Plus size={15}/> Итерация</>}
   </button>}</header>
-  <div className="iteration-stage-guide" aria-label="Этапы процесса разработки">
-   {stages.map((stage,index)=><div className="iteration-stage-guide-item" key={stage.stage}><small>{index+1}</small><strong>{stage.label}</strong><span>{stage.description||'Описание этапа не задано.'}</span></div>)}
-  </div>
   {loading&&<p className="muted" role="status">Загрузка…</p>}
   {error&&<p className="error" role="alert">{error}</p>}
   {notice&&<p role="status">{notice}</p>}
