@@ -443,7 +443,8 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
   const old=item.existing;
   const changedRequirements=item.changes.includes('title')||item.changes.includes('description');
   if(changedRequirements&&item.parent){
-   await saveSpecRevision(db,old,{title:item.title,description:item.description,origin:'iteration_plan',actorId,
+   // Both callers provide a transactional PoolClient (MCP outer route or UI/Planning transaction).
+   await saveSpecRevision(db as PoolClient,old,{title:item.title,description:item.description,origin:'iteration_plan',actorId,
     reason:'Изменение плана итерации',reviewStatus:['analysis','backlog'].includes(old.stage)?'current':'pending'});
   }else if(changedRequirements){
    await db.query('UPDATE tasks SET title=$3,description=$4,updated_at=now() WHERE project_id=$1 AND id=$2',[projectId,old.id,item.title,item.description]);
