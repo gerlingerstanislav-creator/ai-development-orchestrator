@@ -1717,7 +1717,7 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const [imports,developments,tests,merges,analyses,iterationRuns,deployments]=await Promise.all([
+ const [imports,developments,tests,merges,analyses,iterationRuns,deployments,queuedTasks,peerQuestions,pmOrders]=await Promise.all([
   pool.query("SELECT j.id,j.status,j.message,j.source_url,j.request_text,j.source_file_count,j.analyzed_chunks,j.total_chunks,j.saved_documents,j.created_at,j.updated_at,j.result,j.draft_result IS NOT NULL AS has_draft,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id) AS topic_total,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id AND tp.status IN ('complete','conflict')) AS topic_completed FROM document_import_jobs j WHERE j.project_id=$1 ORDER BY j.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
@@ -1726,7 +1726,10 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query(`SELECT r.id,r.status,r.message,r.created_at,r.updated_at,r.plan_id,i.id AS iteration_id,i.title
    FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id
    WHERE i.project_id=$1 ORDER BY r.created_at DESC LIMIT 70`,[id]),
-  pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
+  pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
+  pool.query("SELECT q.task_id AS id,q.task_id,q.status,q.detail,q.created_at,q.updated_at,t.title,t.display_number,t.priority,t.depends_on_task_id,dep.stage AS dependency_stage FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id LEFT JOIN tasks dep ON dep.id=t.depends_on_task_id WHERE q.project_id=$1 AND q.status IN ('queued','dispatching','cancelled') ORDER BY t.priority,q.created_at LIMIT 120",[id]),
+  pool.query("SELECT q.note_id AS id,q.task_id,q.role,q.status,q.error AS detail,q.updated_at,n.body,t.display_number FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed') ORDER BY q.updated_at DESC LIMIT 60",[id]),
+  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 AND status IN ('queued','working','waiting_agents','waiting_user') ORDER BY updated_at DESC LIMIT 30",[id])
  ]);
  const processes:any[]=[
   ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
@@ -1746,6 +1749,15 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // Reconciliation is already recorded in the development process events.
   processes.push({id:row.id,kind:'analysis',title:'Сверка ТЗ #'+row.display_number+' · '+row.task_title,status:row.status,
    detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,result:{message:row.message}});
+ }
+ for(const row of queuedTasks.rows){
+  processes.push({id:row.id,kind:'development',title:'Очередь разработки #'+row.display_number+' · '+row.title,status:row.status==='dispatching'?'running':row.status,detail:row.detail||(row.depends_on_task_id&&!['merge_queue','deployment','documentation','done'].includes(row.dependency_stage)?'Ожидает завершения зависимости':'Ожидает готовности требований или свободного разработчика'),createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id});
+ }
+ for(const row of peerQuestions.rows){
+  processes.push({id:row.id,kind:'analysis',title:'Вопрос специалисту · задача #'+row.display_number,status:row.status,detail:row.detail||row.body,createdAt:row.updated_at,updatedAt:row.updated_at,taskId:row.task_id});
+ }
+ for(const row of pmOrders.rows){
+  processes.push({id:row.id,kind:'analysis',title:'Поручение ПМ',status:row.status==='working'?'running':row.status==='queued'?'queued':'waiting',detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at});
  }
  for(const row of merges.rows){
   processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
