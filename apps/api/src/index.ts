@@ -1681,7 +1681,7 @@ app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
  };
  const analyst=await pool.query("UPDATE agent_analysis_runs SET status='cancelled',message='Прервано пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,spec_version",[id,processId]);
  if(analyst.rowCount){
-  await pool.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='analysis' AND analysis_state='processing' AND spec_version=$3",[id,analyst.rows[0].task_id,analyst.rows[0].spec_version]);
+  await pool.query("UPDATE tasks SET analysis_state='paused',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='analysis' AND analysis_state='processing' AND spec_version=$3",[id,analyst.rows[0].task_id,analyst.rows[0].spec_version]);
   await cancelWorkflow('task-analysis-'+processId);
   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'analysis','cancelled','Анализ задачи остановлен пользователем')",[randomUUID(),id,processId]);
   return {ok:true,status:'cancelled'};
