@@ -1,5 +1,6 @@
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
+import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
 import Fastify from 'fastify';
 import {findActiveProjectOperation,projectDeletionConfirmation} from './project-lifecycle.js';
 import {createMergeService} from './merge-service.js';
@@ -592,6 +593,7 @@ async function requireAdmin(req:any,reply:any){
  }
  return true;
 }
+registerCloudDiagnosticsSettings(app,{pool,requireAdmin});
 function decryptToken(packedText:string){
  const bytes=Buffer.from(packedText,'base64');
  const d=createDecipheriv('aes-256-gcm',encryptionKey,bytes.subarray(0,12));
@@ -1820,7 +1822,8 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initDiagnosticSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+  startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
   try{await recoverMergeBatches(pool,startMergeBatch);}catch(error){app.log.error({error},'Merge queue reconciliation failed');}

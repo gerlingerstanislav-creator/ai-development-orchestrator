@@ -25,6 +25,9 @@ services:
       AGENT_RUNTIME_ENABLED: ${AGENT_RUNTIME_ENABLED:-true}
       RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:?set RUNNER_SHARED_SECRET}
       TEMPORAL_ADDRESS: temporal:7233
+      SUPABASE_DIAGNOSTICS_URL: ${SUPABASE_DIAGNOSTICS_URL:-https://eqibpyblwzdqpimyzntz.supabase.co}
+      # Publishable key only; database allows INSERT and denies reads/updates/deletes.
+      SUPABASE_DIAGNOSTICS_API_KEY: ${SUPABASE_DIAGNOSTICS_API_KEY:-sb_publishable_1rFQHvM17WljCk1xCau_fg_Aa4t1EVl}
     depends_on:
       db: {condition: service_healthy}
   temporal:

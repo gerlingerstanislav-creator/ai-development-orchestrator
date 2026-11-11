@@ -300,6 +300,9 @@ function App(){
  const [deploymentHealthUrl,setDeploymentHealthUrl]=useState('');
  const [deploymentEnvironment,setDeploymentEnvironment]=useState('production');
  const [accountSettings,setAccountSettings]=useState(false);
+  const [developmentMode,setDevelopmentMode]=useState(true);
+  const [developmentModeBusy,setDevelopmentModeBusy]=useState(false);
+  const [developmentModeError,setDevelopmentModeError]=useState('');
  const [projectMenuOpen,setProjectMenuOpen]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
  const [tokenUsage,setTokenUsage]=useState<TokenUsageResponse|null>(null);
@@ -1170,6 +1173,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  );
 
  useEffect(()=>{if(token&&accountSettings){void refreshTokenUsage();}},[token,accountSettings]);
+  useEffect(()=>{
+   if(!token||!accountSettings)return;
+   let mounted=true;
+   void api<{development_mode:boolean}>('/diagnostics/settings').then(s=>{if(mounted){setDevelopmentMode(s.development_mode);setDevelopmentModeError('');}})
+    .catch(e=>{if(mounted)setDevelopmentModeError(e instanceof Error?e.message:'Не удалось загрузить настройки');});
+   return()=>{mounted=false;};
+  },[token,accountSettings]);
+  async function updateDevelopmentMode(enabled:boolean){
+   setDevelopmentModeBusy(true);setDevelopmentModeError('');
+   try{const saved=await api<{development_mode:boolean}>('/diagnostics/settings',{method:'PUT',body:JSON.stringify({development_mode:enabled})});setDevelopmentMode(saved.development_mode);}
+   catch(e){setDevelopmentModeError(e instanceof Error?e.message:'Не удалось сохранить режим разработки');}
+   finally{setDevelopmentModeBusy(false);}
+  }
  async function saveAiSettings(){if(!selected)return;setAiBusy(true);try{const saved=await api<AiSettings>('/projects/'+selected.id+'/ai-settings',{method:'PUT',body:JSON.stringify(aiSettings)});setAiSettings(saved);setAiMessage('Настройки сохранены');}catch(e){fail(e);}finally{setAiBusy(false);}}
  async function startTaskTesting(){
   if(!selected||!activeTask)return;
@@ -1879,6 +1895,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
 </header>
  
  {accountSettings?<div className="page compact-project-page">
+  <section className="panel codex-panel">
+   <h3>Режим разработки</h3>
+   <label style={{display:"flex",alignItems:"center",gap:10}}>
+    <input type="checkbox" checked={developmentMode} disabled={developmentModeBusy} onChange={e=>void updateDevelopmentMode(e.target.checked)} style={{width:18,height:18}}/>
+    Отправлять диагностические логи в облако
+   </label>
+   <p className="muted">Включён по умолчанию. При выключении отправка в Supabase прекращается; локальные журналы и работа агентов сохраняются.</p>
+   {developmentModeError&&<p className="error">{developmentModeError}</p>}
+  </section>
  <section className="panel codex-panel">
   <div className="row-line"><h3>Использованные токены Codex</h3><button className="secondary" onClick={()=>void refreshTokenUsage()}>Обновить</button></div>
   <p className="muted">Фактический расход токенов, сообщённый Codex CLI в JSON-событиях. Учёт начнётся с новых запросов после обновления; прошлые запуски без сохранённой статистики не включены.</p>
