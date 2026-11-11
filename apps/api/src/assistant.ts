@@ -12,7 +12,7 @@ import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
-import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings} from './project-team.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 import type {ManagerDeps} from './project-manager.js';
 
 type Dependencies={
@@ -693,7 +693,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    try{
     const response=await fetch(codexUrl+'/agent',{
      method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-     body:JSON.stringify({model:roleConfig.model,reasoning:roleConfig.reasoning,prompt,session_token:secret,agent_role:role,project_id:id}),
+     body:JSON.stringify({model:roleConfig.model,reasoning:roleConfig.reasoning,prompt,session_token:secret,agent_role:role,project_id:id,role_capacity:await roleCapacity(pool,id,role)}),
      signal:AbortSignal.timeout(255000)
     });
     const data=await response.json().catch(()=>({})) as any;
