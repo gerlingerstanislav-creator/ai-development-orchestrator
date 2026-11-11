@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {qaWaiverAssessment} from '../dist/qa-waiver.js';
+import {qaWaiverAssessment,latestQaWaiver} from '../dist/qa-waiver.js';
+import {randomUUID} from 'node:crypto';
+import pg from 'pg';
 
 const sha='c'.repeat(40);
 const base=()=>({
@@ -42,4 +44,32 @@ test('requires completed blocked run with tested commit, spec version and plan',
  const c=base();c.report.commit='';assert.equal(qaWaiverAssessment(c).eligible,false);
  const d=base();d.qa_spec_version=null;assert.equal(qaWaiverAssessment(d).eligible,false);
  const e=base();e.qa_plan_snapshot.cases=[];assert.equal(qaWaiverAssessment(e).eligible,false);
+});
+
+test('waiver approval is scoped to the latest QA run, not an older run for the same task',async t=>{
+ const client=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await client.connect();
+ const schema='qawaiver_'+randomUUID().replaceAll('-','');
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await pool.end();await client.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await client.end();});
+ await client.query('CREATE SCHEMA '+schema);
+ await client.query('SET search_path TO '+schema+',public');
+ await client.query(`
+  CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text,verdict text,qa_spec_version int,qa_plan_snapshot jsonb,report jsonb,created_at timestamptz);
+  CREATE TABLE qa_merge_waivers(id uuid PRIMARY KEY,project_id uuid,task_id uuid,test_run_id uuid,justification text,commit_sha text,spec_version int,approved_by uuid,unverified_cases jsonb,created_at timestamptz);
+ `);
+ const project=randomUUID(),task=randomUUID(),oldRun=randomUUID(),newRun=randomUUID();
+ const make=async(id,seconds)=>client.query(
+  "INSERT INTO ai_test_runs(id,project_id,task_id,status,verdict,qa_spec_version,qa_plan_snapshot,report,created_at) VALUES($1,$2,$3,'completed','blocked',3,$4::jsonb,$5::jsonb,now()+$6::int * interval '1 second')",
+  [id,project,task,JSON.stringify(base().qa_plan_snapshot),JSON.stringify(base().report),seconds]);
+ await make(oldRun,0);
+ await client.query(
+  "INSERT INTO qa_merge_waivers(id,project_id,task_id,test_run_id,justification,commit_sha,spec_version,approved_by,unverified_cases,created_at) VALUES($1,$2,$3,$4,'Owner accepted risk',$5,3,$6,'[]'::jsonb,now())",
+  [randomUUID(),project,task,oldRun,sha,randomUUID()]);
+ assert.ok((await latestQaWaiver(pool,project,task)).approval,'original exception remains visible for its run');
+ await make(newRun,5);
+ const latest=await latestQaWaiver(pool,project,task);
+ assert.equal(latest.run_id,newRun);
+ assert.equal(latest.approval,null,'old risk acceptance must not apply to a newer QA run');
+ assert.equal(latest.assessment.eligible,true);
 });
