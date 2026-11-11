@@ -219,7 +219,7 @@ export async function queueIterationPlanning(db:Db,projectId:string,actorId:stri
  return {planning_run_id:runId,iteration_id:data.iteration_id,status:'queued'};
 }
 
-export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:string,projectId:string)=>Promise<string>){
+export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:string,projectId:string,role?:'analysis'|'development'|'manager')=>Promise<string>){
  const run=(await pool.query(`SELECT r.*,i.project_id FROM iteration_planning_runs r
   JOIN project_iterations i ON i.id=r.iteration_id WHERE r.id=$1`,[runId])).rows[0];
  if(!run||run.status==='completed'||run.status==='failed')return;
@@ -266,7 +266,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Общие документы проекта:\n'+JSON.stringify(common.rows).slice(0,1500),
   'Правила проекта и инструкции СА:\n'+(rules.rows.map(row=>row.body).join('\n')+'\n'+(profile.rows[0]?.agent_instructions??'')).slice(0,1500)
  ].join('\n\n');
- const analyst=epicPlan.parse(parseAgentObject(await ask(prompt,run.project_id)));
+ const analyst=epicPlan.parse(parseAgentObject(await ask(prompt,run.project_id,'analysis')));
  const hasDevelopment=analyst.epics.some(epic=>epic.tasks.some(task=>task.kind==='development'));
  const technical=z.object({subtasks:z.array(z.object({
   epic_key:key,key,title,description:z.string().trim().min(1).max(6000),tags:tags.default([]),depends_on:key.optional()
@@ -284,7 +284,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
    'Декомпозиция СА: '+JSON.stringify(analyst).slice(0,18000),
    'Правила проекта: '+rules.rows.map(row=>row.body).join('\n').slice(0,4000)
   ].join('\n\n');
-  proposals=technical.parse(parseAgentObject(await ask(developerPrompt,run.project_id)));
+  proposals=technical.parse(parseAgentObject(await ask(developerPrompt,run.project_id,'development')));
  }
  await pool.query("UPDATE iteration_planning_runs SET message='ПМ собирает общий черновик',updated_at=now() WHERE id=$1",[runId]);
  await planningEvent(pool,run.project_id,runId,'manager','ПМ объединяет требования СА и технические предложения разработчика');
@@ -296,7 +296,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Предложения разработчика: '+JSON.stringify(proposals).slice(0,14000),
   'Исходные границы: '+details.body.slice(0,7000)
  ].join('\n\n');
- const draft=epicPlan.parse(parseAgentObject(await ask(managerPrompt,run.project_id)));
+ const draft=epicPlan.parse(parseAgentObject(await ask(managerPrompt,run.project_id,'manager')));
  // Analyst requirements remain authoritative. PM can propose additions, not rewrite them.
  const analystKeys=new Set(analyst.epics.flatMap(epic=>[epic.key,...epic.tasks.map(task=>task.key)]));
  const mergedByEpic=new Map(draft.epics.map(epic=>[epic.key,epic]));

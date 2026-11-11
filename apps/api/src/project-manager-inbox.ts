@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from './agent-tools.js';
 import {agentLearnedContext} from './agent-tools.js';
-import {conversationInstructions} from './project-team.js';
+import {conversationInstructions,resolveRoleAiSettings} from './project-team.js';
 
 type RouteDeps={
  pool:Pool;
@@ -118,7 +118,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    turn.reply_to?pool.query("SELECT role,body FROM assistant_messages WHERE project_id=$1 AND id=$2",[projectId,turn.reply_to]):Promise.resolve({rows:[]}),
    turn.topic_id?pool.query('SELECT title,status FROM project_chat_topics WHERE project_id=$1 AND id=$2',[projectId,turn.topic_id]):Promise.resolve({rows:[]})
   ]);
-  const config=configResult.rows[0];
+  const config=await resolveRoleAiSettings(pool,projectId,'manager',configResult.rows[0]);
   if(!config?.enabled)throw Error('AI выключен в настройках проекта');
   const session=await createAgentSession(pool,projectId,turn.actor_id,'manager');
   sessionId=session.id;

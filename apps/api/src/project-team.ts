@@ -11,6 +11,16 @@ const specialistRoles=['devops'] as const;
 const roleSchema=z.enum([...conversationalRoles,...stageRoles,...specialistRoles]);
 const memoryStatus=z.enum(['approved','rejected']);
 const instructions=z.string().max(12000);
+export const selectableAgentModels=['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'] as const;
+const selectedModel=z.enum(selectableAgentModels);
+export async function resolveRoleAiSettings(pool:Pick<Pool,'query'>,projectId:string,role:string,defaults?:{model:string;reasoning:string;enabled?:boolean}){
+ const [base,override]=await Promise.all([
+  defaults?Promise.resolve({rows:[defaults]}):pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
+  pool.query('SELECT model FROM project_agent_models WHERE project_id=$1 AND role=$2',[projectId,role]).catch(error=>{if((error as {code?:string}).code==='42P01')return {rows:[]};throw error;})
+ ]);
+ const fallback=base.rows[0]||{model:'gpt-6-luna',reasoning:'low',enabled:false};
+ return {...fallback,model:override.rows[0]?.model||fallback.model};
+}
 const oldDeploymentInstructions='Организуй проверяемую доставку прошедших QA и слитых изменений. Используй GitHub Actions, неизменяемые артефакты и конкретный SHA; обеспечь защиту секретов, идемпотентность и rollback. Без подключённого окружения не запускай деплой и не объявляй публикацию успешной. Подготовка CI/CD должна проходить через PR и проверки; запроси недостающие данные окружения, но не выдумывай их.';
 
 /** Keep project-specific edits from both formerly independent DevOps roles. */
@@ -37,6 +47,13 @@ export async function initProjectTeamSchema(pool:Pool){
   role text NOT NULL CHECK(role IN ('manager','analyst')),
   agent_name text NOT NULL,
   agent_instructions text NOT NULL DEFAULT '',
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY(project_id,role)
+ );
+ CREATE TABLE IF NOT EXISTS project_agent_models(
+  project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  role text NOT NULL CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops')),
+  model text NOT NULL CHECK(model IN ('gpt-6-luna','gpt-6-sol','gpt-6.1-sol')),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY(project_id,role)
  );
@@ -171,20 +188,35 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
  const canWrite=async(req:any,reply:any,id:string)=>await access(req,reply,id)&&await requireAdmin(req,reply);
  app.get('/api/projects/:id/team',async(req:any,reply)=>{
   const {id}=param.parse(req.params);if(!await access(req,reply,id))return;
-  const [stages,specialists,conversations,memory]=await Promise.all([
+  const [stages,specialists,conversations,models,memory]=await Promise.all([
    pool.query('SELECT stage,label,position,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=ANY($2::text[]) ORDER BY position',[id,stageRoles]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 ORDER BY role',[id]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 ORDER BY CASE role WHEN \'manager\' THEN 0 ELSE 1 END',[id]),
+   pool.query('SELECT role,model FROM project_agent_models WHERE project_id=$1',[id]),
    pool.query(`SELECT m.id,m.role,m.kind,m.body,m.evidence,m.status,m.origin,m.author_id,m.created_at,m.reviewed_at,
     u.email AS author_email FROM agent_memory m LEFT JOIN users u ON u.id=m.author_id
     WHERE m.project_id=$1 ORDER BY m.created_at DESC,m.id DESC LIMIT 1000`,[id])
   ]);
+  const modelFor=(role:string)=>models.rows.find(x=>x.role===role)?.model??null;
   const agents=[
-   ...conversations.rows.map(r=>({id:'conversation:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='manager'?'Коммуникации':'Бизнес-анализ',type:'conversation',instructions:r.agent_instructions})),
-   ...stages.rows.map(r=>({id:'stage:'+r.stage,role:r.stage,name:r.agent_name,stage:r.label,type:'workflow',instructions:r.agent_instructions})),
-   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:'CI/CD · выкладка · инфраструктура',type:'specialist',instructions:r.agent_instructions}))
+   ...conversations.rows.map(r=>({id:'conversation:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='manager'?'Коммуникации':'Бизнес-анализ',type:'conversation',instructions:r.agent_instructions,model:modelFor(r.role)})),
+   ...stages.rows.map(r=>({id:'stage:'+r.stage,role:r.stage,name:r.agent_name,stage:r.label,type:'workflow',instructions:r.agent_instructions,model:modelFor(r.stage)})),
+   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:'CI/CD · выкладка · инфраструктура',type:'specialist',instructions:r.agent_instructions,model:modelFor(r.role)}))
   ];
   return {agents,memory:memory.rows};
+ });
+ app.patch('/api/projects/:id/team/:role/model',async(req:any,reply)=>{
+  const {id,role}=changeParam.parse(req.params);if(!await canWrite(req,reply,id))return;
+  const validated=z.object({model:selectedModel.nullable()}).safeParse(req.body);
+  if(!validated.success)return reply.code(400).send({error:'Недопустимая модель агента'});
+  const {model}=validated.data;
+  const table=conversationalRoles.includes(role as typeof conversationalRoles[number])?'project_conversation_agents':specialistRoles.includes(role as typeof specialistRoles[number])?'project_specialist_agents':'workflow_stages';
+  const key=table==='workflow_stages'?'stage':'role';
+  if(!(await pool.query(`SELECT 1 FROM ${table} WHERE project_id=$1 AND ${key}=$2`,[id,role])).rowCount)
+   return reply.code(404).send({error:'Роль не найдена'});
+  if(model)await pool.query("INSERT INTO project_agent_models(project_id,role,model) VALUES($1,$2,$3) ON CONFLICT(project_id,role) DO UPDATE SET model=EXCLUDED.model,updated_at=now()",[id,role,model]);
+  else await pool.query('DELETE FROM project_agent_models WHERE project_id=$1 AND role=$2',[id,role]);
+  return {role,model};
  });
  app.patch('/api/projects/:id/team/:role',async(req:any,reply)=>{
   const {id,role}=changeParam.parse(req.params);if(!await canWrite(req,reply,id))return;

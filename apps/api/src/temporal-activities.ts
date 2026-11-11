@@ -15,7 +15,7 @@ import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
-import {agentMemoryContext,conversationInstructions,recordAgentLearning} from './project-team.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings} from './project-team.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -90,7 +90,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,stage));
  if(stage==='analysis')prompt='Ты СИСТЕМНЫЙ аналитик (SA). Тебе передана только согласованная постановка для технической проработки. Анализируй API, состояния, данные, зависимости и критерии реализации. Не создавай задачи и вопросы по будущему функционалу вне переданного пула. Технические противоречия возвращай на согласование BA; только блокирующие продуктовые решения направляй владельцу.\n\n'+prompt;
  prompt+='\n\nУтверждённые тематические знания (не изменяй требования без согласования):\n'+knowledge.documents+'\n\nПрименимые инструкции:\n'+knowledge.modules+'\n\nНакопленный опыт этапа:\n'+await agentMemoryContext(pool,projectId,stage);
- return askRunnerAssistant(prompt,projectId,taskId,operation,ai);
+ return askRunnerAssistant(prompt,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai));
 }
 async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000):Promise<string>{
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
@@ -108,10 +108,10 @@ async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|n
  return data.message;
 }
 export async function prepareIterationPlanDraft(runId:string){
- await runIterationPlanning(pool,runId,async(prompt,projectId)=>{
+ await runIterationPlanning(pool,runId,async(prompt,projectId,role)=>{
   const ai=(await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0];
   if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
-  return askRunnerAssistant(prompt,projectId,null,'iteration_planning',ai,210000);
+  return askRunnerAssistant(prompt,projectId,null,'iteration_planning',await resolveRoleAiSettings(pool,projectId,role||'analysis',ai),210000);
  });
 }
 export async function failIterationPlanDraft(runId:string,message:string){
@@ -213,7 +213,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
    prompt+=taskContext.slice(0,Math.min(3200,Math.max(0,24000-prompt.length)));
    const response=await fetch(codexUrl+'/assistant',{method:'POST',
     headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-    body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning}),
+    body:JSON.stringify({prompt,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning}),
     signal:AbortSignal.timeout(105000)});
    const data=await response.json().catch(()=>({})) as any;
    if(!response.ok)throw new Error(String(data.error||'Не удалось получить QA-план от Codex'));
@@ -247,8 +247,9 @@ export async function startDevelopment(args:TaskRef){
  if(task.spec_review_status==='pending'||task.spec_review_status==='needs_approval')throw ApplicationFailure.nonRetryable('Требования ожидают проверки аналитиком или согласования');
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
+ const developerAi=await resolveRoleAiSettings(pool,projectId,'development',ai);
  const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
-  model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:1800,
+  model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
   title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
  await dispatch(job);
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
@@ -323,7 +324,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
  await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
-  token,model:ai.model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
+  token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
   title:task.title,description:task.description,projectRules:rules,testPlan,knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
@@ -437,7 +438,7 @@ export async function rejectTestedTask(args:{projectId:string;taskId:string;cycl
  const initial=await pool.query('SELECT triggered_by FROM ai_task_runs WHERE id=$1',[cycleId]);
  const id=randomUUID();
  await pool.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status,cycle_id,cycle_attempt) VALUES($1,$2,$3,$4,$5,'queued',$6,$7) ON CONFLICT(cycle_id,cycle_attempt) DO NOTHING",
-  [id,projectId,taskId,initial.rows[0].triggered_by,settings.rows[0].model,cycleId,attempt+1]);
+  [id,projectId,taskId,initial.rows[0].triggered_by,(await resolveRoleAiSettings(pool,projectId,'development',{...settings.rows[0],reasoning:'low'})).model,cycleId,attempt+1]);
  const saved=await pool.query('SELECT id FROM ai_task_runs WHERE cycle_id=$1 AND cycle_attempt=$2',[cycleId,attempt+1]);
  return saved.rows[0].id;
 }
@@ -521,7 +522,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     'Комментарии специалистов:\n'+JSON.stringify(agentNotes).slice(0,4800),
      'Если ты прямо адресованный специалист и по проверенным фактам появился универсальный урок, заверши ответ строкой LEARNING_SUGGESTION: <урок>; иначе LEARNING_SUGGESTION: none. Не включай секреты и личные данные.',
     'Вопрос пользователя:\n'+mentionedAgent.message].join('\n\n'):prompt;
-    const rawReply=String(await assistantCompletion(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager')).trim();
+    const rawReply=String(await askRunnerAssistant(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager',await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]))).trim();
     const suggestion=mentionedAgent?rawReply.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim():undefined;
     if(mentionedAgent)await recordAgentLearning(pool,{projectId,role:mentionedAgent.stage,runId:messageId,body:suggestion,evidence:'Прямой диалог в задаче '+taskId});
     const generated=rawReply.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
@@ -622,7 +623,7 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string}
    ].join('\n\n');
    const ai=settings.rows[0];
    if(!ai?.enabled)throw Error('AI отключён в настройках проекта');
-   const raw=await askRunnerAssistant(prompt,projectId,taskId,'peer_question_'+note.target_stage,ai,65000);
+   const raw=await askRunnerAssistant(prompt,projectId,taskId,'peer_question_'+note.target_stage,await resolveRoleAiSettings(pool,projectId,note.target_stage,ai),65000);
    const from=raw.indexOf('{'),to=raw.lastIndexOf('}');
    const answer=JSON.parse(raw.slice(from,to+1)) as {status:string;answer:string;source:keyof typeof sources;quote:string};
    const text=String(answer.answer||'').trim().slice(0,2200);

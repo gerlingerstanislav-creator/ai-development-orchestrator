@@ -12,7 +12,7 @@ import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
-import {agentMemoryContext,conversationInstructions,recordAgentLearning} from './project-team.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings} from './project-team.js';
 import type {ManagerDeps} from './project-manager.js';
 
 type Dependencies={
@@ -114,7 +114,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   }
 
  const decideTaskManagerAction:ManagerDeps['decideAction']=async({projectId,taskId,message,snapshot})=>{
-  const config=await configuration(projectId);
+  const config=await resolveRoleAiSettings(pool,projectId,'manager',await configuration(projectId));
   if(!config.enabled)throw Error('AI отключён в настройках проекта');
   const clarification=snapshot.requests.find(request=>request.kind==='analysis_clarifications'&&request.status==='open');
   const prompt=[
@@ -227,7 +227,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    await processEvent(id,jobId,stage,message);
   };
   try{
-   const config=await configuration(id);
+   const config=await resolveRoleAiSettings(pool,id,'analyst',await configuration(id));
    if(!config.enabled)throw Error('Включи AI в настройках проекта.');
    if(job.draft_result){
     await saveImportedDraft(id,jobId,job.draft_result,'analyst:'+jobId,input);
@@ -634,8 +634,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Сообщение пользователя:\n'+mentionedAgent.message
    ].join('\n\n');
    try{
-    const response=await completion(prompt,config);
-    await storeTokenUsage(id,null,config.model,response.usage);
+    const roleConfig=await resolveRoleAiSettings(pool,id,mentionedAgent.stage,config);
+    const response=await completion(prompt,roleConfig);
+    await storeTokenUsage(id,null,roleConfig.model,response.usage);
      const raw=response.text.trim();
      const lesson=raw.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim();
      await recordAgentLearning(pool,{projectId:id,role:mentionedAgent.stage,runId:randomUUID(),body:lesson,evidence:'Прямой диалог с @'+mentionedAgent.alias});
@@ -651,6 +652,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'AI отключён в настройках проекта'});
    const role:AgentRole=documentationMode?'analyst':'manager';
+   const roleConfig=await resolveRoleAiSettings(pool,id,role,config);
    const project=(await pool.query('SELECT name,description FROM projects WHERE id=$1',[id])).rows[0];
    const priorHistory=await history(id,null,mode);
    const instructions=documentationMode?await businessAnalystModules(id):await stageAgentContext(id,'backlog');
@@ -691,14 +693,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    try{
     const response=await fetch(codexUrl+'/agent',{
      method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-     body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:secret}),
+     body:JSON.stringify({model:roleConfig.model,reasoning:roleConfig.reasoning,prompt,session_token:secret}),
      signal:AbortSignal.timeout(255000)
     });
     const data=await response.json().catch(()=>({})) as any;
     if(!response.ok)throw Object.assign(new Error(String(data.error||'Codex agent failed').slice(0,700)),{statusCode:response.status});
     if(typeof data.message!=='string'||!data.message.trim())throw Error('Агент не вернул ответ');
     const effects=await agentSessionEffects(pool,sessionId);
-    await storeTokenUsage(id,null,config.model,data.usage);
+    await storeTokenUsage(id,null,roleConfig.model,data.usage);
     await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
     await store(id,null,null,'assistant',data.message,effects.created_task_id,effects.created_document_id,mode,pool,effects,{topicId});
     await countCall(id,uid(req));
@@ -730,7 +732,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   if(!result.rowCount)return reply.code(404).send({error:'Задача не найдена'});
   const task=result.rows[0];
   if(mode!=='chat'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
-  const config=await configuration(id);
+  const config=await resolveRoleAiSettings(pool,id,'analysis',await configuration(id));
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
   const link=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
