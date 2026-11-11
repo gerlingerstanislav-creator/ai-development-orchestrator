@@ -115,7 +115,10 @@ function deviceInfo(){
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
-const MAX_PARALLEL_DEVELOPMENT=3;
+const MAX_PARALLEL_DEVELOPMENT=2;
+const MAX_PARALLEL_PER_ROLE=1;
+const activeByRole=new Map();
+const jobRole=job=>job.kind==='test'?'testing':'development';
 const MAX_PARALLEL_CHAT=4;
 const jobQueue=[];
 const activeBranches=new Set();
@@ -125,17 +128,20 @@ function startNextJobs(){
  for(let i=0;i<jobQueue.length && runningJobs<MAX_PARALLEL_DEVELOPMENT;){
   const {job,state}=jobQueue[i];
   const branchKey=job.repository+':'+job.taskId;
-  if(activeBranches.has(branchKey)){i++;continue;}
+  const role=jobRole(job);
+  if(activeBranches.has(branchKey)||(activeByRole.get(role)||0)>=MAX_PARALLEL_PER_ROLE){i++;continue;}
   jobQueue.splice(i,1);
   activeBranches.add(branchKey);
   runningJobs++;
+  activeByRole.set(role,(activeByRole.get(role)||0)+1);
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Запуск разработки в изолированной рабочей папке';
   void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
-   activeBranches.delete(branchKey);runningJobs--;startNextJobs();
+   activeBranches.delete(branchKey);runningJobs--;
+   activeByRole.set(role,Math.max(0,(activeByRole.get(role)||1)-1));startNextJobs();
   });
  }
- for(let i=0;i<jobQueue.length;i++)jobQueue[i].state.message='Ожидает свободного исполнителя (очередь '+(i+1)+')';
+ for(let i=0;i<jobQueue.length;i++)jobQueue[i].state.message='Ожидает свободного исполнителя своей роли (очередь '+(i+1)+')';
 }
 const jobKey=process.env.RUNNER_SHARED_SECRET||'';
 if(jobKey.length<32)throw Error('RUNNER_SHARED_SECRET required');
