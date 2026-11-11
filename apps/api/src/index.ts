@@ -1209,9 +1209,6 @@ app.get('/api/background-processes',async(req:any)=>{
    title:'AI-тестирование',detail:row.message||'Проверка задачи',status:'running',
    createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
- for(const row of taskAnalyses.rows){
-  processes.push({id:row.id,kind:'analysis',title:'Анализ задачи #'+row.display_number+' · '+row.title,status:row.status,detail:row.message||'Системный аналитик обрабатывает задачу',createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id,result:{message:row.message}});
- }
  for(const row of analyses.rows){
   if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // A Temporal review already appears within its development cycle.
   processes.push({id:'analysis:'+row.id,kind:'analysis',projectId:row.project_id,projectName:row.project_name,
@@ -1749,6 +1746,9 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   processes.push({id:row.id,kind:'testing',title:'Тестирование #'+row.display_number+' · '+row.task_title,
    status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,
    result:row.report?{message:row.report.summary,verdict:row.verdict,findings:row.report.findings,checks:row.report.checks,commit:row.report.commit}:null});
+ }
+ for(const row of taskAnalyses.rows){
+  processes.push({id:row.id,kind:'analysis',title:'Анализ задачи #'+row.display_number+' · '+row.title,status:row.status,detail:row.message||'Системный аналитик обрабатывает задачу',createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id,result:{message:row.message}});
  }
  for(const row of analyses.rows){
   if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // Reconciliation is already recorded in the development process events.
