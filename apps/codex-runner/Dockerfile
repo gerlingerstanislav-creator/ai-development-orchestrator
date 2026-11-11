@@ -8,7 +8,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  && npm install -g @openai/codex@0.167.1 @playwright/test@1.56.0 \
  && NODE_PATH="$(npm root -g)" node -e "require('@playwright/test')" \
- && command -v chromium && command -v pytest \
+ && command -v chromium && test -x /usr/lib/chromium/chromium && command -v pytest \
  && codex_native="$(find "$(npm root -g)/@openai" -type f -path '*/vendor/*/bin/codex')" \
  && test -x "$codex_native" \
  && ln -s "$codex_native" /usr/local/bin/codex-linux-sandbox \
