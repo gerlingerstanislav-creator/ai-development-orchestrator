@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
+import {jobIdentity,openJobJournal,recoveryAction} from './job-journal.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -115,6 +116,10 @@ function deviceInfo(){
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
+const journal=openJobJournal(process.env.RUNNER_STATE_DIR||join(home,'runner-jobs'));
+journal.recover();
+const readJob=id=>activeJobs.get(id)||journal.read(id);
+function saveJob(job,state){journal.save({identity:jobIdentity(job),state},job.token);}
 const jobChildren=new Map();
 const cancelledJobs=new Set();
 const assertJobActive=id=>{if(cancelledJobs.has(id))throw new Error('Прервано пользователем');};
@@ -125,7 +130,9 @@ const jobRole=job=>job.kind==='test'?'testing':'development';
 const MAX_PARALLEL_CHAT=4;
 const jobQueue=[];
 const activeBranches=new Set();
+const runningJobIds=new Set();
 let runningJobs=0;
+let storageRetry;
 let activeChatRequests=0;
 const activeAgentRoles=new Map();
 function startNextJobs(){
@@ -137,14 +144,25 @@ function startNextJobs(){
   const roleKey=(job.projectId||job.repository)+':'+role;
   const capacity=Number.isInteger(job.roleCapacity)?Math.min(10,Math.max(1,job.roleCapacity)):MAX_PARALLEL_PER_ROLE;
   if(activeBranches.has(branchKey)||(activeByRole.get(roleKey)||0)>=capacity){i++;continue;}
+  state.status='running';state.startedAt=new Date().toISOString();
+  state.message='Исполнитель приступил к заданию';
+  try{saveJob(job,state);}
+  catch(error){
+   state.status='queued';state.startedAt=null;
+   state.message='Ожидает доступа к журналу исполнителя';
+   process.stderr.write(state.message+': '+error.message+'\n');
+   storageRetry??=setTimeout(()=>{storageRetry=undefined;startNextJobs();},5000).unref();
+   return;
+  }
   jobQueue.splice(i,1);
   activeBranches.add(branchKey);
+  runningJobIds.add(job.id);
   runningJobs++;
   activeByRole.set(roleKey,(activeByRole.get(roleKey)||0)+1);
-  state.status='running';state.startedAt=new Date().toISOString();
-  state.message='Запуск разработки в изолированной рабочей папке';
   void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{if(state.status!=='cancelled')state.status='failed';if(state.status!=='cancelled')state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
-   activeBranches.delete(branchKey);runningJobs--;
+   try{saveJob(job,state);activeJobs.delete(job.id);}
+   catch(error){process.stderr.write('Не удалось сохранить результат задания '+job.id+': '+error.message+'\n');}
+   activeBranches.delete(branchKey);runningJobIds.delete(job.id);cancelledJobs.delete(job.id);runningJobs--;
    activeByRole.set(roleKey,Math.max(0,(activeByRole.get(roleKey)||1)-1));startNextJobs();
   });
  }
@@ -197,8 +215,7 @@ async function createPullRequest(job,branch,summary){
   throw new Error('GitHub PR HTTP '+response.status+
    (response.status===403||response.status===422?' — проверь Pull requests: Read and write и правила веток':''));
  }
- const result=await response.json();
- return result.html_url;
+ return response.json();
 }
 function codexJsonResult(output){
  let message='',usage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
@@ -217,6 +234,28 @@ function addUsage(a,b){
   cached_input_tokens:(a.cached_input_tokens||0)+(b.cached_input_tokens||0),
   output_tokens:(a.output_tokens||0)+(b.output_tokens||0)};
 }
+async function ensureTaskPullRequest(job,branch,commit,summary){
+ const existing=await fetch('https://api.github.com/repos/'+job.repository+'/pulls?state=open&head='+
+  encodeURIComponent(job.repository.split('/')[0]+':'+branch),{
+  headers:{Authorization:'Bearer '+job.token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+  signal:AbortSignal.timeout(20000)
+ });
+ if(!existing.ok)throw Error('Не удалось проверить существующий PR: GitHub HTTP '+existing.status);
+ const open=await existing.json();
+ const matching=open.find(pr=>pr.base?.ref===job.baseBranch);
+ assertJobActive(job.id);
+ const pr=matching||await createPullRequest(job,branch,summary);
+ if(pr.head?.sha!==commit||!pr.html_url)throw Error('Ветка PR изменилась. Проверьте актуальную версию в GitHub.');
+ return pr.html_url;
+}
+async function resumePublishedCommit(job,state,git){
+ if(!state.checkpoint)return false;
+ const remote=(await git('ls-remote','origin','refs/heads/'+job.taskId)).stdout.trim().split(/\s+/)[0];
+ const action=recoveryAction(state.checkpoint,remote);
+ if(action==='changed')throw Error('Ветка GitHub изменилась после прерывания. Требуется проверка перед повтором.');
+ return action==='published';
+}
+
 async function runJob(job,state){
  const deadline=Date.now()+job.maxRuntimeSeconds*1000;
  const timeLeft=()=>Math.max(0,deadline-Date.now());
@@ -235,6 +274,13 @@ async function runJob(job,state){
   state.message='Клонирование репозитория';
   await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
    {cwd:workdir,env:gitEnv,timeout:75000});
+  if(await resumePublishedCommit(job,state,git)){
+   state.prUrl=await ensureTaskPullRequest(job,branch,state.checkpoint.commit,'Изменения восстановлены после перезапуска.');
+   state.branch=branch;
+   assertJobActive(job.id);
+   state.status='completed';state.message='Готовый коммит и PR восстановлены из GitHub';
+   return;
+  }
   // Continue the same branch after failures/restarts if it already exists.
   const remoteBranch=await fetch('https://api.github.com/repos/'+job.repository+'/branches/'+encodeURIComponent(branch),{
    headers:{Authorization:'Bearer '+job.token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
@@ -315,8 +361,8 @@ async function runJob(job,state){
      (finalErrors?' | Диагностика: '+finalErrors:''));
    }
   }
-  const result=attempt.result;
   assertJobActive(job.id);
+  const previous=(await git('rev-parse','HEAD')).stdout.trim();
   state.message='Создание коммита';
   await git('add','--all');
   const staged=await git('diff','--cached','--name-only');
@@ -324,25 +370,20 @@ async function runJob(job,state){
    throw new Error('Обнаружены потенциально секретные файлы. Коммит отменён');
   await command('git',['-c','user.name=AI Development Orchestrator','-c','user.email=ai-orchestrator@users.noreply.github.com',
    'commit','-m','AI: '+job.title.slice(0,120)],{cwd:dir,env:gitEnv,timeout:30000});
-  assertJobActive(job.id);
-  state.message='Отправка ветки GitHub';
-  await git('push','-u','origin','HEAD:refs/heads/'+branch);
-  assertJobActive(job.id);
-  state.message='Создание черновика Pull Request';
-  const existingPr=await fetch('https://api.github.com/repos/'+job.repository+'/pulls?state=open&head='+
-   encodeURIComponent(job.repository.split('/')[0]+':'+branch),{
-   headers:{Authorization:'Bearer '+job.token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
-   signal:AbortSignal.timeout(20000)
-  });
-  if(!existingPr.ok)throw new Error('Не удалось проверить существующий PR: GitHub HTTP '+existingPr.status);
-  const openPrs=await existingPr.json();
-  const samePr=openPrs.find(pr=>pr.base?.ref===job.baseBranch);
-  const prBody=String(attempt.answer||'').replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
-   const prUrl=samePr?.html_url||await createPullRequest(job,branch,prBody||'Изменения подготовлены.');
   const handoff=String(attempt.answer||'').match(/HANDOFF_NOTE:\s*([^\n\r]{1,2800})/i)?.[1]?.trim()||'';
   state.handoffNote=/^(none|нет|отсутствуют)[.!]?$/i.test(handoff)?'':handoff.slice(0,2500);
    const learning=String(attempt.answer||'').match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim()||'';
    state.learningSuggestion=/^(none|нет|отсутствуют)[.!]?$/i.test(learning)?'':learning.slice(0,1600);
+  const commit=(await git('rev-parse','HEAD')).stdout.trim();
+  assertJobActive(job.id);
+  state.checkpoint={previous,commit};
+  state.message='Отправка ветки GitHub';
+  saveJob(job,state);
+  await git('push','-u','origin','HEAD:refs/heads/'+branch);
+  assertJobActive(job.id);
+  state.message='Создание Pull Request';
+  const prBody=String(attempt.answer||'').replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
+  const prUrl=await ensureTaskPullRequest(job,branch,commit,prBody||'Изменения подготовлены.');
   assertJobActive(job.id);
   state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
@@ -370,7 +411,12 @@ async function runTestJob(job,state){
   await command('git',['clone','--depth','1','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],
    {cwd:workdir,env:gitEnv,timeout:90000});
   const rev=await command('git',['rev-parse','HEAD'],{cwd:dir,timeout:10000});
-  state.testedCommit=rev.stdout.trim();
+  const commit=rev.stdout.trim();
+  if((job.expectedCommit&&commit!==job.expectedCommit)||(state.testedCommit&&commit!==state.testedCommit))
+   throw Error('Ветка PR изменилась. Требуется сверка нового коммита перед QA.');
+  assertJobActive(job.id);
+  state.testedCommit=commit;
+  saveJob(job,state);
   // Probe the real runner, not the model's assumptions about what tools may exist.
   const probe=await command('sh',['-c',
    'for tool in node npm npx python3 pytest git chromium chromium-browser google-chrome playwright docker; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool: available"; else echo "$tool: unavailable"; fi; done; if test -d node_modules; then echo "node_modules: available"; else echo "node_modules: unavailable"; fi'
@@ -492,11 +538,17 @@ async function runConflictJob(job,state){
  const gitEnv={GIT_TERMINAL_PROMPT:'0',GIT_CONFIG_COUNT:'1',
   GIT_CONFIG_KEY_0:'http.https://github.com/.extraheader',
   GIT_CONFIG_VALUE_0:'AUTHORIZATION: basic '+auth};
- const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:90000});
+ const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,jobId:job.id,timeout:90000});
  try{
   state.message='Получение свежих веток PR и целевой ветки';
-  await command('git',['clone','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],{cwd:workspace,env:gitEnv,timeout:90000});
+  await command('git',['clone','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],{cwd:workspace,env:gitEnv,jobId:job.id,timeout:90000});
   await git('fetch','origin',job.baseBranch);
+  if(await resumePublishedCommit(job,state,git)){
+   assertJobActive(job.id);
+   state.status='completed';state.message='Готовое разрешение конфликта восстановлено из GitHub';
+   state.branch=job.taskId;
+   return;
+  }
   const headBefore=(await git('rev-parse','HEAD')).stdout.trim();
   const targetSha=(await git('rev-parse','FETCH_HEAD')).stdout.trim();
   let conflicts=[];
@@ -523,7 +575,7 @@ async function runConflictJob(job,state){
    const result=await command('codex',[
      'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
      '--json','--ephemeral','--skip-git-repo-check','--sandbox','danger-full-access',prompt
-   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
+   ],{cwd:dir,env:{...cliEnv,RUNNER_SHARED_SECRET:undefined},jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
    const parsed=codexJsonResult(result.stdout);
    state.usage=parsed.usage;
    const answer=parsed.message||'';
@@ -537,18 +589,23 @@ async function runConflictJob(job,state){
    await git('diff','--cached','--check');
    // A resolved file may have no staged diff if the chosen side matches HEAD.
    await command('git',['-c','user.name=AI Development Orchestrator','-c','user.email=ai-orchestrator@users.noreply.github.com',
-    'commit','-m','Resolve PR conflicts with '+job.baseBranch],{cwd:dir,env:gitEnv,timeout:30000});
+    'commit','-m','Resolve PR conflicts with '+job.baseBranch],{cwd:dir,env:gitEnv,jobId:job.id,timeout:30000});
   }
   // Refuse to overwrite concurrent edits to the PR branch.
   const remoteHead=(await git('ls-remote','origin','refs/heads/'+job.taskId)).stdout.split(/\s+/)[0];
   if(remoteHead!==headBefore)throw new Error('Ветка PR изменилась во время разрешения конфликтов. Повтори операцию.');
   const remoteTarget=(await git('ls-remote','origin','refs/heads/'+job.baseBranch)).stdout.split(/\s+/)[0];
   if(remoteTarget!==targetSha)throw new Error('Целевая ветка изменилась во время разрешения конфликтов. Повтори операцию.');
+  const commit=(await git('rev-parse','HEAD')).stdout.trim();
+  assertJobActive(job.id);
+  state.checkpoint={previous:headBefore,commit};
+  saveJob(job,state);
   await git('push','origin','HEAD:refs/heads/'+job.taskId);
+  assertJobActive(job.id);
   state.status='completed';state.message='Конфликты устранены, ветка PR обновлена';
   state.branch=job.taskId;state.resolvedFiles=conflicts;
  }catch(error){
-  state.status='failed';state.message=String(error?.message||error).replaceAll(job.token,'[REDACTED]').slice(0,1800);
+  if(state.status!=='cancelled'){state.status='failed';state.message=String(error?.message||error).replaceAll(job.token,'[REDACTED]').slice(0,1800);}
  }finally{await rm(workspace,{recursive:true,force:true}).catch(()=>{});}
 }
 async function readJson(req){
@@ -714,31 +771,42 @@ http.createServer(async(req,res)=>{
     (job.roleCapacity!==undefined&&(!Number.isInteger(job.roleCapacity)||job.roleCapacity<1||job.roleCapacity>10))||
      typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
     return reply(res,400,{error:'Некорректные параметры задачи'});
-   if(activeJobs.has(job.id))return reply(res,409,{error:'Запуск с таким ID уже существует'});
-   const state={id:job.id,status:'queued',message:'Задача принята в очередь',branch:null,baseBranch:job.baseBranch,prUrl:null,createdAt:new Date().toISOString(),startedAt:null};
-   activeJobs.set(job.id,state);
-   if(activeJobs.size>200){for(const [key,v] of activeJobs){if(v.status==='completed'||v.status==='failed'){activeJobs.delete(key);break;}}}
+   const previous=readJob(job.id);
+   const identity=jobIdentity(job);
+   if(previous&&JSON.stringify(previous.identity)!==JSON.stringify(identity))
+    return reply(res,422,{error:'Идентификатор запуска относится к другому заданию'});
+   if(previous&&previous.state.status!=='interrupted')
+    return reply(res,409,{error:'Запуск с таким ID уже существует'});
+   const restarts=(previous?.state.restarts||0)+(previous?1:0);
+   const state={...previous?.state,id:job.id,status:restarts>2?'failed':'queued',
+    message:restarts>2?'Исчерпаны попытки восстановления исполнителя':'Задача принята в очередь',
+    baseBranch:job.baseBranch,createdAt:previous?.state.createdAt||new Date().toISOString(),startedAt:null,restarts};
+   saveJob(job,state);
+   if(state.status==='failed')return reply(res,202,state);
+   activeJobs.set(job.id,{identity,state,secret:job.token});
    jobQueue.push({job,state});
    startNextJobs();
    return reply(res,202,state);
   }
   if(req.method==='POST'&&/^\/jobs\/[a-f0-9-]{36}\/cancel$/.test(req.url||'')){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   const id=req.url.split('/')[2],state=activeJobs.get(id);
+   const id=req.url.split('/')[2],record=readJob(id),state=record?.state;
    if(!state)return reply(res,404,{error:'Запуск не найден'});
-   if(!['queued','running'].includes(state.status))return reply(res,409,{error:'Запуск уже завершён'});
+   if(!['queued','running','interrupted'].includes(state.status))return reply(res,409,{error:'Запуск уже завершён'});
    cancelledJobs.add(id);
    const index=jobQueue.findIndex(item=>item.job.id===id);
-   if(index>=0)jobQueue.splice(index,1);
+   const [queued]=index>=0?jobQueue.splice(index,1):[];
    const child=jobChildren.get(id);if(child)child.kill('SIGKILL');
    state.status='cancelled';state.message='Остановлено пользователем';
+   journal.save({identity:record.identity,state},record.secret??queued?.job.token);
+   if(!child&&!runningJobIds.has(id)){activeJobs.delete(id);cancelledJobs.delete(id);}
    startNextJobs();
    return reply(res,200,{ok:true,status:'cancelled'});
   }
   if(req.method==='GET'&& /^\/jobs\/[a-f0-9-]{36}$/.test(req.url||'')){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   const job=activeJobs.get(req.url.slice(6));
-   return job?reply(res,200,job):reply(res,404,{error:'Задача не найдена (возможно, исполнитель перезапущен)'});
+   const job=readJob(req.url.slice(6));
+   return job?reply(res,200,job.state):reply(res,404,{error:'Задача не найдена (возможно, исполнитель перезапущен)'});
   }
   if(req.method==='POST'&&req.url==='/test'){
    if(!(await connected()).connected)return reply(res,409,{error:'Codex ещё не подключён'});

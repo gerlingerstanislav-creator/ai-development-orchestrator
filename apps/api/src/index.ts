@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import {findActiveProjectOperation,projectDeletionConfirmation} from './project-lifecycle.js';
-import {deploymentDecision} from './deployment-stage.js';
+import {createMergeService} from './merge-service.js';
+import {createMergeBatch,initMergeBatches,readMergeBatch,recoverMergeBatches} from './merge-batch.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes,validateHealthUrl} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
@@ -21,7 +22,7 @@ import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
 import {initKnowledgeDocumentUpdates,registerKnowledgeDocumentUpdateRoutes} from './knowledge-document-updates.js';
 import {fingerprint} from './topic-import.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
-import {initQaWaiverSchema,registerQaWaiverRoutes,qaWaiverAssessment} from './qa-waiver.js';
+import {initQaWaiverSchema,registerQaWaiverRoutes} from './qa-waiver.js';
 import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
 import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {readAgentActivity} from './task-agent-activity.js';
@@ -171,7 +172,7 @@ async function dbInit() {
   created_at timestamptz not null default now(),finished_at timestamptz
  );
  CREATE INDEX IF NOT EXISTS idx_merge_process_runs_project ON merge_process_runs(project_id,created_at DESC);
- UPDATE merge_process_runs SET status='failed',message='Слияние прервано перезапуском API',finished_at=now() WHERE status='running';
+
 
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS document_kind text not null default 'technical';
  ALTER TABLE documents ADD COLUMN IF NOT EXISTS implementation_status text not null default 'unverified';
@@ -313,6 +314,7 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_feedback text not null default '';
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS test_attempts int not null default 0;
  ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS cycle_id uuid;
+ ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS runner_spec_version integer;
  ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS cycle_attempt int not null default 0;
  CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_task_cycle_attempt ON ai_task_runs(cycle_id,cycle_attempt) WHERE cycle_id IS NOT NULL;
  CREATE TABLE IF NOT EXISTS ai_test_runs (
@@ -832,154 +834,7 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
 
 
 
-async function restackChildren(projectId:string,parentId:string,parentHeadSha:string,parentBase:string,repository:string,token:string,actorId:string){
- const children=await pool.query("SELECT id,pr_number,pr_base_branch FROM tasks WHERE project_id=$1 AND depends_on_task_id=$2 AND stage='merge_queue' AND pr_number IS NOT NULL",[projectId,parentId]);
- if(!children.rowCount)return;
- const base='https://api.github.com/repos/'+repository;
- const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
- const compare=await fetch(base+'/compare/'+encodeURIComponent(parentHeadSha)+'...'+encodeURIComponent(parentBase),{headers,signal:AbortSignal.timeout(15000)});
- const ancestry=await compare.json().catch(()=>({})) as any;
- const safe=compare.ok&&['ahead','identical'].includes(ancestry.status);
- for(const child of children.rows){
-  if(child.pr_base_branch===parentBase)continue;
-  try{
-   if(!safe)throw new Error('Нельзя автоматически сменить базу: коммит родительской ветки не содержится в '+parentBase+'. Нужна безопасная пересборка ветки.');
-   const updated=await fetch(base+'/pulls/'+child.pr_number,{method:'PATCH',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({base:parentBase}),signal:AbortSignal.timeout(15000)});
-   const data=await updated.json().catch(()=>({})) as any;
-   if(!updated.ok)throw new Error('GitHub HTTP '+updated.status+': '+String(data.message||'').slice(0,150));
-   await pool.query('UPDATE tasks SET pr_base_branch=$2,updated_at=now() WHERE id=$1',[child.id,parentBase]);
-   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),child.id,actorId,'pr_restacked','PR переключён на '+parentBase+' после слияния родителя '+parentId]);
-  }catch(e){
-   await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),child.id,actorId,'pr_restack_failed','PR ожидает смены базовой ветки: '+(e instanceof Error?e.message:String(e)).slice(0,320)]);
-  }
- }
-}
-async function registerMergedDeployment(projectId:string,taskId:string,userId:string,mergeSha:string|null){
- const client=await pool.connect();
- try{
-  await client.query('BEGIN');
-  const task=await client.query('SELECT stage FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,projectId]);
-  if(!task.rowCount)throw new Error('Задача не найдена после слияния PR');
-  if(task.rows[0].stage!=='merge_queue'){
-   await client.query('COMMIT');
-   return task.rows[0].stage as string;
-  }
-  const mode=(await client.query("SELECT mode FROM project_deployment_settings WHERE project_id=$1",[projectId])).rows[0]?.mode||'skip';
-  const decision=deploymentDecision(mode);
-  const skipped=decision.status==='skipped';
-  const destination=decision.stage;
-  await client.query("INSERT INTO task_deployment_records(task_id,project_id,status,reason,merge_sha,actor_id) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id) DO UPDATE SET status=EXCLUDED.status,reason=EXCLUDED.reason,merge_sha=COALESCE(EXCLUDED.merge_sha,task_deployment_records.merge_sha),actor_id=EXCLUDED.actor_id,updated_at=now()",
-   [taskId,projectId,decision.status,decision.reason,mergeSha,userId]);
-  await client.query('UPDATE tasks SET stage=$3,updated_at=now() WHERE id=$1 AND project_id=$2',[taskId,projectId,destination]);
-  await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)",
-   [randomUUID(),taskId,userId,skipped?'deployment_skipped':'deployment_pending',skipped?'Выкладка пропущена: окружение не настроено':'Нужно подтвердить ручную выкладку или указать причину пропуска']);
-  await client.query('COMMIT');
-  return destination;
- }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
-}
-async function mergeTaskPr(projectId:string,taskId:string,userId:string){
- const info=await pool.query("SELECT t.id,t.title,t.stage,t.pr_number,t.pr_url,t.depends_on_task_id,t.pr_base_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
- [taskId,projectId,userId]);
- if(!info.rowCount)throw Object.assign(new Error('Задача или подключение GitHub не найдены'),{statusCode:404});
- const row=info.rows[0];
- if(row.stage!=='merge_queue'||!row.pr_number)throw Object.assign(new Error('Задача не находится в очереди слияния или не содержит PR'),{statusCode:409});
- if(await pendingAgentQuestions(pool,projectId,taskId))throw Object.assign(new Error('Нельзя слить PR: у задачи остаются вопросы без ответа'),{statusCode:409});
- const token=decryptToken(row.secret_encrypted);
- if(row.depends_on_task_id){
-  const parent=await pool.query('SELECT id,title,stage,pr_number,pr_base_branch FROM tasks WHERE project_id=$1 AND id=$2',[projectId,row.depends_on_task_id]);
-  if(parent.rowCount && !['documentation','done'].includes(parent.rows[0].stage))
-   throw Object.assign(new Error('Сначала слей родительскую задачу «'+parent.rows[0].title+'»'),{statusCode:409});
-  if(parent.rowCount && parent.rows[0].pr_number && row.pr_base_branch===row.depends_on_task_id){
-   const parentPr=await fetch('https://api.github.com/repos/'+row.repository+'/pulls/'+parent.rows[0].pr_number,{
-    headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},signal:AbortSignal.timeout(15000)});
-   if(parentPr.ok){
-    const info=await parentPr.json() as any;
-    if(info.merged)await restackChildren(projectId,row.depends_on_task_id,info.head.sha,info.base.ref,row.repository,token,userId);
-   }
-   const current=await pool.query('SELECT pr_base_branch FROM tasks WHERE id=$1',[taskId]);
-   row.pr_base_branch=current.rows[0]?.pr_base_branch;
-  }
- }
- const base='https://api.github.com/repos/'+row.repository;
- const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
- const pull=await fetch(base+'/pulls/'+row.pr_number,{headers,signal:AbortSignal.timeout(15000)});
- if(!pull.ok)throw Object.assign(new Error('Не удалось получить PR: GitHub HTTP '+pull.status),{statusCode:502});
- const pr=await pull.json() as any;
- if(pr.merged){
-  await registerMergedDeployment(projectId,taskId,userId,String(pr.merge_commit_sha||pr.head.sha||''));
-  await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
-  return {taskId,status:'merged',url:row.pr_url};
- }
- if(pr.state!=='open'||pr.draft)throw Object.assign(new Error('PR закрыт или находится в черновике; переведи его в Ready for review'),{statusCode:409});
- // QA plans require a verified test run for the exact commit being merged.
- const spec=await pool.query('SELECT spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
- if(!spec.rowCount||spec.rows[0].spec_review_status!=='current'||spec.rows[0].spec_version!==spec.rows[0].spec_reviewed_version||(spec.rows[0].spec_reviewed_commit&&spec.rows[0].spec_reviewed_commit!==pr.head.sha))
-  throw Object.assign(new Error('Требования изменились или аналитик проверял другую версию PR. Повтори сверку требований и тестирование.'),{statusCode:409});
- const qaPlan=await pool.query('SELECT id,spec_version FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
- const orchestrated=await pool.query('SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND cycle_id IS NOT NULL LIMIT 1',[projectId,taskId]);
- if((qaPlan.rowCount||orchestrated.rowCount)&&spec.rows[0].spec_reviewed_commit!==pr.head.sha)
-  throw Object.assign(new Error('Аналитик не проверил последний коммит PR. Сначала повтори сверку требований.'),{statusCode:409});
- if((qaPlan.rowCount||orchestrated.rowCount)&&(!qaPlan.rowCount||qaPlan.rows[0].spec_version!==spec.rows[0].spec_version))
-  throw Object.assign(new Error('Нет QA-плана для актуальной версии ТЗ. Сначала выполни тестирование.'),{statusCode:409});
- if(qaPlan.rowCount){
-  const lastTest=await pool.query('SELECT id,task_id,verdict,report,status,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1',[projectId,taskId]);
-  const run=lastTest.rows[0];
-  const matches=run&&run.status==='completed'&&run.report?.commit===pr.head.sha&&run.qa_spec_version===spec.rows[0].spec_version;
-  if(!matches)throw Object.assign(new Error('QA-отчёт устарел или не относится к текущему коммиту PR. Повтори тестирование.'),{statusCode:409});
-  if(run.verdict==='blocked'){
-   const waiver=await pool.query('SELECT id,test_run_id,commit_sha,spec_version FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 AND test_run_id=$3',[projectId,taskId,run.id]);
-   if(!waiver.rowCount||!qaWaiverAssessment(run).eligible||waiver.rows[0].commit_sha!==pr.head.sha||waiver.rows[0].spec_version!==spec.rows[0].spec_version)
-    throw Object.assign(new Error('Сценарии не проверены. Необходимо отдельное согласование исключений в карточке задачи.'),{statusCode:409});
-  }else if(run.verdict!=='passed'){
-   throw Object.assign(new Error('Тестировщик выявил дефекты или проверка не завершена. Слияние запрещено.'),{statusCode:409});
-  }
- }
- if(pr.base?.ref!==(row.pr_base_branch||row.target_branch||row.default_branch))throw Object.assign(new Error('Целевая ветка PR отличается от настроенной ветки проекта'),{statusCode:409});
- if(pr.mergeable===null || pr.mergeable_state==='unknown')
-  throw Object.assign(new Error('GitHub ещё вычисляет mergeability PR, повторная проверка необходима'),{statusCode:409});
- if(pr.mergeable===false || pr.mergeable_state==='dirty')
-  throw Object.assign(new Error('PR содержит конфликт с целевой веткой'),{statusCode:409});
- if(pr.mergeable_state==='blocked')
-  throw Object.assign(new Error('PR заблокирован правилами GitHub или проверками'),{statusCode:409});
- // Best-effort CI inspection. Fine-grained tokens may lack Checks access;
- // GitHub still enforces branch protection and required checks on the merge API.
- // Never treat an inaccessible check endpoint as proof that CI has passed.
- const readCi=async(path:string,label:string):Promise<any|null>=>{
-  const url=base+path;
-  const response=await fetch(url,{headers,signal:AbortSignal.timeout(15000)});
-  if(response.status===401||response.status===403){
-   const publicHeaders={Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
-   const publicResponse=await fetch(url,{headers:publicHeaders,signal:AbortSignal.timeout(15000)});
-   if(publicResponse.ok)return publicResponse.json();
-   if([401,403,404].includes(publicResponse.status))return null;
-   throw Object.assign(new Error('Не удалось проверить '+label+': GitHub HTTP '+publicResponse.status),{statusCode:502});
-  }
-  if(!response.ok)throw Object.assign(new Error('Не удалось проверить '+label+' в GitHub: HTTP '+response.status),{statusCode:502});
-  return response.json();
- };
- const checkData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/check-runs?per_page=100','CI (Check Runs)');
- if(checkData){
-  const runs=Array.isArray(checkData.check_runs)?checkData.check_runs:[];
-  const incomplete=runs.filter((c:any)=>c.status!=='completed'||!['success','neutral','skipped'].includes(c.conclusion));
-  if(incomplete.length)throw Object.assign(new Error('PR ожидает проверок CI или содержит ошибки: '+incomplete.map((c:any)=>c.name).slice(0,5).join(', ')),{statusCode:409});
-  if(Number(checkData.total_count||0)>runs.length)throw Object.assign(new Error('У коммита больше 100 проверок CI. Для безопасного слияния необходимо получить все результаты проверок.'),{statusCode:409});
- }
- const statusData=await readCi('/commits/'+encodeURIComponent(pr.head.sha)+'/status','статусы коммита');
- if(statusData){
-  const statuses=Array.isArray(statusData.statuses)?statusData.statuses:[];
-  if(statuses.length&&statusData.state!=='success')throw Object.assign(new Error('Статусы коммита не пройдены: '+statusData.state),{statusCode:409});
- }
-
- const merge=await fetch(base+'/pulls/'+row.pr_number+'/merge',{method:'PUT',headers:{...headers,'Content-Type':'application/json'},
-  body:JSON.stringify({sha:pr.head.sha,merge_method:'merge',commit_title:'Merge AI task: '+String(row.title).slice(0,150)}),
-  signal:AbortSignal.timeout(25000)});
- const merged=await merge.json().catch(()=>({})) as any;
- if(!merge.ok || !merged.merged)throw Object.assign(new Error('GitHub отклонил слияние: '+String(merged.message||merge.status).slice(0,240)),{statusCode:409});
- await registerMergedDeployment(projectId,taskId,userId,String(merged.sha||pr.merge_commit_sha||''));
- await restackChildren(projectId,taskId,pr.head.sha,pr.base.ref,row.repository,token,userId);
- await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'merged',$4)",[randomUUID(),taskId,userId,row.pr_url]);
- return {taskId,status:'merged',url:row.pr_url};
-}
+const {mergeTaskPr}=createMergeService(pool,decryptToken);
 app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
@@ -987,10 +842,6 @@ app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
  catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message});}
 });
 
-type MergeBatchResult={taskId:string;status:'merged'|'skipped';reason?:string};
-type MergeBatch={id:string;projectId:string;status:'running'|'completed';results:MergeBatchResult[];currentTask:string|null;message:string;createdAt:string;finishedAt?:string};
-const mergeBatches=new Map<string,MergeBatch>();
-const runningMergeProjects=new Map<string,string>();
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
@@ -1003,10 +854,10 @@ app.get('/api/background-processes',async(req:any)=>{
   pool.query(`SELECT j.id,j.project_id,p.name AS project_name,j.status,j.message,j.created_at
     FROM document_import_jobs j JOIN projects p ON p.id=j.project_id
     JOIN memberships m ON m.project_id=j.project_id AND m.user_id=$1
-    WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50`,[userId]),
+    WHERE j.status IN ('queued','running') ORDER BY j.created_at DESC LIMIT 50`,[userId]),
   pool.query('SELECT p.id,p.name FROM projects p JOIN memberships m ON m.project_id=p.id AND m.user_id=$1',[userId]),
   pool.query("SELECT t.id,t.project_id,t.message,t.created_at,p.name AS project_name FROM ai_test_runs t JOIN projects p ON p.id=t.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE t.status IN ('queued','running') ORDER BY t.created_at DESC LIMIT 50",[userId]),
-  pool.query("SELECT j.id,j.project_id,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status='running' ORDER BY j.created_at DESC LIMIT 50",[userId]),
+  pool.query("SELECT j.id,j.project_id,j.status,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status IN ('queued','running') ORDER BY j.created_at DESC LIMIT 50",[userId]),
   pool.query("SELECT r.id,r.project_id,r.task_id,r.message,r.created_at,t.title,p.name AS project_name FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id JOIN projects p ON p.id=r.project_id JOIN memberships m ON m.project_id=r.project_id AND m.user_id=$1 WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50",[userId]),
   pool.query(`SELECT r.id,r.status,r.message,r.created_at,i.id AS iteration_id,i.project_id,i.title,p.name AS project_name
    FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id JOIN projects p ON p.id=i.project_id
@@ -1083,119 +934,30 @@ app.get('/api/background-processes',async(req:any)=>{
  }
  for(const row of merges.rows){
   processes.push({id:'merge:'+row.id,kind:'merge',projectId:row.project_id,projectName:row.project_name,
-   title:'Последовательное слияние PR',detail:row.message||'Обработка PR',status:'running',
+   title:'Последовательное слияние PR',detail:row.message||'Обработка PR',status:row.status==='queued'?'queued':'running',
    createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
  }
  processes.sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
  return {count:processes.length,processes,checkedAt:new Date().toISOString()};
 });
 
-async function resolvePrConflicts(projectId:string,taskId:string,userId:string){
- const details=await pool.query(
-  "SELECT t.title,t.description,t.pr_number,t.git_branch,g.repository,g.target_branch,g.default_branch,c.secret_encrypted,a.model,a.reasoning FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 LEFT JOIN project_ai_settings a ON a.project_id=t.project_id WHERE t.id=$1 AND t.project_id=$2",
-  [taskId,projectId,userId]);
- if(!details.rowCount)throw Error('Не найдены настройки GitHub для разрешения конфликтов');
- const row=details.rows[0];
- if(!row.pr_number||!row.git_branch)throw Error('У задачи отсутствует ветка PR');
- const token=decryptToken(row.secret_encrypted);
- const jobId=randomUUID();
- const job={id:jobId,kind:'resolve-conflict',taskId,repository:row.repository,
-  baseBranch:row.target_branch||row.default_branch,token,
-  model:(await resolveRoleAiSettings(pool,projectId,'development',{model:row.model||aiDefaults.model,reasoning:row.reasoning||aiDefaults.reasoning})).model,reasoning:row.reasoning||aiDefaults.reasoning,
-  maxRuntimeSeconds:900,title:row.title,description:row.description||''};
- // Get actual PR base: stacked PRs may initially target a parent task branch.
- const prResp=await fetch('https://api.github.com/repos/'+row.repository+'/pulls/'+row.pr_number,{
-  headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
-  signal:AbortSignal.timeout(15000)});
- if(!prResp.ok)throw Error('Не удалось получить PR для устранения конфликтов: HTTP '+prResp.status);
- const pr=await prResp.json() as any;
- job.baseBranch=pr.base.ref;
- const accepted=await agentCall('/jobs','POST',job);
- if(!['queued','running'].includes(accepted.status))throw Error('Исполнитель не принял разрешение конфликта');
- const deadline=Date.now()+16*60*1000;
- while(Date.now()<deadline){
-  await new Promise(resolve=>setTimeout(resolve,3000));
-  let result:any;
-  try{result=await agentCall('/jobs/'+jobId);}
-  catch(e){throw Error('Не удалось получить результат разрешения конфликта: '+(e instanceof Error?e.message:String(e)));}
-  const batchId=runningMergeProjects.get(projectId);
-  const batch=batchId?mergeBatches.get(batchId):undefined;
-  if(batch)batch.message=String(result.message||'Устранение конфликтов через Codex');
-  if(result.status==='completed'){
-   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'conflicts_resolved',$4)",[randomUUID(),taskId,userId,'Codex обновил PR после разрешения Git-конфликтов']);
-   return;
-  }
-  if(result.status==='failed'){
-   const message=String(result.message||'Не удалось разрешить конфликты');
-   await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'merge_needs_attention',$4)",[randomUUID(),taskId,userId,message.slice(0,1500)]);
-   throw Error(message);
-  }
- }
- throw Error('Превышено время ожидания разрешения конфликтов. Проверь статус ветки перед повтором.');
-}
-async function runMergeBatch(batch:MergeBatch,userId:string){
- try{
-  const tasks=await pool.query("SELECT id,depends_on_task_id FROM tasks WHERE project_id=$1 AND stage='merge_queue' ORDER BY created_at LIMIT 30",[batch.projectId]);
-  const byId=new Map(tasks.rows.map((t:any)=>[t.id,t.depends_on_task_id]));
-  const depth=(taskId:string,seen=new Set<string>()):number=>{
-   if(seen.has(taskId))return 0;seen.add(taskId);
-   const parent=byId.get(taskId) as string|undefined;
-   return parent?1+depth(parent,seen):0;
-  };
-  tasks.rows.sort((a:any,b:any)=>depth(a.id)-depth(b.id));
-  for(const task of tasks.rows){
-   batch.currentTask=task.id;batch.message='Слияние PR '+(batch.results.length+1)+' из '+tasks.rows.length;
-   let success=false,reason='';
-   for(let retry=0;retry<3;retry++){
-    try{
-     const result=await mergeTaskPr(batch.projectId,task.id,userId);
-     batch.results.push({taskId:task.id,status:'merged'});success=true;break;
-    }catch(e){
-     reason=e instanceof Error?e.message:String(e);
-     const isPending=/ещё вычисляет mergeability/i.test(reason);
-     if(isPending&&retry<2){await new Promise(resolve=>setTimeout(resolve,3000));continue;}
-     const isConflict=/merge conflicts|содержит конфликт|mergeable.*dirty|GitHub отклонил слияние.*conflict/i.test(reason);
-     if(!isConflict||retry>=2)break;
-     try{
-      batch.message='Разрешение конфликта PR через Codex';
-      await resolvePrConflicts(batch.projectId,task.id,userId);
-      // GitHub may calculate mergeable asynchronously after new commits.
-      await new Promise(resolve=>setTimeout(resolve,2500));
-     }catch(error){reason=error instanceof Error?error.message:String(error);break;}
-    }
-   }
-   if(!success)batch.results.push({taskId:task.id,status:'skipped',reason});
-   await pool.query("UPDATE merge_process_runs SET message=$2,current_task=$3,results=$4 WHERE id=$1",
-    [batch.id,batch.message,task.id,JSON.stringify(batch.results)]).catch(()=>{});
-   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'merge',$4,$5,$6)",
-    [randomUUID(),batch.projectId,batch.id,success?'info':'warning',success?'merged':'skipped',success?'PR успешно слит':reason.slice(0,1200)]).catch(()=>{});
-  }
- }catch(e){batch.message='Ошибка обработки очереди: '+(e instanceof Error?e.message:String(e));}
- finally{
-  batch.currentTask=null;batch.status='completed';batch.finishedAt=new Date().toISOString();
-  await pool.query("UPDATE merge_process_runs SET status=$2,message=$3,results=$4,finished_at=now(),current_task=NULL WHERE id=$1",
-   [batch.id,'completed',batch.message,JSON.stringify(batch.results)]).catch(()=>{});
-  if(runningMergeProjects.get(batch.projectId)===batch.id)runningMergeProjects.delete(batch.projectId);
- }
+async function startMergeBatch(batchId:string){
+ const client=await temporal();
+ await client.withDeadline(Date.now()+5000,()=>client.workflow.start('mergeReadyBatch',{
+  workflowId:'merge-ready-'+batchId,workflowIdReusePolicy:'REJECT_DUPLICATE',taskQueue:'agent-pipeline',args:[batchId]
+ }));
 }
 app.post('/api/projects/:id/merge-ready',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const existingId=runningMergeProjects.get(id);
- if(existingId)return reply.code(409).send({error:'Слияние уже выполняется',batchId:existingId});
- const batch:MergeBatch={id:randomUUID(),projectId:id,status:'running',results:[],currentTask:null,message:'Подготовка очереди',createdAt:new Date().toISOString()};
- mergeBatches.set(batch.id,batch);runningMergeProjects.set(id,batch.id);
- await pool.query("INSERT INTO merge_process_runs(id,project_id,actor_id,status,message) VALUES($1,$2,$3,'running',$4)",[batch.id,id,uid(req),batch.message]);
- await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'merge','started','Запущено последовательное слияние')",[randomUUID(),id,batch.id]);
- void runMergeBatch(batch,uid(req));
+ const batch=await createMergeBatch(pool,id,uid(req));
  return reply.code(202).send(batch);
 });
 app.get('/api/projects/:id/merge-ready/:batchId',async(req:any,reply)=>{
  const {id,batchId}=parse(z.object({id:z.string().uuid(),batchId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const batch=mergeBatches.get(batchId);
- if(!batch||batch.projectId!==id)return reply.code(404).send({error:'Очередь слияния не найдена после перезапуска или истекла'});
- return batch;
+ const batch=await readMergeBatch(pool,id,batchId);
+ return batch??reply.code(404).send({error:'Очередь слияния не найдена'});
 });
 
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
@@ -1986,9 +1748,10 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
+  try{await recoverMergeBatches(pool,startMergeBatch);}catch(error){app.log.error({error},'Merge queue reconciliation failed');}
   try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}
  })();
  reconcile();setInterval(reconcile,12000).unref();}

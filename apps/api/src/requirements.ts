@@ -21,7 +21,8 @@ export async function initRequirementsSchema(pool:Pool){
   "CREATE INDEX IF NOT EXISTS idx_requirement_runs_project ON requirement_review_runs(project_id,created_at DESC)",
   "ALTER TABLE qa_test_plans ADD COLUMN IF NOT EXISTS spec_version integer NOT NULL DEFAULT 1",
   "ALTER TABLE ai_test_runs ADD COLUMN IF NOT EXISTS qa_spec_version integer",
-  "ALTER TABLE ai_test_runs ADD COLUMN IF NOT EXISTS qa_plan_snapshot jsonb"
+  "ALTER TABLE ai_test_runs ADD COLUMN IF NOT EXISTS qa_plan_snapshot jsonb",
+  "ALTER TABLE ai_test_runs ADD COLUMN IF NOT EXISTS runner_commit_sha text"
  ].join(';\n')+';');
 }
 

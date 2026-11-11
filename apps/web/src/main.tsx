@@ -1562,7 +1562,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const batch=await api<{id:string;status:string;message:string;results:Array<{taskId:string,status:string,reason?:string}>}>('/projects/'+selected.id+'/merge-ready',{method:'POST'});
    setMergeReport('Начато последовательное слияние PR.');
    let state=batch;
-   while(state.status==='running'){
+   while(['queued','running'].includes(state.status)){
     await new Promise(resolve=>setTimeout(resolve,3000));
     state=await api<typeof batch>('/projects/'+selected.id+'/merge-ready/'+batch.id);
     setMergeReport(state.message+' · Слито: '+state.results.filter(r=>r.status==='merged').length+'.');
@@ -1570,9 +1570,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const result=state;
    // Project state is reloaded from API after merge; deployment may be skipped or pending.
    const mergedCount=result.results.filter(r=>r.status==='merged').length;
-   const skippedCount=result.results.filter(r=>r.status==='skipped').length;
+   const skippedCount=result.results.filter(r=>r.status==='skipped'||r.status==='failed').length;
    const errors=[...new Set(result.results.map(r=>r.reason).filter((value):value is string=>!!value))];
-   setMergeReport('Слито: '+mergedCount+'. Требуется внимание: '+skippedCount+'.'+(errors.length?' Подробности показаны в уведомлении.':''));
+   setMergeReport((result.status==='failed'||result.status==='partial'?result.message+' ':'')+'Слито: '+mergedCount+'. Требуется внимание: '+skippedCount+'.'+(errors.length?' Подробности показаны в уведомлении.':''));
    if(errors.length)fail(new Error(errors.join('\n')));
    if(mergedCount)await loadProject(selected.id);
   }catch(e){fail(e);}finally{setMergeBusy(false);}
@@ -1770,7 +1770,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
  }
- const processStatus=(status:string)=>status==='completed'?'Завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status==='stale'?'Нужно подтвердить заново':status;
+ const processStatus=(status:string)=>status==='completed'?'Завершён':status==='partial'?'Частично завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status==='stale'?'Нужно подтвердить заново':status;
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
  const taskTags=[...new Set(tasks.flatMap(task=>task.tags??[]))].sort((a,b)=>a.localeCompare(b,'ru'));
