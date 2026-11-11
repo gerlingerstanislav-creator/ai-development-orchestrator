@@ -1,3 +1,4 @@
+import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
@@ -230,64 +231,49 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
  let sessionId:string|null=null;
  let watchers:ProjectManagerWatch[]=[];
  try{
-  const [configResult,projectResult,contextResult,tasksResult,questionsResult,historyResult,replyResult,topicResult]=await Promise.all([
+  // No project-wide task snapshots or chat history on each PM turn.
+  // Current order and explicit reply are sufficient; tools provide everything else.
+  const [configResult,projectResult,replyResult,topicResult,orderResult,eventResult,recentResult]=await Promise.all([
    pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
    pool.query('SELECT name,description FROM projects WHERE id=$1',[projectId]),
-   pool.query('SELECT stage,label,agent_name,mode FROM workflow_stages WHERE project_id=$1 ORDER BY position',[projectId]),
-   pool.query("SELECT id,title,stage,analysis_state,spec_review_status FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 45",[projectId]),
-   pool.query("SELECT id,task_id,author_stage,body,status,requires_customer FROM task_agent_notes WHERE project_id=$1 AND kind='question' AND status='open' ORDER BY requires_customer DESC,created_at DESC LIMIT 35",[projectId]),
-   pool.query("SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND id<>$2 AND status='completed' ORDER BY created_at DESC LIMIT 16",[projectId,messageId]),
    turn.reply_to?pool.query("SELECT role,body FROM assistant_messages WHERE project_id=$1 AND id=$2",[projectId,turn.reply_to]):Promise.resolve({rows:[]}),
-   turn.topic_id?pool.query('SELECT title,status FROM project_chat_topics WHERE project_id=$1 AND id=$2',[projectId,turn.topic_id]):Promise.resolve({rows:[]})
+   turn.topic_id?pool.query('SELECT title,status FROM project_chat_topics WHERE project_id=$1 AND id=$2',[projectId,turn.topic_id]):Promise.resolve({rows:[]}),
+   orderId?pool.query('SELECT summary,status,topic_id FROM project_pm_orders WHERE project_id=$1 AND id=$2',[projectId,orderId]):Promise.resolve({rows:[]}),
+   orderId?pool.query('SELECT kind,detail,process_id FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 3',[orderId]):Promise.resolve({rows:[]}),
+   !turn.reply_to?pool.query("SELECT role,left(body,450) AS body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND id<>$2 AND ((topic_id=$3) OR ($3::uuid IS NULL AND topic_id IS NULL)) ORDER BY created_at DESC,id DESC LIMIT 3",[projectId,messageId,turn.topic_id||null]):Promise.resolve({rows:[]})
   ]);
   const config=await resolveRoleAiSettings(pool,projectId,'manager',configResult.rows[0]);
   if(!config?.enabled)throw Error('AI выключен в настройках проекта');
   const session=await createAgentSession(pool,projectId,turn.actor_id,'manager');
   sessionId=session.id;
-  const [instructions,learned]=await Promise.all([
-   conversationInstructions(pool,projectId,'manager'),agentLearnedContext(pool,projectId,'manager')
-  ]);
-  const [orders,orderEvents,decisions]=await Promise.all([
-   pool.query("SELECT id,summary,status,topic_id FROM project_pm_orders WHERE project_id=$1 AND status NOT IN ('completed','failed') ORDER BY updated_at DESC LIMIT 15",[projectId]),
-   orderId?pool.query('SELECT kind,detail,process_id,created_at FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 25',[orderId]):Promise.resolve({rows:[]}),
-   pool.query("SELECT i.title,d.question,d.answer,d.created_at FROM iteration_owner_decisions d JOIN project_iterations i ON i.id=d.iteration_id WHERE i.project_id=$1 ORDER BY d.created_at DESC LIMIT 35",[projectId])
-  ]);
-  const ownerQuestion=orderId?(await pool.query(`SELECT n.id,n.task_id,n.body,n.status FROM project_pm_order_events e
-   JOIN task_agent_notes n ON n.id=e.process_id AND n.project_id=$2
-   WHERE e.order_id=$1 AND e.kind='owner_question' LIMIT 1`,[orderId,projectId])).rows[0]:null;
-  const prompt=[
-   'Ты ПМ проекта AI Development Orchestrator. Ты единственная точка взаимодействия владельца с агентами.',
-   'Текущее поручение: '+String(orderId||'не задано')+'. Сохраняй связь с ним при уточнениях и продолжении после событий. Не считай поручение выполненным, пока работа не проверена.',
-   ownerQuestion?'Это ответ на конкретный вопрос: '+JSON.stringify(ownerQuestion)+'. Если решение явно дано и вопрос открыт, сохрани его через approvals.answer_question с указанными ID. Если владелец просит уточнить вопрос, ответь и оставь поручение в waiting_user.':'',
-   'НОВОЕ СООБЩЕНИЕ ВЛАДЕЛЬЦА: '+String(turn.body),
-   'При завершении процесса ты будешь вызван повторно системой. Продолжай исходное поручение, а не просто пересказывай событие. Используй iterations.preview_plan и iterations.publish_plan при планировании. После прямой команды владельца «приступай к разработке» используй iterations.launch для утверждённой итерации, не пингуй разработчиков по каждой задаче.',
-   'Если тебе самому нужно решение по поручению, создай тему через discussions.open с первым сообщением и пометь поручение waiting_user. Вопросы и предложения аналитика оставляй в карточке задачи. Для статуса укажи номер задачи и реальную ссылку GitHub, если она известна. Не придумывай orchestrator:// или другие псевдоссылки: для поручений отдельного адреса нет.',
-   'На вопросы о состоянии читай processes.list по задаче. Объясняй конкретную стадию, причину ожидания и следующий шаг по фактам системы.',
-   'Если владелец просит повторить провалившийся QA для существующего PR, прочитай processes.list и tasks.read, затем вызови qa.retry для каждой подходящей задачи. Не запускай итерацию заново ради QA. Сначала дождись результата действующего QA; API сам запрещает параллельные проверки. После qa.retry следи за процессом, не помечай тесты прошедшими до проверенного отчёта.',
-   'Когда QA завершён со статусом blocked из-за подтверждённо отсутствующих инструментов, используй approvals.list: покажи сколько сценариев проверено и какие конкретно не проверены. Запроси у владельца явное решение: ждать инструменты или разрешить слияние с перечисленными непроверенными проверками. Только после ясного согласия используй approvals.decide (approve_without_visual) для конкретного request_id. Никаких массовых или автоматических исключений, нельзя обходить сбой Codex, выявленные дефекты, актуальность ТЗ или GitHub CI. При отсутствии запроса на согласование честно объясни причину, а не объявляй этап пропущенным.',
-   'Если пользователь просит дозапустить разработку, проверь processes.list и development_queue. Существующие поручения с актуальной ревизией подхватит диспетчер; сообщи конкретные причины ожидания. Устаревший запуск требует новой явной команды владельца на актуальную итерацию.',
-   'Когда пользователь уже дал ответ, используй сохранённые решения вместо повторного вопроса. Зафиксируй новое решение через pm.decisions.record с ID сообщения пользователя, если оно влияет на требования/итерацию.',
-   'Твоя работа: оперативно распределять поручения через инструменты, отслеживать статусы, собирать результаты, не подменять собой разработчика, БА, СА, QA или DevOps.',
-   'Обрабатывай этот запрос независимо от других сообщений. Не ожидай окончания других процессов и не запускай работу агента у себя синхронно.',
-   'У тебя есть MCP orchestrator. Реальные операции выполняй только через доступные инструменты. Не заявляй о создании задач или запуске процессов, если инструмент этого не подтвердил. Не оставляй поручение ждать агентов, если не запущен процесс или не зафиксирована конкретная очередь с причиной ожидания; если инструмента нет, сообщи о блокировке и зафиксируй failed, а не waiting_agents.',
-   'Согласования этапов: покажи владельцу конкретную задачу, текущий и следующий этап, критерии, риски и ссылку на нужный экран/процесс. Не обходи обязательные проверки. Если доступный инструмент не поддерживает подтверждение, сообщи об этом и предложи конкретное действие в интерфейсе, но не выдавай согласование за выполненное.',
-   'Вопросы агентов: прежде чем спрашивать владельца, прочитай задачи и принятые решения. Владелец может отвечать на вопросы других агентов через ПМ. Не выдумывай ответы на нерешённые вопросы.',
-   'Обсуждения: соблюдай тему и контекст ответа. Когда вопрос разрешён и решение записано, закрой тему через discussions.close. При наличии нерешённого вопроса сохрани waiting_user.',
-   'Инструкции ПМ: '+instructions.slice(0,4400),
-   'Накопленные знания: '+learned.slice(0,3200),
-   'Проект: '+JSON.stringify(projectResult.rows[0]||{}).slice(0,1500),
-   'Workflow: '+JSON.stringify(contextResult.rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)}))).slice(0,4200),
-   'Задачи: '+JSON.stringify(tasksResult.rows).slice(0,6500),
-   'Вопросы от агентов: '+JSON.stringify(questionsResult.rows).slice(0,4800),
-   'Тема: '+JSON.stringify(topicResult.rows[0]||null),
-   'Активные поручения: '+JSON.stringify(orders.rows).slice(0,3300),
-   'Контрольные точки поручения: '+JSON.stringify(orderEvents.rows).slice(0,4500),
-   'Подтверждённые решения владельца: '+JSON.stringify(decisions.rows).slice(0,5500),
-   'Реестр принятых решений проекта: '+JSON.stringify((await pool.query('SELECT question,answer,iteration_id FROM project_pm_decisions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 40',[projectId])).rows).slice(0,6000),
-   'ID текущего сообщения владельца: '+String(turn.channel==='project'?messageId:'внутреннее системное событие'),
-   'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]||null).slice(0,2500),
-   'Недавняя история: '+JSON.stringify(historyResult.rows.reverse()).slice(0,5500)
-  ].join('\n\n').slice(0,22500);
+  const instructions=await conversationInstructions(pool,projectId,'manager');
+  const ownerQuestion=orderId?(await pool.query(
+   "SELECT n.id,n.task_id,n.body,n.status FROM project_pm_order_events e JOIN task_agent_notes n ON n.id=e.process_id AND n.project_id=$2 WHERE e.order_id=$1 AND e.kind='owner_question' LIMIT 1",
+   [orderId,projectId])).rows[0]:null;
+  const prompt=composeAgentPrompt({
+   role:'Менеджер проекта AI Development Orchestrator. Один логический ПМ, независимые поручения.',
+   objective:String(turn.body),
+   tools:'MCP orchestrator. Получай задачи через tasks.list/read, процессы через processes.list, решения через pm.decisions.list, историю по необходимости через discussions.read/history.search, итерации через iterations.list/read. Вызывай инструмент только когда информация нужна для текущего сообщения; не читай весь проект автоматически.',
+   instructions:[
+    instructions.slice(0,3200),
+    'Координируй работу специалистов; не подменяй аналитика, разработчика, QA или DevOps.',
+    'Запуск, публикация плана, согласование и смена статуса допустимы только при подтверждённом результате серверного инструмента и необходимых разрешениях пользователя.',
+    'Если запрос просто вопрос — отвечай без побочных изменений. При неизвестном факте используй адресное чтение.',
+    'Если поступило событие завершения, продолжи соответствующее поручение; новые вопросы ПМ оформляй через discussions.open, после ответа закрывай тему.',
+    'Для повторного QA используй qa.retry только после проверки текущих процессов; blocked не равен passed. Пропуск визуальных проверок требует явного решения владельца.',
+    'Решения владельца фиксируй через pm.decisions.record; не придумывай подтверждения, проверки, PR или ссылки.',
+    'Не запускай несколько одинаковых процессов и не ожидай другие поручения синхронно.'
+   ].join('\n'),
+   scope:JSON.stringify({project:projectResult.rows[0]||{},order_id:orderId,order:orderResult.rows[0]||null,topic:topicResult.rows[0]||null,message_id:messageId}),
+   continuation:[
+    ownerQuestion?'Вопрос, на который отвечает пользователь: '+JSON.stringify(ownerQuestion):'',
+    replyResult.rows[0]?'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]).slice(0,1600):'',
+    eventResult.rows.length?'Последние события этого поручения: '+JSON.stringify(eventResult.rows).slice(0,1000):'',
+    recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,950):''
+   ].filter(Boolean).join('\n\n'),
+   output:'Ответь по-русски кратко. При действиях назови подтверждённый результат; при ожидании — конкретную причину.'
+  });
+  await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
    body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1}),

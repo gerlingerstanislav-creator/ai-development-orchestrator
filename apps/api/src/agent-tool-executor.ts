@@ -70,6 +70,22 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const pending=await pool.query("SELECT r.id AS request_id,r.task_id,r.kind,r.status,r.payload,r.created_at,t.title,t.stage FROM manager_requests r JOIN tasks t ON t.id=r.task_id AND t.project_id=r.project_id WHERE r.project_id=$1 AND r.status IN ('open','waiting') ORDER BY r.created_at DESC LIMIT 80",[projectId]);
   return {requests:pending.rows};
  }
+ case 'discussions.read':{
+  const {topic_id,limit}=z.object({topic_id:uuid,limit:z.number().int().min(1).max(20).default(6)}).parse(params);
+  const topic=await pool.query('SELECT id,title,status FROM project_chat_topics WHERE id=$1 AND project_id=$2',[topic_id,projectId]);
+  if(!topic.rowCount)throw rejected('Тема не найдена',404);
+  const messages=await pool.query(
+   "SELECT id,role,left(body,1300) AS body,reply_to,created_at FROM assistant_messages WHERE project_id=$1 AND topic_id=$2 AND channel='project' AND status='completed' ORDER BY created_at DESC,id DESC LIMIT $3",
+   [projectId,topic_id,limit]);
+  return {topic:topic.rows[0],messages:messages.rows.reverse()};
+ }
+ case 'history.search':{
+  const {query,limit}=z.object({query:z.string().trim().min(2).max(120),limit:z.number().int().min(1).max(12).default(6)}).parse(params);
+  const messages=await pool.query(
+   "SELECT id,role,left(body,1400) AS excerpt,topic_id,created_at FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND body ILIKE $2 ORDER BY created_at DESC,id DESC LIMIT $3",
+   [projectId,'%'+query+'%',limit]);
+  return {messages:messages.rows};
+ }
  case 'discussions.list':{
   const topics=await pool.query('SELECT id,title,status,created_at,closed_at FROM project_chat_topics WHERE project_id=$1 ORDER BY status,created_at DESC LIMIT 100',[projectId]);
   return {topics:topics.rows};

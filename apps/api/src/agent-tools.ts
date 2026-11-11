@@ -6,7 +6,7 @@ export const hashSecret=(text:string)=>createHash('sha256').update(text).digest(
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
  'tasks.list','tasks.read','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','memory.list','documentation.request_reset',
- 'iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
+ 'history.search','discussions.read','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
  annotations:readOnlyTools.has(name)
@@ -65,6 +65,8 @@ export const agentToolCatalog=[
  tool('qa.retry','Повторно запустить сверку актуального ТЗ, формирование QA-плана и независимое тестирование уже существующего PR. Используй для конкретной задачи по прямому запросу владельца или после исправления инфраструктурного сбоя. API проверяет статус Temporal, текущий PR, блокировки и запрещает параллельный QA. Не считать перезапуск подтверждением качества.',{task_id:id,idempotency_key:idem},['task_id']),
  tool('approvals.list','Прочитать ожидающие решения владельца согласования по задачам (требования, вопросы агентов, QA).',{}),
  tool('discussions.list','Список тем ПМ проекта с открытыми и закрытыми обсуждениями.',{}),
+ tool('discussions.read','Прочитать несколько сообщений конкретной темы по необходимости.',{topic_id:id,limit:field('number','До 20 сообщений')},['topic_id']),
+ tool('history.search','Найти старое обсуждение в чате проекта, не загружая всю историю.',{query:str,limit:field('number','До 12 найденных сообщений')},['query']),
  tool('discussions.open','Создать тему обсуждения с владельцем и сразу отправить первый вопрос или сообщение. Повторно используй открытую тему с тем же смыслом.',{title:str,opening_message:str,awaiting_reply:field('boolean','Нужен ответ владельца. По умолчанию да.')},['title','opening_message']),
  tool('discussions.close','Закрыть обсуждение после ответа владельца и передачи решения. Можно открыть повторно через discussions.reopen.',{topic_id:id},['topic_id']),
  tool('discussions.reopen','Открыть закрытую тему для дополнительных уточнений.',{topic_id:id},['topic_id']),

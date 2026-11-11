@@ -1,3 +1,4 @@
+import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
@@ -1400,6 +1401,29 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
  return true;
 }
 // Project-scoped process center. The global counter uses this same data model.
+// Read-only, project-scoped audit of the actual prompt sent to an AI agent.
+// Only administrators can view potentially sensitive task text; secrets are redacted at write time.
+app.get('/api/projects/:id/processes/:processId/prompts',async(req:any,reply)=>{
+ const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const rows=await pool.query('SELECT id,role,operation,prompt,original_chars,truncated,created_at FROM agent_prompt_audit WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 10',[id,processId]);
+ return {prompts:rows.rows};
+});
+// Codex Runner sends the exact final development/QA prompt after adding sandbox rules.
+app.post('/internal/agent-prompt',async(req:any,reply)=>{
+ const secret=process.env.RUNNER_SHARED_SECRET||'';
+ if(!secret||req.headers['x-runner-secret']!==secret)return reply.code(403).send({error:'Forbidden'});
+ const data=parse(z.object({
+  projectId:z.string().uuid(),processId:z.string().uuid(),
+  role:z.enum(['development','testing']),prompt:z.string().min(1).max(80000)
+ }),req.body);
+ const belongs=await pool.query(
+  'SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND id=$2 UNION ALL SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND id=$2 LIMIT 1',
+  [data.projectId,data.processId]);
+ if(!belongs.rowCount)return reply.code(404).send({error:'Process not found'});
+ await recordAgentPrompt(pool,{projectId:data.projectId,processId:data.processId,role:data.role,operation:'codex_exec',prompt:data.prompt});
+ return {ok:true};
+});
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
@@ -1415,9 +1439,12 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
   readDevelopmentQueue(pool,id),
   pool.query("SELECT q.note_id AS id,q.task_id,q.role,q.status,q.error AS detail,q.updated_at,n.body,t.display_number FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed') ORDER BY q.updated_at DESC LIMIT 60",[id]),
-  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 AND status IN ('queued','working','waiting_agents','waiting_user') ORDER BY updated_at DESC LIMIT 30",[id]),
+  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.updated_at,t.title,t.display_number FROM agent_analysis_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
+ const promptRecords=await pool.query(
+  'SELECT * FROM (SELECT DISTINCT ON (process_id) process_id AS id,role,operation,created_at FROM agent_prompt_audit WHERE project_id=$1 ORDER BY process_id,created_at DESC) entries ORDER BY created_at DESC LIMIT 50',
+  [id]);
  const processes:any[]=[
   ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
    status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,taskId:r.task_id,
@@ -1449,10 +1476,17 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   processes.push({id:row.id,kind:'analysis',title:'Вопрос специалисту · задача #'+row.display_number,status:row.status,detail:row.detail||row.body,createdAt:row.updated_at,updatedAt:row.updated_at,taskId:row.task_id});
  }
  for(const row of pmOrders.rows){
-  processes.push({id:row.id,kind:'analysis',title:row.status==='waiting_user'?'ПМ · нужен твой ответ в чате':row.status==='waiting_agents'?'ПМ · ожидает команду':'Поручение ПМ',status:row.status==='working'?'running':row.status==='queued'?'queued':'waiting',detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at});
+  processes.push({id:row.id,kind:'analysis',title:row.status==='waiting_user'?'ПМ · нужен твой ответ в чате':row.status==='waiting_agents'?'ПМ · ожидает команду':'Поручение ПМ',status:row.status==='working'?'running':row.status==='queued'?'queued':['completed','failed'].includes(row.status)?row.status:'waiting',detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at});
  }
  for(const row of merges.rows){
   processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
+ }
+ const visibleIds=new Set(processes.map(p=>p.id));
+ for(const entry of promptRecords.rows){
+  if(visibleIds.has(entry.id))continue;
+  processes.push({id:entry.id,kind:'analysis',title:'AI-запрос · '+entry.role,
+   status:'logged',detail:'Промпт подготовлен для вызова модели ('+entry.operation+'); результат смотри в соответствующем чате.',
+   createdAt:entry.created_at,updatedAt:entry.created_at});
  }
  processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
  return {processes,checkedAt:new Date().toISOString()};
@@ -1822,7 +1856,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}

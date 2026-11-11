@@ -69,6 +69,7 @@ type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'devel
 type DocumentationQuestion={id:string;topic_key:string;question:string;status:'open'|'answered';answer:string|null;document_id:string;document_title:string;created_at:string};
 type DocumentationProposal={id:string;job_id:string;topic_key:string;document_id:string;title:string;proposed_body:string;status:string;document_title:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
+type AgentPromptAudit={id:string;role:string;operation:string;prompt:string;original_chars:number;truncated:boolean;created_at:string};
 function compactProcessDescription(detail:string):string{
  const normalized=detail.replace(/\s+/g,' ').trim();
  if(!normalized)return 'Подробности доступны справа.';
@@ -349,6 +350,7 @@ function App(){
  },[route]);
 
  const [processEvents,setProcessEvents]=useState<ProjectProcessEvent[]>([]);
+ const [processPrompts,setProcessPrompts]=useState<AgentPromptAudit[]>([]);
  const [processFilter,setProcessFilter]=useState<'all'|'active'|'failed'|'completed'>('all');
  const [processActionBusy,setProcessActionBusy]=useState(false);
  const [processInstruction,setProcessInstruction]=useState('');
@@ -740,6 +742,20 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   const timer=window.setInterval(refresh,9000);
   return()=>{live=false;window.clearInterval(timer);};
  },[token,selected?.id,selectedProcessId,section]);
+ useEffect(()=>{
+  if(!token||!selected?.id||!selectedProcessId||section!=='processes'){setProcessPrompts([]);return;}
+  let live=true;
+  const refresh=async()=>{
+   try{
+    const result=await api<{prompts:AgentPromptAudit[]}>('/projects/'+selected.id+'/processes/'+selectedProcessId+'/prompts');
+    if(live)setProcessPrompts(result.prompts);
+   }catch{if(live)setProcessPrompts([]);}
+  };
+  void refresh();
+  const timer=window.setInterval(()=>{if(!document.hidden)void refresh();},9000);
+  return()=>{live=false;window.clearInterval(timer);};
+ },[token,selected?.id,selectedProcessId,section]);
+
 
  useEffect(()=>{
   if(!token||!projectsLoaded)return;
@@ -1829,7 +1845,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
  }
- const processStatus=(status:string)=>status==='completed'?'Завершён':status==='partial'?'Частично завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status==='stale'?'Нужно подтвердить заново':status;
+ const processStatus=(status:string)=>status==='completed'?'Завершён':status==='partial'?'Частично завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status==='logged'?'Промпт сохранён':status==='stale'?'Нужно подтвердить заново':status;
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
  const taskTags=[...new Set(tasks.flatMap(task=>task.tags??[]))].sort((a,b)=>a.localeCompare(b,'ru'));
@@ -2026,6 +2042,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {process.kind==='document_import'&&<div className="process-metrics"><span>Файлов: {process.sourceFileCount??'—'}</span><span>Фрагментов: {process.progress?.completed??0} / {process.progress?.total??'—'}</span><span>Тем готово: {process.topicProgress?.completed??0} / {process.topicProgress?.total||'—'}</span><span>Сохранено страниц: {process.savedDocuments??0}</span></div>}
      {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
      {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
+     {selectedProcessId===process.id&&processPrompts.length>0&&<details className="process-prompt-audit" style={{margin:'12px 0'}}>
+      <summary style={{cursor:'pointer',fontWeight:600}}>Промпты запусков ({processPrompts.length})</summary>
+      <p className="muted">Текст, переданный модели, с маскировкой известных секретов. Для повторных запусков показаны отдельные запросы.</p>
+      {processPrompts.map(entry=><details key={entry.id} style={{margin:'8px 0'}}>
+       <summary style={{cursor:'pointer'}}>{entry.role} · {new Date(entry.created_at).toLocaleString('ru-RU')} · {entry.original_chars} символов{entry.truncated?' · сокращённый журнал':''}</summary>
+       <pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:480,overflow:'auto',fontSize:12,padding:12,background:'var(--panel-bg, rgba(127,127,127,.06))',borderRadius:8}}>{entry.prompt}</pre>
+      </details>)}
+     </details>}
+
      {process.result&&<div className="process-result"><strong>Результат</strong><p>{process.result.message||'Операция завершена'}</p>
       {process.iterationId&&selected&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'plan')+'/'+process.iterationId)}>Открыть итерацию</button>}
       {process.result.created_document_id&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'docs')+'/'+process.result!.created_document_id)}>Открыть документацию</button>}
