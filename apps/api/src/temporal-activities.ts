@@ -16,7 +16,7 @@ import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
-import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings} from './project-team.js';
+import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
@@ -249,7 +249,7 @@ export async function startDevelopment(args:TaskRef){
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const developerAi=await resolveRoleAiSettings(pool,projectId,'development',ai);
- const job={id:runId,taskId,repository:repo.repository,baseBranch,token,
+ const job={id:runId,taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
   title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
  await dispatch(job);
@@ -324,7 +324,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  if(['running','completed','failed'].includes(record.rows[0].status))return id; // Activity retry must not enqueue the same Codex test twice.
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
- await dispatch({id,kind:'test',taskId,repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
+ await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
   title:task.title,description:task.description,projectRules:rules,testPlan,knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1",[id]);
