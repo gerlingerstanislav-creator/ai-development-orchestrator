@@ -1,3 +1,4 @@
+import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
@@ -1400,6 +1401,29 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
  return true;
 }
 // Project-scoped process center. The global counter uses this same data model.
+// Read-only, project-scoped audit of the actual prompt sent to an AI agent.
+// Only administrators can view potentially sensitive task text; secrets are redacted at write time.
+app.get('/api/projects/:id/processes/:processId/prompts',async(req:any,reply)=>{
+ const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const rows=await pool.query('SELECT id,role,operation,prompt,original_chars,truncated,created_at FROM agent_prompt_audit WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 10',[id,processId]);
+ return {prompts:rows.rows};
+});
+// Codex Runner sends the exact final development/QA prompt after adding sandbox rules.
+app.post('/internal/agent-prompt',async(req:any,reply)=>{
+ const secret=process.env.RUNNER_SHARED_SECRET||'';
+ if(!secret||req.headers['x-runner-secret']!==secret)return reply.code(403).send({error:'Forbidden'});
+ const data=parse(z.object({
+  projectId:z.string().uuid(),processId:z.string().uuid(),
+  role:z.enum(['development','testing']),prompt:z.string().min(1).max(80000)
+ }),req.body);
+ const belongs=await pool.query(
+  'SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND id=$2 UNION ALL SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND id=$2 LIMIT 1',
+  [data.projectId,data.processId]);
+ if(!belongs.rowCount)return reply.code(404).send({error:'Process not found'});
+ await recordAgentPrompt(pool,{projectId:data.projectId,processId:data.processId,role:data.role,operation:'codex_exec',prompt:data.prompt});
+ return {ok:true};
+});
 app.get('/api/projects/:id/processes',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
@@ -1822,7 +1846,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
