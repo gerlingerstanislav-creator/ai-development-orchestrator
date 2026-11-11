@@ -56,14 +56,13 @@ test('project manager inbox persists independent turns and safely retries failed
  assert.equal(invalid.statusCode,400);
  fail=true;
  const failed=await app.inject({method:'POST',url,payload:{message:'Не потеряй эту задачу'}});
- assert.equal(failed.statusCode,503);
- const id=failed.json().message_id;
- assert.equal((await db.query('SELECT status FROM assistant_messages WHERE id=$1',[id])).rows[0].status,'failed');
+ assert.equal(failed.statusCode,202);
+ const id=failed.json().id;
+ assert.equal((await db.query('SELECT status FROM assistant_messages WHERE id=$1',[id])).rows[0].status,'queued',
+  'Temporal outage preserves the queued message for durable recovery');
  fail=false;
- const retried=await app.inject({method:'POST',url:url+'/'+id+'/retry'});
- assert.equal(retried.statusCode,202,retried.body);
- assert.equal(started.at(-1),id);
- assert.equal((await db.query('SELECT status FROM assistant_messages WHERE id=$1',[id])).rows[0].status,'queued');
+ const pendingRetry=await app.inject({method:'POST',url:url+'/'+id+'/retry'});
+ assert.equal(pendingRetry.statusCode,409,'queued messages are recovered automatically instead of manually retried');
 });
 
 test('PM reports completed delegated iteration only once and never reports a requeued draft as ready',async t=>{
