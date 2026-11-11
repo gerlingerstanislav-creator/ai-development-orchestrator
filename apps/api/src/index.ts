@@ -1657,6 +1657,8 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,sta
   const choice=z.enum(['approve_without_visual','wait_for_tools','answer','approve_requirements','reject_requirements']).parse(args.choice);
   const answer=z.string().trim().max(3000).default('').parse(args.answer);
   url+='/manager/requests/'+requestId+'/decision';payload={choice,answer};
+ }else if(name==='qa.retry'){
+  url+='/start-testing';payload={};
  }else if(name==='workflow.approve_development'){
   url+='/run-ai';payload={approveAnalysis:true};
   if(task.iteration_id){
@@ -1670,7 +1672,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,sta
  let result:any;
  try{result=response.json();}catch{result={error:response.body.slice(0,300)};}
  if(response.statusCode>=400)throw Object.assign(Error(String(result.error||'Операция не выполнена').slice(0,700)),{statusCode:response.statusCode});
- return result;
+ return name==='qa.retry'?{...result,task_id:taskId}:result;
 }});
 const assistant=registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexUrl,runnerKey,decryptToken,
  startDocumentationWorkflow:async jobId=>{
