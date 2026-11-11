@@ -115,7 +115,7 @@ function deviceInfo(){
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
-const MAX_PARALLEL_DEVELOPMENT=2;
+const MAX_PARALLEL_DEVELOPMENT=20; // Actual per-project role limits come from signed API jobs.
 const MAX_PARALLEL_PER_ROLE=1;
 const activeByRole=new Map();
 const jobRole=job=>job.kind==='test'?'testing':'development';
@@ -124,22 +124,24 @@ const jobQueue=[];
 const activeBranches=new Set();
 let runningJobs=0;
 let activeChatRequests=0;
-const activeAgentRoles=new Set();
+const activeAgentRoles=new Map();
 function startNextJobs(){
  for(let i=0;i<jobQueue.length && runningJobs<MAX_PARALLEL_DEVELOPMENT;){
   const {job,state}=jobQueue[i];
   const branchKey=job.repository+':'+job.taskId;
   const role=jobRole(job);
-  if(activeBranches.has(branchKey)||(activeByRole.get(role)||0)>=MAX_PARALLEL_PER_ROLE){i++;continue;}
+  const roleKey=(job.projectId||job.repository)+':'+role;
+  const capacity=Number.isInteger(job.roleCapacity)?Math.min(10,Math.max(1,job.roleCapacity)):MAX_PARALLEL_PER_ROLE;
+  if(activeBranches.has(branchKey)||(activeByRole.get(roleKey)||0)>=capacity){i++;continue;}
   jobQueue.splice(i,1);
   activeBranches.add(branchKey);
   runningJobs++;
-  activeByRole.set(role,(activeByRole.get(role)||0)+1);
+  activeByRole.set(roleKey,(activeByRole.get(roleKey)||0)+1);
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Запуск разработки в изолированной рабочей папке';
   void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}).finally(()=>{
    activeBranches.delete(branchKey);runningJobs--;
-   activeByRole.set(role,Math.max(0,(activeByRole.get(role)||1)-1));startNextJobs();
+   activeByRole.set(roleKey,Math.max(0,(activeByRole.get(roleKey)||1)-1));startNextJobs();
   });
  }
  for(let i=0;i<jobQueue.length;i++)jobQueue[i].state.message='Ожидает свободного исполнителя своей роли (очередь '+(i+1)+')';
@@ -623,7 +625,7 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/agent'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-   if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
+   if(activeChatRequests>=20)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
    const data=await readJson(req);
    if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
       !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
@@ -631,8 +633,8 @@ http.createServer(async(req,res)=>{
       typeof data.session_token!=='string'||!/^[a-f0-9]{64}$/.test(data.session_token))
      return reply(res,400,{error:'Неверный агентный запрос'});
    const roleKey=['manager','analyst','business_analyst'].includes(data.agent_role)&&/^[a-f0-9-]{36}$/.test(data.project_id||'')?data.project_id+':'+(data.agent_role==='business_analyst'?'analyst':data.agent_role):null;
-    if(roleKey&&activeAgentRoles.has(roleKey))return reply(res,429,{error:'Исполнитель этой роли занят'});
-    if(roleKey)activeAgentRoles.add(roleKey);
+    if(roleKey&&(activeAgentRoles.get(roleKey)||0)>=(data.role_capacity||1))return reply(res,429,{error:'Исполнитель этой роли занят'});
+    if(roleKey)activeAgentRoles.set(roleKey,(activeAgentRoles.get(roleKey)||0)+1);
     activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
@@ -660,7 +662,7 @@ http.createServer(async(req,res)=>{
     return reply(res,200,{message,usage:parsed.usage});
    }catch(error){
     return reply(res,503,{error:'Агент Codex: '+String(error?.message||error).slice(0,900)});
-   }finally{activeChatRequests--;if(roleKey)activeAgentRoles.delete(roleKey);}
+   }finally{activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
   }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(!authorized(req))return reply(res,403,{error:'Forbidden'});
@@ -698,7 +700,8 @@ http.createServer(async(req,res)=>{
     !['low','medium'].includes(job.reasoning)||
     !Number.isInteger(job.maxRuntimeSeconds)||job.maxRuntimeSeconds<90||job.maxRuntimeSeconds>7200||
     typeof job.token!=='string'||job.token.length<20||
-    typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
+    (job.roleCapacity!==undefined&&(!Number.isInteger(job.roleCapacity)||job.roleCapacity<1||job.roleCapacity>10))||
+     typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
     return reply(res,400,{error:'Некорректные параметры задачи'});
    if(activeJobs.has(job.id))return reply(res,409,{error:'Запуск с таким ID уже существует'});
    const state={id:job.id,status:'queued',message:'Задача принята в очередь',branch:null,baseBranch:job.baseBranch,prUrl:null,createdAt:new Date().toISOString(),startedAt:null};
