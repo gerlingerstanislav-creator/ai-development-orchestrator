@@ -1,3 +1,4 @@
+import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {runnerAssistantPrompt} from './runner-assistant-prompt.js';
 import {carryDevelopmentAuthorizationAfterAnalysis} from './agent-work-scheduler.js';
@@ -79,14 +80,14 @@ async function jobSettings(projectId:string,taskId:string){
   pool.query('SELECT * FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT g.repository,g.default_branch,g.target_branch,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.provider='github_token'",[projectId]),
   pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
-  pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 60',[projectId]),
-  pool.query('SELECT stage,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1',[projectId])
+  pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 15',[projectId]),
+  pool.query("SELECT stage,agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage IN ('development','testing')",[projectId])
  ]);
  if(!task.rowCount||!repo.rowCount||!settings.rowCount||!settings.rows[0].enabled)
   throw ApplicationFailure.nonRetryable('Задача, подключение GitHub или настройки AI недоступны');
  const t=task.rows[0],g=repo.rows[0],ai=settings.rows[0];
  const agentSettings=await Promise.all(workflow.rows.map(async row=>({...row,agent_instructions:String(row.agent_instructions||'')+'\n\nНакопленный опыт и утверждённые дополнения:\n'+await agentMemoryContext(pool,projectId,row.stage)})));
-  return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,12000),agentSettings};
+  return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,1800),agentSettings};
 }
 async function dispatch(job:any,beforeStart?:()=>Promise<boolean>){
  try{
@@ -109,7 +110,7 @@ function formatWorkflowKnowledge(ctx:Awaited<ReturnType<typeof buildKnowledgeCon
  return {modules,documents};
 }
 async function stageContext(projectId:string,taskId:string,stage:KnowledgeStage,processId?:string){
- return buildKnowledgeContext(pool,{projectId,taskId,stage,processId,budgetChars:10000,includeBodies:true});
+ return buildKnowledgeContext(pool,{projectId,taskId,stage,processId,budgetChars:1800,includeBodies:false});
 }
 async function taskHandoffContext(projectId:string,taskId:string,stage:string){
  const [notes,conversation]=await Promise.all([
@@ -117,16 +118,22 @@ async function taskHandoffContext(projectId:string,taskId:string,stage:string){
  ]);
  const responsibility=workflowResponsibility(stage);
  const assignment=responsibility?'Этап '+stage+'. Условия старта: '+responsibility.trigger+' Ожидаемый результат: '+responsibility.result+'\n\n':'';
- return assignment+'Реплики пользователя в этой задаче:\n'+conversation.slice(-3200)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-4800);
+ return assignment+'Реплики пользователя в этой задаче:\n'+conversation.slice(-900)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-1200);
 }
 async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string):Promise<string>{
  const setup=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
  const stage:KnowledgeStage=operation.includes('qa')||operation.includes('test')?'testing':operation.includes('documentation')?'documentation':'analysis';
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,stage));
- if(stage==='analysis')prompt='Ты СИСТЕМНЫЙ аналитик (SA). Тебе передана только согласованная постановка для технической проработки. Анализируй API, состояния, данные, зависимости и критерии реализации. Не создавай задачи и вопросы по будущему функционалу вне переданного пула. Технические противоречия возвращай на согласование BA; только блокирующие продуктовые решения направляй владельцу.\n\n'+prompt;
- prompt+='\n\nУтверждённые тематические знания (не изменяй требования без согласования):\n'+knowledge.documents+'\n\nПрименимые инструкции:\n'+knowledge.modules+'\n\nНакопленный опыт этапа:\n'+await agentMemoryContext(pool,projectId,stage);
- return askRunnerAssistant(prompt,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai));
+ const composed=composeAgentPrompt({
+  role:stage==='analysis'?'Системный аналитик':stage==='testing'?'QA-инженер':'Аналитик документации',
+  objective:prompt,
+  instructions:(await agentMemoryContext(pool,projectId,stage)).slice(0,1400),
+  tools:'Доступен только структурированный ответ; не заявляй о вызовах инструментов или изменениях без факта выполнения.',
+  scope:'Проект '+projectId+', задача '+taskId,
+  context:knowledge.documents.slice(0,1300)+'\n'+knowledge.modules.slice(0,850)
+ });
+ return askRunnerAssistant(composed,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai));
 }
 async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000):Promise<string>{
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
@@ -447,9 +454,19 @@ export async function startDevelopment(args:TaskRef){
  const description=String(task.description||'').slice(0,14000)+(feedback?'\n\nОБЯЗАТЕЛЬНЫЕ ИСПРАВЛЕНИЯ ПО РЕЗУЛЬТАТАМ ПРОВЕРКИ:\n'+feedback:'');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const developerAi=await resolveRoleAiSettings(pool,projectId,'development',ai);
+ const agentInstructions=(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules;
+ const agentPrompt=composeAgentPrompt({
+  role:String(agentSettings.find((s:any)=>s.stage==='development')?.agent_name||'AI-разработчик'),
+  objective:task.title+'\n'+description,
+  tools:'Локальная рабочая копия GitHub, терминал и файловые операции. Сначала изучи код. За commit, push и PR отвечает оркестратор.',
+  instructions:agentInstructions,
+  scope:'Репозиторий '+repo.repository+', базовая ветка '+baseBranch+'; задача '+taskId,
+  context:'Правила: '+rules.slice(0,1200)+'\nДокументация по задаче: '+knowledge.documents.slice(0,1200)+'\nПередача от коллег: '+(await taskHandoffContext(projectId,taskId,'development')).slice(0,1200),
+  output:'Измени файлы в рабочей копии, проверь доступные тесты. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
+ });
  const job={id:runId,taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,projectRules:rules,relatedTasks:[],knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'development'),agentName:agentSettings.find((s:any)=>s.stage==='development')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules};
+  title:task.title,description,agentPrompt,projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
  if(!await dispatch(job,beforeStart))return;
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -549,9 +566,19 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   throw ApplicationFailure.nonRetryable('QA-прогон нельзя восстановить для изменившейся версии ТЗ или PR');
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
+ const qaPrompt=composeAgentPrompt({
+  role:String(agentSettings.find((s:any)=>s.stage==='testing')?.agent_name||'AI-тестировщик'),
+  objective:'Независимо проверь задачу: '+task.title+'\n'+String(task.description||'').slice(0,6500),
+  tools:'Изолированная копия репозитория, команды npm/pytest/API и локальный HTTP-сервер. Если браузера нет, визуальные проверки помечай blocked, не выдумывай результаты.',
+  instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
+  scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||''),
+  context:'Правила: '+rules.slice(0,900)+'\nДокументация: '+knowledge.documents.slice(0,900)+'\nПередача: '+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,1000),
+  output:'Проверяй каждый тест-кейс по фактам; если проверка невозможна, верни blocked/not_run, а не passed.'
+ });
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,projectRules:rules,testPlan:record.rows[0].qa_plan_snapshot??testPlan,expectedCommit:record.rows[0].runner_commit_sha||task.spec_reviewed_commit||undefined,knowledgeContext:knowledge.documents,handoffContext:await taskHandoffContext(projectId,taskId,'testing'),agentName:agentSettings.find((s:any)=>s.stage==='testing')?.agent_name,agentInstructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules});
+  title:task.title,description:task.description,agentPrompt:qaPrompt,projectRules:'',testPlan:record.rows[0].qa_plan_snapshot??testPlan,
+  expectedCommit:record.rows[0].runner_commit_sha||task.spec_reviewed_commit||undefined,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1 AND status IN ('queued','running')",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
