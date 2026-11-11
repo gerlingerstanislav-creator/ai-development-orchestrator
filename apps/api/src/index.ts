@@ -342,16 +342,13 @@ async function dbInit() {
 
  ALTER TABLE project_ai_settings ADD COLUMN IF NOT EXISTS daily_run_limit int not null default 3;
  `);
- await pool.query(`UPDATE workflow_stages SET description=CASE stage
-  WHEN 'backlog' THEN 'Новые задачи и идеи ожидают утверждённого объёма.'
-  WHEN 'analysis' THEN 'Аналитики прорабатывают требования, техническую реализацию и зависимости.'
-  WHEN 'development' THEN 'Разработчики реализуют готовые задачи и прикрепляют PR.'
-  WHEN 'testing' THEN 'QA проверяет изменения и при необходимости возвращает дефекты.'
-  WHEN 'merge_queue' THEN 'Проверенные PR последовательно сливаются в целевую ветку.'
-  WHEN 'deployment' THEN 'DevOps выполняет либо согласованно пропускает выкладку.'
-  WHEN 'documentation' THEN 'Документация актуализируется по фактической реализации.'
-  WHEN 'done' THEN 'Работа завершена, результат и история сохранены.'
-  ELSE '' END WHERE description=''`);
+ const stageDefaults=Object.entries(workflowStageDescriptions);
+ await pool.query(
+  'UPDATE workflow_stages s SET description=d.description FROM (VALUES '+
+   stageDefaults.map((_,i)=>'($'+(2*i+1)+'::text,$'+(2*i+2)+'::text)').join(',')+
+  ') AS d(stage,description) WHERE s.stage=d.stage AND s.description=\'\'',
+  stageDefaults.flat()
+ );
  await initDocumentationSystem(pool);
  await initDocumentationReset(pool);
  await pool.query("UPDATE workflow_stages SET agent_name='Системный аналитик' WHERE stage='analysis' AND agent_name='AI-аналитик'");
