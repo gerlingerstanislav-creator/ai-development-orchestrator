@@ -17,6 +17,7 @@ test('closed PM discussions disappear from sidebar without hiding any messages f
  await db.query(`
   CREATE TABLE project_chat_topics(id uuid PRIMARY KEY,project_id uuid,title text,status text DEFAULT 'open',created_at timestamptz DEFAULT now(),closed_at timestamptz);
   CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,pm_request_id uuid,created_task_id uuid,created_document_id uuid,created_at timestamptz DEFAULT now(),documentation_reset_requested boolean DEFAULT false,owner_question_cleanup_requested boolean DEFAULT false);
+  CREATE TABLE chat_images(id uuid PRIMARY KEY,project_id uuid,assistant_message_id uuid,name text,mime_type text,created_at timestamptz DEFAULT now());
  `);
  registerAssistantRoutes(app,{pool,uid:()=>randomUUID(),access:async()=>true,requireAdmin:async()=>true,
   codexUrl:'http://localhost:9999',runnerKey:'unused',decryptToken:value=>value,startDocumentationWorkflow:async()=>{}});

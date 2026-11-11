@@ -11,6 +11,7 @@ import {KnowledgeAudit} from './KnowledgeAudit.js';
 import {DocumentationReset} from './DocumentationReset.js';
 import {ProjectIterations,TaskPlanningFields,type IterationSummary,type PlanningOptions} from './ProjectIterations.js';
 import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
+import {ChatImagePicker,ChatImageGallery,ChatImageDropZone,prepareChatImages,type ChatImageDraft,type ChatImageMeta} from './ChatImages.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
@@ -81,17 +82,17 @@ function compactProcessDescription(detail:string):string{
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
-type ManagerMessage={id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
+type ManagerMessage={images?:ChatImageMeta[];id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;topic_title?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantMessage={images?:ChatImageMeta[];id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;topic_title?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
  messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
- files:File[];documentId:string|null;error:string;
+ files:File[];images:ChatImageDraft[];documentId:string|null;error:string;
 };
 const emptyProjectChat:ProjectChatState={
- messages:[],input:'',pendingId:null,jobId:null,progress:'',historyLoaded:false,files:[],documentId:null,error:''
+ messages:[],input:'',pendingId:null,jobId:null,progress:'',historyLoaded:false,files:[],images:[],documentId:null,error:''
 };
 const projectChatKey=(projectId:string,mode:ProjectChatMode)=>projectId+':'+mode;
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
@@ -521,7 +522,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   });
  }
  const {messages:projectMessages,pendingId:projectPendingId,jobId:projectImportJobId,input:projectInput,progress:projectImportProgress,
-  historyLoaded:projectHistoryLoaded,error:projectChatError}=getProjectChat(projectChatMode);
+  historyLoaded:projectHistoryLoaded,error:projectChatError,images:projectImages}=getProjectChat(projectChatMode);
  const visibleProjectMessages=projectChatMode==='project'&&projectTopicId
   ?projectMessages.filter(message=>message.topic_id===projectTopicId):projectMessages;
  const projectChatBusy=projectPendingId!==null && projectChatMode==='documentation';
@@ -541,6 +542,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskMessages,setTaskMessages]=useState<AssistantMessage[]>([]);
  const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
+  const [taskImages,setTaskImages]=useState<ChatImageDraft[]>([]);
  const [managerState,setManagerState]=useState<ManagerSnapshot|null>(null);
  const [managerBusy,setManagerBusy]=useState(false);
  const [managerAnswer,setManagerAnswer]=useState('');
@@ -962,7 +964,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   void refresh();const timer=window.setInterval(()=>void refresh(),6000);
   return()=>{alive=false;window.clearInterval(timer);};
  },[selectedProjectId,projectChatOpen]);
- useEffect(()=>{setTaskMessages([]);setTaskInput('');if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
+ useEffect(()=>{setTaskMessages([]);setTaskInput('');setTaskImages([]);if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
  async function createTask(e:React.FormEvent){e.preventDefault();if(!selected)return;setBusy(true);try{await api('/projects/'+selected.id+'/tasks',{method:'POST',body:JSON.stringify({title:form.title,description:form.description,type:form.type,parent_id:form.parent_id||null})});await loadProject(selected.id);setShowTask(false);setForm({...form,title:'',description:'',parent_id:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -1391,6 +1393,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   }
   updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,files:next}));
  }
+ async function attachProjectImages(files:File[]){
+  if(!files.length)return;
+  const chatKey=projectChatKey(selectedProjectId,projectChatMode);
+  try{
+   const images=await prepareChatImages(files,getProjectChat(projectChatMode).images);
+   updateProjectChat(chatKey,chat=>({...chat,images,error:''}));
+  }catch(error){updateProjectChat(chatKey,chat=>({...chat,error:error instanceof Error?error.message:String(error)}));}
+ }
+ async function attachTaskImages(files:File[]){
+  if(!files.length)return;
+  try{setTaskImages(await prepareChatImages(files,taskImages));setManagerFeedback('');}
+  catch(error){setManagerFeedback(error instanceof Error?error.message:String(error));}
+ }
  async function sendPmMessage(projectId:string,turn:AssistantMessage&{request_id:string}){
   const chatKey=projectChatKey(projectId,'project');
   const updateTurn=(update:(message:AssistantMessage)=>AssistantMessage)=>updateProjectChat(chatKey,chat=>({
@@ -1399,9 +1414,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   updateTurn(message=>({...message,pending:true,failed:false}));
   try{
    const saved=await api<{id:string;status:AssistantMessage['status']}>('/projects/'+projectId+'/manager/inbox',{
-    method:'POST',body:JSON.stringify({requestId:turn.request_id,message:turn.body,replyTo:turn.reply_to,topicId:turn.topic_id})
+    method:'POST',body:JSON.stringify({requestId:turn.request_id,message:turn.body,replyTo:turn.reply_to,topicId:turn.topic_id,images:(turn.images||[]).filter(image=>!!image.data).map(image=>({name:image.name,mimeType:image.mimeType,data:image.data}))})
    });
    updateTurn(message=>({...message,id:saved.id,status:saved.status,pending:false,awaitingHistory:true}));
+    updateProjectChat(chatKey,chat=>({...chat,images:[]}));
   }catch(e){
    updateProjectChat(chatKey,chat=>chat.messages.some(message=>message.request_id===turn.request_id&&message.id.startsWith('pending-'))
     ?{...chat,error:e instanceof Error?e.message:String(e),messages:chat.messages.map(message=>
@@ -1412,25 +1428,26 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function sendProjectMessage(e:React.FormEvent){
   e.preventDefault();
   const files=projectChatMode==='documentation'?analystFiles:[];
-  if(!selected||(!projectInput.trim()&&!files.length)||projectChatBusy)return;
+  const images=projectImages;
+  if(!selected||(!projectInput.trim()&&!files.length&&!images.length)||projectChatBusy)return;
   const requestId=crypto.randomUUID();
   const projectId=selected.id,mode=projectChatMode,optimisticId='pending-'+requestId,replyTo=projectReplyTo;
   const quoted=projectMessages.find(message=>message.id===replyTo);
   const quotedTopic=quoted?.topic_id&&projectTopics.some(topic=>topic.id===quoted.topic_id)?quoted.topic_id:null;
   const topicId=projectTopicId||quotedTopic||null;
-  const message=projectInput.trim()||'Подготовь ТЗ по приложенным материалам.';
+  const message=projectInput.trim()||(files.length?'Подготовь ТЗ по приложенным материалам.':'');
   const chatKey=projectChatKey(projectId,mode);
   const sentAt=new Date().toISOString();
   setProjectReplyTo(null);
   if(mode==='project'){
    const turn={id:optimisticId,request_id:requestId,role:'user' as const,body:message,
-    reply_to:replyTo,topic_id:topicId,created_at:sentAt,pending:true};
+    reply_to:replyTo,topic_id:topicId,created_at:sentAt,pending:true,images};
    updateProjectChat(chatKey,chat=>({...chat,input:'',error:'',messages:[...chat.messages,turn]}));
    await sendPmMessage(projectId,turn);
    return;
   }
   updateProjectChat(chatKey,chat=>({...chat,input:'',pendingId:optimisticId,error:'',messages:[
-   ...chat.messages,{id:optimisticId,role:'user',reply_to:replyTo,topic_id:topicId,body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:sentAt}
+   ...chat.messages,{id:optimisticId,role:'user',reply_to:replyTo,topic_id:topicId,body:message+(files.length?'\n\nМатериалы: '+files.map(file=>file.name).join(', '):''),pending:true,created_at:sentAt,images}
   ]}));
   function updatePendingChat(update:(chat:ProjectChatState)=>ProjectChatState){
    updateProjectChat(chatKey,chat=>chat.pendingId===optimisticId?update(chat):chat);
@@ -1438,23 +1455,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   try{
    const attachments=await Promise.all(files.map(async file=>({name:file.name,body:await file.text()})));
    const currentJobId=getProjectChat('documentation').jobId;
-   if(currentJobId&&attachments.length)throw Error('Новые файлы можно прикрепить после завершения текущей работы аналитика.');
+   if(currentJobId&&(attachments.length||images.length))throw Error('Новые файлы и изображения можно прикрепить после завершения текущей работы аналитика.');
    const response=currentJobId
     ?await api<AssistantResponse>('/projects/'+projectId+'/processes/'+currentJobId+'/instructions',
       {method:'POST',body:JSON.stringify({message})})
     :await api<AssistantResponse>('/projects/'+projectId+'/assistant',{method:'POST',body:JSON.stringify({
-       message,mode,attachments,replyTo,topicId,documentId:analystDocumentId
+       message,mode,attachments,images:images.map(image=>({name:image.name,mimeType:image.mimeType,data:image.data})),replyTo,topicId,documentId:analystDocumentId
       })});
    if(response.import_job_id){
     const jobId=response.import_job_id;
     updatePendingChat(chat=>({...chat,pendingId:null,jobId,progress:'Аналитик начал работу…',
-     files:[],messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false}:m)}));
+     files:[],images:[],messages:chat.messages.map(m=>m.id===optimisticId?{...m,pending:false}:m)}));
     return;
    }
    const reply:AssistantMessage={id:'reply-'+crypto.randomUUID(),role:'assistant',body:response.message,
     created_task_id:response.created_task_id,created_document_id:response.created_document_id,
     documentation_reset_requested:response.documentation_reset_requested,owner_question_cleanup_requested:response.owner_question_cleanup_requested,created_at:new Date().toISOString()};
-   updatePendingChat(chat=>({...chat,files:[],messages:[
+   updatePendingChat(chat=>({...chat,files:[],images:[],messages:[
     ...chat.messages.map(m=>m.id===optimisticId?{...m,pending:false}:m),reply
    ]}));
    if(selectedProjectRef.current===projectId&&(response.created_task_id||response.created_document_id))await loadProject(projectId);
@@ -1523,17 +1540,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function sendTaskMessage(e:React.FormEvent){
   e.preventDefault();
-  if(!selected||!activeTask||!taskInput.trim()||managerSending)return;
-  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim();
+  if(!selected||!activeTask||(!taskInput.trim()&&!taskImages.length)||managerSending)return;
+  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim(),images=taskImages;
   const optimisticId='pending-'+crypto.randomUUID();
   const sentAt=new Date().toISOString();
-  setManagerState(old=>old?{...old,messages:[...old.messages,{id:optimisticId,role:'user',body:message,status:'queued',created_at:sentAt}]}:old);
+  setManagerState(old=>old?{...old,messages:[...old.messages,{id:optimisticId,role:'user',body:message,status:'queued',created_at:sentAt,images}]}:old);
   setTaskInput('');setManagerFeedback('');setManagerSending(true);
   try{
    const response=await api<{id:string;status:string}>('/projects/'+projectId+'/tasks/'+taskId+'/manager/messages',{
-    method:'POST',body:JSON.stringify({message})
+    method:'POST',body:JSON.stringify({message,images:images.map(image=>({name:image.name,mimeType:image.mimeType,data:image.data}))})
    });
    setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,id:response.id}:m)}:old);
+    setTaskImages([]);
   }catch(error){
    setManagerFeedback(error instanceof Error?error.message:'Сообщение не принято');
    setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,status:'failed'}:m)}:old);
@@ -2304,7 +2322,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {!projectTopics.length&&<small className="pm-topic-managed-hint">Открытых вопросов нет</small>}
 
    </aside>
-   <div className="pm-chat-conversation">
+   <ChatImageDropZone className="pm-chat-conversation" onImages={files=>void attachProjectImages(files)} onError={message=>updateProjectChat(projectChatKey(selectedProjectId,projectChatMode),chat=>({...chat,error:message}))}>
    <div className="pm-thread-wrap">
    <div ref={projectThreadRef} onScroll={onProjectScroll} className="assistant-thread" role="log" aria-live="polite">
     {visibleProjectMessages.length===0&&<p className="assistant-hint">{projectChatMode==='documentation'?'Обсуди со мной идеи, бизнес-логику и требования. Я не создаю задачи без твоего решения. После согласования передай пакет системному аналитику.':'Напиши, например: «Создай задачу на добавление поиска по документации».'}</p>}
@@ -2313,6 +2331,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.topic_id&&<small className="pm-message-topic">{m.topic_title||projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       {m.role==='assistant'?<div className="pm-chat-markdown"><DocumentMarkdown source={pmDisplayText(m.body)}/></div>:<div>{m.body}</div>}
+       <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
       {m.status==='queued'&&<small className="chat-message-status">Поручение сохранено · ожидает запуска</small>}
       {m.status==='processing'&&<small className="chat-message-status">ПМ распределяет поручение…</small>}
@@ -2339,20 +2358,22 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {analystFiles.map((file,index)=><span key={file.name+'-'+index}>{file.name}
      <button type="button" aria-label={'Убрать '+file.name} disabled={projectChatBusy} onClick={()=>updateProjectChat(projectChatKey(selectedProjectId,'documentation'),chat=>({...chat,files:chat.files.filter((_,i)=>i!==index)}))}><X size={13}/></button></span>)}
    </div>}
+   {projectImages.length>0&&<ChatImageGallery images={projectImages} projectId={selectedProjectId} read={api} onRemove={id=>updateProjectChat(projectChatKey(selectedProjectId,projectChatMode),chat=>({...chat,images:chat.images.filter(image=>image.id!==id)}))}/>}
    <form className="assistant-composer" onSubmit={sendProjectMessage}>
     {projectChatMode==='documentation'&&<>
      <input hidden type="file" ref={analystFileInput} multiple accept=".md,.txt,.csv,.json,.yaml,.yml" onChange={e=>{attachAnalystFiles(e.currentTarget.files);e.currentTarget.value='';}}/>
      <button className="secondary" type="button" aria-label="Прикрепить материалы" title="Прикрепить материалы" disabled={projectChatBusy||!!projectImportJobId} onClick={()=>analystFileInput.current?.click()}><Paperclip size={16}/></button>
     </>}
-    {mentionMatches(projectInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
+    <ChatImagePicker disabled={projectChatBusy||!aiSettings.enabled} onFiles={files=>void attachProjectImages(files)}/>
+     {mentionMatches(projectInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
       {mentionMatches(projectInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>{setProjectInput(addMention(projectInput,option.alias));projectInputRef.current?.focus();}}>
        <strong>@{option.alias}</strong><small>{aiAgentName(stages.find(s=>s.stage===option.stage)?.agent_name||option.alias)}</small></button>)}
      </div>}
      <textarea ref={projectInputRef} rows={2} value={projectInput} onChange={e=>setProjectInput(e.target.value)} placeholder={projectChatMode==='documentation'?'Обсудить продукт, сценарии и требования…':'Сообщение, задача или документ… (Shift+Enter — новая строка)'} aria-label={projectChatMode==='documentation'?'Сообщение бизнес-аналитику':'Сообщение Менеджеру проекта'} onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}/>
-    <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!!(projectTopicId&&projectTopics.find(t=>t.id===projectTopicId)?.status==='closed')||(!projectInput.trim()&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
+    <button className="primary assistant-send-icon" title="Отправить сообщение" aria-label="Отправить сообщение" disabled={projectChatBusy||!!(projectTopicId&&projectTopics.find(t=>t.id===projectTopicId)?.status==='closed')||(!projectInput.trim()&&!projectImages.length&&(projectChatMode!=='documentation'||!analystFiles.length))||!aiSettings.enabled} type="submit"><Send size={17}/></button>
    </form>
    {!aiSettings.enabled&&<p className="assistant-disabled">Включи AI в настройках проекта.</p>}
-  </div></div>
+  </ChatImageDropZone></div>
    </section>}
   <div className="chat-agent-launchers" role="group" aria-label="Чаты с агентами">
    <button type="button" className={'chat-agent-button '+(projectChatOpen&&projectChatMode==='project'?'active':'')} onClick={()=>toggleAgentChat('project')} title="Чат с менеджером проекта" aria-label="Открыть чат с ПМ"><span className="chat-agent-glyph"><MessageCircle size={32}/></span></button>
@@ -2537,7 +2558,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {deploymentMode==='automatic'&&<button type="button" className="primary" disabled={mergeBusy} onClick={()=>{if(!selected)return;const commit=window.prompt('Точный SHA слитого PR:');if(!commit)return;setMergeBusy(true);void api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/deployment/start',{method:'POST',body:JSON.stringify({confirm:true,commit_sha:commit.trim()})}).then(()=>{setMergeReport('Запрос поставлен в Temporal. Статус доступен в Центре процессов.');}).catch(fail).finally(()=>setMergeBusy(false));}}>Запустить GitHub Actions</button>}</div></div>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
-    <aside className="task-conversation manager-conversation">
+    <ChatImageDropZone className="task-conversation manager-conversation" onImages={files=>void attachTaskImages(files)} onError={setManagerFeedback}>
      <header><MessageCircle size={17}/><strong>Менеджер проекта</strong>
       <small>{decisions.length?'Ожидает вашего решения':activeAgentRuns.length||managerWorking?'Команда работает':'Контролирует процесс'}</small>
      </header>
@@ -2565,6 +2586,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <small>{new Date(m.created_at).toLocaleString('ru-RU')}</small>
        </div>
        <div className="manager-message-body">{m.body}</div>
+        <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
        {m.role==='user'&&['queued','processing'].includes(m.status)&&!m.id.startsWith('pending-')&&
         <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void stopManagerMessage(m.id)}>Прервать ответ ПМ</button>}
        {m.role==='user'&&m.status==='cancelled'&&<small className="muted">Обработка прервана</small>}
@@ -2623,17 +2645,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       </div>
      </div>}
      {managerFeedback&&<p className="manager-action-error" role="alert">{managerFeedback}</p>}
-     <form className="assistant-composer" onSubmit={sendTaskMessage}>
-      {mentionMatches(taskInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
+     {taskImages.length>0&&<ChatImageGallery images={taskImages} projectId={selectedProjectId} read={api} onRemove={id=>setTaskImages(old=>old.filter(image=>image.id!==id))}/>}
+      <form className="assistant-composer" onSubmit={sendTaskMessage}>
+      <ChatImagePicker disabled={managerSending||!aiSettings.enabled} onFiles={files=>void attachTaskImages(files)}/>
+       {mentionMatches(taskInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
         {mentionMatches(taskInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>setTaskInput(addMention(taskInput,option.alias))}>
          <strong>@{option.alias}</strong><small>{aiAgentName(stages.find(s=>s.stage===option.stage)?.agent_name||option.alias)}</small></button>)}
        </div>}
        <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
        placeholder={analysisClarification?'Ответьте на вопросы аналитика…':'Напишите Менеджеру проекта… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" />
-      <button className="primary" type="submit" disabled={managerSending||!taskInput.trim()||!aiSettings.enabled}><Send size={15}/> Отправить</button>
+      <button className="primary" type="submit" disabled={managerSending||(!taskInput.trim()&&!taskImages.length)||!aiSettings.enabled}><Send size={15}/> Отправить</button>
      </form>
-    </aside>
+    </ChatImageDropZone>
    </div>
    {activeTask.type!=='question'&&<div className="task-workflow" aria-label="Этапы выполнения">
     {stages.map((stage,i)=><React.Fragment key={stage.stage}>

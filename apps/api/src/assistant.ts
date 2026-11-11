@@ -5,6 +5,7 @@ import {recordAgentActivity} from './task-agent-activity.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {randomUUID} from 'node:crypto';
 import { z } from 'zod';
+import {chatImagesSchema,validateChatImages,saveChatImages,type RunnerImage} from './chat-images.js';
 import {extractGitHubDocumentLocation,readGitHubMarkdownFiles,resolveGitHubDocumentCommit} from './github-document-import.js';
 import {importByTopics} from './topic-import.js';
 import {pendingAgentQuestions,taskConversationEvidence,taskNotesContext} from './task-agent-notes.js';
@@ -29,13 +30,16 @@ const attachmentSchema=z.object({
  body:z.string().min(1).max(100000)
 });
 const analystRequest=messageSchema.extend({
+ message:z.string().trim().max(4000),
  replyTo:z.string().uuid().nullable().optional(),
  topicId:z.string().uuid().nullable().optional(),
  mode:z.enum(['project','documentation']).default('project'),
  attachments:z.array(attachmentSchema).max(5).default([]),
+  images:chatImagesSchema,
  documentId:z.string().uuid().nullable().default(null)
 }).superRefine((data,ctx)=>{
- if(data.attachments.length&&data.mode!=='documentation')ctx.addIssue({code:'custom',message:'Прикрепляй материалы в чате аналитика.'});
+ if(!data.message&&!data.images.length&&!data.attachments.length)ctx.addIssue({code:'custom',message:'Добавь текст или изображение.'});
+  if(data.attachments.length&&data.mode!=='documentation')ctx.addIssue({code:'custom',message:'Прикрепляй материалы в чате аналитика.'});
  if(data.attachments.reduce((size,file)=>size+Buffer.byteLength(file.body),0)>250000)
   ctx.addIssue({code:'custom',message:'Материалы в одном сообщении должны занимать до 250 КБ.'});
 });
@@ -84,14 +88,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   return r.rows.map(x=>'- '+x.body).join('\n').slice(0,12000);
  }
   async function completion(prompt:string,config:any,options?:{
-   maxAttempts?:number;timeoutMs?:number;onRetry?:(attempt:number,maxAttempts:number,reason:string)=>Promise<void>
+   maxAttempts?:number;timeoutMs?:number;onRetry?:(attempt:number,maxAttempts:number,reason:string)=>Promise<void>;images?:RunnerImage[]
   }){
    const maxAttempts=options?.maxAttempts??1;
    for(let attempt=1;attempt<=maxAttempts;attempt++){
     try{
      const response=await fetch(codexUrl+'/assistant',{method:'POST',
       headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-      body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt}),
+      body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,images:options?.images??[]}),
       signal:AbortSignal.timeout(options?.timeoutMs??(maxAttempts>1?255000:115000))});
      const data=await response.json().catch(()=>({})) as any;
      if(!response.ok){
@@ -177,13 +181,15 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   return r.rows.reverse().map(x=>x.role+': '+x.body.slice(0,1600)).join('\n\n');
  }
  async function store(id:string,taskId:string|null,actor:string|null,role:'user'|'assistant',body:string,createdTask:string|null=null,createdDocument:string|null=null,channel:'project'|'documentation'='project',db:Pick<Pool,'query'>=pool,actions:{documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean}={},relation:{replyTo?:string|null;topicId?:string|null}={}){
+  const messageId=randomUUID();
   if(relation.replyTo||relation.topicId){
    await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested,owner_question_cleanup_requested,reply_to,topic_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10,$11,$12,$13)',
-    [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false,relation.replyTo??null,relation.topicId??null]);
+    [messageId,id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false,relation.replyTo??null,relation.topicId??null]);
   }else{
    await db.query('INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,created_task_id,created_document_id,channel,created_at,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,clock_timestamp(),$10,$11)',
-    [randomUUID(),id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false]);
+    [messageId,id,taskId,actor,role,body,createdTask,createdDocument,channel,actions.documentation_reset_requested??false,actions.owner_question_cleanup_requested??false]);
   }
+  return messageId;
  }
  async function storeTokenUsage(id:string,taskId:string|null,model:string,usage:{input_tokens:number;cached_input_tokens:number;output_tokens:number}|undefined){
   if(!usage)return;
@@ -485,7 +491,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id))return;
   const {mode}=z.object({mode:z.enum(['project','documentation']).default('project')}).parse(req.query);
-  return (await pool.query('SELECT m.id,m.role,m.body,m.status,m.reply_to,m.topic_id,t.title AS topic_title,m.pm_request_id AS request_id,m.created_task_id,m.created_document_id,m.created_at,m.documentation_reset_requested,m.owner_question_cleanup_requested FROM assistant_messages m LEFT JOIN project_chat_topics t ON t.id=m.topic_id AND t.project_id=m.project_id WHERE m.project_id=$1 AND m.task_id IS NULL AND m.channel=$2 ORDER BY m.created_at DESC,m.role ASC,m.id DESC LIMIT 150',[id,mode])).rows.reverse();
+  return (await pool.query(`SELECT m.id,m.role,m.body,m.status,m.reply_to,m.topic_id,t.title AS topic_title,m.pm_request_id AS request_id,m.created_task_id,m.created_document_id,m.created_at,m.documentation_reset_requested,m.owner_question_cleanup_requested,(SELECT COALESCE(json_agg(json_build_object('id',ci.id,'name',ci.name,'mimeType',ci.mime_type) ORDER BY ci.created_at,ci.id),'[]'::json) FROM chat_images ci WHERE ci.assistant_message_id=m.id) AS images FROM assistant_messages m LEFT JOIN project_chat_topics t ON t.id=m.topic_id AND t.project_id=m.project_id WHERE m.project_id=$1 AND m.task_id IS NULL AND m.channel=$2 ORDER BY m.created_at DESC,m.role ASC,m.id DESC LIMIT 150`,[id,mode])).rows.reverse();
  });
  app.get('/api/projects/:id/document-import/:jobId',async(req:any,reply)=>{
   const {id,jobId}=z.object({id:z.string().uuid(),jobId:z.string().uuid()}).parse(req.params);
@@ -561,12 +567,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    return reply.code(409).send({error:'Ошибка сохранения: '+reason.slice(0,650)});
   }
  });
- app.post('/api/projects/:id/assistant',async(req:any,reply)=>{
+ app.post('/api/projects/:id/assistant',{bodyLimit:9*1024*1024},async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const parsed=analystRequest.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:parsed.error.issues[0].message});
-  const {message,mode,attachments,documentId:targetDocumentId,replyTo,topicId}=parsed.data;
+  const {message,mode,attachments,images,documentId:targetDocumentId,replyTo,topicId}=parsed.data;
+   const validatedImages=validateChatImages(images);
+   const runnerImages:RunnerImage[]=validatedImages.map(image=>({name:image.name,mimeType:image.mimeType,data:image.data.toString('base64')}));
   let replyContext='';
   if(replyTo){
    const original=(await pool.query("SELECT id,role,body FROM assistant_messages WHERE id=$1 AND project_id=$2 AND task_id IS NULL AND channel=$3",[replyTo,id,mode])).rows[0];
@@ -586,7 +594,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   try{mentionedAgent=await resolveAgentMention(pool,id,message);}
   catch(e){return reply.code((e as {statusCode?:number}).statusCode||422).send({error:(e as Error).message});}
   if(mentionedAgent){
-   if(attachments.length)return reply.code(400).send({error:'Вложения при прямом обращении к агенту пока не поддерживаются'});
+   if(attachments.length)return reply.code(400).send({error:'Текстовые файлы при прямом обращении к агенту пока не поддерживаются'});
    const config=await configuration(id);
    if(!config.enabled)return reply.code(409).send({error:'AI отключён в настройках проекта'});
    const [project,docs]=await Promise.all([
@@ -623,26 +631,27 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    }
    const prompt=composeAgentPrompt({
     role:mentionedAgent.name+' — специалист '+mentionedAgent.stage,
-    objective:mentionedAgent.message,
+    objective:mentionedAgent.message||'Изучи приложенные изображения',
     tools:'Здесь только ответ в чате, без выполнения действий. Проверка CI, изменение кода или работа с документами не подтверждены без соответствующего инструмента.',
     instructions:mentionedAgent.instructions.slice(0,2400),
     scope:JSON.stringify(project.rows[0]||{}).slice(0,450),
     context:'Правила проекта: '+(await rulesContext(id)).slice(0,700)+
      '\nСвязанные документы: '+JSON.stringify(docs.rows).slice(0,750)+
      (devopsGitHubContext?'\nМетаданные CI: '+devopsGitHubContext.slice(0,1800):''),
-    continuation:replyContext||topicContext,
+    continuation:[replyContext,topicContext,runnerImages.length?'Приложены изображения: '+runnerImages.map(image=>image.name).join(', '):''].filter(Boolean).join('\n\n'),
     output:'Отвечай по-русски на основе проверяемых фактов. Не выдумывай выполненные операции. В конце LEARNING_SUGGESTION: <урок> или none.'
    });
    await recordAgentPrompt(pool,{projectId:id,processId:randomUUID(),role:mentionedAgent.stage,operation:'direct_mention',prompt}).catch(()=>{});
    try{
     const roleConfig=await resolveRoleAiSettings(pool,id,mentionedAgent.stage,config);
-    const response=await completion(prompt,roleConfig);
+    const response=await completion(prompt,roleConfig,{images:runnerImages});
     await storeTokenUsage(id,null,roleConfig.model,response.usage);
      const raw=response.text.trim();
      const lesson=raw.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim();
      await recordAgentLearning(pool,{projectId:id,role:mentionedAgent.stage,runId:randomUUID(),body:lesson,evidence:'Прямой диалог с @'+mentionedAgent.alias});
      const answer='@'+mentionedAgent.alias+' · '+raw.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
-    await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
+    const userMessageId=await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
+    await saveChatImages(pool,{projectId:id,actorId:uid(req),messageId:userMessageId,scope:'assistant'},validatedImages);
     await store(id,null,null,'assistant',answer,null,null,mode,pool,{}, {topicId});
     await countCall(id,uid(req));
     return {message:answer,created_task_id:null,created_document_id:null};
@@ -672,14 +681,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     ].join('\n'),
     scope:JSON.stringify({project:project?.name||'',project_id:id,selected_document_id:targetDocumentId||null,topic:topicContext||null}),
     continuation:replyContext,
-    context:attachments.length?'Прикреплённые материалы:\n'+JSON.stringify(attachments.map(a=>({name:a.name,body:a.body.slice(0,3000)}))).slice(0,10000):'',
+    context:[attachments.length?'Прикреплённые материалы:\n'+JSON.stringify(attachments.map(a=>({name:a.name,body:a.body.slice(0,3000)}))).slice(0,10000):'',runnerImages.length?'Приложено изображений: '+runnerImages.map(image=>image.name).join(', ')+'. Анализируй визуальное содержимое.':''].filter(Boolean).join('\n\n'),
     output:'Коротко сообщи результат и реальные действия инструментов. При невозможности объясни препятствие.'
    });
    await recordAgentPrompt(pool,{projectId:id,processId:sessionId,role,operation:'project_chat',prompt}).catch(()=>{});
    try{
     const response=await fetch(codexUrl+'/agent',{
      method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-     body:JSON.stringify({model:roleConfig.model,reasoning:roleConfig.reasoning,prompt,session_token:secret,agent_role:role,project_id:id,role_capacity:await roleCapacity(pool,id,role)}),
+     body:JSON.stringify({model:roleConfig.model,reasoning:roleConfig.reasoning,prompt,session_token:secret,agent_role:role,project_id:id,role_capacity:await roleCapacity(pool,id,role),images:runnerImages}),
      signal:AbortSignal.timeout(255000)
     });
     const data=await response.json().catch(()=>({})) as any;
@@ -687,7 +696,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     if(typeof data.message!=='string'||!data.message.trim())throw Error('Агент не вернул ответ');
     const effects=await agentSessionEffects(pool,sessionId);
     await storeTokenUsage(id,null,roleConfig.model,data.usage);
-    await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
+    const userMessageId=await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
+    await saveChatImages(pool,{projectId:id,actorId:uid(req),messageId:userMessageId,scope:'assistant'},validatedImages);
     await store(id,null,null,'assistant',data.message,effects.created_task_id,effects.created_document_id,mode,pool,effects,{topicId});
     await countCall(id,uid(req));
     return {message:data.message,created_task_id:effects.created_task_id,

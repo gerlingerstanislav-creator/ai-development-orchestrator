@@ -1,4 +1,5 @@
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
+import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {runnerAssistantPrompt} from './runner-assistant-prompt.js';
 import {carryDevelopmentAuthorizationAfterAnalysis} from './agent-work-scheduler.js';
@@ -136,10 +137,10 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
  await recordAgentPrompt(pool,{projectId,processId:processId||taskId,role:stage,operation,prompt:composed}).catch(()=>{});
  return askRunnerAssistant(composed,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai));
 }
-async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000):Promise<string>{
+async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000,images:RunnerImage[]=[]):Promise<string>{
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-  body:JSON.stringify({prompt:runnerAssistantPrompt(prompt),model:ai.model,reasoning:ai.reasoning}),
+  body:JSON.stringify({prompt:runnerAssistantPrompt(prompt),model:ai.model,reasoning:ai.reasoning,images}),
   signal:AbortSignal.timeout(timeoutMs)});
  const data=await response.json().catch(()=>({})) as any;
  if(!response.ok||typeof data.message!=='string')throw Error(String(data.error||'Codex не вернул результат').slice(0,500));
@@ -762,10 +763,11 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
   if(!args.handled){
    const snapshot=await managerSnapshot(pool,projectId,taskId);
    if(!snapshot)throw Error('Задача не найдена');
+   const images=await readChatImages(pool,projectId,messageId,'manager');
    const settings=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
    if(!settings.rows[0]?.enabled)throw Error('AI отключён в настройках проекта');
    const rules=(await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at DESC LIMIT 12',[projectId])).rows.map(x=>x.body).join('\n').slice(0,3000);
-   const history=snapshot.messages.filter(m=>!['failed','cancelled'].includes(m.status)&&m.id!==messageId).slice(-16).map(m=>({role:m.role,content:String(m.body).slice(0,1200)}));
+   const history=snapshot.messages.filter(m=>!['failed','cancelled'].includes(m.status)&&m.id!==messageId).slice(-16).map(m=>({role:m.role,content:String(m.body).slice(0,1200),images:m.images?.map((image:{name:string})=>image.name)}));
    const pending=snapshot.requests.filter(x=>x.status==='open').map(x=>({kind:x.kind,id:x.id,request:managerRequestSummary(x)}));
    const latest=snapshot.latestTest;
    const agentNotes=snapshot.internalNotes.slice(0,12).reverse().map(n=>({
@@ -775,26 +777,26 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const replyTarget=snapshot.messages.find(m=>m.id===msg.rows[0].reply_to);
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
-    objective:String(msg.rows[0].body).slice(0,4000),
+    objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
     tools:'В этом вызове нет инструментов изменения проекта. Не утверждай о выполненных действиях или запуске процессов без подтверждённых фактов сервера.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
     scope:JSON.stringify({task_id:taskId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
-    context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict,summary:String(latest.report?.summary||'').slice(0,650)}:null}).slice(0,1600),
+    context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict,summary:String(latest.report?.summary||'').slice(0,650)}:null,images:images.map(image=>image.name)}).slice(0,1600),
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,1000):'',
     output:'Отвечай по фактам и по-русски. Если инструментальная проверка недоступна, назови именно непроверенные сценарии, не объявляй их пройденными.'
    });
    const mentionedAgent=await resolveAgentMention(pool,projectId,String(msg.rows[0].body));
    const directPrompt=mentionedAgent?composeAgentPrompt({
     role:mentionedAgent.name+' — специалист этапа '+mentionedAgent.stage,
-    objective:mentionedAgent.message,
+    objective:mentionedAgent.message||'Изучи приложенные изображения',
     tools:'Это ответ в чате задачи. Не утверждай о запуске кода или тестов без доказательств.',
     instructions:mentionedAgent.instructions.slice(0,2600),
     scope:JSON.stringify({task_id:taskId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,2200)}),
-    context:JSON.stringify({latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null}).slice(0,600),
+    context:JSON.stringify({latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,600),
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,800):'',
     output:'Краткий ответ; в конце LEARNING_SUGGESTION: <подтверждённый урок> либо none.'
    }):prompt;
-    const rawReply=String(await askRunnerAssistant(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager',await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]))).trim();
+    const rawReply=String(await askRunnerAssistant(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager',await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]),110000,images)).trim();
     const suggestion=mentionedAgent?rawReply.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim():undefined;
     if(mentionedAgent)await recordAgentLearning(pool,{projectId,role:mentionedAgent.stage,runId:messageId,body:suggestion,evidence:'Прямой диалог в задаче '+taskId});
     const generated=rawReply.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();

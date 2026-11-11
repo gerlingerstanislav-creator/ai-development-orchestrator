@@ -2,6 +2,7 @@ import {randomUUID,timingSafeEqual} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
+import {chatImagesSchema,validateChatImages,saveChatImages} from './chat-images.js';
 import {parseAgentMention,resolveAgentMention} from './agent-mentions.js';
 import {latestQaWaiver,qaWaiverAssessment,type QaRunRow} from './qa-waiver.js';
 
@@ -136,7 +137,7 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
 export async function managerSnapshot(pool:Pool,projectId:string,taskId:string){
  await syncManagerInbox(pool,projectId,taskId);
  const [messages,requests,task,owner,tests,notes]=await Promise.all([
-  pool.query("SELECT * FROM (SELECT id,role,body,status,reply_to,created_at FROM manager_messages WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 300) recent ORDER BY created_at,id",[projectId,taskId]),
+  pool.query("SELECT * FROM (SELECT id,role,body,status,reply_to,created_at,(SELECT COALESCE(json_agg(json_build_object('id',ci.id,'name',ci.name,'mimeType',ci.mime_type) ORDER BY ci.created_at,ci.id),'[]'::json) FROM chat_images ci WHERE ci.manager_message_id=manager_messages.id) AS images FROM manager_messages WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 300) recent ORDER BY created_at,id",[projectId,taskId]),
   pool.query("SELECT id,kind,source_id,payload,status,created_at,decision FROM manager_requests WHERE project_id=$1 AND task_id=$2 AND status IN ('open','waiting') ORDER BY created_at,id",[projectId,taskId]),
   pool.query('SELECT id,title,description,stage,analysis_state,clarification_questions,spec_version,spec_review_status,pr_url,pr_number,test_feedback FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT workflow_id,kind,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[projectId,taskId]),
@@ -261,16 +262,24 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    [randomUUID(),id,taskId,result.message.slice(0,3500)]);
   return reply.code(result.status).send(result);
  });
- app.post('/api/projects/:id/tasks/:taskId/manager/messages',async(req:any,reply)=>{
+ app.post('/api/projects/:id/tasks/:taskId/manager/messages',{bodyLimit:9*1024*1024},async(req:any,reply)=>{
   const {id,taskId}=scope.parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {message}=z.object({message:z.string().trim().min(1).max(4000)}).parse(req.body);
+  const {message,images}=z.object({message:z.string().trim().max(4000),images:chatImagesSchema})
+   .refine(value=>!!value.message||value.images.length>0,{message:'Добавь сообщение или изображение'}).parse(req.body);
+  const validatedImages=validateChatImages(images);
   const t=await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[taskId,id]);
   if(!t.rowCount)return reply.code(404).send({error:'Задача не найдена'});
   const msgId=randomUUID();
   // This is committed BEFORE any AI call so browser refresh never loses the user message.
-  await pool.query("INSERT INTO manager_messages(id,project_id,task_id,actor_id,role,body,status) VALUES($1,$2,$3,$4,'user',$5,'queued')",
-   [msgId,id,taskId,uid(req),message]);
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   await client.query("INSERT INTO manager_messages(id,project_id,task_id,actor_id,role,body,status) VALUES($1,$2,$3,$4,'user',$5,'queued')",
+    [msgId,id,taskId,uid(req),message]);
+   await saveChatImages(client,{projectId:id,taskId,actorId:uid(req),messageId:msgId,scope:'manager'},validatedImages);
+   await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
   try{await startManagerWorkflow({projectId:id,taskId,messageId:msgId});}
   catch(e){
    await pool.query("UPDATE manager_messages SET status='failed',updated_at=now() WHERE id=$1",[msgId]);

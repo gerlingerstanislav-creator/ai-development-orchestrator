@@ -8,6 +8,7 @@ import {createMergeService} from './merge-service.js';
 import {createMergeBatch,initMergeBatches,readMergeBatch,recoverMergeBatches} from './merge-batch.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes,validateHealthUrl} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
+import {initChatImages,registerChatImageRoutes} from './chat-images.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
 import {resolveRoleAiSettings} from './project-team.js';
 import {initAgentToolsSchema} from './agent-tools.js';
@@ -435,6 +436,7 @@ async function access(req:any,reply:any,projectId:string) {
  if(!await canAccess(projectId,uid(req))){reply.code(403).send({error:'Нет доступа к проекту'});return false;}return true;
 }
 app.get('/api/health',async()=>({ok:true}));
+registerChatImageRoutes(app,{pool,access});
 registerDiagnosticRoutes(app,{pool,access});
 // Codex uses a personal ChatGPT entitlement. Keep access restricted to the bootstrap administrator.
 app.addHook('preHandler',async(req,reply)=>{
@@ -1856,7 +1858,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
