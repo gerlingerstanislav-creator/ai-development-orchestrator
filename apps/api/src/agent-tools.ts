@@ -17,6 +17,8 @@ const id=field('string','UUID'),str=field('string','Произвольный т�
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
+ tool('pm.decisions.list','Прочитать структурированные решения владельца, чтобы не задавать повторных вопросов.',{}),
+ tool('pm.decisions.record','Зафиксировать ответ владельца в реестре решений. Укажи ID его исходного сообщения. При наличии итерации решение передаётся СА.',{source_message_id:id,question:str,answer:str,iteration_id:id,order_id:id},['source_message_id','question','answer']),
  tool('pm.orders.list','Просмотреть активные поручения ПМ и их статусы.',{}),
  tool('pm.orders.update','Зафиксировать состояние поручения: ждать ответа владельца, ждать агента, завершить или отметить ошибку.',{order_id:id,status:{type:'string',enum:['working','waiting_agents','waiting_user','completed','failed']},summary:str},['order_id','status']),
  tool('iterations.ask_question','Добавить вопрос к итерации, требующий решения владельца. Вопрос показывается на вкладке План разработки.',{iteration_id:id,question:str},['iteration_id','question']),

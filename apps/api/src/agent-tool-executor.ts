@@ -82,6 +82,31 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(!updated.rowCount)throw rejected('Тема не найдена',404);
   return {topic:updated.rows[0]};
  }
+ case 'pm.decisions.list':{
+  return {decisions:(await pool.query('SELECT id,question,answer,iteration_id,order_id,created_at FROM project_pm_decisions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 100',[projectId])).rows};
+ }
+ case 'pm.decisions.record':{
+  const {source_message_id,question,answer,iteration_id,order_id}=z.object({
+   source_message_id:uuid,question:z.string().trim().min(3).max(2000),answer:z.string().trim().min(1).max(5000),
+   iteration_id:uuid.optional(),order_id:uuid.optional()
+  }).parse(params);
+  const source=(await pool.query("SELECT id,pm_order_id FROM assistant_messages WHERE id=$1 AND project_id=$2 AND role='user' AND channel='project'",[source_message_id,projectId])).rows[0];
+  if(!source)throw rejected('Решение должно иметь подтверждённый исходный ответ владельца',409);
+  const parent=order_id||source.pm_order_id||null;
+  if(parent){
+   const exists=await pool.query('SELECT 1 FROM project_pm_orders WHERE id=$1 AND project_id=$2',[parent,projectId]);
+   if(!exists.rowCount)throw rejected('Поручение не найдено',404);
+  }
+  if(iteration_id){
+   const valid=await pool.query('SELECT 1 FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
+   if(!valid.rowCount)throw rejected('Итерация не найдена',404);
+  }
+  const id=randomUUID();
+  const saved=await pool.query("INSERT INTO project_pm_decisions(id,project_id,order_id,source_message_id,iteration_id,question,answer) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,source_message_id,question) WHERE source_message_id IS NOT NULL DO NOTHING RETURNING id",
+   [id,projectId,parent,source_message_id,iteration_id||null,question,answer]);
+  if(saved.rowCount&&iteration_id)await recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
+  return {id:saved.rows[0]?.id||null,recorded:!!saved.rowCount,iteration_id:iteration_id||null};
+ }
  case 'pm.orders.list':{
   return {orders:(await pool.query("SELECT id,summary,status,topic_id,updated_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[projectId])).rows};
  }

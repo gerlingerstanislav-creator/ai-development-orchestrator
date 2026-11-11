@@ -264,6 +264,15 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_project_pm_orders_project ON project_pm_orders(project_id,status,updated_at DESC);
  ALTER TABLE assistant_messages ADD COLUMN IF NOT EXISTS pm_order_id uuid REFERENCES project_pm_orders(id) ON DELETE SET NULL;
  CREATE INDEX IF NOT EXISTS idx_assistant_pm_order ON assistant_messages(pm_order_id,created_at);
+ CREATE TABLE IF NOT EXISTS project_pm_decisions(
+  id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  order_id uuid REFERENCES project_pm_orders(id) ON DELETE SET NULL,
+  source_message_id uuid REFERENCES assistant_messages(id) ON DELETE SET NULL,
+  iteration_id uuid,question text NOT NULL,answer text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+ );
+ CREATE INDEX IF NOT EXISTS idx_pm_decisions_project ON project_pm_decisions(project_id,created_at DESC);
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_decision_source ON project_pm_decisions(project_id,source_message_id,question) WHERE source_message_id IS NOT NULL;
  CREATE TABLE IF NOT EXISTS project_pm_order_events(
   id uuid PRIMARY KEY,order_id uuid NOT NULL REFERENCES project_pm_orders(id) ON DELETE CASCADE,
   kind text NOT NULL,detail text NOT NULL,process_id uuid,

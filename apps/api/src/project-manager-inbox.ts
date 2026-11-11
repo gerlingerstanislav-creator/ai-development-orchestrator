@@ -135,7 +135,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    'Текущее поручение: '+String(orderId||'не задано')+'. Сохраняй связь с ним при уточнениях и продолжении после событий. Не считай поручение выполненным, пока работа не проверена.',
    'При завершении процесса ты будешь вызван повторно системой. Продолжай исходное поручение, а не просто пересказывай событие. Используй инструменты iterations.preview_plan, iterations.publish_plan и workflow.approve_development в рамках согласований.',
    'При необходимости задавай вопрос в отдельной теме через discussions.open и помечай поручение как waiting_user через pm.orders.update. Пока ответ не получен, не считай его закрытым.',
-   'Когда пользователь уже дал ответ, используй сохранённые решения вместо повторного вопроса.',
+   'Когда пользователь уже дал ответ, используй сохранённые решения вместо повторного вопроса. Зафиксируй новое решение через pm.decisions.record с ID сообщения пользователя, если оно влияет на требования/итерацию.',
    'Твоя работа: оперативно распределять поручения через инструменты, отслеживать статусы, собирать результаты, не подменять собой разработчика, БА, СА, QA или DevOps.',
    'Обрабатывай этот запрос независимо от других сообщений. Не ожидай окончания других процессов и не запускай работу агента у себя синхронно.',
    'У тебя есть MCP orchestrator. Реальные операции выполняй только через доступные инструменты. Не заявляй о создании задач или запуске процессов, если инструмент этого не подтвердил.',
@@ -152,6 +152,8 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    'Активные поручения: '+JSON.stringify(orders.rows).slice(0,3300),
    'Контрольные точки поручения: '+JSON.stringify(orderEvents.rows).slice(0,4500),
    'Подтверждённые решения владельца: '+JSON.stringify(decisions.rows).slice(0,5500),
+   'Реестр принятых решений проекта: '+JSON.stringify((await pool.query('SELECT question,answer,iteration_id FROM project_pm_decisions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 40',[projectId])).rows).slice(0,6000),
+   'ID текущего сообщения владельца: '+String(turn.channel==='project'?messageId:'внутреннее системное событие'),
    'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]||null).slice(0,2500),
    'Недавняя история: '+JSON.stringify(historyResult.rows.reverse()).slice(0,5500),
    'НОВОЕ СООБЩЕНИЕ ВЛАДЕЛЬЦА: '+String(turn.body)
