@@ -1944,7 +1944,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span className="process-list-title">{['running','queued'].includes(process.status)&&process.kind==='testing'?
        <span className="agent-equalizer" aria-label="Тестировщик выполняет проверку" role="status"><i/><i/><i/></span>:
        <span className={'process-dot '+process.status}/>}<strong>{process.title}</strong></span>
-      <small>{processStatus(process.status)} · {new Date(process.createdAt).toLocaleString('ru-RU')}</small>
+      <small>{processStatus(process.status)} · {new Date(process.updatedAt||process.createdAt).toLocaleString('ru-RU')}</small>
       <span className="process-list-summary">{compactProcessDescription(process.detail)}</span>
      </button>)}
     {!projectProcesses.length&&<p className="muted process-empty">Процессов пока нет</p>}
