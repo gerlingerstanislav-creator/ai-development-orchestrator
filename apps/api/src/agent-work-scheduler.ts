@@ -71,6 +71,8 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
   // One active development run system-wide. QA already runs independently in Codex Runner.
   const busy=await db.query("SELECT 1 FROM ai_task_runs WHERE status IN ('queued','running') LIMIT 1");
   if(busy.rowCount)return;
+  const peer=await db.query("SELECT 1 FROM agent_peer_queue WHERE role='development' AND status='running' LIMIT 1");
+  if(peer.rowCount)return;
   const pending=await db.query(`SELECT q.project_id,q.iteration_id,q.task_id,q.requested_by,t.stage,t.analysis_state,
     t.spec_review_status,t.clarification_questions,t.depends_on_task_id,t.pr_base_branch,
     t.spec_version,i.revision,i.approved_revision,settings.model,settings.enabled,
