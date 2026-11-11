@@ -1,4 +1,5 @@
 import {agentInstructions} from './agent-instructions.js';
+import {responsibilityFor} from './role-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
@@ -180,9 +181,9 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
     WHERE m.project_id=$1 ORDER BY m.created_at DESC,m.id DESC LIMIT 1000`,[id])
   ]);
   const agents=[
-   ...conversations.rows.map(r=>({id:'conversation:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='manager'?'Коммуникации':'Бизнес-анализ',type:'conversation',instructions:r.agent_instructions})),
-   ...stages.rows.map(r=>({id:'stage:'+r.stage,role:r.stage,name:r.agent_name,stage:r.label,type:'workflow',instructions:r.agent_instructions})),
-   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:'CI/CD · выкладка · инфраструктура',type:'specialist',instructions:r.agent_instructions}))
+   ...conversations.rows.map(r=>({id:'conversation:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='manager'?'Коммуникации':'Бизнес-анализ',type:'conversation',instructions:r.agent_instructions,responsibility:responsibilityFor(r.role)})),
+   ...stages.rows.map(r=>({id:'stage:'+r.stage,role:r.stage,name:r.agent_name,stage:r.label,type:'workflow',instructions:r.agent_instructions,responsibility:responsibilityFor(r.stage)})),
+   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:'CI/CD · выкладка · инфраструктура',type:'specialist',instructions:r.agent_instructions,responsibility:responsibilityFor(r.role)}))
   ];
   return {agents,memory:memory.rows};
  });
