@@ -67,6 +67,10 @@ export async function createTaskPolicy(workDirectory,{writable=true,qa=false}={}
    ...setting('shell_environment_policy.set.CHROMIUM_BIN','/usr/bin/chromium'),
    ...setting('shell_environment_policy.set.npm_config_registry','https://registry.npmjs.org/'),
    ...setting('shell_environment_policy.set.PIP_INDEX_URL','https://pypi.org/simple'),
+   // Loopback test clients must never send local HTTP/WebSocket requests to the
+   // outbound dependency proxy. Keep the outbound domain allowlist intact.
+   ...setting('shell_environment_policy.set.NO_PROXY','localhost,127.0.0.1,::1'),
+   ...setting('shell_environment_policy.set.no_proxy','localhost,127.0.0.1,::1'),
    ...setting('shell_environment_policy.set.XDG_CACHE_HOME',scratch),
    ...setting('shell_environment_policy.set.XDG_CONFIG_HOME',scratch)
   ]:[])
