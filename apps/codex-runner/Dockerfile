@@ -2,13 +2,11 @@ FROM node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bubblewrap ca-certificates git python3 python3-pip python3-venv python3-pytest \
-      chromium fonts-liberation \
  && update-ca-certificates \
  && test -s /etc/ssl/certs/ca-certificates.crt \
  && rm -rf /var/lib/apt/lists/* \
- && npm install -g @openai/codex@0.167.1 @playwright/test@1.56.0 \
- && NODE_PATH="$(npm root -g)" node -e "require('@playwright/test')" \
- && command -v chromium && test -x /usr/lib/chromium/chromium && command -v pytest \
+ && npm install -g @openai/codex@0.167.1 \
+ && command -v python3 && command -v pytest \
  && codex_native="$(find "$(npm root -g)/@openai" -type f -path '*/vendor/*/bin/codex')" \
  && test -x "$codex_native" \
  && ln -s "$codex_native" /usr/local/bin/codex-linux-sandbox \
