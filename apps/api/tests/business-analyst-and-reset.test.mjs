@@ -219,6 +219,7 @@ test('the team excludes platform stages and keeps configured AI agents',async t=
   CREATE TEMP TABLE workflow_stages(project_id uuid,stage text,label text,position int,agent_name text,agent_instructions text);
   CREATE TEMP TABLE project_specialist_agents(project_id uuid,role text,agent_name text,agent_instructions text);
   CREATE TEMP TABLE project_conversation_agents(project_id uuid,role text,agent_name text,agent_instructions text);
+  CREATE TEMP TABLE project_agent_models(project_id uuid,role text,model text,updated_at timestamptz DEFAULT now(),UNIQUE(project_id,role));
   CREATE TEMP TABLE users(id uuid,email text);
   CREATE TEMP TABLE agent_memory(id uuid,project_id uuid,role text,kind text,body text,evidence text,status text,origin text,author_id uuid,created_at timestamptz,reviewed_at timestamptz);
  `);
@@ -238,6 +239,15 @@ test('the team excludes platform stages and keeps configured AI agents',async t=
   ['manager','Координируй работу'],['analysis','Проверяй требования']
  ]);
  assert.equal((await db.query('SELECT count(*)::int AS n FROM workflow_stages WHERE project_id=$1',[project])).rows[0].n,4);
+ const invalid=await app.inject({method:'PATCH',url:'/api/projects/'+project+'/team/manager/model',payload:{model:'unsupported-model'}});
+ assert.equal(invalid.statusCode,400,'unknown Codex model must be rejected');
+ const changed=await app.inject({method:'PATCH',url:'/api/projects/'+project+'/team/manager/model',payload:{model:'gpt-6-sol'}});
+ assert.equal(changed.statusCode,200,changed.body);
+ const configured=await app.inject({url:'/api/projects/'+project+'/team'});
+ assert.equal(configured.json().agents.find(a=>a.role==='manager').model,'gpt-6-sol');
+ const reset=await app.inject({method:'PATCH',url:'/api/projects/'+project+'/team/manager/model',payload:{model:null}});
+ assert.equal(reset.statusCode,200,reset.body);
+ assert.equal((await app.inject({url:'/api/projects/'+project+'/team'})).json().agents.find(a=>a.role==='manager').model,null);
 });
 
 

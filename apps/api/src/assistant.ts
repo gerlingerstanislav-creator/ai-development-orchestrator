@@ -114,7 +114,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   }
 
  const decideTaskManagerAction:ManagerDeps['decideAction']=async({projectId,taskId,message,snapshot})=>{
-  const config=await configuration(projectId);
+  const config=await resolveRoleAiSettings(pool,projectId,'manager',await configuration(projectId));
   if(!config.enabled)throw Error('AI отключён в настройках проекта');
   const clarification=snapshot.requests.find(request=>request.kind==='analysis_clarifications'&&request.status==='open');
   const prompt=[
@@ -227,7 +227,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    await processEvent(id,jobId,stage,message);
   };
   try{
-   const config=await configuration(id);
+   const config=await resolveRoleAiSettings(pool,id,'analyst',await configuration(id));
    if(!config.enabled)throw Error('Включи AI в настройках проекта.');
    if(job.draft_result){
     await saveImportedDraft(id,jobId,job.draft_result,'analyst:'+jobId,input);
@@ -732,7 +732,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   if(!result.rowCount)return reply.code(404).send({error:'Задача не найдена'});
   const task=result.rows[0];
   if(mode!=='chat'&&task.stage!=='analysis')return reply.code(409).send({error:'Перемести задачу в колонку «Анализ»'});
-  const config=await configuration(id);
+  const config=await resolveRoleAiSettings(pool,id,'analysis',await configuration(id));
   if(!config.enabled)return reply.code(409).send({error:'Включи ручной AI в настройках проекта'});
   const other=await pool.query('SELECT id,title,description,stage FROM tasks WHERE project_id=$1 AND id<>$2 ORDER BY updated_at DESC LIMIT 30',[id,taskId]);
   const link=(await pool.query('SELECT repository,default_branch,target_branch FROM project_git_repositories WHERE project_id=$1',[id])).rows[0];
