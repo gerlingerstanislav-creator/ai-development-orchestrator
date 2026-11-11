@@ -1,0 +1,4 @@
+Runner seccomp profile derived from Moby Profiles, seccomp/default.json at 6049e40058759e8a1673ac1090ec6a7e36b9c9bd, Apache-2.0.
+https://github.com/moby/profiles/blob/6049e40058759e8a1673ac1090ec6a7e36b9c9bd/seccomp/default.json
+
+ADO adds namespace setup for bubblewrap and leaves the rest of the Docker allowlist intact.
