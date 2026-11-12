@@ -32,7 +32,7 @@ import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
 import {updateCurrentSpecification} from './requirements.js';
 import {z} from 'zod';
-import {checkedWithActualCapabilities} from './qa-evidence.js';
+import {evaluateQaRun} from './modules/quality/domain/qa-verdict.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
@@ -791,38 +791,10 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   const singlePass=snapshot?.singlePass===true;
   if(singlePass&&status==='completed'&&remote.executionVerified!==true)
    return failRunnerRun('testing',projectId,testId,'Runner не подтвердил исполнение проверок. Обновите Codex Runner и повторите QA.');
-  const adHoc=snapshot?.singlePass===true&&snapshot.adHoc===true;
-  const expected=adHoc?z.array(z.object({id:z.string().regex(/^qa-[1-9][0-9]?$/),title:z.string().trim().min(3).max(240)})).max(30).safeParse(remote.cases??[]):null;
-  const cases:Array<{id:string;title?:string}>=adHoc
-   ? [...new Map((expected?.success?expected.data:[]).map(item=>[item.id,item])).values()]
-   : Array.isArray(snapshot?.cases)?snapshot.cases:[];
-  const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
-  const providedMap=new Map<string,{result:string;evidence:string;reason:string;browserVerified:boolean}>();
-  for(const item of provided){
-   if(typeof item?.case_id==='string'&&typeof item?.result==='string'&&['passed','failed','blocked','not_run'].includes(item.result)){
-    const evidence=String(item.evidence||'').slice(0,3000).trim();
-    const reason=String(item.reason||'unknown').slice(0,60);
-    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason,browserVerified:item.browserVerified===true});
-   }
-  }
-  const supplied=cases.map(c=>{
-   const candidate=providedMap.get(c.id);
-   return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата',browserVerified:candidate?.browserVerified===true};
-  });
-  const {cases:checked,visualToolGap}=checkedWithActualCapabilities(cases,supplied,String(remote.capabilities||''));
-  let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
   const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
-  const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version||
-   (row.rows[0].qa_plan_snapshot?.simplified===true&&remote.testedCommit!==currentSpec.rows[0].spec_reviewed_commit);
-  if(!cases.length||!remote.testedCommit||!Array.isArray(remote.checks))verdict='blocked';
-  if(checked.some(c=>c.result==='failed')||(Array.isArray(remote.checks)&&remote.checks.some((c:any)=>c.result==='failed'))||(Array.isArray(remote.findings)&&remote.findings.length>0))verdict='failed';
-  else if((checked.some(c=>c.result!=='passed')||visualToolGap||snapshot?.singlePass===true&&!remote.executionVerified)&&verdict==='passed')verdict='blocked';
-  // A changed specification invalidates the entire run even if old cases failed.
-  if(staleSpecification)verdict='blocked';
-  const ran=checked.filter(c=>c.result==='passed'||c.result==='failed').length;
-  const outcome=singlePass&&status==='completed'?'Проверено '+ran+' из '+cases.length+'.':message;
-  const screenshots=Array.isArray(remote.screenshots)?remote.screenshots.filter((s:any)=>s?.mime==='image/jpeg'&&typeof s.data==='string'&&s.data.length<=250000&&/^[A-Za-z0-9+/=]+$/.test(s.data)).slice(0,3):[];
-  const report={screenshots,summary:remote.summary||outcome,executionVerified:remote.executionVerified===true,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
+  const {adHoc,cases,checked,verdict,outcome,report}=evaluateQaRun({
+   snapshot,remote,status,message,qaSpecVersion:row.rows[0].qa_spec_version,currentSpec
+  });
   const client=await pool.connect();
   try{
    await client.query('BEGIN');

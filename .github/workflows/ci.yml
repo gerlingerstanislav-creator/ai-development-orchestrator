@@ -68,6 +68,7 @@ jobs:
           node --test apps/api/tests/project-lifecycle-api.test.mjs
           node --test apps/api/tests/project-agent-availability.test.mjs
           node --test apps/api/tests/runner-recovery.test.mjs
+          node --test apps/api/tests/qa-verdict-policy.test.mjs
           node --test apps/api/tests/background-processes.test.mjs apps/api/tests/legacy-development-reconciler.test.mjs
           node --test apps/api/tests/project-process-controller.test.mjs
           node --test apps/api/tests/documentation-module.test.mjs
