@@ -33,7 +33,8 @@ export function createLegacyDevelopmentReconciler(
   }catch(error){
    const message=error instanceof Error?error.message:String(error);
    if(message.includes('Задача не найдена'))return;
-   detail='Связь с исполнителем временно недоступна · '+detail;
+   const outage='Связь с исполнителем временно недоступна · ';
+   if(!detail.startsWith(outage))detail=outage+detail;
    remote=undefined;
   }
   if(!['queued','running','completed','failed'].includes(status))return;
