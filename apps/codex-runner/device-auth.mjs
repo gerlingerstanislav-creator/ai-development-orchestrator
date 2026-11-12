@@ -23,8 +23,9 @@ function runLogin(){
  const collect=(chunk)=>{log=(log+chunk.toString('utf8')).slice(-10000)};
  child.stdout.on('data',collect);child.stderr.on('data',collect);
  child.on('error',e=>{loginState='error';log+='\n'+e.message;});
- child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const {attempts:connections,successes,lastError:proxyError}=codexProxy.stats();void Promise.all([probeAuthEndpoint(),codexProxy.probe()]).then(([probe,tunnel])=>{diagnosis=probe+'; '+tunnel+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
- const deadline=setTimeout(()=>{if(login===child){child.kill('SIGTERM');loginState='expired';}},10*60*1000);
+ let deadline;
+ child.on('exit',(code,signal)=>{clearTimeout(deadline);if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const {attempts:connections,successes,lastError:proxyError}=codexProxy.stats();void Promise.all([probeAuthEndpoint(),codexProxy.probe()]).then(([probe,tunnel])=>{diagnosis=probe+'; '+tunnel+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
+ deadline=setTimeout(()=>{if(login===child){child.kill('SIGTERM');loginState='expired';}},10*60*1000);
  deadline.unref();
 }
 function deviceInfo(){
@@ -40,7 +41,7 @@ function deviceInfo(){
  function activeLogin(){return loginState!=='idle'?deviceInfo():null;}
  async function logout(){
   if(login){login.kill('SIGTERM');login=null;}
-  loginState='idle';log='';
+  loginState='idle';log='';diagnosis='';started=0;
   try{await execFileAsync('codex',['logout'],{timeout:10000,env:cliEnv});}catch{}
  }
  return {connected,runLogin,deviceInfo,activeLogin,logout};
