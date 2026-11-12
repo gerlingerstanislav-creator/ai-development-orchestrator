@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import Fastify from 'fastify';
 import {setTimeout as delay} from 'node:timers/promises';
 import pg from 'pg';
-import {registerProjectManagerInbox,checkProjectManagerWatch,initProjectManagerInbox,deliverProjectManagerInbox,pmInboxWorkflowId,failProjectManagerInbox,publishOwnerQuestionsToPmChat} from '../dist/project-manager-inbox.js';
+import {registerProjectManagerInbox,checkProjectManagerWatch,initProjectManagerInbox,deliverProjectManagerInbox,pmInboxWorkflowId,failProjectManagerInbox,publishOwnerQuestionsToPmChat,ensureProjectManagerActionOrder,shouldCreateProjectManagerOrder} from '../dist/project-manager-inbox.js';
 import {executeAgentTool} from '../dist/agent-tool-executor.js';
 import {toolsForRole} from '../dist/agent-tools.js';
 
@@ -62,10 +62,13 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  await until(async()=>!!(await read(firstId)).pm_dispatched_at);
  assert.equal(deliveries.filter(id=>id==='project-pm-'+firstId).length,1);
  assert.equal((await send({message:'Другой текст',requestId:key})).statusCode,409);
- assert.equal((await db.query('SELECT count(*)::int AS count FROM project_pm_orders')).rows[0].count,1);
+ assert.equal(first.json().order_id,null,'plain chat is not an order');
+ assert.equal((await db.query('SELECT count(*)::int AS count FROM project_pm_orders')).rows[0].count,0);
 
- const waitingOrder=first.json().order_id;
- await db.query("UPDATE project_pm_orders SET status='waiting_user' WHERE id=$1",[waitingOrder]);
+ // Simulate an existing owner question emitted by the PM after an earlier action.
+ const waitingOrder=randomUUID();
+ await db.query("INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,status,summary) VALUES($1,$2,$3,$4,'waiting_user','Вопрос ПМ')",[waitingOrder,project,user,firstId]);
+ await db.query('UPDATE assistant_messages SET pm_order_id=$2 WHERE id=$1',[firstId,waitingOrder]);
  const answerKey=randomUUID();
  const answer={message:'Выбираю 5 минут',replyTo:firstId,topicId:topic,requestId:answerKey};
  const ownerAnswer=await send(answer);
@@ -76,6 +79,7 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  assert.equal(reply.reply_to,firstId);
  assert.equal(reply.topic_id,topic);
  assert.equal(reply.pm_order_id,waitingOrder);
+ assert.equal((await db.query('SELECT count(*)::int AS count FROM project_pm_orders')).rows[0].count,1,'answer reuses the waiting order');
  await db.query("UPDATE project_chat_topics SET status='closed' WHERE id=$1",[topic]);
  assert.deepEqual((await send(answer)).json(),ownerAnswer.json(),'lost receipt can be recovered after the topic closes');
  assert.equal((await send({message:'Ответ',replyTo:randomUUID()})).statusCode,400);
@@ -217,4 +221,48 @@ test('PM observes QA retry cycle once and resumes after an infrastructure failur
  assert.equal((await db.query("SELECT status FROM project_pm_orders WHERE id=$1",[order])).rows[0].status,'queued');
  const rows=(await db.query("SELECT * FROM project_pm_order_events WHERE kind='resume'")).rows;
  assert.equal(rows.length,1,'one durable PM wakeup for each QA cycle');
+});
+
+
+test('PM tracks real tool actions without creating orders for chat reads',async t=>{
+ const db=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await db.connect();
+ const schema='pmaction_'+randomUUID().replaceAll('-','');
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await pool.end();await db.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await db.end();});
+ await db.query('CREATE SCHEMA '+schema);
+ await db.query('SET search_path TO '+schema+',public');
+ await db.query(`
+  CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,pm_order_id uuid);
+  CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,source_message_id uuid,topic_id uuid,status text,summary text);
+  CREATE TABLE project_pm_decisions(id uuid PRIMARY KEY,project_id uuid,source_message_id uuid,order_id uuid);
+  CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text);
+ `);
+ const projectId=randomUUID(),actorId=randomUUID(),messageId=randomUUID();
+ await db.query('INSERT INTO assistant_messages(id,project_id) VALUES($1,$2)',[messageId,projectId]);
+ const base={projectId,messageId,actorId,topicId:null,summary:'Проверь статус',events:[]};
+ assert.equal(await ensureProjectManagerActionOrder(pool,base),null);
+ assert.equal(await ensureProjectManagerActionOrder(pool,{...base,events:[
+  {tool:'tasks.read',result:{id:randomUUID()}},
+  {tool:'pm.orders.list',result:{orders:[]}},
+  {tool:'processes.report',result:{ok:true}},
+  {tool:'memory.record',result:{ok:true}}
+ ]}),null);
+ assert.equal(shouldCreateProjectManagerOrder([{tool:'pm.decisions.record',result:{recorded:false}}]),false);
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM project_pm_orders')).rows[0].n,0);
+ const decision=randomUUID();
+ await db.query('INSERT INTO project_pm_decisions(id,project_id,source_message_id) VALUES($1,$2,$3)',[decision,projectId,messageId]);
+ const action={...base,summary:'Создай задачу',events:[{tool:'tasks.create',result:{id:randomUUID()}}]};
+ const orderId=await ensureProjectManagerActionOrder(pool,action);
+ assert.ok(orderId);
+ assert.equal(await ensureProjectManagerActionOrder(pool,action),orderId,'retries reuse the order');
+ assert.deepEqual((await db.query('SELECT status,summary,source_message_id FROM project_pm_orders')).rows,
+  [{status:'working',summary:'Создай задачу',source_message_id:messageId}]);
+ assert.equal((await db.query('SELECT pm_order_id FROM assistant_messages WHERE id=$1',[messageId])).rows[0].pm_order_id,orderId);
+ assert.equal((await db.query('SELECT order_id FROM project_pm_decisions WHERE id=$1',[decision])).rows[0].order_id,orderId,'decision is linked to the eventual order');
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM project_pm_order_events')).rows[0].n,1);
+ const second=randomUUID();
+ await db.query('INSERT INTO assistant_messages(id,project_id) VALUES($1,$2)',[second,projectId]);
+ assert.ok(await ensureProjectManagerActionOrder(pool,{...base,messageId:second,events:[],delegated:true}),
+  'delegated work is visible as an order');
 });

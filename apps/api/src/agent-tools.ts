@@ -5,6 +5,7 @@ import {agentMemoryContext} from './project-team.js';
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
+ 'pm.decisions.list','pm.orders.list','iterations.preview_plan','approvals.list','discussions.list',
  'tasks.list','tasks.read','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','memory.list','documentation.request_reset',
  'history.search','discussions.read','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
@@ -83,6 +84,14 @@ export const agentToolCatalog=[
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
  tool('memory.record','Сохранить опыт либо предложить улучшение инструкции. Опыт не становится автоматически обязательным правилом.',{kind:field('string','observation или instruction_suggestion'),text:str,evidence:str,idempotency_key:idem},['kind','text'])
 ];
+// Orders track successful mutations, not reads or routine agent telemetry.
+// Catalog metadata keeps future tools classified without keyword heuristics.
+const pmNonOrderTools=new Set(['pm.orders.update','processes.report','memory.record']);
+export function isProjectManagerOrderAction(name:string){
+ const tool=agentToolCatalog.find(entry=>entry.name===name);
+ return !!tool&&!tool.annotations.readOnlyHint&&!pmNonOrderTools.has(name);
+}
+
 export const readerRoles=['manager','analyst','business_analyst','analysis','development','testing','documentation','devops','architect'] as const;
 export type AgentRole=typeof readerRoles[number];
 export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;processId?:string;actorId?:string};
