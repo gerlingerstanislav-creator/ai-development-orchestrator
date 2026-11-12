@@ -34,6 +34,7 @@ node /opt/codex-runner/browser-client.mjs start
 node /opt/codex-runner/browser-client.mjs start /example.html
 node /opt/codex-runner/browser-client.mjs goto /example.html
 node /opt/codex-runner/browser-client.mjs viewport 390 844
+node /opt/codex-runner/browser-client.mjs inspect '.line'  # discover real DOM and computed geometry/colors
 node /opt/codex-runner/browser-client.mjs assert --case CASE_ID 'document.querySelectorAll(".item").length===8'
 node /opt/codex-runner/browser-client.mjs assert --check visual-smoke 'document.readyState==="complete"'
 node /opt/codex-runner/browser-client.mjs screenshot
