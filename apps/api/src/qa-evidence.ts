@@ -1,3 +1,4 @@
+import {isVisualAcceptanceCase as sharedVisualCase} from './qa-visual-case.mjs';
 /**
  * The test agent's natural-language claim is not evidence of having run a
  * browser. A static CSS/code inspection cannot satisfy a visual acceptance
@@ -5,10 +6,8 @@
  */
 export type VisualCase={id:string;title?:string;description?:string;area?:string;execution_mode?:string;steps?:Array<{action?:string;expected?:string}>};
 export type ReportedCase={case_id:string;result:string;reason:string;evidence:string;browserVerified?:boolean};
-export function isVisualAcceptanceCase(test:VisualCase):boolean{
- const content=[test.title,test.description,test.area,...(test.steps||[]).flatMap(x=>[x.action,x.expected])].join(' ');
- return /(визуальн|отображен|выгляд|интерфейс|кнопк|расположен|окружност|стрелк|фигур|цвет|адаптив|скриншот|браузер|отрисов|верстк|перекрыв|размер(?:а|ов)? экрана|ui\b|css\b|canvas|svg|pixel|layout|render|click|responsive|screenshot|viewport|scroll)/i.test(content);
-}
+export function isVisualAcceptanceCase(test:VisualCase):boolean{return sharedVisualCase(test);}
+
 export function browserPresent(capabilities:string):boolean{
  return /(?:^|\n)(?:(?:chromium|chromium-browser|google-chrome): available|qa_browser: playwright chromium available)(?:\n|$)/.test(capabilities);
 }

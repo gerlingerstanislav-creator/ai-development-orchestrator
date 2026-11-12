@@ -260,6 +260,8 @@ export async function applyLegacySchema(pool:Pool,workflowStageDescriptions:Reco
  ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS cycle_id uuid;
  ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS runner_spec_version integer;
  ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS cycle_attempt int not null default 0;
+ ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS result_kind text;
+ ALTER TABLE ai_task_runs ADD COLUMN IF NOT EXISTS result_commit text;
  CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_task_cycle_attempt ON ai_task_runs(cycle_id,cycle_attempt) WHERE cycle_id IS NOT NULL;
  CREATE TABLE IF NOT EXISTS ai_test_runs (
   id uuid primary key,project_id uuid not null references projects(id) on delete cascade,

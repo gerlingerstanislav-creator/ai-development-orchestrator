@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {incompleteQaCases,qaCompletionPrompt,completedQaSummary} from './qa-completion.mjs';
+import {incompleteQaCases,qaCompletionPrompt,completedQaSummary,applyVisualEvidenceGate} from './qa-completion.mjs';
 import {verifyQaExecution} from './qa-run-evidence.mjs';
 
 const visualCase={
@@ -79,4 +79,44 @@ test('previously blocked case can be verified only by its own late proof',()=>{
  ]});
  assert.equal(now.caseResults[0].result,'passed');
  assert.equal(now.verdict,'passed');
+});
+
+test('QA never announces 2/2 when both visual criteria lack case-linked Chromium assertions',()=>{
+ const claimed={
+  verdict:'passed',summary:'Все критерии подтверждены!',
+  caseResults:[
+   {case_id:'qa-1',title:visualCase.title,result:'passed',reason:'executed',browserVerified:false,evidence:'npm test PASS'},
+   {case_id:'qa-2',title:browserCase.title,result:'passed',reason:'executed',browserVerified:false,evidence:'npm test PASS'}
+  ],checks:[{name:'npm test',result:'passed'}]
+ };
+ const checked=applyVisualEvidenceGate(claimed,[visualCase,browserCase],{browserAvailable:true});
+ assert.equal(checked.verdict,'blocked');
+ assert.deepEqual(checked.caseResults.map(c=>c.result),['blocked','blocked']);
+ assert.deepEqual(incompleteQaCases(checked,[visualCase,browserCase],{browserAvailable:true}).map(c=>c.id),['qa-1','qa-2']);
+ const summary=completedQaSummary(checked,{retriedIds:['qa-1','qa-2']});
+ assert.match(summary,/Проверено 0 из 2/);
+ assert.doesNotMatch(summary,/Все критерии подтверждены фактическими проверками/);
+});
+test('QA accepts both visual cases only after real per-case browser proof',()=>{
+ const data={
+  verdict:'blocked',caseResults:[
+   {case_id:'qa-1',title:visualCase.title,result:'blocked',reason:'unverified',evidence:''},
+   {case_id:'qa-2',title:browserCase.title,result:'blocked',reason:'unverified',evidence:''}
+  ],checks:[],findings:[],summary:'Продолжение тестирования'
+ };
+ const browser=[
+  {kind:'case',id:'qa-1',result:'passed',expression:'document.querySelectorAll(".line").length === 8'},
+  {kind:'case',id:'qa-2',result:'passed',expression:'[...document.querySelectorAll(".line")].every(e=>e.getBoundingClientRect().width>0)'}
+ ];
+ const checked=applyVisualEvidenceGate(verifyQaExecution(data,[],[],{browserEvidence:browser}),
+  [visualCase,browserCase],{browserAvailable:true});
+ assert.equal(checked.verdict,'passed');
+ assert.equal(checked.caseResults.every(c=>c.browserVerified===true),true);
+ assert.match(completedQaSummary(checked),/Проверено 2 из 2/);
+});
+test('focused QA instructions require an actual browser assertion, not narrative proof',()=>{
+ const prompt=qaCompletionPrompt([{id:'qa-1',title:'Восемь видимых параллельных линий',steps:[]}],{taskTitle:'Линии'});
+ assert.match(prompt,/ОБЯЗАТЕЛЬНО выполни реальную browser-client/);
+ assert.match(prompt,/assert --case/);
+ assert.match(prompt,/не просто напиши об этом/);
 });

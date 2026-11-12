@@ -32,7 +32,8 @@ test('the development dispatcher fills each project capacity in the same reconci
   CREATE TABLE connections(id uuid,provider text);
   CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text);
   CREATE TABLE agent_peer_queue(project_id uuid,role text,status text);
-  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,message text DEFAULT '',cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
+  CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,task_id uuid,status text,verdict text,completed_at timestamptz DEFAULT now());
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text);
   CREATE TABLE iteration_execution_queue(project_id uuid,iteration_id uuid NOT NULL,task_id uuid,requested_by uuid,

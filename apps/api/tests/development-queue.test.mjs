@@ -28,7 +28,8 @@ test('development queue binds approval, skips blocked tasks and retries one stab
   CREATE TABLE connections(id uuid,provider text);
   CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text);
   CREATE TABLE agent_peer_queue(project_id uuid,role text,status text);
-  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,message text NOT NULL DEFAULT '',cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
+  CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,task_id uuid,status text,verdict text,completed_at timestamptz DEFAULT now());
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text);
   CREATE TABLE iteration_execution_queue(project_id uuid,iteration_id uuid NOT NULL,task_id uuid,requested_by uuid,
@@ -127,7 +128,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  await releaseTaskOrchestration(db,project,automatic,(await status(automatic)).run_id);
  await dispatch();
  assert.equal(starts.length,4,'already completed work without new feedback must not rerun');
- await db.query("UPDATE tasks SET test_feedback='QA: fix 360px responsive circles, keep existing PR',git_branch=$2,pr_url=$3 WHERE id=$1",
+ await db.query("UPDATE tasks SET test_feedback='QA: fix 360px responsive circles, keep existing PR',git_branch=$2,pr_url=$3,updated_at=now() WHERE id=$1",
   [first,first,'https://github.com/example/repo/pull/9']);
  const oldRunId=(await status(first)).run_id;
  await dispatch();
@@ -147,4 +148,37 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  await releaseTaskOrchestration(db,project,first,next.run_id);
  await dispatch();
  assert.equal(starts.length,5,'failed rework must not requeue itself forever without new comments');
+
+ // A failed developer run itself updates tasks.test_feedback + tasks.updated_at.
+ // With the old r.created_at >= t.updated_at guard, the same Git 128 failure
+ // starts indefinitely every 5-second scheduling tick.
+ const broken=randomUUID(),priorRun=randomUUID();
+ const exactFailure='git завершился с кодом 128: fatal: refs/remotes/origin/main...HEAD: no merge base';
+ await db.query("INSERT INTO tasks(id,project_id,iteration_id,stage,analysis_state,test_feedback,updated_at) VALUES($1,$2,$3,'development','approved',$4,now())",
+  [broken,project,iteration,exactFailure]);
+ await db.query("INSERT INTO ai_task_runs(id,project_id,task_id,triggered_by,model,status,message,created_at) VALUES($1,$2,$3,$4,'gpt-6-luna','failed',$5,now()-interval '2 minutes')",
+  [priorRun,project,broken,actor,exactFailure]);
+ await dispatch();
+ await dispatch();
+ assert.equal(starts.length,5,'same developer failure must not create another cycle even though task timestamp is newer');
+ // A truly new owner/QA instruction remains eligible for a new attempt.
+ await db.query("UPDATE tasks SET test_feedback=$2,updated_at=now() WHERE id=$1",
+  [broken,'QA нашёл новый воспроизводимый дефект на обновлённом SHA; требуется исправление']);
+ await dispatch();
+ assert.equal(starts.length,6,'new distinct feedback permits another attempt without bypassing QA');
+ assert.equal(starts.at(-1).args[0].taskId,broken);
+ await db.query("UPDATE ai_task_runs SET status='completed' WHERE task_id=$1 AND status IN ('queued','running')",[broken]);
+ await releaseTaskOrchestration(db,project,broken,(await status(broken)).run_id);
+ // A blocked QA must never be interpreted as a request for another developer
+ // cycle. Only an actual reproducible failed test is eligible for rework.
+ const qaBlocked=randomUUID(),qaRun=randomUUID();
+ await db.query("INSERT INTO tasks(id,project_id,iteration_id,stage,analysis_state,test_feedback) VALUES($1,$2,$3,'development','approved','QA: Chromium asserts were not executed')",
+  [qaBlocked,project,iteration]);
+ await db.query("INSERT INTO ai_test_runs(id,task_id,status,verdict) VALUES($1,$2,'completed','blocked')",[qaRun,qaBlocked]);
+ await dispatch();
+ assert.equal(starts.length,6,'blocked QA cannot auto-assign the developer');
+ await db.query("UPDATE ai_test_runs SET verdict='failed' WHERE id=$1",[qaRun]);
+ await dispatch();
+ assert.equal(starts.length,7,'a real QA failure can authorize developer rework');
+ assert.equal(starts.at(-1).args[0].taskId,qaBlocked);
 });

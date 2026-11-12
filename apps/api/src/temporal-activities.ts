@@ -528,6 +528,14 @@ export async function startDevelopment(args:TaskRef){
   WHERE id=$1 AND status IN ('queued','running') AND COALESCE(runner_spec_version,$2)=$2 RETURNING id`,[runId,task.spec_version]);
  if(!pinned.rowCount)throw ApplicationFailure.nonRetryable('Попытка разработки изменилась или отменена');
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
+ // Branch identity belongs to the TASK, not to the Codex attempt or cycle.
+ // A resumed QA rework must continue the same task-owned branch.
+ const linkedBranch=String(task.git_branch||'');
+ if(linkedBranch&&linkedBranch!==taskId&&linkedBranch!==baseBranch&&task.implementation_kind!=='already_implemented')
+  throw ApplicationFailure.nonRetryable('Задача уже привязана к другой рабочей ветке: '+linkedBranch+'. Автоматически менять её нельзя.');
+ await pool.query("UPDATE tasks SET git_branch=$3 WHERE id=$1 AND project_id=$2 AND (git_branch IS NULL OR git_branch=$3 OR git_branch=$4 OR implementation_kind='already_implemented')",
+  [taskId,projectId,taskId,baseBranch]);
+ await pool.query("UPDATE ai_task_runs SET branch=$2 WHERE id=$1 AND status IN ('queued','running')",[runId,taskId]);
  const feedback=String(task.test_feedback||'').slice(0,3800);
  // A stale project-document review is advisory. Only live owner questions and
  // task analysis gates block the initial development; rework may proceed on PR.
@@ -559,7 +567,7 @@ export async function startDevelopment(args:TaskRef){
  const agentPrompt=composeAgentPrompt(agentPromptParts);
  const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,agentPrompt,agentPromptZones:agentPromptZones(agentPromptParts),projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
+  title:task.title,description,reworkFeedback:feedback,agentPrompt,agentPromptZones:agentPromptZones(agentPromptParts),projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
  if(!await dispatch(job,beforeStart))return;
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -604,6 +612,14 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
    await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,msg]);
    return {status:'failed',message:msg};
   }
+  const noChangeReview=status==='completed'&&!reusedBase?remote.reworkReview:null;
+  if(noChangeReview){
+   const sha=String(noChangeReview.commit||'');
+   if(!/^[a-f0-9]{40}$/i.test(sha)||String(noChangeReview.summary||'').trim().length<40||
+    !Array.isArray(noChangeReview.files)||!noChangeReview.files.length||
+    !Array.isArray(noChangeReview.reasons)||!noChangeReview.reasons.length||!remote.prUrl)
+    return failRunnerRun('development',projectId,runId,'Разработчик не объяснил, почему по замечаниям QA нет необходимости менять код');
+  }
   if(status==='completed'&&reusedBase){
    const proof=remote.implementationEvidence,sha=String(remote.verifiedCommit||'');
    if(!/^[a-f0-9]{40}$/i.test(sha)||proof?.commit!==sha||!Array.isArray(proof?.files)||!proof.files.length||!Array.isArray(proof?.criteria)||!proof.criteria.length){
@@ -627,14 +643,21 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   }
   if(status==='completed'){
     await recordAgentLearning(pool,{projectId,role:'development',runId,body:remote.learningSuggestion,evidence:'Запуск разработки '+runId+'; '+String(remote.prUrl||'')});
-   if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'development',authorName:'AI-разработчик',targetStage:'all',kind:'handoff',body:String(remote.handoffNote),sourceKey:'developer:'+runId,sourceRunId:runId});
+   if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{
+    projectId,taskId,authorStage:'development',authorName:'AI-разработчик',
+    targetStage:noChangeReview?'testing':'all',kind:noChangeReview?'resolution':'handoff',
+    body:String(remote.handoffNote),sourceKey:'developer:'+runId,sourceRunId:runId
+   });
   }
   const db=await pool.connect();
   try{
    await db.query('BEGIN');
-   const saved=await db.query(`UPDATE ai_task_runs SET status=$2,message=$3,branch=$4,pr_url=$5,completed_at=now()
+   const saved=await db.query(`UPDATE ai_task_runs SET status=$2,message=$3,branch=$4,pr_url=$5,completed_at=now(),
+     result_kind=$6,result_commit=$7
     WHERE id=$1 AND status IN ('queued','running') RETURNING id`,
-   [runId,status,message,remote.branch||null,remote.prUrl||null]);
+   [runId,status,message,remote.branch||null,remote.prUrl||null,
+    noChangeReview?'no_changes_needed':reusedBase?'already_implemented':status==='completed'?'code_changed':null,
+    noChangeReview?.commit||remote.verifiedCommit||null]);
    if(!saved.rowCount){
     await db.query('ROLLBACK');
     return {status:'failed',message:'Попытка уже завершена или отменена'};
@@ -650,6 +673,13 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
      [projectId,taskId,String(remote.prUrl)]);
     await db.query("UPDATE tasks SET stage='testing',implementation_kind='pr',implementation_commit=NULL,implementation_evidence=NULL,git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
      [taskId,remote.branch||taskId,remote.prUrl,match?Number(match[1]):null,remote.baseBranch||null,projectId]);
+    await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,NULL,'pr_created',$3)",
+     [randomUUID(),taskId,'Рабочая ветка '+(remote.branch||taskId)+' · PR: '+String(remote.prUrl||'')]);
+    if(noChangeReview)await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,NULL,'developer_no_changes',$3)",
+     [randomUUID(),taskId,('Разработчик не менял код и вернул задачу на QA для повторной проверки на SHA '+noChangeReview.commit+
+      '. Комментарий: '+noChangeReview.summary+'; обоснование: '+noChangeReview.reasons.join('; ')+
+      '; файлы: '+noChangeReview.files.join(', ')+'; PR: '+String(remote.prUrl)).slice(0,2800)]);
+
    }
    await db.query('COMMIT');
   }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
@@ -929,6 +959,24 @@ export async function rejectTestedTask(args:{projectId:string;taskId:string;cycl
  const test=await pool.query('SELECT report FROM ai_test_runs WHERE id=$1',[testId]);
  const report=test.rows[0]?.report||{};
  const feedback=JSON.stringify(report).slice(0,10000);
+ const lastDeveloper=await pool.query(
+  "SELECT result_kind,result_commit FROM ai_task_runs WHERE cycle_id=$1 AND cycle_attempt=$2 AND project_id=$3 AND task_id=$4 ORDER BY created_at DESC LIMIT 1",
+  [cycleId,attempt,projectId,taskId]);
+ const unchanged=lastDeveloper.rows[0];
+ if(unchanged?.result_kind==='no_changes_needed'&&unchanged.result_commit&&unchanged.result_commit===report.commit){
+  // The developer has explicitly disputed the prior QA feedback without
+  // changing this SHA. Another identical automatic developer cycle will not
+  // resolve the contradiction: keep QA's failed verdict and ask PM to decide
+  // whether tests, requirements or implementation need attention.
+  const detail=('QA нашёл дефекты после подтверждения разработчиком отсутствия необходимых правок на SHA '+
+   report.commit+'. Повторная автоматическая разработка остановлена; ПМ должен разобрать расхождение с QA. '+feedback).slice(0,2400);
+  await pool.query("UPDATE tasks SET stage='testing',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2",
+   [taskId,projectId,detail]);
+  await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'qa_dev_disagreement',$3)",
+   [randomUUID(),taskId,detail]);
+  await event(projectId,testId,'testing','needs_attention',detail,'warning');
+  return null;
+ }
  await pool.query("UPDATE tasks SET stage='development',test_feedback=$3,test_attempts=$4,updated_at=now() WHERE id=$1 AND project_id=$2",
   [taskId,projectId,feedback,attempt+1]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',

@@ -213,12 +213,27 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
     -- Never restart finished work without a real rework reason. For returns
     -- from QA or PM, test_feedback is the explicit outstanding delta.
     AND (NULLIF(t.test_feedback,'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id))
+    -- QA environment/tool gaps are not product defects. Even if a manager
+    -- accidentally moves the card back to Development, do not auto-charge
+    -- Codex to modify code for unverified browser assertions. The PM can
+    -- still explicitly authorize a real new developer task when appropriate.
+    AND COALESCE((SELECT qa.verdict FROM ai_test_runs qa
+      WHERE qa.task_id=t.id AND qa.status='completed'
+      ORDER BY qa.completed_at DESC,qa.id DESC LIMIT 1),'') <> 'blocked'
     AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners o WHERE o.task_id=t.id AND o.state='active')
     AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status IN ('queued','running'))
-    -- A failed rework attempt needs fresh task feedback or an explicit
-    -- user retry. Do not flood Temporal with the same failing job forever.
-    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status='failed'
+    -- Completing an attempt must not immediately reschedule the SAME feedback
+    -- even if the card has not yet been advanced by the Temporal worker.
+    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status='completed'
       AND r.created_at >= t.updated_at)
+    -- An internal failure writes tasks.updated_at while persisting its
+    -- diagnostic into test_feedback. Comparing only timestamps therefore
+    -- loops forever: each failed attempt makes itself appear "old".
+    -- The same failed diagnostic must never trigger another automatic run.
+    -- Distinct QA/owner feedback can explicitly authorize another attempt.
+    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status='failed'
+      AND (r.created_at >= t.updated_at OR
+       (NULLIF(t.test_feedback,'') IS NOT NULL AND r.message=t.test_feedback)))
     AND NOT EXISTS(SELECT 1 FROM iteration_execution_queue q WHERE q.project_id=t.project_id AND q.task_id=t.id AND q.status IN ('queued','dispatching'))
    ORDER BY t.priority,t.created_at LIMIT 25
    ON CONFLICT(project_id,task_id) DO UPDATE SET iteration_id=EXCLUDED.iteration_id,requested_by=EXCLUDED.requested_by,

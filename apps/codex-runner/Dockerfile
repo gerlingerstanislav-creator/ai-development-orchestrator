@@ -19,9 +19,10 @@ COPY apps/codex-runner/server.mjs ./server.mjs
 COPY apps/codex-runner/command-executor.mjs ./command-executor.mjs
 COPY apps/codex-runner/codex-proxy.mjs ./codex-proxy.mjs
 COPY apps/api/src/prompt-assembler.mjs /opt/api/src/prompt-assembler.mjs
+COPY apps/api/src/qa-visual-case.mjs /opt/api/src/qa-visual-case.mjs
 COPY apps/codex-runner/qa-prompt.mjs apps/codex-runner/developer-prompt.mjs apps/codex-runner/qa-tools.md ./
 COPY apps/codex-runner/browser-gateway.mjs apps/codex-runner/browser-client.mjs apps/codex-runner/qa-exec.mjs ./
-COPY apps/codex-runner/agent-context.mjs apps/codex-runner/agent-mcp.mjs apps/codex-runner/job-journal.mjs apps/codex-runner/job-scheduler.mjs apps/codex-runner/development-outcome.mjs apps/codex-runner/execution-policy.mjs apps/codex-runner/qa-preflight.mjs apps/codex-runner/qa-run-evidence.mjs apps/codex-runner/qa-completion.mjs apps/codex-runner/rate-limits.mjs apps/codex-runner/chat-images.mjs ./
+COPY apps/codex-runner/agent-context.mjs apps/codex-runner/agent-mcp.mjs apps/codex-runner/job-journal.mjs apps/codex-runner/job-scheduler.mjs apps/codex-runner/development-outcome.mjs apps/codex-runner/task-branch-history.mjs apps/codex-runner/execution-policy.mjs apps/codex-runner/qa-preflight.mjs apps/codex-runner/qa-run-evidence.mjs apps/codex-runner/qa-completion.mjs apps/codex-runner/rate-limits.mjs apps/codex-runner/chat-images.mjs ./
 # Run exactly the import+HTTP smoke check used in CI against the image
 # rather than just checking server.mjs syntax on the GitHub host.
 COPY apps/codex-runner/startup-smoke.mjs ./startup-smoke.mjs

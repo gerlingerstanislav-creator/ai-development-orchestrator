@@ -13,7 +13,7 @@ import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './jo
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
 import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from './qa-run-evidence.mjs';
-import {incompleteQaCases,qaCompletionPrompt,completedQaSummary} from './qa-completion.mjs';
+import {incompleteQaCases,qaCompletionPrompt,completedQaSummary,applyVisualEvidenceGate} from './qa-completion.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext,scopedAgentPrompt} from './agent-context.mjs';
@@ -21,7 +21,8 @@ import {assembleAgentPrompt} from '../api/src/prompt-assembler.mjs';
 import {buildQaPrompt} from './qa-prompt.mjs';
 import {buildDeveloperPrompt} from './developer-prompt.mjs';
 import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
-import {parseExistingImplementation} from './development-outcome.mjs';
+import {parseExistingImplementation,parseNoChangesNeeded} from './development-outcome.mjs';
+import {taskBranchName,ensureTaskBranchHistory} from './task-branch-history.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -286,7 +287,7 @@ async function runJob(job,state,context){
  const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000,jobId:job.id});
  // Stable branch identity: one Git branch per task; different agents cannot
  // work in that branch concurrently (startNextJobs locks repository+taskId).
- const branch=job.taskId;
+ const branch=taskBranchName(job.taskId);
  try{
   state.message='Клонирование репозитория';
   await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
@@ -307,6 +308,20 @@ async function runJob(job,state,context){
    state.message='Продолжение существующей ветки '+branch;
    await git('fetch','--depth','1','origin','refs/heads/'+branch+':refs/remotes/origin/'+branch);
    await git('checkout','-b',branch,'refs/remotes/origin/'+branch);
+   // A depth-1 clone of main plus a depth-1 fetch of the task branch often
+   // has no merge-base, even when GitHub does. Repair ancestry *before* the
+   // model runs, so a 50-second Codex attempt is not wasted on git 128.
+   const history=await ensureTaskBranchHistory(git,{baseBranch:job.baseBranch,taskBranch:branch});
+   state.branchHistory=history.rehydrated?'restored':'shared';
+   const baseRef='refs/remotes/origin/'+job.baseBranch;
+   let canFastForward=false;
+   try{await git('merge-base','--is-ancestor','HEAD',baseRef);canFastForward=true;}catch{}
+   if(canFastForward){
+    // Only a true fast-forward of the very same task branch is permitted.
+    // No new branch, forced push, synthetic commit or loss of previous work.
+    await git('merge','--ff-only',baseRef);
+    await git('push','origin','HEAD:refs/heads/'+branch);
+   }
   }else if(remoteBranch.status===404){
    await git('checkout','-b',branch);
    state.message='Создание ветки задачи в GitHub';
@@ -339,13 +354,26 @@ async function runJob(job,state,context){
    const head=(await git('rev-parse','HEAD')).stdout.trim();
    const base=(await git('rev-parse','refs/remotes/origin/'+job.baseBranch)).stdout.trim();
    if(head!==base){
-    // The task branch already contains work by a previous developer. Reuse
-    // its PR rather than fabricating another file modification.
+    // Never fabricate a commit when earlier task commits are already present.
+    // QA rework requires an explicit, checkable reason that no edits are
+    // necessary. On initial recovery, the existing PR can simply be reused.
     const diff=(await git('diff','--name-only','refs/remotes/origin/'+job.baseBranch+'...HEAD')).stdout.trim();
     if(!diff)throw Error('Ветка отличается от базовой, но изменений для PR не обнаружено');
+    const rework=String(job.reworkFeedback||'').trim();
+    if(rework){
+     const tracked=(await git('ls-files')).stdout.split(/\r?\n/).filter(Boolean);
+     const review=parseNoChangesNeeded(attempt.answer||'',{headSha:head,trackedFiles:tracked});
+     if(!review)return false; // Ask the developer to explain the no-change decision.
+     assertJobActive(job.id);
+     state.reworkReview=review;
+     state.handoffNote='Исправления не требуются. Повторная проверка QA на SHA '+head+
+      '. '+review.summary+' Проверено: '+review.files.join(', ')+
+      '. Обоснование: '+review.reasons.join(' | ');
+     state.message='Разработчик объяснил отсутствие необходимых правок и вернул тот же PR в QA';
+    }
     state.prUrl=await ensureTaskPullRequest(job,branch,head,(attempt.answer||'').slice(0,6000));
     state.branch=branch;state.completionKind='pr';state.status='completed';
-    state.message='Существующие изменения в ветке переданы в PR без нового коммита';
+    if(!rework)state.message='Существующие изменения в ветке переданы в PR без нового коммита';
     return true;
    }
    const tracked=(await git('ls-files')).stdout.split(/\r?\n/).filter(Boolean);
@@ -354,7 +382,7 @@ async function runJob(job,state,context){
    state.completionKind='already_implemented';
    state.verifiedCommit=head;
    state.implementationEvidence=evidence;
-   state.branch=job.baseBranch;
+   state.branch=branch; // Persistent task branch, even when QA verifies base SHA.
    state.prUrl=null;
    state.handoffNote=evidence.summary;
    state.status='completed';
@@ -366,7 +394,7 @@ async function runJob(job,state,context){
    if(await completeWithoutEdits(attempt))return;
    if(timeLeft()<45000)throw Error('Не представлены ни изменения, ни подтверждение готовой реализации; времени на повторную попытку недостаточно');
    state.message='Уточняет результат разработки: изменения, повторное использование PR или доказательство готового кода';
-   attempt=await runCodex(prompt+'\n\nПовторная попытка: докажи существующую реализацию с RESULT и IMPLEMENTATION_EVIDENCE, либо сделай действительно необходимые изменения. Не меняй файлы только ради коммита. Предыдущий ответ: '+String(attempt.answer||'').slice(-1100));
+   attempt=await runCodex(prompt+'\n\nПовторная попытка: если код уже соответствует замечаниям QA, обязательно предъяви RESULT: no_changes_needed и REWORK_REVIEW с явным объяснением, ссылками на файлы и проверяемыми причинами; если реализация уже в базовой ветке — используй RESULT: already_implemented и IMPLEMENTATION_EVIDENCE. Иначе исправь код. Не меняй файлы только ради коммита. Предыдущий ответ: '+String(attempt.answer||'').slice(-1100));
    if(!attempt.files.stdout.trim()){
     if(await completeWithoutEdits(attempt))return;
     throw Error('Агент не представил изменений или проверяемого доказательства уже реализованной задачи: '+String(attempt.answer||'').slice(-1300));
@@ -608,19 +636,24 @@ async function runTestJob(job,state,context){
    });
   };
   let verified=await verifyActualExecution();
+  // A command may prove a structural test, but not its visual/geometry case.
+  // Enforce the exact same browser evidence requirement as the API, BEFORE
+  // calculating missing cases or final counts. Never report "2/2" if API
+  // will reject both cases as unverified.
+  const plannedCases=(job.testPlan?.cases||[]).length?job.testPlan.cases:verified.cases;
+  verified=applyVisualEvidenceGate(verified,plannedCases,{browserAvailable});
   // A successfully formatted JSON report is not the end of QA. The model can
   // overlook one case ID even when it verified overlapping cases in Chromium.
   // Give it one small, focused opportunity to collect the MISSING evidence.
   // The second model response is never trusted; only new gateway/receipt
   // events may change results.
-  const plannedCases=(job.testPlan?.cases||[]).length?job.testPlan.cases:verified.cases;
   const gaps=incompleteQaCases(verified,plannedCases,{browserAvailable,maxCases:8});
   if(gaps.length){
    state.message='Допроверяет '+gaps.length+' сценариев без подтверждённых доказательств';
    const focus=qaCompletionPrompt(gaps,{taskTitle:job.title,taskDescription:job.description});
    await auditCodexPrompt(job,'testing',focus);
    try{
-    const extra=await command('codex',[...args,...context.args,context.prefix+focus],{
+    const extra=await command('codex',[...args,...context.args,scopedAgentPrompt(context,focus)],{
      cwd:dir,env:{...cliEnv,...context.env},
      timeout:Math.min(180000,job.maxRuntimeSeconds*1000),
      maxOutputChars:170000,jobId:job.id
@@ -630,7 +663,7 @@ async function runTestJob(job,state,context){
      const parsedExtra=codexJsonResult(extra.stdout);
      state.usage=addUsage(state.usage,parsedExtra.usage);
     }catch{ /* We audit executed evidence, never rely on the follow-up prose. */ }
-    verified=await verifyActualExecution();
+    verified=applyVisualEvidenceGate(await verifyActualExecution(),plannedCases,{browserAvailable});
    }catch(error){
     // A failed follow-up never invalidates previous genuine checks nor
     // silently waives the missing ones.
@@ -639,7 +672,7 @@ async function runTestJob(job,state,context){
     // Browser assertions may have been executed before a Codex CLI failure.
     // Preserve their real results, including confirmed failures, rather than
     // converting them back into generic blocked status.
-    verified=await verifyActualExecution();
+    verified=applyVisualEvidenceGate(await verifyActualExecution(),plannedCases,{browserAvailable});
    }
    verified.summary=completedQaSummary(verified,{retriedIds:gaps.map(item=>item.id)});
    if(verified.verdict==='passed')
