@@ -763,6 +763,8 @@ async function runTestJob(job,state,context){
     verified=await verifyActualExecution();
    }
    verified.summary=completedQaSummary(verified,{retriedIds:gaps.map(item=>item.id)});
+   if(verified.verdict==='passed')
+    verified.handoffNote='Все тест-кейсы подтверждены, включая адресную допроверку '+gaps.map(item=>item.id).join(', ')+'.';
   }
   report=verified;
   state.executionVerified=true;
