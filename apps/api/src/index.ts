@@ -1,3 +1,5 @@
+import {createLegacyDevelopmentReconciler} from './modules/processes/infrastructure/reconcile-legacy-development.js';
+import {registerBackgroundProcessRoutes} from './modules/processes/api.js';
 import {registerProjectGitRoutes} from './modules/integrations/github/api.js';
 import {registerCodexAdminRoutes} from './modules/codex/api.js';
 import {registerAuthRoutes} from './modules/auth/api.js';
@@ -452,132 +454,7 @@ app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
  catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message});}
 });
 
-function developmentProcessDetail(message:string){
- return message.replace('Codex изменяет код','Изменяет код').replace('Codex не создал файлы.','Файлы не изменились.');
-}
-
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
-app.get('/api/background-processes',async(req:any)=>{
- const userId=uid(req);
- const [developments,imports,tests,merges,analyses,iterationRuns,taskAnalyses]=await Promise.all([
-  pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.title AS task_title,t.display_number,a.status,a.message,a.created_at,a.cycle_id
-    FROM ai_task_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
-    JOIN tasks t ON t.id=a.task_id
-    WHERE a.status IN ('queued','running')
-    ORDER BY a.created_at DESC LIMIT 50`,[userId]),
-  pool.query(`SELECT j.id,j.project_id,p.name AS project_name,j.status,j.message,j.created_at
-    FROM document_import_jobs j JOIN projects p ON p.id=j.project_id
-    JOIN memberships m ON m.project_id=j.project_id AND m.user_id=$1
-    WHERE j.status IN ('queued','running') ORDER BY j.created_at DESC LIMIT 50`,[userId]),
-  pool.query("SELECT t.id,t.project_id,t.task_id,t.status,t.message,t.created_at,p.name AS project_name FROM ai_test_runs t JOIN projects p ON p.id=t.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE t.status IN ('queued','running') ORDER BY t.created_at DESC LIMIT 50",[userId]),
-  pool.query("SELECT j.id,j.project_id,j.status,j.message,j.created_at,p.name AS project_name FROM merge_process_runs j JOIN projects p ON p.id=j.project_id JOIN memberships m ON m.project_id=p.id AND m.user_id=$1 WHERE j.status IN ('queued','running') ORDER BY j.created_at DESC LIMIT 50",[userId]),
-  pool.query(`SELECT r.id,r.project_id,r.task_id,r.status,r.message,r.created_at,t.title,p.name AS project_name,phase.stage
-   FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id JOIN projects p ON p.id=r.project_id
-   JOIN memberships m ON m.project_id=r.project_id AND m.user_id=$1
-   LEFT JOIN LATERAL (SELECT e.stage FROM process_events e WHERE e.project_id=r.project_id AND e.process_id=r.id
-    AND e.stage IN ('review_started','test_design_started') ORDER BY e.created_at DESC,e.id DESC LIMIT 1) phase ON true
-   WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50`,[userId]),
-  pool.query(`SELECT r.id,r.status,r.message,r.created_at,i.id AS iteration_id,i.project_id,i.title,p.name AS project_name
-   FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id JOIN projects p ON p.id=i.project_id
-   JOIN memberships m ON m.project_id=i.project_id AND m.user_id=$1
-   WHERE r.status IN ('queued','running') ORDER BY r.created_at DESC LIMIT 50`,[userId]),
-  pool.query(`SELECT a.id,a.project_id,p.name AS project_name,a.task_id,t.display_number,t.title,a.status,a.message,a.created_at
-   FROM agent_analysis_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
-   JOIN tasks t ON t.id=a.task_id WHERE a.status IN ('queued','running') ORDER BY a.created_at DESC LIMIT 50`,[userId])
- ]);
- const qualityGateProcesses=await pool.query(`SELECT g.id,g.project_id,g.task_id,g.kind,g.status,g.message,g.started_at,
-  p.name AS project_name,t.title AS task_title,t.display_number
-  FROM quality_gate_runs g JOIN projects p ON p.id=g.project_id JOIN memberships m ON m.project_id=g.project_id AND m.user_id=$1
-  JOIN tasks t ON t.id=g.task_id WHERE g.status IN ('queued','running')
-  ORDER BY g.started_at DESC LIMIT 60`,[userId]);
- const processes:BackgroundProcess[]=[];
- for(const gate of qualityGateProcesses.rows){
-  processes.push({id:gate.kind+':'+gate.id,kind:gate.kind==='ci'?'ci':'review',role:gate.kind==='ci'?'devops':'architect',
-   projectId:gate.project_id,projectName:gate.project_name,taskId:gate.task_id,
-   title:(gate.kind==='ci'?'Собственный CI':'Ревью архитектора')+' #'+gate.display_number+' · '+gate.task_title,
-   detail:gate.message||'Проверяется PR',status:gate.status==='queued'?'queued':'running',
-   createdAt:gate.started_at,url:'/projects/'+gate.project_id+'/processes?process='+gate.id});
- }
- for(const row of developments.rows){
-  let status:string=row.status,detail:string=developmentProcessDetail(row.message||'Работа над задачей');
-  if(row.cycle_id){
-   processes.push({id:'development:'+row.id,kind:'development',role:'development',projectId:row.project_id,projectName:row.project_name,
-    taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
-    detail,status:status==='queued'?'queued':'running',createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
-   continue; // Temporal owns reconciliation; do not bypass tests and move to merge queue.
-  }
-
-  // Reconcile the actual runner state: DB status alone may remain stale if the
-  // user closes the task page while a development run completes.
-  try{
-   const remote=await agentCall('/jobs/'+row.id);
-   status=String(remote.status||status);
-   detail=developmentProcessDetail(String(remote.message||detail)).slice(0,250);
-   if(['completed','failed'].includes(status)){
-    await pool.query("UPDATE ai_task_runs SET status=$2,message=$3,branch=COALESCE($4,branch),pr_url=COALESCE($5,pr_url),completed_at=now() WHERE id=$1 AND status IN ('running','queued')",
-     [row.id,status,detail,remote.branch||null,remote.prUrl||null]).catch(()=>{});
-    if(status==='completed'&&remote.prUrl){
-     const match=/\/pull\/(\d+)$/.exec(remote.prUrl);
-     await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",
-      [row.task_id,remote.branch||null,remote.prUrl,match?Number(match[1]):null,row.project_id,remote.baseBranch||null]).catch(()=>{});
-    }
-    if(remote.usage){
-     const u=remote.usage;
-     await pool.query("INSERT INTO ai_token_usage(id,project_id,task_id,source_id,operation,model,input_tokens,cached_input_tokens,output_tokens) SELECT $1,$2,$3,$4,'development',a.model,$5,$6,$7 FROM ai_task_runs a WHERE a.id=$4 ON CONFLICT(source_id) DO NOTHING",
-      [randomUUID(),row.project_id,row.task_id,row.id,Math.max(0,Number(u.input_tokens)||0),Math.max(0,Number(u.cached_input_tokens)||0),Math.max(0,Number(u.output_tokens)||0)]).catch(()=>{});
-    }
-    await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'development',$4,$5,$6)",
-     [randomUUID(),row.project_id,row.id,status==='failed'?'error':'info',status,detail]).catch(()=>{});
-    continue;
-   }
-  }catch(error){
-   const text=error instanceof Error?error.message:String(error);
-   if(text.includes('Задача не найдена'))continue;
-   detail='Связь с исполнителем временно недоступна · '+detail;
-  }
-  if(status!=='queued'&&status!=='running')continue;
-  if(status!==row.status||detail!==row.message){
-   await pool.query('UPDATE ai_task_runs SET status=$2,message=$3 WHERE id=$1',[row.id,status,detail]).catch(()=>{});
-   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development',$4,$5)",
-    [randomUUID(),row.project_id,row.id,status,detail]).catch(()=>{});
-  }
-  processes.push({id:'development:'+row.id,kind:'development',role:'development',projectId:row.project_id,projectName:row.project_name,
-   taskId:row.task_id,title:'Разработка #'+row.display_number+' · '+row.task_title,
-   detail,status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
- }
- for(const row of imports.rows){
-  processes.push({id:'import:'+row.id,kind:'document_import',role:'analyst',projectId:row.project_id,projectName:row.project_name,
-   title:'Импорт документации',detail:String(row.message||'Обработка Markdown-документов').slice(0,250),
-   status:row.status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
- }
- for(const row of tests.rows){
-  processes.push({id:'test:'+row.id,kind:'testing',role:'testing',taskId:row.task_id,projectId:row.project_id,projectName:row.project_name,
-   title:'AI-тестирование',detail:row.message||'Проверка задачи',status:row.status,
-   createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
- }
- for(const row of analyses.rows){
-  const preparingTests=row.stage==='test_design_started';
-  processes.push({id:'analysis:'+row.id,kind:preparingTests?'testing':'analysis',role:preparingTests?'testing':'analysis',projectId:row.project_id,projectName:row.project_name,
-   taskId:row.task_id,title:(preparingTests?'Подготовка тест-плана · ':'Сверка требований · ')+row.title,detail:row.message||'Проверка задачи',status:row.status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
- }
- for(const row of taskAnalyses.rows){
-  processes.push({id:'task-analysis:'+row.id,kind:'analysis',role:'analysis',projectId:row.project_id,projectName:row.project_name,
-   taskId:row.task_id,title:'Анализ #'+row.display_number+' · '+row.title,detail:row.message||'Подготовка требований к разработке',
-   status:row.status,createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
- }
- for(const row of iterationRuns.rows){
-  processes.push({id:'iteration-plan:'+row.id,kind:'analysis',role:'analysis',projectId:row.project_id,projectName:row.project_name,
-   title:'План задач · '+row.title,detail:row.message,status:row.status,createdAt:row.created_at,
-   url:'/projects/'+row.project_id+'/docs/plan/'+row.iteration_id});
- }
- for(const row of merges.rows){
-  processes.push({id:'merge:'+row.id,kind:'merge',role:'platform',projectId:row.project_id,projectName:row.project_name,
-   title:'Последовательное слияние PR',detail:row.message||'Обработка PR',status:row.status==='queued'?'queued':'running',
-   createdAt:row.created_at,url:'/projects/'+row.project_id+'/processes?process='+row.id});
- }
- processes.sort((a,b)=>new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
- return {count:processes.length,processes,checkedAt:new Date().toISOString()};
-});
+registerBackgroundProcessRoutes(app,pool,uid);
 
 async function startMergeBatch(batchId:string){
  const client=await temporal();
@@ -1663,12 +1540,17 @@ async function main(){
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
 await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initQualityGateSchema(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
+ const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
+  pool,path=>agentCall(path),
+  (error,runId)=>app.log.warn({error,runId},'Legacy development reconciliation failed')
+ );
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
   try{await recoverMergeBatches(pool,startMergeBatch);}catch(error){app.log.error({error},'Merge queue reconciliation failed');}
   try{await publishOwnerQuestionsToPmChat(pool);}catch(error){app.log.error({error},'PM owner questions reconciliation failed');}
   try{await reconcileTaskAnalysisQueue(pool,temporal);}catch(error){app.log.error({error},'Task analyst queue reconciliation failed');}
   try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}
+  try{await reconcileLegacyDevelopmentRuns();}catch(error){app.log.error({error},'Legacy development process reconciliation failed');}
  })();
  reconcile();setInterval(reconcile,12000).unref();}
 main().catch(e=>{console.error(e);process.exit(1);});
