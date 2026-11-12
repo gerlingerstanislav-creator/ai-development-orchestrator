@@ -1,3 +1,4 @@
+import {preserveAcceptanceCriteria} from './acceptance-criteria.js';
 import {type AgentReaderScope} from './agent-tools.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {createAgentSession,finishAgentSession} from './agent-tools.js';
@@ -218,7 +219,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
    'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
    'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
-   'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику.',
+   'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику. Сохраняй все действующие критерии приёмки из постановки; не повторяй одинаковые критерии.',
    'Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
@@ -241,7 +242,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
     await client.query('COMMIT');return;
    }
    if(output.outcome==='ready'){
-    await updateCurrentSpecification(client,projectId,taskId,latest.title,output.refined_description);
+    await updateCurrentSpecification(client,projectId,taskId,latest.title,preserveAcceptanceCriteria(latest.description,output.refined_description));
     const questions=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND kind='question' AND status IN ('open','processing') LIMIT 1",[taskId]);
     if(questions.rowCount||latest.clarification_questions?.length){
      await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
@@ -716,7 +717,8 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   if(staleSpecification)verdict='blocked';
   const ran=checked.filter(c=>c.result==='passed'||c.result==='failed').length;
   const outcome=singlePass&&status==='completed'?'Проверено '+ran+' из '+cases.length+'.':message;
-  const report={summary:remote.summary||outcome,...(singlePass?{executionVerified:remote.executionVerified===true}:{}),findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
+  const screenshots=Array.isArray(remote.screenshots)?remote.screenshots.filter((s:any)=>s?.mime==='image/jpeg'&&typeof s.data==='string'&&s.data.length<=250000&&/^[A-Za-z0-9+/=]+$/.test(s.data)).slice(0,3):[];
+  const report={screenshots,summary:remote.summary||outcome,...(singlePass?{executionVerified:remote.executionVerified===true}:{}),findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -763,12 +765,12 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
-  const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' RETURNING id",
-   [taskId,projectId,msg,args.simplified?'merge_queue':'testing']);
+  const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' AND test_feedback IS DISTINCT FROM $3 RETURNING id",
+   [taskId,projectId,msg,'testing']);
   if(updated.rowCount){
    await client.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_tools_unavailable',msg]);
    await client.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level) VALUES($1,$2,$3,'testing',$4,$5,'warning')",
-    [randomUUID(),projectId,testId,args.simplified?'partial':'awaiting_manual_qa_decision',msg]);
+    [randomUUID(),projectId,testId,'awaiting_manual_qa_decision',msg]);
   }
   await client.query('COMMIT');
   if(!updated.rowCount)return;

@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
+import {QaRunEvidence} from './QaRunEvidence.js';
 import {ProjectTeam} from './ProjectTeam.js';
 import {aiAgentName,serviceStages} from './agent-labels.js';
 import {KnowledgeTraceability} from './KnowledgeTraceability.js';
@@ -63,7 +64,7 @@ type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:s
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
-type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;human_report?:string|null;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
+type TestRun={qa_plan_snapshot?:{cases?:Array<{id:string;title?:string;description?:string;preconditions?:string;steps?:Array<{action:string;expected:string}>;purpose?:string}>}|null;id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;human_report?:string|null;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;reason?:string;evidence:string}>;capabilities?:string;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};topicProgress?:{completed:number;total:number};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
@@ -2573,6 +2574,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </details>
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
 
+     {newestTaskTest?.status==='completed'&&<QaRunEvidence run={newestTaskTest}/>}
      {activeTask.stage==='merge_queue'&&newestTaskTest?.verdict==='blocked'&&<div className="qa-waiver-panel" role="status"><strong>Тестирование завершено частично</strong><p>{activeTask.test_feedback||'Некоторые сценарии остались без проверки. Подробности есть в отчёте QA.'}</p></div>}
      {activeTask.stage==='testing'&&newestTaskTest?.status==='failed'&&
       <div className="qa-waiver-panel" role="status">

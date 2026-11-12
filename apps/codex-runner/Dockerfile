@@ -11,11 +11,12 @@ RUN apt-get update \
  && test -x "$codex_native" \
  && ln -s "$codex_native" /usr/local/bin/codex-linux-sandbox \
  && codex-linux-sandbox --help >/dev/null \
- && mkdir -p /home/node/.codex /var/lib/ado-runner \
- && chown -R node:node /home/node/.codex /var/lib/ado-runner
+ && mkdir -p /home/node/.codex /var/lib/ado-runner /var/lib/ado-qa-workspaces \
+ && chown -R node:node /home/node/.codex /var/lib/ado-runner /var/lib/ado-qa-workspaces
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
+COPY apps/codex-runner/browser-gateway.mjs apps/codex-runner/browser-client.mjs ./
 COPY apps/codex-runner/agent-context.mjs apps/codex-runner/agent-mcp.mjs apps/codex-runner/job-journal.mjs apps/codex-runner/execution-policy.mjs apps/codex-runner/qa-preflight.mjs apps/codex-runner/qa-run-evidence.mjs apps/codex-runner/rate-limits.mjs apps/codex-runner/chat-images.mjs ./
 USER node
 EXPOSE 4300

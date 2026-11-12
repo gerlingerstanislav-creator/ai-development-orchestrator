@@ -3,11 +3,12 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, writeFile, access } from 'node:fs/promises';
+import { mkdir, writeFile, access, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
+import {startQaBrowserGateway,openQaBrowserSession,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
@@ -42,6 +43,7 @@ proxyServer.on('connect',(req,client,head)=>{
  client.on('close',()=>remote.destroy());
 });
 proxyServer.listen(4399,'127.0.0.1');
+startQaBrowserGateway();
 const proxyUrl='http://127.0.0.1:4399';
 const baseEnv=runnerEnvironment();
 const cliEnv={...baseEnv,HOME:process.env.HOME||'/home/node',CODEX_HOME:home,SSL_CERT_FILE:'/etc/ssl/certs/ca-certificates.crt',HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
@@ -444,7 +446,8 @@ async function auditCodexPrompt(job,role,prompt){
 // A first-pass AI test agent runs within the disposable Codex container.
 // No persistent environment provisioning or Docker socket is exposed to it.
 async function runTestJob(job,state,context){
- const workdir=await mkdtemp(join(tmpdir(),'ado-test-'));
+ const workdir=join(process.env.QA_BROWSER_WORKSPACES_DIR||'/var/lib/ado-qa-workspaces','ado-qa-'+job.id);
+ await mkdir(workdir,{recursive:true,mode:0o700});
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
  const singlePass=job.testPlan?.singlePass===true;
@@ -474,7 +477,12 @@ async function runTestJob(job,state,context){
   const probe=await command('codex',[...policy.sandboxArgs,'--','sh','-c',probeScript],{
    cwd:dir,env:cliEnv,timeout:25000,maxOutputChars:6000,jobId:job.id
   });
-  const capabilities=probe.stdout.trim().slice(0,2500);
+  const browserAvailable=await browserHealth();
+  const capabilities=(probe.stdout.trim()+'\nqa_browser: '+(browserAvailable?'playwright chromium available':'unavailable')).slice(0,2500);
+  if(browserAvailable){
+   const browserSession=openQaBrowserSession(job.id);
+   await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
+  }
   state.capabilities=capabilities;
   const tracked=(await command('git',['ls-files'],{cwd:dir,env:gitEnv,timeout:10000,maxOutputChars:100000,jobId:job.id})).stdout.split(/\r?\n/);
   const prerequisite=qaPrerequisiteError(tracked,capabilities);
@@ -506,7 +514,7 @@ async function runTestJob(job,state,context){
    'Если проект не требует зависимостей, не объявляй его непроверяемым только из-за отсутствия node_modules.',
    baseline.length?'Runner уже запустил стандартные проверки в изоляции. Используй их результаты, если они проверяют нужное поведение. Если команда не прошла из-за зависимостей, подготовь среду и повтори. Сам определи, указывает ли её вывод на дефект или ограничение среды. Фактический результат: '+JSON.stringify(baseline):'',
    singlePass?'Сначала запусти доступную проверку проекта. Для Python используй python3 -m pytest, если в проекте есть тесты. Для Node запусти имеющийся скрипт тестов, установив зависимости при необходимости. Если готовых тестов для требования нет, выполни конкретную проверку с утверждением об ожидаемом результате, например вызови функцию или локальный API с тестовыми данными.': '',
-   singlePass?'В каждом выполненном checks и caseResults укажи в поле command точный текст одной команды, которую ты действительно запускал и которая проверяет это утверждение. Укажи пустую строку для недоступной проверки. Успеху соответствует код 0, провалу — ненулевой код. Чтение файлов, просмотр diff и установка зависимостей не считаются тестами.':'',
+   'В каждом выполненном checks и caseResults укажи в поле command точный текст одной команды, которую ты действительно запускал и которая проверяет это утверждение. Укажи пустую строку для недоступной проверки. Успеху соответствует код 0, провалу — ненулевой код. Чтение файлов, просмотр diff и установка зависимостей не считаются тестами.',
    'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run.',
    'Не утверждай, что пользовательский путь, браузерное действие или ручная проверка выполнены без реального инструмента и воспроизведения.',
    (adHoc?'Для каждого выбранного сценария':'Для КАЖДОГО case_id из плана')+' верни result, evidence и reason. reason для passed/failed = executed; для недоступных сценариев = tool_unavailable|environment_unavailable|manual_only. Если настоящая причина не установлена, reason = unknown (слияние без проверки нельзя рекомендовать).',
@@ -519,7 +527,7 @@ async function runTestJob(job,state,context){
    'Проверяй текущий PR и ранее слитую регрессию. Не требуй уже готового бота, прогноза или пользовательского пути от отдельного Python-модуля, если они реализуются другими незавершёнными задачами.',
    'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
    'ВАЖНО: сетевой proxy Codex сбрасывает NO_PROXY для каждой sandbox-команды. Если Node.js fetch, Playwright или тесты обращаются к локальному HTTP-серверу, запускай клиентскую команду с явными NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 (например: env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test). Это исключает только localhost из прокси; произвольные внешние хосты по-прежнему запрещены.',
-   'Браузер в текущем контейнере отсутствует: Linux Codex seccomp препятствует безопасному запуску Chromium. Не устанавливай браузер для обхода изоляции, не объявляй визуальные сценарии пройденными. Отмечай их blocked/tool_unavailable с конкретной причиной, если нет альтернативного действующего браузерного инструмента.',
+   browserAvailable?'Playwright Chromium ДОСТУПЕН через отдельный защищённый контейнер. Для браузерных проверок запускай node /opt/codex-runner/browser-client.mjs start, затем goto /, count CSS_SELECTOR, assert "JS boolean expression", viewport 390 844, screenshot. Можно выполнять клики через click CSS_SELECTOR, ввод через fill CSS_SELECTOR VALUE. Каждая команда выводит JSON и завершается кодом 1 при ошибке; используй реальные результаты как доказательство, указав точную команду в caseResults. После установки зависимостей или сборки повтори start. Браузер не имеет доступа к интернету или Docker. Не считай скриншот доказательством конкретного критерия без проверяемого утверждения.':'Браузерный сервис недоступен — браузерные кейсы должны получить blocked/tool_unavailable; не устанавливай Chromium в sandbox.',
    'Тестовая среда не имеет доступа к Docker-сокету, секретам приложения, внутренним сервисам платформы или произвольному интернету. Все команды выполняются в изоляции.',
    'Сбой Codex CLI — не доказательство отсутствия инструментов и не основание автоматически разрешать пропуск проверок.',
    'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
@@ -536,7 +544,7 @@ async function runTestJob(job,state,context){
    'Текущий git commit: '+state.testedCommit
   ].join('\n\n');
   state.message='Проверяет код и запускает доступные тесты';
-  const commandField=singlePass?{command:{type:'string'}}:{};
+  const commandField={command:{type:'string'}};
   const titleField=singlePass?{title:{type:'string'}}:{};
   const reportSchema={
    type:'object',additionalProperties:false,
@@ -609,15 +617,22 @@ async function runTestJob(job,state,context){
    report=verifyReport(corrected.message||'');
   }
   assertJobActive(job.id);
-  if(singlePass){
-   report=verifyQaExecution(report,[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout)],baseline);
-   state.executionVerified=true;
-   if(adHoc)state.cases=report.cases;
-  }
+  report=verifyQaExecution(report,[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout)],baseline);
+  state.executionVerified=true;
+  if(adHoc)state.cases=report.cases;
   state.verdict=report.verdict;
   state.summary=report.summary.slice(0,3500);
   state.handoffNote=String(report.handoffNote||'').slice(0,2500);
    state.learningSuggestion=String(report.learningSuggestion||'').slice(0,1600);
+  // Keep small screenshots as immutable QA evidence before deleting the workspace.
+  const screenshotDir=join(dir,'.ado-qa-evidence');
+  const shots=await readdir(screenshotDir).catch(()=>[]);
+  const screenshots=[];
+  for(const name of shots.filter(name=>/^[0-9a-f-]{36}\.jpg$/i.test(name)).slice(0,3)){
+   const bytes=await readFile(join(screenshotDir,name)).catch(()=>null);
+   if(bytes&&bytes.length>100&&bytes.length<=180000)screenshots.push({name,mime:'image/jpeg',data:bytes.toString('base64')});
+  }
+  state.screenshots=screenshots;
   state.findings=report.findings.slice(0,20);
   state.checks=report.checks.slice(0,30);
   state.caseResults=report.caseResults.slice(0,50);

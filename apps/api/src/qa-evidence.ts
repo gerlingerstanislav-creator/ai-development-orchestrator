@@ -10,7 +10,7 @@ export function isVisualAcceptanceCase(test:VisualCase):boolean{
  return /(визуальн|отображен|выгляд|интерфейс|кнопк|расположен|окружност|стрелк|фигур|цвет|адаптив|скриншот|браузер|отрисов|верстк|перекрыв|размер(?:а|ов)? экрана|ui\b|css\b|canvas|svg|pixel|layout|render|click|responsive|screenshot|viewport|scroll)/i.test(content);
 }
 export function browserPresent(capabilities:string):boolean{
- return /(?:^|\n)(?:chromium|chromium-browser|google-chrome): available(?:\n|$)/.test(capabilities);
+ return /(?:^|\n)(?:(?:chromium|chromium-browser|google-chrome): available|qa_browser: playwright chromium available)(?:\n|$)/.test(capabilities);
 }
 export function checkedWithActualCapabilities(
  expected:VisualCase[],reported:ReportedCase[],capabilities:string
@@ -19,6 +19,12 @@ export function checkedWithActualCapabilities(
  let visualToolGap=false;
  const cases=expected.map(test=>{
   const current=byId.get(test.id)||{case_id:test.id,result:'not_run',reason:'unknown',evidence:'Нет подтверждённого результата'};
+  if(current.result==='passed'&&isVisualAcceptanceCase(test)&&browserPresent(capabilities)
+    &&!(current.reason==='executed'&&/\/opt\/codex-runner\/browser-client\.mjs\s+assert\b/.test(current.evidence))){
+   visualToolGap=true;
+   return {case_id:test.id,result:'blocked',reason:'unverified',
+    evidence:'Chromium доступен, но для визуального критерия «'+String(test.title||test.id).slice(0,130)+'» нет подтверждённой выполненной browser-client assert-команды. Нужна повторная браузерная проверка.'};
+  }
   if(current.result==='passed'&&isVisualAcceptanceCase(test)&&!browserPresent(capabilities)){
    visualToolGap=true;
    return {

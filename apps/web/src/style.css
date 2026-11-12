@@ -1323,3 +1323,15 @@ body:has(.tasks-page){overflow:hidden}
 .pm-voice-action.active{color:#4555c7;background:#edf0ff;border-color:#b9c2f9}
 .pm-voice-hint{font-size:10px;color:#626f86;max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:650px){.pm-voice-hint{max-width:60px}}
+
+/* Full QA evidence: compact and consistent with task panels. */
+.qa-evidence-panel{border:1px solid var(--border-color,rgba(127,127,127,.25));border-radius:8px;padding:12px;margin:12px 0;font-size:13px}
+.qa-evidence-panel p{margin:7px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.qa-evidence-case{border-top:1px solid var(--border-color,rgba(127,127,127,.19));padding:9px 0}
+.qa-evidence-case summary{cursor:pointer;display:flex;justify-content:space-between;gap:14px;align-items:center}
+.qa-evidence-case summary strong{white-space:nowrap;font-size:12px}
+.qa-evidence-case ol{padding-left:20px;margin:7px 0}
+.qa-evidence-case pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
+
+.qa-evidence-images{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px}
+.qa-evidence-images img{width:100%;height:auto;border-radius:6px;border:1px solid rgba(127,127,127,.2)}

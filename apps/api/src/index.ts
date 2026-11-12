@@ -687,7 +687,7 @@ app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
  const result=await pool.query(
-  'SELECT id,task_id,cycle_id,attempt,status,message,verdict,report,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 150',
+  "SELECT id,task_id,cycle_id,attempt,status,message,verdict,report - 'screenshots' AS report,qa_plan_snapshot,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 150",
   [id]);
  return result.rows;
 });
