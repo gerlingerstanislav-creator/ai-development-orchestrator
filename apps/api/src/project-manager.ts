@@ -252,7 +252,8 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    const call=async(path:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url:taskPath+path,
     headers:{authorization:await deps.workerAuthorization(actor.actor_id,actor.email)},payload});
    if(startRequested&&snapshot.owner)return handled('Работа по задаче уже запущена. Статус виден в Центре процессов.');
-   const clarification=snapshot.requests.find(request=>['analysis_clarifications','question'].includes(request.kind)&&request.status==='open'&&snapshot.task.stage==='analysis');
+   const isAnalysisStage=snapshot.task.stage==='analysis';
+   const clarification=snapshot.requests.find(request=>['analysis_clarifications','question'].includes(request.kind)&&request.status==='open'&&isAnalysisStage);
    if(clarification){
     if(!await isTurnActive())return {message:'',handled:true};
     const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message);
@@ -262,7 +263,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    if(!await isTurnActive())return {message:'',handled:true};
    const started=await call('/approve-development',{});
    const result=started.json();
-   if(started.statusCode>=400)return handled([analysisResult,String(result.error||'Не удалось запустить разработку.')].filter(Boolean).join('\n\n'));
+   if(started.statusCode>=400)return handled(String(result.error||'Не удалось запустить разработку.'));
    return handled([result.recovered?result.message:'Задача передана в разработку. Запуск принят в очередь Temporal.'].join('\n\n'));
   }
   if(analysisActions||!['development','testing'].includes(snapshot.task.stage))return {message:''};
