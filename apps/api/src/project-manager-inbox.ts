@@ -5,7 +5,7 @@ import type {Pool} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {chatImagesSchema,validateChatImages,saveChatImages,readChatImages} from './chat-images.js';
-import {createAgentSession,finishAgentSession,agentSessionEffects} from './agent-tools.js';
+import {createAgentSession,finishAgentSession,agentSessionEffects,isProjectManagerOrderAction} from './agent-tools.js';
 import {agentLearnedContext} from './agent-tools.js';
 import {conversationInstructions,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
@@ -30,6 +30,34 @@ export async function initProjectManagerInbox(pool:Pick<Pool,'query'>){
   CREATE INDEX IF NOT EXISTS idx_pm_inbox_delivery ON assistant_messages(pm_next_dispatch_at,created_at,id)
    WHERE role='user' AND channel IN ('project','pm-internal') AND status='queued' AND pm_dispatched_at IS NULL;
  `);
+}
+
+type CompletedPmTool={tool:string;result?:unknown};
+
+export function shouldCreateProjectManagerOrder(events:readonly CompletedPmTool[],delegated=false){
+ return delegated||events.some(event=>{
+  if(!isProjectManagerOrderAction(event.tool))return false;
+  const result=event.result;
+  return !(result&&typeof result==='object'&&'recorded' in result&&result.recorded===false);
+ });
+}
+
+/** Link a successful action to its source message, transactionally and once. */
+export async function ensureProjectManagerActionOrder(
+ db:Pick<Pool,'query'>,
+ args:{projectId:string;messageId:string;actorId:string;topicId:string|null;summary:string;events:readonly CompletedPmTool[];delegated?:boolean}
+):Promise<string|null>{
+ if(!shouldCreateProjectManagerOrder(args.events,!!args.delegated))return null;
+ const current=await db.query('SELECT pm_order_id FROM assistant_messages WHERE project_id=$1 AND id=$2 FOR UPDATE',[args.projectId,args.messageId]);
+ if(!current.rowCount)throw Error('Сообщение ПМ для поручения не найдено');
+ if(current.rows[0].pm_order_id)return current.rows[0].pm_order_id as string;
+ const orderId=randomUUID();
+ await db.query(`INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,topic_id,status,summary)
+  VALUES($1,$2,$3,$4,$5,'working',$6)`,[orderId,args.projectId,args.actorId,args.messageId,args.topicId,args.summary.slice(0,500)]);
+ await db.query('UPDATE assistant_messages SET pm_order_id=$2 WHERE project_id=$1 AND id=$3',[args.projectId,orderId,args.messageId]);
+ await db.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'created',$3)",
+  [randomUUID(),orderId,'Поручение создано после подтверждённого действия ПМ']);
+ return orderId;
 }
 
 export function pmInboxWorkflowId(turn:PendingTurn){
@@ -174,19 +202,16 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
    const waiting=(await client.query(`SELECT id FROM project_pm_orders WHERE project_id=$1 AND status='waiting_user'
     AND (id=$2 OR topic_id=$3) ORDER BY (id IS DISTINCT FROM $2),updated_at DESC,id LIMIT 1 FOR UPDATE`,
    [id,target?.pm_order_id??null,topicId])).rows[0];
-   const orderId=waiting?.id??randomUUID();
+   // Message dispatch is durable. New orders are created only after a real action.
+   const orderId:string|null=waiting?.id??null;
    if(waiting)
     await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[orderId]);
-   else
-    await client.query('INSERT INTO project_pm_orders(id,project_id,actor_id,topic_id,summary) VALUES($1,$2,$3,$4,$5)',
-     [orderId,id,actorId,topicId,message.slice(0,500)]);
    await client.query(`INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,reply_to,topic_id,pm_order_id,pm_request_id,pm_request_digest)
     VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7,$8,$9)`,
     [messageId,id,actorId,message,replyTo,topicId,orderId,requestId??null,digest]);
    await saveChatImages(client,{projectId:id,actorId,messageId,scope:'assistant'},validatedImages);
-   if(!waiting)await client.query('UPDATE project_pm_orders SET source_message_id=$2 WHERE id=$1',[orderId,messageId]);
-   await client.query('INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)',
-    [randomUUID(),orderId,waiting?'owner_reply':'created',waiting?'Владелец ответил на вопрос ПМ':'Поручение принято от владельца']);
+   if(waiting)await client.query('INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)',
+    [randomUUID(),orderId,'owner_reply','Владелец ответил на вопрос ПМ']);
    await client.query('COMMIT');
    return reply.code(202).send({id:messageId,order_id:orderId,status:'queued'});
   }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
@@ -266,6 +291,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
     'Если запрос просто вопрос — отвечай без побочных изменений. При неизвестном факте используй адресное чтение.',
     'Если владелец явно просит удалить ошибочную карточку, используй tasks.delete с подтверждёнными task_id и source_message_id его сообщения. Действуй только после серверного разрешения. Не утверждай, что удаление в принципе невозможно, пока не проверил соответствующий инструмент.',
     'Если поступило событие завершения, продолжи соответствующее поручение; новые вопросы ПМ оформляй через discussions.open, после ответа закрывай тему.',
+    orderId?'Текущее поручение: '+orderId+'.':'Новый ход чата: order_id отсутствует. При успешном действии поручение создаст backend. Не вызывай pm.orders.update без существующего order_id.',
     'Для повторного QA используй qa.retry после проверки текущих процессов. При неполном QA укажи, что не проверено. Для подробностей используй processes.list с process_id.',
     'Для возврата на анализ, адресного исправления существующего PR или повторного QA используй workflow.move_task с target_stage, source_message_id владельца и причиной. Не запускай работу с нуля, учитывай сохранённые результаты и новые комментарии. Статус merge_queue и последующие этапы устанавливают штатные проверки, а не ПМ вручную.',
     'Для завершения готовой задачи вызывай tasks.close: операция подтвердит слияние, выкладку и документацию. Для ОТМЕНЫ ненужной начатой задачи есть tasks.cancel (это удаление с аудитом), для удаления ошибочной неисполненной карточки tasks.delete. Не путай закрытие успешно сделанной задачи с отменой, не выставляй done без проверки.',
@@ -293,7 +319,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
-  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.prepare_spec','documentation.answer_question','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','qa.retry','iterations.launch','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
+  const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true',[projectId,session.id]);
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
@@ -306,32 +332,56 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const openedTopic=toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string');
   const effectiveTopic=turn.topic_id||openedTopic||null;
   const client=await pool.connect();
+  let confirmedOrderId=orderId;
   try{
    await client.query('BEGIN');
    const finished=await client.query("UPDATE assistant_messages SET status='completed' WHERE id=$1 AND status='processing' AND pm_dispatch_attempt=$2 RETURNING id",[messageId,attempt]);
+   if(finished.rowCount&&!confirmedOrderId&&turn.channel==='project'){
+    confirmedOrderId=await ensureProjectManagerActionOrder(client,{
+     projectId,messageId,actorId:turn.actor_id,topicId:effectiveTopic,summary:String(turn.body||'Действие ПМ'),
+     events:toolEvents.rows,delegated:watchers.length>0
+    });
+   }
    if(finished.rowCount){
     // Keep the original question in the main chat when the PM opens a topic.
     // Only the PM's answer is assigned to the new topic; both remain visible in the main timeline.
     await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id,created_task_id,created_document_id,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5,$6,$7,$8,$9)",
-     [randomUUID(),projectId,data.message,effectiveTopic,orderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
+     [randomUUID(),projectId,data.message,effectiveTopic,confirmedOrderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
    }
-   if(orderId&&finished.rowCount){
+   if(confirmedOrderId&&finished.rowCount){
     const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question'||row.tool==='discussions.open'&&row.result?.awaiting_reply===true);
-    const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===orderId);
+    const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===confirmedOrderId);
     const questionOpen=ownerQuestion&&!!(await client.query("SELECT 1 FROM task_agent_notes WHERE id=$1 AND status IN ('open','processing')",[ownerQuestion.id])).rowCount;
     const status=questionOpen||hasOpenQuestion?'waiting_user':watchers.length?'waiting_agents':'completed';
-    if(!explicitlySet||watchers.length||ownerQuestion||hasOpenQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[orderId,status,effectiveTopic]);
-    else await client.query('UPDATE project_pm_orders SET topic_id=COALESCE($2,topic_id),updated_at=now() WHERE id=$1',[orderId,effectiveTopic]);
+    if(!explicitlySet||watchers.length||ownerQuestion||hasOpenQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,status,effectiveTopic]);
+    else await client.query('UPDATE project_pm_orders SET topic_id=COALESCE($2,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,effectiveTopic]);
     if(effectiveTopic)await client.query(`UPDATE project_chat_topics t SET status='closed',closed_at=now()
      WHERE t.id=$1 AND t.project_id=$2 AND t.status='open'
       AND EXISTS(SELECT 1 FROM project_pm_orders o WHERE o.id=$3 AND o.status='completed')
       AND NOT EXISTS(SELECT 1 FROM project_pm_orders o WHERE o.project_id=t.project_id AND o.topic_id=t.id
-       AND o.status IN ('queued','working','waiting_agents','waiting_user'))`,[effectiveTopic,projectId,orderId]);
-    await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'pm_step',$3)",[randomUUID(),orderId,'ПМ завершил шаг; статус '+status]);
+       AND o.status IN ('queued','working','waiting_agents','waiting_user'))`,[effectiveTopic,projectId,confirmedOrderId]);
+    await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'pm_step',$3)",[randomUUID(),confirmedOrderId,'ПМ завершил шаг; статус '+status]);
    }
    await client.query('COMMIT');
+   if(confirmedOrderId)watchers=watchers.map(watch=>({...watch,orderId:confirmedOrderId||undefined}));
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
  }catch(error){
+  // Codex may perform a mutation and fail before producing a final reply.
+  // Keep the side effect associated with a durable order for recovery.
+  if(!orderId&&sessionId&&turn.channel==='project'){
+   const events=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true',[projectId,sessionId]);
+   if(shouldCreateProjectManagerOrder(events.rows)){
+    const recovery=await pool.connect();
+    try{
+     await recovery.query('BEGIN');
+     await ensureProjectManagerActionOrder(recovery,{
+      projectId,messageId,actorId:turn.actor_id,topicId:turn.topic_id,
+      summary:String(turn.body||'Действие ПМ'),events:events.rows
+     });
+     await recovery.query('COMMIT');
+    }catch(e){await recovery.query('ROLLBACK').catch(()=>{});throw e;}finally{recovery.release();}
+   }
+  }
   const message=String(error instanceof Error?error.message:error);
   const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
   if(retryable){
