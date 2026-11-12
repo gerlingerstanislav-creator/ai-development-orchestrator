@@ -55,6 +55,9 @@ export async function ensureProjectManagerActionOrder(
  await db.query(`INSERT INTO project_pm_orders(id,project_id,actor_id,source_message_id,topic_id,status,summary)
   VALUES($1,$2,$3,$4,$5,'working',$6)`,[orderId,args.projectId,args.actorId,args.messageId,args.topicId,args.summary.slice(0,500)]);
  await db.query('UPDATE assistant_messages SET pm_order_id=$2 WHERE project_id=$1 AND id=$3',[args.projectId,orderId,args.messageId]);
+ // Decisions are recorded by their authenticated message ID before the order exists.
+ await db.query('UPDATE project_pm_decisions SET order_id=$2 WHERE project_id=$1 AND source_message_id=$3 AND order_id IS NULL',
+  [args.projectId,orderId,args.messageId]);
  await db.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,'created',$3)",
   [randomUUID(),orderId,'Поручение создано после подтверждённого действия ПМ']);
  return orderId;

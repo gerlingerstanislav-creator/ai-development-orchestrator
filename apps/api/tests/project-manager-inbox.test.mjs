@@ -235,6 +235,7 @@ test('PM tracks real tool actions without creating orders for chat reads',async 
  await db.query(`
   CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,pm_order_id uuid);
   CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,source_message_id uuid,topic_id uuid,status text,summary text);
+  CREATE TABLE project_pm_decisions(id uuid PRIMARY KEY,project_id uuid,source_message_id uuid,order_id uuid);
   CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text);
  `);
  const projectId=randomUUID(),actorId=randomUUID(),messageId=randomUUID();
@@ -249,6 +250,8 @@ test('PM tracks real tool actions without creating orders for chat reads',async 
  ]}),null);
  assert.equal(shouldCreateProjectManagerOrder([{tool:'pm.decisions.record',result:{recorded:false}}]),false);
  assert.equal((await db.query('SELECT count(*)::int AS n FROM project_pm_orders')).rows[0].n,0);
+ const decision=randomUUID();
+ await db.query('INSERT INTO project_pm_decisions(id,project_id,source_message_id) VALUES($1,$2,$3)',[decision,projectId,messageId]);
  const action={...base,summary:'Создай задачу',events:[{tool:'tasks.create',result:{id:randomUUID()}}]};
  const orderId=await ensureProjectManagerActionOrder(pool,action);
  assert.ok(orderId);
@@ -256,6 +259,7 @@ test('PM tracks real tool actions without creating orders for chat reads',async 
  assert.deepEqual((await db.query('SELECT status,summary,source_message_id FROM project_pm_orders')).rows,
   [{status:'working',summary:'Создай задачу',source_message_id:messageId}]);
  assert.equal((await db.query('SELECT pm_order_id FROM assistant_messages WHERE id=$1',[messageId])).rows[0].pm_order_id,orderId);
+ assert.equal((await db.query('SELECT order_id FROM project_pm_decisions WHERE id=$1',[decision])).rows[0].order_id,orderId,'decision is linked to the eventual order');
  assert.equal((await db.query('SELECT count(*)::int AS n FROM project_pm_order_events')).rows[0].n,1);
  const second=randomUUID();
  await db.query('INSERT INTO assistant_messages(id,project_id) VALUES($1,$2)',[second,projectId]);
