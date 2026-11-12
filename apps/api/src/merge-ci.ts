@@ -46,14 +46,10 @@ export async function requireMergeCi(input:{
  if(!branchResponse)throw blocked('Нет доступа к сведениям о целевой ветке '+branch);
  const details=await branchResponse.json() as Branch;
  if(details.name!==branch)throw blocked('GitHub не подтвердил целевую ветку '+branch);
- // GitHub reports "protected=false" only when neither classic branch protection
- // nor a matching branch ruleset is active. There are no required checks to
- // discover in this case, and checking optional jobs must not block merging.
- // GitHub itself still enforces the final merge endpoint's authoritative rules.
- if(details.protected===false)return;
- // For a protected branch we must verify its required CI: a missing rules
- // response is an authorization problem, never proof that requirements are empty.
- const rules=await pages<Rule>('/rules/branches/'+ref,'правила целевой ветки',data=>data);
+ // An unprotected branch has no mandatory checks to discover through
+ // inaccessible rules endpoints. Still inspect reported head CI outcomes and
+ // reject actual failures: no silent bypass of tests is permitted.
+ const rules=details.protected===false?[]:await pages<Rule>('/rules/branches/'+ref,'правила целевой ветки',data=>data);
  if(!rules)throw blocked('Недостаточно прав GitHub для чтения обязательных проверок защищённой ветки '+branch);
  const required:RequiredCheck[]=[];
  const add=(name:string,appId?:number)=>{
