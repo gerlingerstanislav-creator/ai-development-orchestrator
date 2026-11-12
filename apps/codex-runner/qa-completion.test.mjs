@@ -57,7 +57,7 @@ test('a reported command pass of a visual case still needs Chromium proof',()=>{
  const receipts=[{kind:'case',id:'qa-1',exitCode:0,stdout:'structure pass',stderr:''}];
  const verified=verifyQaExecution(existing,[],[],{receipts,browserEvidence});
  assert.equal(verified.caseResults[0].result,'passed');
- assert.equal(verified.caseResults[0].browserVerified,undefined);
+ assert.equal(verified.caseResults[0].browserVerified,false);
  assert.deepEqual(incompleteQaCases(verified,[visualCase,browserCase],{browserAvailable:true}).map(item=>item.id),['qa-1']);
 });
 
