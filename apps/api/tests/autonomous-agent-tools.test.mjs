@@ -19,6 +19,7 @@ test('specialists can consult and record/resolve blockers but cannot mutate work
   CREATE TABLE memberships(project_id uuid,user_id uuid,role text);
   CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE);
   CREATE TABLE process_events(id uuid PRIMARY KEY,project_id uuid NOT NULL,process_id uuid NOT NULL,process_kind text,stage text,detail text,level text DEFAULT 'info',task_id uuid);
+  CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid REFERENCES tasks(id),event text NOT NULL,detail text NOT NULL DEFAULT '');
  `);
  await initTaskAgentNotesSchema(db);
  await initAgentToolsSchema(db);
