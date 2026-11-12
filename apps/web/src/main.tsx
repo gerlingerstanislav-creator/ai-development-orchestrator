@@ -65,9 +65,9 @@ type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
 type TestRun={qa_plan_snapshot?:{cases?:Array<{id:string;title?:string;description?:string;preconditions?:string;steps?:Array<{action:string;expected:string}>;purpose?:string}>}|null;id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;human_report?:string|null;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;reason?:string;evidence:string}>;capabilities?:string;commit?:string}|null;created_at:string;completed_at?:string|null};
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
-type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};topicProgress?:{completed:number;total:number};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
+type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis'|'ci'|'review';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};topicProgress?:{completed:number;total:number};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
 type DocumentationQuestion={id:string;topic_key:string;question:string;status:'open'|'answered';answer:string|null;document_id:string;document_title:string;created_at:string};
 type DocumentationProposal={id:string;job_id:string;topic_key:string;document_id:string;title:string;proposed_body:string;status:string;document_title:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
@@ -243,7 +243,7 @@ async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  if(!response.ok)throw Object.assign(Error(data.error||'Ошибка запроса'),{status:response.status});
  return data as T;
 }
-const workflowRoleLabels:Record<string,string>={manager:'ПМ',analyst:'Бизнес-аналитик',platform:'Система',analysis:'Системный аналитик',development:'Разработчик',testing:'QA',documentation:'Технический писатель',devops:'DevOps'};
+const workflowRoleLabels:Record<string,string>={manager:'ПМ',analyst:'Аналитик BA/SA',platform:'Система',analysis:'Аналитик BA/SA',development:'Разработчик',testing:'QA',documentation:'Технический писатель',devops:'DevOps',architect:'Архитектор'};
 type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'workflow'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string;planning?:boolean;iterationId?:string};
 const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -327,6 +327,8 @@ function App(){
  const [deploymentMode,setDeploymentMode]=useState<'skip'|'manual'|'automatic'>('skip');
  const [deploymentHealthUrl,setDeploymentHealthUrl]=useState('');
  const [deploymentEnvironment,setDeploymentEnvironment]=useState('production');
+ const [deploymentSsh,setDeploymentSsh]=useState({host:'',username:'',path:'',privateKey:'',knownHosts:'',configured:false});
+ const [sshSaving,setSshSaving]=useState(false);
  const [accountSettings,setAccountSettings]=useState(false);
   const [developmentMode,setDevelopmentMode]=useState(true);
   const [developmentModeBusy,setDevelopmentModeBusy]=useState(false);
@@ -752,6 +754,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setDeploymentMode(deployment.mode);
    setDeploymentHealthUrl(deployment.health_url??'');
    setDeploymentEnvironment(deployment.environment??'production');
+   const ssh=await api<{configured:boolean;host?:string;username?:string;remote_path?:string}>('/projects/'+id+'/deployment/ssh').catch(()=>({configured:false,host:'',username:'',remote_path:''}));
+   setDeploymentSsh({host:ssh.host||'',username:ssh.username||'',path:ssh.remote_path||'',privateKey:'',knownHosts:'',configured:ssh.configured});
    const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
    setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
   }catch(e){fail(e);}
@@ -1020,6 +1024,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(task.stage==='analysis'&&stage==='development'){await approveDevelopment(task);return;}
   try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage})});await loadProject(selected.id);}
   catch(e){fail(e);}
+ }
+ async function saveDeploymentSsh(){
+  if(!selected||sshSaving)return;
+  setSshSaving(true);
+  try{
+   await api('/projects/'+selected.id+'/deployment/ssh',{method:'PUT',body:JSON.stringify({
+    host:deploymentSsh.host,username:deploymentSsh.username,path:deploymentSsh.path,
+    private_key:deploymentSsh.privateKey,known_hosts:deploymentSsh.knownHosts
+   })});
+   setDeploymentSsh(value=>({...value,privateKey:'',knownHosts:'',configured:true}));
+  }catch(e){fail(e);}finally{setSshSaving(false);}
  }
  async function saveWorkflowStage(){
   if(!selected||!workflowModal)return;
@@ -2490,11 +2505,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      placeholder="Цели, критерии качества, обязательные проверки и правила этапа…"/>:
      <div className="workflow-field-value workflow-instructions-readonly">{workflowModal.agent_instructions||'Инструкции пока не указаны'}</div>}
    </div>
-   {workflowModal.stage==='deployment'&&<div className="workflow-detail-field"><div className="workflow-field-heading"><strong>Порядок выкладки</strong></div><select value={deploymentMode} onChange={e=>setDeploymentMode(e.target.value as 'skip'|'manual'|'automatic')}><option value="skip">Пропускать, пока нет окружения</option><option value="manual">Ожидать ручную выкладку или явный пропуск</option><option value="automatic">Автоматически через GitHub Actions и Temporal</option></select>
+   {workflowModal.stage==='deployment'&&<div className="workflow-detail-field"><div className="workflow-field-heading"><strong>Порядок выкладки</strong></div><select value={deploymentMode} onChange={e=>setDeploymentMode(e.target.value as 'skip'|'manual'|'automatic')}><option value="skip">Пропускать, пока нет окружения</option><option value="manual">Ожидать ручную выкладку или явный пропуск</option><option value="automatic">Автоматически через SSH и Temporal (без Actions)</option></select>
     {deploymentMode==='automatic'&&<><label>HTTPS-проверка приложения<input type="url" placeholder="https://example.com/health" value={deploymentHealthUrl} onChange={e=>setDeploymentHealthUrl(e.target.value)}/></label>
-    <label>GitHub environment<input value={deploymentEnvironment} onChange={e=>setDeploymentEnvironment(e.target.value)} maxLength={50}/></label>
-    <button className="secondary" type="button" onClick={()=>{if(selected)void api<{pr_url:string}>('/projects/'+selected.id+'/deployment/prepare-workflow',{method:'POST'}).then(data=>window.open(data.pr_url,'_blank','noopener,noreferrer')).catch(fail);}}>Подготовить GitHub Actions PR</button></>}
-    <small className="muted">Успешная выкладка фиксируется только после завершения workflow и проверки URL. Без окружения доступен пропуск.</small></div>}
+    <label>Окружение<input value={deploymentEnvironment} onChange={e=>setDeploymentEnvironment(e.target.value)} maxLength={50}/></label>
+    <label>SSH-хост<input placeholder="deploy.example.com" value={deploymentSsh.host} onChange={e=>setDeploymentSsh(old=>({...old,host:e.target.value}))}/></label>
+    <label>Пользователь SSH<input placeholder="deploy" value={deploymentSsh.username} onChange={e=>setDeploymentSsh(old=>({...old,username:e.target.value}))}/></label>
+    <label>Каталог приложения на сервере<input placeholder="/srv/ai-orchestrator" value={deploymentSsh.path} onChange={e=>setDeploymentSsh(old=>({...old,path:e.target.value}))}/></label>
+    <label>Приватный SSH-ключ (сохраняется зашифрованным)<textarea rows={3} value={deploymentSsh.privateKey} placeholder={deploymentSsh.configured?'Ключ уже сохранён. Заполните для замены.':'-----BEGIN OPENSSH PRIVATE KEY-----'} onChange={e=>setDeploymentSsh(old=>({...old,privateKey:e.target.value}))}/></label>
+    <label>Проверенный SSH host key (known_hosts)<textarea rows={2} value={deploymentSsh.knownHosts} placeholder="deploy.example.com ssh-ed25519 AAAA..." onChange={e=>setDeploymentSsh(old=>({...old,knownHosts:e.target.value}))}/></label>
+    <button className="secondary" type="button" disabled={sshSaving||!deploymentSsh.host||!deploymentSsh.username||!deploymentSsh.path||!deploymentSsh.privateKey||!deploymentSsh.knownHosts} onClick={()=>void saveDeploymentSsh()}>{sshSaving?'Сохранение…':deploymentSsh.configured?'Заменить SSH-настройки':'Сохранить SSH-настройки'}</button>
+    {deploymentSsh.configured&&<small className="muted">SSH-ключ сохранён зашифрованным. Для замены введите новый ключ и host key.</small>}</>}
+    <small className="muted">Выкладка выполняется нашим Temporal Worker по SSH. Успех подтверждается только проверкой HTTPS, без GitHub Actions.</small></div>}
    <small className="muted workflow-agent-notice">Инструкции используются соответствующим AI-агентом. Системные ограничения имеют приоритет.</small>
    </>}
    {workflowModal.stage==='testing'&&<p className="workflow-transition-description"><RotateCcw size={14}/> Если обнаружены ошибки, задача вернётся в разработку с замечаниями. Затем тесты выполнятся повторно.</p>}

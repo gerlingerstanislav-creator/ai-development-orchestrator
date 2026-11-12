@@ -11,6 +11,7 @@ import {findActiveProjectOperation,projectDeletionConfirmation} from './project-
 import {createMergeService} from './merge-service.js';
 import {createMergeBatch,initMergeBatches,readMergeBatch,recoverMergeBatches} from './merge-batch.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes,validateHealthUrl} from './deployment-automation.js';
+import {initQualityGateSchema} from './quality-gates.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initChatImages,registerChatImageRoutes} from './chat-images.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
@@ -914,7 +915,7 @@ function developmentProcessDetail(message:string){
  return message.replace('Codex изменяет код','Изменяет код').replace('Codex не создал файлы.','Файлы не изменились.');
 }
 
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
  const [developments,imports,tests,merges,analyses,iterationRuns,taskAnalyses]=await Promise.all([
@@ -943,7 +944,19 @@ app.get('/api/background-processes',async(req:any)=>{
    FROM agent_analysis_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
    JOIN tasks t ON t.id=a.task_id WHERE a.status IN ('queued','running') ORDER BY a.created_at DESC LIMIT 50`,[userId])
  ]);
+ const qualityGateProcesses=await pool.query(`SELECT g.id,g.project_id,g.task_id,g.kind,g.status,g.message,g.started_at,
+  p.name AS project_name,t.title AS task_title,t.display_number
+  FROM quality_gate_runs g JOIN projects p ON p.id=g.project_id JOIN memberships m ON m.project_id=g.project_id AND m.user_id=$1
+  JOIN tasks t ON t.id=g.task_id WHERE g.status IN ('queued','running')
+  ORDER BY g.started_at DESC LIMIT 60`,[userId]);
  const processes:BackgroundProcess[]=[];
+ for(const gate of qualityGateProcesses.rows){
+  processes.push({id:gate.kind+':'+gate.id,kind:gate.kind==='ci'?'ci':'review',role:gate.kind==='ci'?'devops':'architect',
+   projectId:gate.project_id,projectName:gate.project_name,taskId:gate.task_id,
+   title:(gate.kind==='ci'?'Собственный CI':'Ревью архитектора')+' #'+gate.display_number+' · '+gate.task_title,
+   detail:gate.message||'Проверяется PR',status:gate.status==='queued'?'queued':'running',
+   createdAt:gate.started_at,url:'/projects/'+gate.project_id+'/processes?process='+gate.id});
+ }
  for(const row of developments.rows){
   let status:string=row.status,detail:string=developmentProcessDetail(row.message||'Работа над задачей');
   if(row.cycle_id){
@@ -1465,10 +1478,15 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.updated_at,t.title,t.display_number FROM agent_analysis_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
+ const qualityGateHistory=await pool.query(
+  "SELECT g.id,g.kind,g.task_id,g.head_sha,g.base_sha,g.status,g.verdict,g.report,g.message,g.started_at,g.completed_at,t.title,t.display_number FROM quality_gate_runs g JOIN tasks t ON t.id=g.task_id WHERE g.project_id=$1 ORDER BY g.started_at DESC LIMIT 70",[id]);
  const promptRecords=await pool.query(
   'SELECT * FROM (SELECT DISTINCT ON (process_id) process_id AS id,role,operation,created_at FROM agent_prompt_audit WHERE project_id=$1 ORDER BY process_id,created_at DESC) entries ORDER BY created_at DESC LIMIT 50',
   [id]);
  const processes:any[]=[
+  ...qualityGateHistory.rows.map((r:any)=>({id:r.id,kind:r.kind,title:(r.kind==='ci'?'Собственный CI':'Ревью архитектора')+' #'+r.display_number+' · '+r.title,
+   status:r.status,detail:r.message,createdAt:r.started_at,updatedAt:r.completed_at,taskId:r.task_id,
+   result:{message:r.message,verdict:r.verdict,commit:r.head_sha,base:r.base_sha,...r.report}})),
   ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
    status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,taskId:r.task_id,
    result:{message:r.message,sha:r.sha,github_url:r.github_url}})),
@@ -1945,11 +1963,29 @@ registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
 registerProjectIterationRoutes(app,{pool,uid,access,requireAdmin,startPlanning:startIterationPlanning});
-registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,start:async runId=>{
+registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,
+ encrypt:(secret:string)=>{const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',encryptionKey,iv);
+  const encrypted=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),encrypted]).toString('base64');},
+ start:async runId=>{
  const client=await temporal();
  await client.workflow.start('automaticDeployment',{taskQueue:'agent-pipeline',workflowId:'deployment-'+runId,
   workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
 }});
+app.get('/api/projects/:id/tasks/:taskId/quality-gates',async(req:any,reply)=>{
+ const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
+ if(!await access(req,reply,id))return;
+ return {runs:(await pool.query("SELECT id,kind,head_sha,base_sha,status,verdict,report,message,started_at,completed_at FROM quality_gate_runs WHERE project_id=$1 AND task_id=$2 ORDER BY started_at DESC LIMIT 30",[id,taskId])).rows};
+});
+app.post('/api/projects/:id/tasks/:taskId/quality-gates',async(req:any,reply)=>{
+ const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const task=await pool.query("SELECT id FROM tasks WHERE project_id=$1 AND id=$2 AND stage IN ('testing','merge_queue') AND pr_number IS NOT NULL",[id,taskId]);
+ if(!task.rowCount)return reply.code(409).send({error:'Требуется открытый PR на стадии тестирования или слияния'});
+ const client=await temporal();
+ const runId=randomUUID();
+ await client.workflow.start('manualQualityGates',{taskQueue:'agent-pipeline',workflowId:'quality-gates-'+runId,args:[{projectId:id,taskId,runId}]});
+ return reply.code(202).send({run_id:runId,status:'queued'});
+});
 registerBusinessAnalystHandoff(app,{pool,uid,access});
 registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
@@ -2061,7 +2097,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initQualityGateSchema(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}

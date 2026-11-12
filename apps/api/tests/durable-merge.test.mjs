@@ -29,6 +29,7 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
   CREATE TABLE qa_test_plans(id uuid,project_id uuid,task_id uuid,spec_version int,spec_hash text);
   CREATE TABLE ai_test_runs(id uuid,project_id uuid,task_id uuid,status text,verdict text,report jsonb,qa_spec_version int,qa_plan_snapshot jsonb,
    created_at timestamptz DEFAULT now());
+  CREATE TABLE quality_gate_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,kind text,head_sha text,base_sha text,status text,verdict text,started_at timestamptz DEFAULT now());
  `);
  const [project,actor,parent,child,connection,legacy]=Array.from({length:6},randomUUID);
  const prUrl='https://github.com/example/repo/pull/1';
@@ -54,7 +55,7 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
  const fetch=globalThis.fetch;
  t.after(()=>{globalThis.fetch=fetch;});
  let merged=false,puts=0,ciPassed=false;
- const headSha='a'.repeat(40);
+ const headSha='a'.repeat(40),baseSha='b'.repeat(40);
  globalThis.fetch=async (url,options)=>{
   if(options?.method==='PUT'){
    puts++;
@@ -70,7 +71,7 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
   if(url.includes('/compare/'))return Response.json({status:'ahead'});
   if(options?.method==='PATCH'&&url.endsWith('/pulls/2'))return Response.json({base:{ref:'main'}});
   assert.ok(url.endsWith('/pulls/1'),url);
-  return Response.json({merged,state:'open',mergeable:true,base:{ref:'main'},head:{sha:headSha},merge_commit_sha:'b'.repeat(40)});
+  return Response.json({merged,state:'open',mergeable:true,base:{ref:'main',sha:baseSha},head:{sha:headSha},merge_commit_sha:'b'.repeat(40)});
  };
  const service=createMergeService(db,()=> 'fake-token');
  const attempt=()=>service.mergeTaskPr(project,parent,actor);
@@ -89,7 +90,7 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
  await db.query('UPDATE ai_test_runs SET qa_spec_version=1,qa_plan_snapshot=$2 WHERE id=$1',[testRun,{...snapshot,spec_hash:'old-plan'}]);
  await assert.rejects(attempt,/Нет завершённого QA-отчёта/);
  await db.query('UPDATE ai_test_runs SET qa_plan_snapshot=$2 WHERE id=$1',[testRun,snapshot]);
- await assert.rejects(attempt,/build — результат отсутствует/);
+ await assert.rejects(attempt,/Нет успешного собственного CI/);
  await db.query('DELETE FROM qa_test_plans WHERE task_id=$1',[parent]);
  const singlePass={singlePass:true,adHoc:true,simplified:true,cases:[{id:'qa-1',title:'Проверка заказа'}]};
  await db.query('UPDATE ai_test_runs SET qa_plan_snapshot=$2 WHERE id=$1',[testRun,singlePass]);
@@ -101,6 +102,9 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
  await db.query("UPDATE ai_test_runs SET verdict='passed',report=$2 WHERE id=$1",[testRun,{
   commit:headSha,executionVerified:true,checks:[{result:'passed',details:'node --test → код 0'}],caseResults:[{case_id:'qa-1',result:'passed',evidence:'node --test → код 0'}]
  }]);
+ await assert.rejects(attempt,/Нет успешного собственного CI/);
+ await db.query("INSERT INTO quality_gate_runs(id,project_id,task_id,kind,head_sha,base_sha,status,verdict) VALUES($1,$2,$3,'ci',$4,$5,'completed','passed'),($6,$2,$3,'review',$4,$5,'completed','passed')",
+  [randomUUID(),project,parent,headSha,baseSha,randomUUID()]);
  await assert.rejects(attempt,/build — результат отсутствует/);
  assert.equal(puts,0);
  ciPassed=true;

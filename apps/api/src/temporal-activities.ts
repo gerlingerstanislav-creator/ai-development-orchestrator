@@ -10,6 +10,7 @@ import {createAssistantService} from './assistant.js';
 import {executeProjectManagerInbox,failProjectManagerInbox,readProjectManagerWatchResume,type ProjectManagerWatch} from './project-manager-inbox.js';
 import {runIterationPlanning} from './project-iterations.js';
 import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
+import {runQualityGates} from './quality-gates.js';
 import pg from 'pg';
 import {randomUUID,createDecipheriv,createHash} from 'node:crypto';
 import {createMergeService} from './merge-service.js';
@@ -1085,6 +1086,23 @@ export async function failProjectSpecification(jobId:string):Promise<void>{
  if(result.rowCount)await event(result.rows[0].project_id,jobId,'document_import','failed','Процесс аналитика прерван','error');
 }
 
+export async function runSelfHostedQualityGates(args:{projectId:string;taskId:string;runId:string}){
+ const timer=setInterval(()=>heartbeat(),12000);
+ try{
+  heartbeat();
+  return await runQualityGates(pool,args,decrypt,codexUrl,runnerKey,()=>heartbeat());
+ }finally{clearInterval(timer);}
+}
+/** Rework only findings from the failing SHA, preserving PR, history and prior completed work. */
+export async function scheduleQualityFix(args:{projectId:string;taskId:string;cycleId:string;attempt:number;message:string}){
+ const message=args.message.slice(0,9500);
+ await pool.query("UPDATE tasks SET stage='development',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2",
+  [args.taskId,args.projectId,'Замечания CI / архитектора по текущему PR:\n'+message]);
+ await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'quality_review_failed',$3)",
+  [randomUUID(),args.taskId,message.slice(0,2200)]);
+ await event(args.projectId,args.cycleId,'architecture_review','retry_development',message,'warning');
+ return scheduleRequirementFix(args);
+}
 export async function runAutomaticDeployment(runId:string){
  const interval=setInterval(()=>heartbeat(),10000);
  try{heartbeat();await performAutomaticDeployment(pool,runId,decrypt);}finally{clearInterval(interval);}

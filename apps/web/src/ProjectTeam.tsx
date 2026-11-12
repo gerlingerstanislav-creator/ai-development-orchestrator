@@ -10,7 +10,7 @@ type Memory={id:string;role:string;kind:string;body:string;evidence:string;statu
 type Snapshot={agents:Agent[];memory:Memory[]};
 type Revision={id:string;previous_name:string;previous_instructions:string;next_name:string;next_instructions:string;created_at:string};
 type Request=<T>(path:string,options?:RequestInit)=>Promise<T>;
-const roleLabels:Record<string,string>={manager:'ПМ',analyst:'БА',analysis:'СА',development:'Разработчик',testing:'QA',deployment:'DevOps',devops:'DevOps',documentation:'Документатор'};
+const roleLabels:Record<string,string>={manager:'ПМ',analyst:'Аналитик',analysis:'Аналитик',development:'Разработчик',testing:'QA',deployment:'DevOps',devops:'DevOps',architect:'Архитектор',documentation:'Документатор'};
 const kindName=(kind:string)=>kind==='observation'?'Наблюдение':kind==='instruction_suggestion'?'Предложение инструкции':kind;
 const statusName=(status:string)=>status==='approved'?'Утверждено':status==='rejected'?'Отклонено':status==='recorded'?'Зафиксировано':status==='pending'?'На рассмотрении':status;
 export function ProjectTeam({projectId,request}:{projectId:string;request:Request}){

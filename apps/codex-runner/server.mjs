@@ -145,7 +145,7 @@ function stopCommand(child){
 const MAX_PARALLEL_DEVELOPMENT=20; // Actual per-project role limits come from signed API jobs.
 const MAX_PARALLEL_PER_ROLE=1;
 const activeByRole=new Map();
-const jobRole=job=>job.kind==='test'?'testing':'development';
+const jobRole=job=>job.kind==='test'?'testing':job.kind==='review'?'architect':job.kind==='ci'?'devops':'development';
 const agentApi=process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools';
 const MAX_PARALLEL_CHAT=4;
 const jobQueue=[];
@@ -190,6 +190,8 @@ function startNextJobs(){
   const scope=job.projectId?{projectId:job.projectId,taskId:job.taskId,processId:job.id,role,actorId:job.actorId}:null;
   void withReaderContext(agentApi,jobKey,scope,context=>{
    if(job.kind==='test')return runTestJob(job,state,context);
+   if(job.kind==='review')return runArchitectureReviewJob(job,state,context);
+   if(job.kind==='ci')return runDeterministicCiJob(job,state);
    if(job.kind==='resolve-conflict')return runConflictJob(job,state,context);
    return runJob(job,state,context);
   }).catch(e=>{if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}}).finally(()=>{
@@ -647,6 +649,131 @@ async function runTestJob(job,state,context){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
  }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
 }
+async function runArchitectureReviewJob(job,state,context){
+ const workspace=await mkdtemp(join(tmpdir(),'ado-architect-'));
+ const dir=join(workspace,'repo');
+ try{
+  state.message='Получение неизменяемого коммита для архитектурного ревью';
+  await command('git',['clone','--branch',job.branch||job.taskId,'https://github.com/'+job.repository+'.git',dir],
+   {cwd:workspace,env:gitEnvironment(job.token),timeout:90000,jobId:job.id});
+  const head=(await command('git',['rev-parse','HEAD'],{cwd:dir,jobId:job.id})).stdout.trim();
+  if(head!==job.expectedCommit)throw Error('PR изменился до архитектурного ревью');
+  await command('git',['fetch','origin',job.baseBranch],{cwd:dir,env:gitEnvironment(job.token),jobId:job.id,timeout:90000});
+  const policy=await isolatedTaskPolicy(workspace,dir,job.id,false,false);
+  const prompt=[
+   'Ты независимый архитектор платформы и Tech Lead. Проведи CODE REVIEW конкретного коммита PR, не меняй файлы.',
+   'Изучи реальный код, diff относительно origin/'+job.baseBranch+', соседние модули, тесты, миграции и совместимость.',
+   'Опирайся только на доказанные дефекты, не придумывай нарушения и не блокируй PR из-за вкусовых пожеланий.',
+   'Блокирующие находки: ошибки архитектуры, нарушение контрактов, security, несовместимость миграций или реальная регрессия.',
+   'Если существенных дефектов нет — APPROVED. Некритичные улучшения перечисли как advice, они не блокируют.',
+   'ВЕРНИ ТОЛЬКО JSON без markdown: {"verdict":"approved|changes_requested","summary":"...","findings":[{"severity":"blocking|advice","file":"...","reason":"...","suggestion":"..."}]}.',
+   'При наличии blocking finding verdict обязан быть changes_requested. Укажи проверяемые конкретные файлы.',
+   'Задача: '+job.title+'\n'+String(job.description).slice(0,8000),
+   'Инструкции роли: '+String(job.agentInstructions||'').slice(0,6000)
+  ].join('\n\n');
+  state.message='Независимое ревью архитектора';
+  const result=await command('codex',['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
+   '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,context.prefix+prompt],{
+   cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(1200000,job.maxRuntimeSeconds*1000),maxOutputChars:150000
+  });
+  const parsed=codexJsonResult(result.stdout);
+  const response=String(parsed.message||'').trim().replace(/^`{3}(?:json)?\s*/i,'').replace(/\s*`{3}$/,'');
+  const start=response.indexOf('{'),end=response.lastIndexOf('}');
+  if(start<0||end<=start)throw Error('Архитектор не вернул проверяемый JSON отчёт');
+  const report=JSON.parse(response.slice(start,end+1));
+  if(!['approved','changes_requested'].includes(report.verdict)||typeof report.summary!=='string'||
+    !Array.isArray(report.findings)||report.findings.length>30||
+    report.findings.some(x=>!['blocking','advice'].includes(x.severity)||typeof x.file!=='string'||typeof x.reason!=='string'||typeof x.suggestion!=='string')||
+    (report.verdict==='approved'&&report.findings.some(x=>x.severity==='blocking')))
+   throw Error('Ревью архитектора не прошло валидацию');
+  state.reviewReport={verdict:report.verdict,summary:report.summary.slice(0,2000),
+   findings:report.findings.map(x=>({severity:x.severity,file:x.file.slice(0,300),reason:x.reason.slice(0,1600),suggestion:x.suggestion.slice(0,1600)}))};
+  state.reviewedCommit=head;state.usage=parsed.usage;
+  state.status='completed';state.message=report.verdict==='approved'?'Архитектор одобрил PR':'Архитектор запросил исправления';
+ }finally{await rm(workspace,{recursive:true,force:true}).catch(()=>{});}
+}
+async function runDeterministicCiJob(job,state){
+ const workspace=await mkdtemp(join(tmpdir(),'ado-ci-'));
+ const dir=join(workspace,'repo');
+ const gitEnv=gitEnvironment(job.token);
+ const checks=[];
+ let postgresStarted=false;
+ const postgresData=join(workspace,'ci-postgres');
+ const socketDir=join(workspace,'scratch','pgsocket');
+ let databaseUrl='';
+ const run=async(name,args,timeout=120000)=>{
+  assertJobActive(job.id);state.message='CI: '+name;
+  const commandResult=await command('codex',[...policy.sandboxArgs,'--',...(databaseUrl?['env','DATABASE_URL='+databaseUrl]:[]),...args],{
+   cwd:dir,env:cliEnv,timeout,maxOutputChars:9000,jobId:job.id,allowNonzero:true});
+  const result={name,exitCode:commandResult.exitCode,output:(commandResult.stdout+'\n'+commandResult.stderr).slice(-3500)};
+  checks.push(result);state.ciChecks=checks;saveJob(job,state);
+  return result.exitCode===0;
+ };
+ let policy;
+ try{
+  state.message='CI: получение точного SHA';
+  await command('git',['clone','--branch',job.branch||job.taskId,'https://github.com/'+job.repository+'.git',dir],
+   {cwd:workspace,env:gitEnv,timeout:90000,jobId:job.id});
+  const head=(await command('git',['rev-parse','HEAD'],{cwd:dir,jobId:job.id})).stdout.trim();
+  if(head!==job.expectedCommit)throw Error('SHA PR изменился до запуска CI');
+  state.testedCommit=head;
+  if(job.baseCommit){
+   await command('git',['fetch','origin',job.baseBranch],{cwd:dir,env:gitEnv,jobId:job.id,timeout:90000});
+   const base=(await command('git',['rev-parse','FETCH_HEAD'],{cwd:dir,jobId:job.id})).stdout.trim();
+   if(base!==job.baseCommit)throw Error('Целевая ветка PR изменилась: необходимо новое CI');
+   // Validate conflict-free integration without changing the checked-out PR.
+   const merge=await command('git',['-c','user.name=ADO CI','-c','user.email=ci@users.noreply.github.com','merge','--no-commit','--no-ff','FETCH_HEAD'],{
+    cwd:dir,env:gitEnv,jobId:job.id,timeout:60000,allowNonzero:true});
+   checks.push({name:'merge compatibility',exitCode:merge.exitCode,output:(merge.stdout+'\n'+merge.stderr).slice(-2500)});
+   if(merge.exitCode!==0){state.ciChecks=checks;state.ciVerdict='failed';state.status='completed';state.message='CI: конфликт интеграции веток';return;}
+  }
+  policy=await isolatedTaskPolicy(workspace,dir,job.id,true,true);
+  const files=(await command('git',['ls-files'],{cwd:dir,jobId:job.id,maxOutputChars:400000})).stdout.split(/\r?\n/).filter(Boolean);
+  const has=(file)=>files.includes(file);
+  const pkg=has('package.json')?JSON.parse(await readFile(join(dir,'package.json'),'utf8')):null;
+  // A fresh PostgreSQL cluster is local to THIS CI job, socket-only, and erased on exit.
+  // Never point arbitrary project tests at the application's real DATABASE_URL.
+  const packages=await Promise.all(files.filter(file=>file==='package.json'||file.endsWith('/package.json')).slice(0,30)
+   .map(async file=>readFile(join(dir,file),'utf8').then(JSON.parse).catch(()=>null)));
+  const needsPg=packages.some(x=>x&&(x.dependencies?.pg||x.devDependencies?.pg));
+  if(needsPg){
+   state.message='CI: изолированная PostgreSQL-база';
+   await mkdir(socketDir,{recursive:true,mode:0o700});
+   await command('/usr/lib/postgresql/15/bin/initdb',['-D',postgresData,'-U','orchestrator','--auth-local=trust','--auth-host=reject','--no-instructions'],
+    {cwd:workspace,timeout:120000,jobId:job.id,maxOutputChars:6000});
+   await command('/usr/lib/postgresql/15/bin/pg_ctl',['-D',postgresData,'-l',join(workspace,'ci-postgres.log'),
+    '-o',"-c listen_addresses='' -c shared_buffers=16MB -c max_connections=20 -c fsync=off -k "+socketDir+" -p 5432",'start','-w'],
+    {cwd:workspace,timeout:90000,jobId:job.id,maxOutputChars:6000});
+   postgresStarted=true;
+   await command('/usr/bin/createdb',['-h',socketDir,'-U','orchestrator','orchestrator'],
+    {cwd:workspace,timeout:20000,jobId:job.id});
+   databaseUrl='postgres://orchestrator@localhost:5432/orchestrator?host='+encodeURIComponent(socketDir);
+  }
+  let executed=0;
+  if(pkg){
+   if(!await run('npm dependencies',['npm','install','--no-audit','--no-fund'],480000)){
+    state.ciChecks=checks;state.ciVerdict='failed';state.status='completed';state.message='CI: установка зависимостей не выполнена';return;
+   }
+   for(const name of ['check','build','test']){
+    if(pkg.scripts?.[name]){executed++;await run('npm '+name,['npm','run',name],360000);}
+   }
+   const nodeTests=files.filter(x=>/\.test\.(mjs|js)$/.test(x)).slice(0,200);
+   if(nodeTests.length&&!pkg.scripts?.test){executed++;await run('node unit tests',['node','--test',...nodeTests],360000);}
+   const syntax=files.filter(x=>/^apps\/(codex-runner|qa-browser)\/.*\.mjs$/.test(x)).slice(0,80);
+   for(const filename of syntax){executed++;await run('syntax '+filename,['node','--check',filename],30000);}
+  }
+  if(files.some(x=>/^(pyproject.toml|pytest.ini|setup.py)$/.test(x))){executed++;await run('python tests',['python3','-m','pytest','-q'],360000);}
+  if(!executed){checks.push({name:'supported tests',exitCode:1,output:'Нет известных технических проверок для этого проекта'});}
+  state.ciChecks=checks;state.ciVerdict=checks.every(x=>x.exitCode===0)?'passed':'failed';
+  state.status='completed';state.message=state.ciVerdict==='passed'?'Собственный CI: все проверки пройдены':'Собственный CI: обнаружены ошибки';
+ }finally{
+  if(postgresStarted)await command('/usr/lib/postgresql/15/bin/pg_ctl',['-D',postgresData,'stop','-m','immediate','-w'],{
+   cwd:workspace,timeout:20000,allowNonzero:true
+  }).catch(()=>{});
+  await rm(workspace,{recursive:true,force:true}).catch(()=>{});
+ }
+}
+
 async function runConflictJob(job,state,context){
  const workspace=await mkdtemp(join(tmpdir(),'ado-conflict-'));
  const dir=join(workspace,'repo');
@@ -828,10 +955,11 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/jobs'&&req.method==='POST'){
    const job=await readJson(req);
-   if(job.kind && !['resolve-conflict','test'].includes(job.kind))return reply(res,400,{error:'Недопустимый тип задания'});
+   if(job.kind && !['resolve-conflict','test','review','ci'].includes(job.kind))return reply(res,400,{error:'Недопустимый тип задания'});
    if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
     typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
     typeof job.repository!=='string'|| !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(job.repository) ||
+    (['ci','review'].includes(job.kind)&&(!/^[a-f0-9]{40}$/i.test(job.expectedCommit)||job.baseCommit!==undefined&&!/^[a-f0-9]{40}$/i.test(job.baseCommit)))||
     (job.branch!==undefined&&(typeof job.branch!=='string'||!/^[a-zA-Z0-9_.\/-]+$/.test(job.branch)||job.branch.startsWith('-')))||
     typeof job.baseBranch!=='string'|| !/^[a-zA-Z0-9_.\/-]+$/.test(job.baseBranch) ||
     !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(job.model)||

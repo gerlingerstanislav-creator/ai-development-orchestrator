@@ -32,3 +32,12 @@ test('DevOps resolves from project specialist registry, not the merge workflow s
  assert.match(calls[0].sql,/project_specialist_agents/);
  assert.deepEqual(calls[0].params,['project-1','devops']);
 });
+
+test('Architect mention addresses a specialist without starting a workflow',async()=>{
+ const calls=[];
+ const pool={query:async(sql,params)=>{calls.push({sql,params});return {rowCount:1,rows:[{agent_name:'Архитектор платформы',agent_instructions:'Review the PR'}]};}};
+ const agent=await resolveAgentMention(pool,'project-1','@Architect проверь PR');
+ assert.equal(agent.stage,'architect');assert.equal(agent.alias,'Architect');
+ assert.match(calls[0].sql,/project_specialist_agents/);
+ assert.deepEqual(calls[0].params,['project-1','architect']);
+});

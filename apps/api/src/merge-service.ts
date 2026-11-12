@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {requireMergeCi} from './merge-ci.js';
+import {requireQualityGates} from './quality-gates.js';
 import {deploymentDecision} from './deployment-stage.js';
 import {qaWaiverAssessment} from './qa-waiver.js';
 import {pendingAgentQuestions} from './task-agent-notes.js';
@@ -133,7 +134,9 @@ async function registerMergedDeployment(projectId:string,taskId:string,userId:st
   throw Object.assign(new Error('GitHub ещё вычисляет mergeability PR, повторная проверка необходима'),{statusCode:409});
  if(pr.mergeable===false || pr.mergeable_state==='dirty')
   throw Object.assign(new Error('PR содержит конфликт с целевой веткой'),{statusCode:409});
- await requireMergeCi({base,headers,branch:pr.base.ref,headSha,
+ if(!/^[a-f0-9]{40}$/i.test(String(pr.base?.sha||'')))throw Object.assign(Error('GitHub не подтвердил SHA целевой ветки'),{statusCode:409});
+ await requireQualityGates(pool,projectId,taskId,headSha,pr.base.sha);
+ await requireMergeCi({base,headers,branch:pr.base.ref,headSha,selfHosted:true,
   mergeSha:typeof pr.merge_commit_sha==='string'&&/^[a-f0-9]{40}$/i.test(pr.merge_commit_sha)?pr.merge_commit_sha:null});
  if(pr.mergeable_state==='blocked')
   throw Object.assign(Error('Проверки CI подтверждены, но GitHub блокирует слияние. Проверьте ограничения целевой ветки в PR.'),{statusCode:409});

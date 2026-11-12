@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bubblewrap ca-certificates git python3 python3-pip python3-venv python3-pytest \
+      bubblewrap ca-certificates git python3 python3-pip python3-venv python3-pytest postgresql-15 \
  && update-ca-certificates \
  && test -s /etc/ssl/certs/ca-certificates.crt \
  && rm -rf /var/lib/apt/lists/* \

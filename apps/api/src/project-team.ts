@@ -8,7 +8,7 @@ import {z} from 'zod';
 const uuid=z.string().uuid();
 const conversationalRoles=['manager','analyst'] as const;
 const stageRoles=['analysis','development','testing','documentation'] as const;
-const specialistRoles=['devops'] as const;
+const specialistRoles=['devops','architect'] as const;
 const roleSchema=z.enum([...conversationalRoles,...stageRoles,...specialistRoles]);
 const memoryStatus=z.enum(['approved','rejected']);
 const instructions=z.string().max(12000);
@@ -17,7 +17,7 @@ const selectedModel=z.enum(selectableAgentModels);
 export async function resolveRoleAiSettings(pool:Pick<Pool,'query'>,projectId:string,role:string,defaults?:{model:string;reasoning:string;enabled?:boolean}){
  const [base,override]=await Promise.all([
   defaults?Promise.resolve({rows:[defaults]}):pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
-  pool.query('SELECT model FROM project_agent_models WHERE project_id=$1 AND role=$2',[projectId,role]).catch(error=>{if((error as {code?:string}).code==='42P01')return {rows:[]};throw error;})
+  pool.query('SELECT model FROM project_agent_models WHERE project_id=$1 AND role=$2',[projectId,role==='analyst'?'analysis':role]).catch(error=>{if((error as {code?:string}).code==='42P01')return {rows:[]};throw error;})
  ]);
  const fallback=base.rows[0]||{model:'gpt-6-luna',reasoning:'low',enabled:false};
  return {...fallback,model:override.rows[0]?.model||fallback.model};
@@ -53,14 +53,14 @@ export async function initProjectTeamSchema(pool:Pool){
  );
  CREATE TABLE IF NOT EXISTS project_agent_models(
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  role text NOT NULL CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops')),
+  role text NOT NULL CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops','architect')),
   model text NOT NULL CHECK(model IN ('gpt-6-luna','gpt-6-sol','gpt-6.1-sol')),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY(project_id,role)
  );
  CREATE TABLE IF NOT EXISTS project_role_capacity(
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  role text NOT NULL CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops')),
+  role text NOT NULL CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops','architect')),
   capacity int NOT NULL CHECK(capacity BETWEEN 1 AND 10),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY(project_id,role),
@@ -83,15 +83,26 @@ export async function initProjectTeamSchema(pool:Pool){
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source_run_id uuid;
  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memory_run_learning ON agent_memory(project_id,role,source_run_id) WHERE source_run_id IS NOT NULL;
  CREATE INDEX IF NOT EXISTS idx_agent_memory_role_status ON agent_memory(project_id,role,status,created_at DESC);
+ ALTER TABLE project_specialist_agents DROP CONSTRAINT IF EXISTS project_specialist_agents_role_check;
+ ALTER TABLE project_specialist_agents ADD CONSTRAINT project_specialist_agents_role_check CHECK(role IN ('devops','architect'));
+ ALTER TABLE project_agent_models DROP CONSTRAINT IF EXISTS project_agent_models_role_check;
+ ALTER TABLE project_agent_models ADD CONSTRAINT project_agent_models_role_check CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops','architect'));
+ ALTER TABLE project_role_capacity DROP CONSTRAINT IF EXISTS project_role_capacity_role_check;
+ ALTER TABLE project_role_capacity ADD CONSTRAINT project_role_capacity_role_check CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops','architect'));
+ INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions)
+ SELECT id,'architect','Архитектор платформы','' FROM projects ON CONFLICT(project_id,role) DO NOTHING;
  INSERT INTO project_conversation_agents(project_id,role,agent_name,agent_instructions)
  SELECT p.id,r.role,r.agent_name,r.agent_instructions FROM projects p
  CROSS JOIN (VALUES
  ('manager','Менеджер проекта','Помогай владельцу проекта ставить задачи и принимать решения. Координируй работу других агентов, уточняй только существенные вопросы, показывай реальные состояния задач и не объявляй действие выполненным без подтверждения инструментов.'),
- ('analyst','Бизнес-аналитик','Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.')
+ ('analyst','Аналитик BA/SA','Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.')
  ) AS r(role,agent_name,agent_instructions)
  ON CONFLICT(project_id,role) DO NOTHING;
  -- Reconcile DevOps after the schema migration without discarding edited stage instructions.
  `);
+ await pool.query("UPDATE project_specialist_agents SET agent_instructions=$1 WHERE role='architect' AND agent_instructions=''",[agentInstructions.architect]);
+ await pool.query("UPDATE project_conversation_agents SET agent_name='Аналитик BA/SA' WHERE role='analyst' AND agent_name='Бизнес-аналитик'");
+ await pool.query("UPDATE workflow_stages SET agent_name='Аналитик BA/SA' WHERE stage='analysis' AND agent_name IN ('Системный аналитик','AI-аналитик','AI-системный аналитик')");
  // Move only untouched built-in profiles to concise current instructions.
  // Preserve any role with an instruction edit recorded by a project owner.
  const legacyDefaults={"analysis":"На основании согласованного бизнес-аналитиком пула анализируй технические требования, данные, API, интеграции, состояния, ограничения и зависимости. Уточняй только блокирующие вопросы по текущим задачам. Продуктовые решения возвращай бизнес-аналитику и владельцу продукта. Не создавай задачи и вопросы по невыбранному функционалу. Сверяй PR с утверждённым ТЗ; QA выполняет тестировщик.","development":"Реализуй только утверждённое ТЗ в существующем репозитории/ветке, выполняй доступные проверки, исправляй воспроизводимые дефекты QA. Создай или обнови PR. Пиши тестировщику технические нюансы и вопросы, заказчику не обращайся. Не меняй секреты.","testing":"Независимо составь тест-план и проведи все доступные проверки на конкретном SHA. Сохраняй доказательства по каждому сценарию. Без реального браузера не засчитывай визуальное тестирование. Если инструментов нет — сообщи Менеджеру проекта непроверенные сценарии, не проси заказчика проводить тесты и не разрешай слияние самостоятельно.","documentation":"Обновляй только проверенную, слитую функциональность по ТЗ и фактическим изменениям. Не включай неутверждённые рабочие заметки команды как установленные требования. Все вопросы направляй коллегам или Менеджеру проекта, а не заказчику.","devops":"Отвечай за надёжность, скорость и экономичность CI/CD, GitHub Actions и выкладки. Анализируй фактические job, длительность, повторные установки зависимостей, кеширование, concurrency, отмену устаревших запусков, повторные сборки, артефакты, безопасность секретов и права GitHub token. Предлагай минимальные проверяемые изменения с измеримым эффектом. Не отключай тесты или защиту веток ради скорости. Используй неизменяемые версии артефактов, гарантируй идемпотентность и исключай параллельные деплои в одну среду. Перед выкладкой проверяй обязательные статусы и SHA; для продакшена нужен явный разрешённый механизм выкладки и стратегия отката. Не утверждай, что сделал deploy, если нет результата инструмента. Не запускай выкладку в ходе консультации."};
@@ -163,8 +174,16 @@ export async function initProjectTeamSchema(pool:Pool){
  }
 }
 export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId:string,role:'manager'|'analyst'){
- const row=(await pool.query('SELECT agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role])).rows[0];
- return row?('Роль: '+row.agent_name+'\nПроектные инструкции:\n'+row.agent_instructions):'';
+ const row=(await pool.query(role==='analyst'?'SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2':'SELECT agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role==='analyst'?'analysis':role])).rows[0];
+ if(!row)return '';
+ if(role==='analyst'){
+  const legacy=(await pool.query("SELECT agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role='analyst'",[projectId])).rows[0];
+  const custom=String(legacy?.agent_instructions||'').trim();
+  const original='Работай с требованиями, исходными материалами и структурой технического задания.';
+  return 'Роль: '+row.agent_name+'\nИнструкции BA/SA:\n'+row.agent_instructions+
+   (custom&&!custom.startsWith(original)&&!row.agent_instructions.includes(custom)?'\nСохранённые инструкции прежнего BA:\n'+custom:'');
+ }
+ return 'Роль: '+row.agent_name+'\nПроектные инструкции:\n'+row.agent_instructions;
 }
 /** Only explicitly approved instruction proposals and observations are used at runtime. */
 export async function agentMemoryContext(pool:Pick<Pool,'query'>,projectId:string,role:string){
@@ -190,7 +209,7 @@ async function roleExists(pool:Pool,projectId:string,role:string){
 /** Runtime cap applies to new Codex work. Manager is structurally single-instance. */
 export async function roleCapacity(pool:Pick<Pool,'query'>,projectId:string,role:string){
  if(role==='manager')return 1;
- const result=await pool.query('SELECT capacity FROM project_role_capacity WHERE project_id=$1 AND role=$2',[projectId,role==='deployment'?'devops':role]);
+ const result=await pool.query('SELECT capacity FROM project_role_capacity WHERE project_id=$1 AND role=$2',[projectId,role==='deployment'?'devops':role==='analyst'?'analysis':role]);
  return Number(result.rows[0]?.capacity||1);
 }
 export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
@@ -216,9 +235,9 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
   const modelFor=(role:string)=>models.rows.find(x=>x.role===role)?.model??null;
    const capacityFor=(role:string)=>role==='manager'?1:Number(capacities.rows.find(x=>x.role===(role==='deployment'?'devops':role))?.capacity||1);
   const agents=[
-   ...conversations.rows.map(r=>({id:'conversation:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='manager'?'Коммуникации':'Бизнес-анализ',type:'conversation',instructions:r.agent_instructions,model:modelFor(r.role),responsibility:responsibilityFor(r.role),capacity:capacityFor(r.role)})),
+   ...conversations.rows.filter(r=>r.role==='manager').map(r=>({id:'conversation:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='manager'?'Коммуникации':'Бизнес-анализ',type:'conversation',instructions:r.agent_instructions,model:modelFor(r.role),responsibility:responsibilityFor(r.role),capacity:capacityFor(r.role)})),
    ...stages.rows.map(r=>({id:'stage:'+r.stage,role:r.stage,name:r.agent_name,stage:r.label,type:'workflow',instructions:r.agent_instructions,model:modelFor(r.stage),responsibility:responsibilityFor(r.stage),capacity:capacityFor(r.stage)})),
-   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:'CI/CD · выкладка · инфраструктура',type:'specialist',instructions:r.agent_instructions,model:modelFor(r.role),responsibility:responsibilityFor(r.role)}))
+   ...specialists.rows.map(r=>({id:'specialist:'+r.role,role:r.role,name:r.agent_name,stage:r.role==='architect'?'Архитектура · код-ревью':'CI/CD · выкладка · инфраструктура',type:'specialist',instructions:r.agent_instructions,model:modelFor(r.role),responsibility:responsibilityFor(r.role)}))
   ];
   return {agents,memory:memory.rows};
  });

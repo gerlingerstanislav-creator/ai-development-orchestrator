@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateHealthUrl,deploymentWorkflowTemplate} from '../dist/deployment-automation.js';
+import {validateHealthUrl,validateSshTarget} from '../dist/deployment-automation.js';
 import {deploymentDecision} from '../dist/deployment-stage.js';
 
 test('deployment decisions keep automatic as pending and preserve explicit skip/manual',()=>{
@@ -16,15 +16,15 @@ test('health probes reject localhost, raw IP, http, credentials and custom port'
  }
  assert.equal(validateHealthUrl('https://example.com/health'),'https://example.com/health');
 });
-test('generated workflow is manually dispatched for immutable SHA and scoped environment',()=>{
- const yaml=deploymentWorkflowTemplate();
- assert.match(yaml,/workflow_dispatch:/);
- assert.match(yaml,/inputs.sha/);
- assert.match(yaml,/inputs.request_id/);
- assert.match(yaml,/concurrency:/);
- assert.match(yaml,/git rev-parse HEAD/);
- assert.match(yaml,/persist-credentials: false/);
- assert.match(yaml,/StrictHostKeyChecking=yes/);
- assert.match(yaml,/secrets.DEPLOY_HOST_KEY/);
- assert.doesNotMatch(yaml,/\npush:/);
+test('self-hosted SSH target requires a pinned known_hosts entry and safe inputs',()=>{
+ const target={host:'deploy.example.com',username:'deploy',path:'/srv/orchestrator',knownHosts:'deploy.example.com ssh-ed25519 AAAAB3NzaC1yc2EAAAADAQABAAABAQ'};
+ assert.deepEqual(validateSshTarget(target),target);
+ for(const item of [
+  {...target,host:'127.0.0.1'},
+  {...target,host:'host;id'},
+  {...target,username:'root;id'},
+  {...target,path:'/srv/../etc'},
+  {...target,path:'/srv/a;rm'},
+  {...target,knownHosts:'evil.example.com ssh-ed25519 AAAA'}
+ ])assert.throws(()=>validateSshTarget(item));
 });
