@@ -1768,7 +1768,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    };
    if(name==='tasks.close'){
     const body=String(message.rows[0].body||'');
-    if(!/(?:закр|заверш|готов[а-я]*|complete|finish|done|close)/i.test(body))
+    if(!/(?:закр(?:ой|ыть|ойте)|заверш(?:и|ить|ите)|отметь[^\n]{0,70}(?:готов|выполн)|пометь[^\n]{0,70}(?:готов|выполн)|mark[^\n]{0,70}done|close[^\n]{0,70}task)/i.test(body))
      return {status:'blocked',reason:'В исходном сообщении владельца нет поручения завершить задачу'};
     const db=await pool.connect();
     try{
@@ -1793,7 +1793,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
     }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
    }
    if(name==='tasks.cancel'){
-    if(!/(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||'')))
+    if(!/(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||''))||/(?:не|не надо|не нужно)\s+(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||'')))
      throw Object.assign(Error('В исходном сообщении нет явного поручения закрыть/отменить задачу'),{statusCode:409});
     const preview=await call('GET','/cancel-preview');
     if(preview.status==='blocked')return preview;
