@@ -693,9 +693,13 @@ async function runDeterministicCiJob(job,state){
  const dir=join(workspace,'repo');
  const gitEnv=gitEnvironment(job.token);
  const checks=[];
+ let postgresStarted=false;
+ const postgresData=join(workspace,'ci-postgres');
+ const socketDir=join(workspace,'scratch','pgsocket');
+ let databaseUrl='';
  const run=async(name,args,timeout=120000)=>{
   assertJobActive(job.id);state.message='CI: '+name;
-  const commandResult=await command('codex',[...policy.sandboxArgs,'--',...args],{
+  const commandResult=await command('codex',[...policy.sandboxArgs,'--',...(databaseUrl?['env','DATABASE_URL='+databaseUrl]:[]),...args],{
    cwd:dir,env:cliEnv,timeout,maxOutputChars:9000,jobId:job.id,allowNonzero:true});
   const result={name,exitCode:commandResult.exitCode,output:(commandResult.stdout+'\n'+commandResult.stderr).slice(-3500)};
   checks.push(result);state.ciChecks=checks;saveJob(job,state);
@@ -723,6 +727,24 @@ async function runDeterministicCiJob(job,state){
   const files=(await command('git',['ls-files'],{cwd:dir,jobId:job.id,maxOutputChars:400000})).stdout.split(/\r?\n/).filter(Boolean);
   const has=(file)=>files.includes(file);
   const pkg=has('package.json')?JSON.parse(await readFile(join(dir,'package.json'),'utf8')):null;
+  // A fresh PostgreSQL cluster is local to THIS CI job, socket-only, and erased on exit.
+  // Never point arbitrary project tests at the application's real DATABASE_URL.
+  const packages=await Promise.all(files.filter(file=>/(^|\\/)package\\.json$/.test(file)).slice(0,30)
+   .map(async file=>readFile(join(dir,file),'utf8').then(JSON.parse).catch(()=>null)));
+  const needsPg=packages.some(x=>x&&(x.dependencies?.pg||x.devDependencies?.pg));
+  if(needsPg){
+   state.message='CI: изолированная PostgreSQL-база';
+   await mkdir(socketDir,{recursive:true,mode:0o700});
+   await command('/usr/lib/postgresql/15/bin/initdb',['-D',postgresData,'-U','orchestrator','--auth-local=trust','--auth-host=reject','--no-instructions'],
+    {cwd:workspace,timeout:120000,jobId:job.id,maxOutputChars:6000});
+   await command('/usr/lib/postgresql/15/bin/pg_ctl',['-D',postgresData,'-l',join(workspace,'ci-postgres.log'),
+    '-o',"-c listen_addresses='' -k "+socketDir+" -p 5432",'start','-w'],
+    {cwd:workspace,timeout:90000,jobId:job.id,maxOutputChars:6000});
+   postgresStarted=true;
+   await command('/usr/bin/createdb',['-h',socketDir,'-U','orchestrator','orchestrator'],
+    {cwd:workspace,timeout:20000,jobId:job.id});
+   databaseUrl='postgres://orchestrator@localhost:5432/orchestrator?host='+encodeURIComponent(socketDir);
+  }
   let executed=0;
   if(pkg){
    if(!await run('npm dependencies',['npm','install','--no-audit','--no-fund'],480000)){
@@ -740,7 +762,12 @@ async function runDeterministicCiJob(job,state){
   if(!executed){checks.push({name:'supported tests',exitCode:1,output:'Нет известных технических проверок для этого проекта'});}
   state.ciChecks=checks;state.ciVerdict=checks.every(x=>x.exitCode===0)?'passed':'failed';
   state.status='completed';state.message=state.ciVerdict==='passed'?'Собственный CI: все проверки пройдены':'Собственный CI: обнаружены ошибки';
- }finally{await rm(workspace,{recursive:true,force:true}).catch(()=>{});}
+ }finally{
+  if(postgresStarted)await command('/usr/lib/postgresql/15/bin/pg_ctl',['-D',postgresData,'stop','-m','immediate','-w'],{
+   cwd:workspace,timeout:20000,allowNonzero:true
+  }).catch(()=>{});
+  await rm(workspace,{recursive:true,force:true}).catch(()=>{});
+ }
 }
 
 async function runConflictJob(job,state,context){
