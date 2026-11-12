@@ -1,3 +1,4 @@
+import {coreSchemaMigrations} from './database/core-migrations.js';
 import {registerDocumentationRoutes} from './modules/documentation/api.js';
 import {registerProjectProcessRoutes} from './modules/processes/project-api.js';
 import {registerProjectCoreRoutes} from './modules/projects/api.js';
@@ -8,13 +9,12 @@ import {registerProjectGitRoutes} from './modules/integrations/github/api.js';
 import {registerCodexAdminRoutes} from './modules/codex/api.js';
 import {registerAuthRoutes} from './modules/auth/api.js';
 import {issueAccessToken} from './modules/auth/application/tokens.js';
-import {applyLegacySchema,pauseAllProjectAgents,ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
+import {pauseAllProjectAgents,ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
 import {runSchemaMigrations} from './database/schema-migrations.js';
 import {initEpicStageSync} from './epic-stage-sync.js';
 import {initAnalysisFirstGate} from './analysis-first-gate.js';
 import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-stage-operations.js';
 import {formatQaReportMessage,qaEventDetail} from './qa-report-message.js';
-import {initAgentPromptAudit} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
@@ -41,13 +41,13 @@ import {registerKnowledgeDocumentUpdateRoutes} from './knowledge-document-update
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes} from './qa-waiver.js';
 import {initRequirementsSchema,saveSpecRevision,updateCurrentSpecification} from './requirements.js';
-import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
+import {registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
-import {initAgentPeerQueue,reconcileAgentPeerQueue} from './agent-peer-queue.js';
-import {initTaskAnalysisQueue,reconcileTaskAnalysisQueue} from './task-analysis-queue.js';
+import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
+import {reconcileTaskAnalysisQueue} from './task-analysis-queue.js';
 import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -1149,14 +1149,11 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
  }
 });
 async function main(){
- await runSchemaMigrations(pool,[{
-  version:1,name:'legacy-schema-baseline',checksum:'ado-legacy-schema-baseline-v1',
-  up:db=>applyLegacySchema(db,workflowStageDescriptions)
- }]);
+ await runSchemaMigrations(pool,coreSchemaMigrations(workflowStageDescriptions));
  // These are runtime policies, not schema migrations: run on every restart.
  await pauseAllProjectAgents(pool);
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
-await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initQualityGateSchema(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initQualityGateSchema(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
   pool,path=>agentCall(path),
