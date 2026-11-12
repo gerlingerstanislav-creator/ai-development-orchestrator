@@ -22,6 +22,16 @@ export function validateHealthUrl(value:string){
   throw problem(400,'Проверка доступности требует публичный HTTPS hostname');
  return u.toString();
 }
+/** Pure input validation: SSH destination and pinned known_hosts are never model-authored shell fragments. */
+export function validateSshTarget(target:{host:string;username:string;path:string;knownHosts:string}){
+ const {host,username,path,knownHosts}=target;
+ if(!/^[a-zA-Z0-9.-]{3,240}$/.test(host)||host==='localhost'||host.startsWith('127.')||
+  !/^[a-z_][a-zA-Z0-9_-]{0,69}$/.test(username)||
+  !/^\/[a-zA-Z0-9_.\/-]{1,349}$/.test(path)||path.split('/').includes('..')||
+  !knownHosts.split('\n').some(line=>line.startsWith(host+' ')&&/\bssh-(rsa|ed25519)\b|\becdsa-sha2-/.test(line)))
+  throw problem(400,'Недопустимый SSH-хост, пользователь, каталог или host key');
+ return target;
+}
 export async function initAutomaticDeployment(db:Db){
  await db.query(`
   ALTER TABLE project_deployment_settings DROP CONSTRAINT IF EXISTS project_deployment_settings_mode_check;
@@ -47,7 +57,6 @@ export async function initAutomaticDeployment(db:Db){
   CREATE INDEX IF NOT EXISTS idx_deployment_runs_task ON deployment_runs(task_id,created_at DESC);
  `);
 }
-const workflowFile='ado-deploy.yml';
 const gitHeaders=(token:string)=>({Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator','Content-Type':'application/json'});
 async function git<T=any>(repo:string,token:string,path:string,method='GET',body?:unknown):Promise<T>{
  if(!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repo))throw problem(400,'Некорректный GitHub репозиторий');
@@ -60,87 +69,8 @@ async function githubConnection(db:Db,projectId:string,userId:string|null){
  const row=(await db.query(`SELECT g.repository,g.default_branch,c.secret_encrypted
   FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id AND c.provider='github_token'
   WHERE g.project_id=$1 AND ($2::uuid IS NULL OR c.owner_id=$2)`,[projectId,userId])).rows[0];
- if(!row)throw problem(409,'Подключи GitHub репозиторий и разреши Actions');
+ if(!row)throw problem(409,'Подключи GitHub репозиторий и настрой доступ к PR');
  return row as {repository:string;default_branch:string;secret_encrypted:string};
-}
-export function deploymentWorkflowTemplate(){
- return [
- 'name: ADO verified deployment',
- 'run-name: ado-deploy-${{ inputs.request_id }}-${{ inputs.sha }}',
- 'on:',
- '  workflow_dispatch:',
- '    inputs:',
- '      sha:',
- '        required: true',
- '        type: string',
- '      request_id:',
- '        required: true',
- '        type: string',
- '      environment:',
- '        required: true',
- '        type: string',
- 'permissions:',
- '  contents: read',
- 'concurrency:',
- '  group: ado-deploy-${{ inputs.environment }}',
- '  cancel-in-progress: false',
- 'jobs:',
- '  deploy:',
- '    environment: ${{ inputs.environment }}',
- '    runs-on: ubuntu-latest',
- '    timeout-minutes: 25',
- '    steps:',
- '      - uses: actions/checkout@v4',
- '        with:',
- '          ref: ${{ inputs.sha }}',
- '          persist-credentials: false',
- '      - name: Verify immutable commit',
- '        env:',
- '          SHA: ${{ inputs.sha }}',
- '        run: |',
- '          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]',
- '          test "$(git rev-parse HEAD)" = "$SHA"',
- '      - name: Deploy exact commit over SSH',
- '        shell: bash',
- '        env:',
- '          SHA: ${{ inputs.sha }}',
- '          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}',
- '          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}',
- '          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}',
- '          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}',
- '          DEPLOY_HOST_KEY: ${{ secrets.DEPLOY_HOST_KEY }}',
- '        run: |',
- '          set -euo pipefail',
- '          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9.-]+$ ]]',
- '          [[ "$DEPLOY_USER" =~ ^[A-Za-z0-9_-]+$ ]]',
- '          [[ "$DEPLOY_PATH" =~ ^/[A-Za-z0-9_./-]+$ ]]',
- '          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_HOST_KEY" ]]',
- '          mkdir -p ~/.ssh && chmod 700 ~/.ssh',
- '          printf "%s\\n" "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519',
- '          printf "%s\\n" "$DEPLOY_HOST_KEY" > ~/.ssh/known_hosts',
- '          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts',
- '          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$DEPLOY_USER@$DEPLOY_HOST" "set -e; cd $DEPLOY_PATH; git fetch origin $SHA; git checkout --detach $SHA; docker compose up -d --build"',
- ''
- ].join('\n');
-}
-export async function prepareWorkflowPr(db:Db,projectId:string,userId:string,decrypt:(v:string)=>string){
- const c=await githubConnection(db,projectId,userId),token=decrypt(c.secret_encrypted),repo=c.repository;
- const path='/.github/workflows/'+workflowFile;
- const existing=await fetch('https://api.github.com/repos/'+repo+'/contents'+path+'?ref='+encodeURIComponent(c.default_branch),
-  {headers:gitHeaders(token),signal:AbortSignal.timeout(20000)});
- if(existing.ok)throw problem(409,'Workflow уже находится в основной ветке');
- if(existing.status!==404)throw problem(502,'Не удалось проверить наличие GitHub Actions workflow');
- const branch='ado/devops-deployment-workflow';
- const prs=await git<any[]>(repo,token,'/pulls?state=open&head='+encodeURIComponent(repo.split('/')[0]+':'+branch));
- if(prs.length)return {pr_url:prs[0].html_url,pr_number:prs[0].number,reused:true};
- const base=await git<{commit:{sha:string}}>(repo,token,'/branches/'+encodeURIComponent(c.default_branch));
- await git(repo,token,'/git/refs','POST',{ref:'refs/heads/'+branch,sha:base.commit.sha});
- await git(repo,token,'/contents'+path,'PUT',{message:'ci: configure SHA-based verified deployment',content:Buffer.from(deploymentWorkflowTemplate()).toString('base64'),branch});
- const pr=await git<{number:number;html_url:string}>(repo,token,'/pulls','POST',{
-  title:'ci: configure verified SHA-based deployment',head:branch,base:c.default_branch,
-  body:'Настройте защищённое окружение GitHub и секреты DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH, DEPLOY_SSH_KEY, DEPLOY_HOST_KEY. Workflow не запускается по push; конкретный SHA отправляет Temporal.'
- });
- return {pr_url:pr.html_url,pr_number:pr.number,reused:false};
 }
 async function event(db:Db,projectId:string,runId:string,stage:string,detail:string){
  await db.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'deployment',$4,$5)",
@@ -171,10 +101,7 @@ export function registerAutomaticDeploymentRoutes(app:FastifyInstance,deps:Deps)
    private_key:z.string().min(70).max(16000),
    known_hosts:z.string().min(40).max(8000)
   }).parse(req.body);
-  if(fields.path.split('/').includes('..')||fields.host==='localhost'||fields.host.startsWith('127.'))
-   throw problem(400,'Небезопасный адрес или путь');
-  if(!fields.known_hosts.split('\n').some(line=>line.startsWith(fields.host+' ')&&/\bssh-(rsa|ed25519)\b|\becdsa-sha2-/.test(line)))
-   throw problem(400,'Укажи закреплённый SSH host key для целевого hostname');
+  validateSshTarget({host:fields.host,username:fields.username,path:fields.path,knownHosts:fields.known_hosts});
   await pool.query(`INSERT INTO project_deployment_ssh(project_id,host,username,remote_path,private_key_encrypted,known_hosts)
    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id) DO UPDATE SET host=EXCLUDED.host,username=EXCLUDED.username,
     remote_path=EXCLUDED.remote_path,private_key_encrypted=EXCLUDED.private_key_encrypted,
