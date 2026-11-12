@@ -30,6 +30,8 @@ services:
       SUPABASE_DIAGNOSTICS_API_KEY: ${SUPABASE_DIAGNOSTICS_API_KEY:-sb_publishable_1rFQHvM17WljCk1xCau_fg_Aa4t1EVl}
     depends_on:
       db: {condition: service_healthy}
+      codex: {condition: service_healthy}
+    restart: unless-stopped
   temporal:
     image: temporalio/temporal:1.10.0
     command: ["server", "start-dev", "--ip", "0.0.0.0", "--db-filename", "/home/temporal/temporal.db"]
@@ -53,7 +55,7 @@ services:
     depends_on:
       db: {condition: service_healthy}
       temporal: {condition: service_started}
-      codex: {condition: service_started}
+      codex: {condition: service_healthy}
     restart: unless-stopped
   codex:
     build:
@@ -78,6 +80,14 @@ services:
       - codex_jobs:/var/lib/ado-runner
       - qa_workspaces:/var/lib/ado-qa-workspaces
     restart: unless-stopped
+    healthcheck:
+      # A Docker image with a missing imported module never reaches this endpoint.
+      # Preserve the internal-only listener; authenticate using the shared secret.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4300/device',{headers:{'X-Runner-Secret':process.env.RUNNER_SHARED_SECRET},signal:AbortSignal.timeout(1500)}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 15s
     networks: [default, qa-internal]
     # Internal only: no host port. Never mount the Docker socket here.
   qa-browser:
