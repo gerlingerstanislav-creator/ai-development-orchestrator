@@ -455,12 +455,30 @@ async function codexCall(path:string,method:'GET'|'POST'='GET') {
 }
 app.get('/api/codex/rate-limits',async(req:any,reply)=>{
  if(!await requireAdmin(req,reply))return;
+ const started=Date.now();
+ const force=req.query?.refresh==='1';
  try{
-  const response=await fetch(codexUrl+'/usage-limits',{headers:{'X-Runner-Secret':runnerKey},signal:AbortSignal.timeout(25000)});
-  const body=await response.json().catch(()=>({error:'Ответ Codex не удалось прочитать'}));
-  if(!response.ok)return reply.code(response.status===409?409:503).send({error:String((body as any).error||'Лимиты недоступны')});
+  const response=await fetch(codexUrl+'/usage-limits'+(force?'?refresh=1':''),{
+   headers:{'X-Runner-Secret':runnerKey},signal:AbortSignal.timeout(25000)
+  });
+  const body=await response.json().catch(()=>({error:'Codex Runner вернул некорректный JSON'})) as any;
+  if(!response.ok){
+   const message=String(body.error||'Codex Runner не предоставил лимиты').slice(0,260);
+   req.log.warn({status:response.status,duration_ms:Date.now()-started},'Codex rate limits upstream unavailable');
+   return reply.code(response.status===409?409:503).send({error:message});
+  }
+  if(!Array.isArray(body.windows)){
+   req.log.warn({duration_ms:Date.now()-started},'Codex rate limits response has no windows array');
+   return reply.code(503).send({error:'Codex Runner вернул неожиданный формат лимитов'});
+  }
   return body;
- }catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Не удалось получить лимиты Codex'});}
+ }catch(e){
+  const cause=(e as {cause?:{code?:string}})?.cause;
+  const reason=e instanceof Error?e.message:'Не удалось получить лимиты Codex';
+  const suffix=cause?.code?' ('+cause.code+')':'';
+  req.log.warn({error:reason,causeCode:cause?.code||null,duration_ms:Date.now()-started},'Codex rate limits request failed');
+  return reply.code(503).send({error:'Нет соединения с Codex Runner: '+reason.slice(0,160)+suffix});
+ }
 });
 app.get('/api/codex/status',async(_req,reply)=>{
  try{return await codexCall('/status');}
