@@ -1332,3 +1332,6 @@ body:has(.tasks-page){overflow:hidden}
 .qa-evidence-case summary strong{white-space:nowrap;font-size:12px}
 .qa-evidence-case ol{padding-left:20px;margin:7px 0}
 .qa-evidence-case pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto}
+
+.qa-evidence-images{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:8px}
+.qa-evidence-images img{width:100%;height:auto;border-radius:6px;border:1px solid rgba(127,127,127,.2)}
