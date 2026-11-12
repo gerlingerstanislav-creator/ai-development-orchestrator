@@ -514,7 +514,7 @@ async function runTestJob(job,state,context){
    'Если проект не требует зависимостей, не объявляй его непроверяемым только из-за отсутствия node_modules.',
    baseline.length?'Runner уже запустил стандартные проверки в изоляции. Используй их результаты, если они проверяют нужное поведение. Если команда не прошла из-за зависимостей, подготовь среду и повтори. Сам определи, указывает ли её вывод на дефект или ограничение среды. Фактический результат: '+JSON.stringify(baseline):'',
    singlePass?'Сначала запусти доступную проверку проекта. Для Python используй python3 -m pytest, если в проекте есть тесты. Для Node запусти имеющийся скрипт тестов, установив зависимости при необходимости. Если готовых тестов для требования нет, выполни конкретную проверку с утверждением об ожидаемом результате, например вызови функцию или локальный API с тестовыми данными.': '',
-   singlePass?'В каждом выполненном checks и caseResults укажи в поле command точный текст одной команды, которую ты действительно запускал и которая проверяет это утверждение. Укажи пустую строку для недоступной проверки. Успеху соответствует код 0, провалу — ненулевой код. Чтение файлов, просмотр diff и установка зависимостей не считаются тестами.':'',
+   'В каждом выполненном checks и caseResults укажи в поле command точный текст одной команды, которую ты действительно запускал и которая проверяет это утверждение. Укажи пустую строку для недоступной проверки. Успеху соответствует код 0, провалу — ненулевой код. Чтение файлов, просмотр diff и установка зависимостей не считаются тестами.',
    'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run.',
    'Не утверждай, что пользовательский путь, браузерное действие или ручная проверка выполнены без реального инструмента и воспроизведения.',
    (adHoc?'Для каждого выбранного сценария':'Для КАЖДОГО case_id из плана')+' верни result, evidence и reason. reason для passed/failed = executed; для недоступных сценариев = tool_unavailable|environment_unavailable|manual_only. Если настоящая причина не установлена, reason = unknown (слияние без проверки нельзя рекомендовать).',
@@ -544,7 +544,7 @@ async function runTestJob(job,state,context){
    'Текущий git commit: '+state.testedCommit
   ].join('\n\n');
   state.message='Проверяет код и запускает доступные тесты';
-  const commandField=singlePass?{command:{type:'string'}}:{};
+  const commandField={command:{type:'string'}};
   const titleField=singlePass?{title:{type:'string'}}:{};
   const reportSchema={
    type:'object',additionalProperties:false,
@@ -617,11 +617,9 @@ async function runTestJob(job,state,context){
    report=verifyReport(corrected.message||'');
   }
   assertJobActive(job.id);
-  if(singlePass){
-   report=verifyQaExecution(report,[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout)],baseline);
-   state.executionVerified=true;
-   if(adHoc)state.cases=report.cases;
-  }
+  report=verifyQaExecution(report,[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout)],baseline);
+  state.executionVerified=true;
+  if(adHoc)state.cases=report.cases;
   state.verdict=report.verdict;
   state.summary=report.summary.slice(0,3500);
   state.handoffNote=String(report.handoffNote||'').slice(0,2500);
