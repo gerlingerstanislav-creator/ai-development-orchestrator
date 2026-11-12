@@ -27,7 +27,7 @@ else if(action==='viewport'){body.width=Number(args[0]);body.height=Number(args[
 else if(action==='click'||action==='count'||action==='text')body.selector=args[0];
 else if(action==='fill'){body.selector=args[0];body.value=args[1]||'';}
 else if(action==='assert')body.expression=args[0];
-else if(!['start','screenshot','close'].includes(action))throw Error('Unknown action: '+action);
+else if(!['start','restart','screenshot','close'].includes(action))throw Error('Unknown action: '+action);
 try{
  const response=await fetch('http://127.0.0.1:4311/action',{method:'POST',
   headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(action==='start'?90000:35000)});
