@@ -45,7 +45,7 @@ export async function createTaskPolicy(workDirectory,{writable=true,qa=false}={}
   ...setting('features.shell_snapshot',false),
   ...setting('web_search','disabled'),
   '-c','permissions.'+profile+'.filesystem='+tomlTable({
-   ':minimal':'read','/usr/local/bin':'read','/usr/local/lib/node_modules':'read','/opt/codex-runner/browser-client.mjs':'read',[scratch]:'write',
+   ':minimal':'read','/usr/local/bin':'read','/usr/local/lib/node_modules':'read','/opt/codex-runner/browser-client.mjs':'read','/opt/codex-runner/qa-exec.mjs':'read',[scratch]:'write',
    ':workspace_roots':{'.':writable?'write':'read','.git':'read','.codex':'read','.agents':'read'},
   }),
   ...(qa?[
