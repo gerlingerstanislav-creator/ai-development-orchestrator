@@ -38,6 +38,7 @@ jobs:
       - name: Project-scoped scheduling and queue integration tests
         run: |
           node --check apps/codex-runner/server.mjs
+          node --check apps/codex-runner/qa-completion.mjs
           node --check apps/codex-runner/qa-prompt.mjs
           node --check apps/codex-runner/developer-prompt.mjs
           node --check apps/api/dist/prompt-assembler.mjs
