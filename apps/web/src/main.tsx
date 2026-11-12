@@ -117,6 +117,31 @@ function markdownInline(source:string):React.ReactNode[]{
  if(last<source.length)nodes.push(source.slice(last));
  return nodes;
 }
+function AgentPromptDisclosure({projectId,processId}:{projectId:string;processId:string}){
+ const [entries,setEntries]=useState<AgentPromptAudit[]|null>(null);
+ const [loading,setLoading]=useState(false);
+ const [error,setError]=useState('');
+ const load=async()=>{
+  setLoading(true);setError('');
+  try{const result=await api<{prompts:AgentPromptAudit[]}>('/projects/'+projectId+'/processes/'+processId+'/prompts');setEntries(result.prompts);}
+  catch(e){setError(e instanceof Error?e.message:'Не удалось получить инструкции');}
+  finally{setLoading(false);}
+ };
+ const initial=entries?.length?[...entries].sort((a,b)=>a.created_at.localeCompare(b.created_at))[0]:null;
+ return <details className="agent-prompt-disclosure" onToggle={event=>{if(event.currentTarget.open)void load();}}>
+  <summary>Посмотреть инструкции агента</summary>
+  {loading&&<small className="muted">Загрузка инструкций…</small>}
+  {!loading&&error&&<small className="muted">{error}</small>}
+  {!loading&&!error&&entries?.length===0&&<small className="muted">Промпт этого запуска не сохранён.</small>}
+  {initial&&!loading&&<div className="agent-prompt-detail">
+   <small className="muted">Первоначальный запрос · {new Date(initial.created_at).toLocaleString('ru-RU')} · {initial.original_chars} символов</small>
+   <pre>{initial.prompt}</pre>
+   {entries&&entries.length>1&&<details className="agent-prompt-retries"><summary>Последующие запросы ({entries.length-1})</summary>
+    {[...entries].sort((a,b)=>a.created_at.localeCompare(b.created_at)).slice(1).map(entry=><div key={entry.id}><small>{entry.operation} · {new Date(entry.created_at).toLocaleString('ru-RU')}</small><pre>{entry.prompt}</pre></div>)}
+   </details>}
+  </div>}
+ </details>;
+}
 function pmDisplayText(source:string){
  // Historic PM responses may contain obsolete, unsupported pseudo-links.
  // Keep their labels, not misleading paths that have no application route.
@@ -558,9 +583,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const deferredQa=managerState?.requests.filter(request=>request.status==='waiting'&&request.kind==='qa_visual')||[];
  const activeAgentRuns=taskAgentRuns.filter(run=>run.status==='running'||run.status==='queued');
  const managerWorking=managerSending||managerMessages?.some(message=>message.role==='user'&&(message.status==='queued'||message.status==='processing'));
+ // Show milestones in the user-facing task chat; fine-grained steps remain in the technical journal.
+ const visibleAgentRuns=taskAgentRuns.filter((run,index,list)=>run.kind!=='qa_design'&&
+  list.findIndex(other=>other.id===run.id&&other.kind===run.kind)===index);
  const chatEntries=[
   ...(managerMessages||[]),
-  ...taskAgentRuns.filter(run=>(run.status==='completed'||run.status==='failed')&&!(run.kind==='testing'&&taskTestRuns.some(test=>test.id===run.id))),
+  ...visibleAgentRuns.map(run=>({...run,kind:'agent_start' as const,agentKind:run.kind,completed_at:null})),
+  ...visibleAgentRuns.filter(run=>['completed','failed'].includes(run.status)&&
+   !(run.kind==='testing'&&taskTestRuns.some(test=>test.id===run.id&&test.human_report))).map(run=>({
+    ...run,kind:'agent_finish' as const,agentKind:run.kind
+   })),
   ...taskTestRuns.filter(test=>['completed','failed'].includes(test.status)&&test.human_report).map(test=>({
    id:test.id,kind:'qa_report' as const,status:test.status,summary:test.human_report||'',
    created_at:test.created_at,completed_at:test.completed_at
@@ -2601,7 +2633,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <div>{item.text}</div>
        </div>)}
       </details>
-      {chatEntries.map(m=>'kind' in m&&m.kind==='qa_report'?<div className="manager-message from-manager qa-report-message" key={'qa-'+m.id}>
+      {chatEntries.map(m=>'kind' in m&&m.kind==='agent_start'?<div className="manager-message from-manager agent-milestone" key={'start-'+m.agentKind+'-'+m.id}>
+       <AgentPromptDisclosure projectId={selectedProjectId} processId={m.id}/>
+       <div className="manager-message-heading"><strong>{agentRunLabels[m.agentKind].name}</strong><small>{new Date(m.created_at).toLocaleString('ru-RU')}</small></div>
+       <div className="manager-message-body">{m.status==='queued'?'Задача поставлена в очередь.':agentRunLabels[m.agentKind].name+' взял задачу в работу.'}</div>
+      </div>:'kind' in m&&m.kind==='qa_report'?<div className="manager-message from-manager qa-report-message" key={'qa-'+m.id}>
        <div className="manager-message-heading">
         <strong>Тестировщик · Отчёт по тест-кейсам</strong>
         <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
@@ -2609,16 +2645,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={m.summary}/></div>
       </div>:'kind' in m?<div className="manager-message from-manager" key={m.kind+'-'+m.id}>
        <div className="manager-message-heading">
-        <strong>{agentRunLabels[m.kind].name} · {m.status==='failed'?'Ошибка':'Итог'}</strong>
+        <strong>{agentRunLabels[m.agentKind].name} · {m.status==='failed'?'Ошибка':'Завершено'}</strong>
         <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
        </div>
-       <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={m.summary||(m.status==='failed'?'Работа завершилась с ошибкой.':'Работа завершена.')}/></div>
+       <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={
+        m.status==='failed'?(m.summary||'Работа завершилась с ошибкой.'):
+        m.agentKind==='development'?'Работа завершена. Изменения переданы тестировщику.':
+        m.agentKind==='analysis'?'Анализ завершён. '+(m.summary||'Результат сохранён в задаче.'):
+        m.agentKind==='documentation'?'Документация обновлена.':
+        m.summary||'Этап завершён.'
+       }/></div>
        {m.link&&<a href={m.link} target="_blank" rel="noreferrer">Открыть PR</a>}
       </div>:<div className={'manager-message '+(m.role==='user'?'from-user':'from-manager')} key={m.id}>
        <div className="manager-message-heading">
         <strong>{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</strong>
         <small>{new Date(m.created_at).toLocaleString('ru-RU')}</small>
        </div>
+       {m.role==='manager'&&m.reply_to&&<AgentPromptDisclosure projectId={selectedProjectId} processId={m.reply_to}/>}
        <div className={'manager-message-body '+(m.role==='manager'?'pm-chat-markdown':'')}>
         {m.role==='manager'?<DocumentMarkdown source={pmDisplayText(m.body)}/>:m.body}
        </div>
