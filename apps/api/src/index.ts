@@ -1,3 +1,4 @@
+import {createLegacyDevelopmentReconciler} from './modules/processes/infrastructure/reconcile-legacy-development.js';
 import {registerBackgroundProcessRoutes} from './modules/processes/api.js';
 import {registerProjectGitRoutes} from './modules/integrations/github/api.js';
 import {registerCodexAdminRoutes} from './modules/codex/api.js';
@@ -1539,12 +1540,17 @@ async function main(){
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
 await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initQualityGateSchema(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
+ const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
+  pool,path=>agentCall(path),
+  (error,runId)=>app.log.warn({error,runId},'Legacy development reconciliation failed')
+ );
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
   try{await recoverMergeBatches(pool,startMergeBatch);}catch(error){app.log.error({error},'Merge queue reconciliation failed');}
   try{await publishOwnerQuestionsToPmChat(pool);}catch(error){app.log.error({error},'PM owner questions reconciliation failed');}
   try{await reconcileTaskAnalysisQueue(pool,temporal);}catch(error){app.log.error({error},'Task analyst queue reconciliation failed');}
   try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}
+  try{await reconcileLegacyDevelopmentRuns();}catch(error){app.log.error({error},'Legacy development process reconciliation failed');}
  })();
  reconcile();setInterval(reconcile,12000).unref();}
 main().catch(e=>{console.error(e);process.exit(1);});
