@@ -79,4 +79,20 @@ test('the development dispatcher fills each project capacity in the same reconci
  await reconcileAgentWorkQueue(db,temporal);
  assert.equal(starts.length,5,'reconciliation never launches duplicate workflow IDs');
  assert.equal(new Set(starts.map(start=>start.workflowId)).size,5);
+ // Stop only project A. Its new developer work must remain queued while
+ // project B is permitted to fill its own newly available slot.
+ const fourth=randomUUID();
+ await db.query("INSERT INTO tasks(id,project_id,stage,analysis_state) VALUES($1,$2,'development','approved')",[fourth,projects[0]]);
+ await db.query('UPDATE projects SET agents_running=false WHERE id=$1',[projects[0]]);
+ await db.query("UPDATE project_role_capacity SET capacity=3 WHERE project_id=$1 AND role='development'",[projects[1]]);
+ await reconcileAgentWorkQueue(db,temporal);
+ assert.equal((await counts())[projects[0]],3,'Stop must suspend only its own project');
+ assert.equal((await counts())[projects[1]],3,'project B is unaffected by Stop in project A');
+ assert.equal((await readDevelopmentQueue(db,projects[0])).find(row=>row.task_id===fourth).reason,'paused');
+ await db.query('UPDATE projects SET agents_running=true WHERE id=$1',[projects[0]]);
+ await db.query("UPDATE project_role_capacity SET capacity=4 WHERE project_id=$1 AND role='development'",[projects[0]]);
+ await reconcileAgentWorkQueue(db,temporal);
+ assert.equal((await counts())[projects[0]],4,'Play restarts queued work without duplicates');
+ assert.equal(starts.length,7);
+ assert.equal(new Set(starts.map(start=>start.workflowId)).size,7);
 });
