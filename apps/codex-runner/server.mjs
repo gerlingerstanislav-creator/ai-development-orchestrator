@@ -16,7 +16,7 @@ import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from
 import {incompleteQaCases,qaCompletionPrompt,completedQaSummary} from './qa-completion.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
-import {agentMcp,withReaderContext} from './agent-context.mjs';
+import {agentMcp,withReaderContext,scopedAgentPrompt} from './agent-context.mjs';
 import {assembleAgentPrompt} from '../api/src/prompt-assembler.mjs';
 import {buildQaPrompt} from './qa-prompt.mjs';
 import {buildDeveloperPrompt} from './developer-prompt.mjs';
@@ -1048,7 +1048,7 @@ http.createServer(async(req,res)=>{
     const result=await withReaderContext(agentApi,jobKey,data.context,context=>
      withRunnerImages(data.images,imageArgs=>command('codex',[
       'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,context.prefix+data.prompt
+      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,scopedAgentPrompt(context,data.prompt)
      ],{cwd:'/opt/codex-runner',env:{...cliEnv,...context.env},timeout:240000,maxOutputChars:500000})));
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
