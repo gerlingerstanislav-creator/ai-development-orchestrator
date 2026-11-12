@@ -33,7 +33,10 @@ function deviceInfo(){
  // Only show the actual device-sign-in URL and code after the CLI provides one.
  // Do not mistake the /api/accounts/deviceauth/usercode error endpoint for a login link.
  const url=output.match(/https:\/\/auth\.openai\.com\/codex\/device\b/i)?.[0]||null;
- const code=url?output.match(/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,6}\b/)?.[0]||null:null;
+ // Codex can emit diagnostics containing unrelated code-shaped strings before
+ // the real device URL. Prefer the most recent code from the CLI output.
+ const codes=url?[...output.matchAll(/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,6}\b/g)]:[];
+ const code=codes.at(-1)?.[0]||null;
  return {state:loginState,url,code,instructions:output,diagnosis,startedAt:started||null};
 }
 
