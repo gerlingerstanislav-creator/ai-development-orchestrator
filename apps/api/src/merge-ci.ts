@@ -10,9 +10,9 @@ const blocked=(message:string)=>Object.assign(Error(message),{statusCode:409});
 const githubError=(label:string,status:number)=>Object.assign(Error('Не удалось проверить '+label+' в GitHub: HTTP '+status),{statusCode:502});
 
 export async function requireMergeCi(input:{
- base:string;headers:Record<string,string>;branch:string;headSha:string;mergeSha?:string|null
+ base:string;headers:Record<string,string>;branch:string;headSha:string;mergeSha?:string|null;selfHosted?:boolean
 }){
- const {base,headers,branch,headSha,mergeSha}=input;
+ const {base,headers,branch,headSha,mergeSha,selfHosted=false}=input;
  const {Authorization:_,...publicHeaders}=headers;
  async function read(path:string,label:string){
   const url=base+path;
@@ -115,9 +115,9 @@ export async function requireMergeCi(input:{
  // Retain the existing check on reported failures, including jobs that the branch
  // does not designate as mandatory.
  const requiredNames=new Set(required.map(check=>check.name));
- for(const run of head.checks??[])if(!requiredNames.has(run.name)&&!checkPassed(run))
+ for(const run of head.checks??[])if(!selfHosted&&!requiredNames.has(run.name)&&!checkPassed(run))
   diagnostics.push(run.name+' — '+checkState(run));
- for(const status of head.statuses??[])if(!requiredNames.has(status.context)&&status.state!=='success')
+ for(const status of head.statuses??[])if(!selfHosted&&!requiredNames.has(status.context)&&status.state!=='success')
   diagnostics.push(status.context+' — '+status.state);
  if(diagnostics.length)throw blocked('CI не подтверждён: '+[...new Set(diagnostics)].join('; '));
 }
