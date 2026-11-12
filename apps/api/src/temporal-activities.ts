@@ -1,6 +1,6 @@
 import {preserveAcceptanceCriteria} from './acceptance-criteria.js';
 import {type AgentReaderScope} from './agent-tools.js';
-import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
+import {composeAgentPrompt,agentPromptZones,recordAgentPrompt} from './agent-prompt.js';
 import {createAgentSession,finishAgentSession} from './agent-tools.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
