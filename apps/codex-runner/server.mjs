@@ -22,6 +22,7 @@ import {buildQaPrompt} from './qa-prompt.mjs';
 import {buildDeveloperPrompt} from './developer-prompt.mjs';
 import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
 import {parseExistingImplementation} from './development-outcome.mjs';
+import {taskBranchName,ensureTaskBranchHistory} from './task-branch-history.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -367,7 +368,7 @@ async function runJob(job,state,context){
  const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000,jobId:job.id});
  // Stable branch identity: one Git branch per task; different agents cannot
  // work in that branch concurrently (startNextJobs locks repository+taskId).
- const branch=job.taskId;
+ const branch=taskBranchName(job.taskId);
  try{
   state.message='Клонирование репозитория';
   await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
@@ -388,6 +389,20 @@ async function runJob(job,state,context){
    state.message='Продолжение существующей ветки '+branch;
    await git('fetch','--depth','1','origin','refs/heads/'+branch+':refs/remotes/origin/'+branch);
    await git('checkout','-b',branch,'refs/remotes/origin/'+branch);
+   // A depth-1 clone of main plus a depth-1 fetch of the task branch often
+   // has no merge-base, even when GitHub does. Repair ancestry *before* the
+   // model runs, so a 50-second Codex attempt is not wasted on git 128.
+   const history=await ensureTaskBranchHistory(git,{baseBranch:job.baseBranch,taskBranch:branch});
+   state.branchHistory=history.rehydrated?'restored':'shared';
+   const baseRef='refs/remotes/origin/'+job.baseBranch;
+   let canFastForward=false;
+   try{await git('merge-base','--is-ancestor','HEAD',baseRef);canFastForward=true;}catch{}
+   if(canFastForward){
+    // Only a true fast-forward of the very same task branch is permitted.
+    // No new branch, forced push, synthetic commit or loss of previous work.
+    await git('merge','--ff-only',baseRef);
+    await git('push','origin','HEAD:refs/heads/'+branch);
+   }
   }else if(remoteBranch.status===404){
    await git('checkout','-b',branch);
    state.message='Создание ветки задачи в GitHub';
@@ -435,7 +450,7 @@ async function runJob(job,state,context){
    state.completionKind='already_implemented';
    state.verifiedCommit=head;
    state.implementationEvidence=evidence;
-   state.branch=job.baseBranch;
+   state.branch=branch; // Persistent task branch, even when QA verifies base SHA.
    state.prUrl=null;
    state.handoffNote=evidence.summary;
    state.status='completed';
