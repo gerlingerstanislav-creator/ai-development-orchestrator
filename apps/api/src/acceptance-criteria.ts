@@ -25,5 +25,15 @@ export function preserveAcceptanceCriteria(before:string,after:string):string{
  const seen=new Set(refined.map(normalized));
  const omitted=existing.filter(x=>!seen.has(normalized(x)));
  if(!omitted.length)return after;
- return after.trimEnd()+'\n\n'+(refined.length?'### Сохранённые критерии приёмки':'### Критерии приёмки')+'\n'+omitted.map(x=>'- '+x).join('\n');
+ if(refined.length){
+  const lines=after.split(/\r?\n/);
+  const headingIndex=lines.findIndex(line=>heading.test(line));
+  let insertion=lines.length;
+  for(let index=headingIndex+1;index<lines.length;index++){
+   if(nextSection.test(lines[index])&&!bullet.test(lines[index])){insertion=index;break;}
+  }
+  lines.splice(insertion,0,...omitted.map(x=>'- '+x));
+  return lines.join('\n');
+ }
+ return after.trimEnd()+'\n\n### Критерии приёмки\n'+omitted.map(x=>'- '+x).join('\n');
 }
