@@ -22,7 +22,7 @@ export default [
   }
  },
  {
-  files:['apps/codex-runner/command-executor.mjs','apps/codex-runner/codex-proxy.mjs'],
+  files:['apps/codex-runner/command-executor.mjs','apps/codex-runner/codex-proxy.mjs','apps/codex-runner/device-auth.mjs'],
   rules:{'no-constant-condition':'error','no-unreachable':'error','no-unsafe-optional-chaining':'error'}
  }
 ];
