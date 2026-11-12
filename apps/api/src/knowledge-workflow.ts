@@ -56,6 +56,8 @@ export async function initKnowledgeWorkflow(pool:Pool){
  ALTER TABLE knowledge_context_snapshots ADD COLUMN IF NOT EXISTS process_id uuid;
  ALTER TABLE knowledge_context_reads ADD COLUMN IF NOT EXISTS process_id uuid;
  ALTER TABLE knowledge_context_reads ADD COLUMN IF NOT EXISTS agent_session_id uuid;
+ ALTER TABLE knowledge_context_reads ADD COLUMN IF NOT EXISTS section_id uuid;
+ ALTER TABLE knowledge_context_reads ADD COLUMN IF NOT EXISTS section_title text;
  CREATE INDEX IF NOT EXISTS idx_knowledge_reads_process ON knowledge_context_reads(project_id,process_id,created_at);
  `);
 }

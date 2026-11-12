@@ -51,7 +51,11 @@ async function updatePage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<
 export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSession,name:string,args:unknown,
  _startWorkflow:(jobId:string)=>Promise<void>):Promise<unknown>{
  const projectId=session.project_id,actorId=session.actor_id;
- const params=(args&&typeof args==='object'&&!Array.isArray(args)?args:{}) as Record<string,unknown>;
+ const params={...(args&&typeof args==='object'&&!Array.isArray(args)?args:{})} as Record<string,unknown>;
+ if(session.task_id&&['knowledge.read','knowledge.section','tasks.read','processes.list'].includes(name)){
+  if(params.task_id!==undefined&&params.task_id!==session.task_id)throw rejected('Сессия агента привязана к другой задаче',403);
+  params.task_id=session.task_id;
+ }
  switch(name){
  case 'approvals.answer_question':{
   const {task_id,note_id,answer}=z.object({task_id:uuid,note_id:uuid,answer:z.string().trim().min(3).max(3000)}).parse(params);
@@ -217,13 +221,16 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
  case 'documents.read':{
   const {document_id}=z.object({document_id:uuid}).parse(params);
-  const r=await pool.query('SELECT id,title,body,parent_id,system_key,source_refs,updated_at FROM documents WHERE project_id=$1 AND id=$2',[projectId,document_id]);
+  const r=await pool.query('SELECT id,title,body,parent_id,system_key,source_refs,updated_at,knowledge_status AS status FROM documents WHERE project_id=$1 AND id=$2',[projectId,document_id]);
   if(!r.rowCount)throw rejected('Страница не найдена',404);
-  return {document:{...r.rows[0],revision:revision(r.rows[0].updated_at)}};
+  const document={...r.rows[0],revision:revision(r.rows[0].updated_at)};
+  if(session.read_only)await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage,agent_session_id,process_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+   [randomUUID(),projectId,session.task_id??null,document_id,document.revision,session.role,session.id,session.process_id??null]);
+  return {document};
  }
  case 'documents.search':{
   const {query}=z.object({query:z.string().trim().min(2).max(150)}).parse(params);
-  const r=await pool.query('SELECT id,title,parent_id,system_key,left(body,1500) excerpt,updated_at FROM documents WHERE project_id=$1 AND (title ILIKE $2 OR body ILIKE $2) ORDER BY updated_at DESC LIMIT 40',
+  const r=await pool.query('SELECT id,title,parent_id,system_key,left(body,700) excerpt,updated_at,knowledge_status AS status FROM documents WHERE project_id=$1 AND (title ILIKE $2 OR body ILIKE $2) ORDER BY updated_at DESC LIMIT 40',
    [projectId,'%'+query+'%']);
   return {documents:r.rows.map(d=>({...d,revision:revision(d.updated_at)}))};
  }
@@ -266,8 +273,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    if(!task.rowCount)throw rejected('Задача не найдена',404);
   }
   const d=r.rows[0];
-  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage,agent_session_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
-   [randomUUID(),projectId,task_id||null,document_id,revision(d.updated_at),session.role,session.id]);
+  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage,agent_session_id,process_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+   [randomUUID(),projectId,task_id||null,document_id,revision(d.updated_at),session.role,session.id,session.process_id??null]);
   return {document:{id:d.id,title:d.title,parent_id:d.parent_id,status:d.knowledge_status,summary:d.knowledge_summary||d.body.slice(0,360),tags:d.knowledge_tags,version:revision(d.updated_at),...(mode==='full'?{body:d.body}:{})}};
  }
 
@@ -286,8 +293,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(task_id&&!await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[task_id,projectId]).then(r=>r.rowCount))throw rejected('Задача не найдена',404);
   const section=markdownSections(document_id,String(r.rows[0].body)).find(s=>typeof section_id==='number'?s.line===section_id:s.section_id===section_id);
   if(!section)throw rejected('Раздел не найден',404);
-  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage,agent_session_id) VALUES($1,$2,$3,$4,$5,$6,$7)',
-   [randomUUID(),projectId,task_id||null,document_id,revision(r.rows[0].updated_at),session.role,session.id]);
+  await pool.query('INSERT INTO knowledge_context_reads(id,project_id,task_id,document_id,document_version,agent_stage,agent_session_id,process_id,section_id,section_title) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+   [randomUUID(),projectId,task_id||null,document_id,revision(r.rows[0].updated_at),session.role,session.id,session.process_id??null,section.section_id,section.title]);
   return {document_id,section_id:section.section_id,title:section.title,body:sectionBody(String(r.rows[0].body),section),version:revision(r.rows[0].updated_at)};
  }
 
@@ -379,6 +386,12 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  case 'processes.list':{
   const {task_id,process_id}=z.object({task_id:uuid.optional(),process_id:uuid.optional()}).parse(params);
   if(process_id){
+   if(session.task_id){
+    const process=await pool.query(`SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
+     UNION ALL SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
+     UNION ALL SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND id=$3`,[projectId,session.task_id,process_id]);
+    if(!process.rowCount)throw rejected('Процесс не найден в задаче',404);
+   }
    const test=(await pool.query('SELECT id,task_id,status,verdict,report,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND id=$2',[projectId,process_id])).rows[0];
    if(test){
     const names=new Map((test.qa_plan_snapshot?.cases??[]).map((item:{id:string;title:string})=>[item.id,item.title]));
