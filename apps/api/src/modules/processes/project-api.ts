@@ -5,7 +5,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {recordAgentPrompt} from '../../agent-prompt.js';
 import {releaseTaskOrchestration} from '../../task-orchestration.js';
-import {listProjectProcesses} from './application/project-process-list.js';
+import {listProjectProcesses} from './infrastructure/project-process-list.js';
 
 type Deps={
  pool:Pool;
