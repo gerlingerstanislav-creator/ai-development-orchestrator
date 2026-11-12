@@ -222,6 +222,10 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
       ORDER BY qa.completed_at DESC,qa.id DESC LIMIT 1),'') <> 'blocked'
     AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners o WHERE o.task_id=t.id AND o.state='active')
     AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status IN ('queued','running'))
+    -- Completing an attempt must not immediately reschedule the SAME feedback
+    -- even if the card has not yet been advanced by the Temporal worker.
+    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status='completed'
+      AND r.created_at >= t.updated_at)
     -- An internal failure writes tasks.updated_at while persisting its
     -- diagnostic into test_feedback. Comparing only timestamps therefore
     -- loops forever: each failed attempt makes itself appear "old".
