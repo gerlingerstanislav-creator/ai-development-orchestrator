@@ -4,6 +4,7 @@ import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {createAgentSession,finishAgentSession} from './agent-tools.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
+import {readTaskWorkflowProfile,workflowProfile,workflowProfileInstructions} from './workflow-profiles.js';
 import {runnerAssistantPrompt} from './runner-assistant-prompt.js';
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
@@ -119,8 +120,11 @@ async function stageContext(projectId:string,taskId:string,stage:KnowledgeStage,
 }
 async function taskHandoffContext(projectId:string,taskId:string,stage:string){
  const responsibility=workflowResponsibility(stage);
+ const profile=await readTaskWorkflowProfile(pool,projectId,taskId);
  const assignment=responsibility?'Этап '+stage+'. Ожидаемый результат: '+responsibility.result+'\n':'';
- return assignment+await readTaskWorkBrief(pool,projectId,taskId,3700);
+ const guidance='Профиль работы: '+workflowProfile(profile).label+'. '+workflowProfileInstructions(profile,stage)+
+  '\nПрофиль задаёт глубину работы, но не позволяет пропускать анализ, независимое ревью, CI, QA, слияние и подтверждение релиза.\n';
+ return assignment+guidance+await readTaskWorkBrief(pool,projectId,taskId,3700);
 }
 
 async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string,processId?:string):Promise<string>{
