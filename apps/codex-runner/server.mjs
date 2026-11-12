@@ -21,7 +21,7 @@ import {assembleAgentPrompt} from '../api/src/prompt-assembler.mjs';
 import {buildQaPrompt} from './qa-prompt.mjs';
 import {buildDeveloperPrompt} from './developer-prompt.mjs';
 import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
-import {parseExistingImplementation} from './development-outcome.mjs';
+import {parseExistingImplementation,parseNoChangesNeeded} from './development-outcome.mjs';
 import {taskBranchName,ensureTaskBranchHistory} from './task-branch-history.mjs';
 
 const execFileAsync=promisify(execFile);
@@ -435,13 +435,26 @@ async function runJob(job,state,context){
    const head=(await git('rev-parse','HEAD')).stdout.trim();
    const base=(await git('rev-parse','refs/remotes/origin/'+job.baseBranch)).stdout.trim();
    if(head!==base){
-    // The task branch already contains work by a previous developer. Reuse
-    // its PR rather than fabricating another file modification.
+    // Never fabricate a commit when earlier task commits are already present.
+    // QA rework requires an explicit, checkable reason that no edits are
+    // necessary. On initial recovery, the existing PR can simply be reused.
     const diff=(await git('diff','--name-only','refs/remotes/origin/'+job.baseBranch+'...HEAD')).stdout.trim();
     if(!diff)throw Error('Ветка отличается от базовой, но изменений для PR не обнаружено');
+    const rework=String(job.reworkFeedback||'').trim();
+    if(rework){
+     const tracked=(await git('ls-files')).stdout.split(/\\r?\\n/).filter(Boolean);
+     const review=parseNoChangesNeeded(attempt.answer||'',{headSha:head,trackedFiles:tracked});
+     if(!review)return false; // Ask the developer to explain the no-change decision.
+     assertJobActive(job.id);
+     state.reworkReview=review;
+     state.handoffNote='Исправления не требуются. Повторная проверка QA на SHA '+head+
+      '. '+review.summary+' Проверено: '+review.files.join(', ')+
+      '. Обоснование: '+review.reasons.join(' | ');
+     state.message='Разработчик объяснил отсутствие необходимых правок и вернул тот же PR в QA';
+    }
     state.prUrl=await ensureTaskPullRequest(job,branch,head,(attempt.answer||'').slice(0,6000));
     state.branch=branch;state.completionKind='pr';state.status='completed';
-    state.message='Существующие изменения в ветке переданы в PR без нового коммита';
+    if(!rework)state.message='Существующие изменения в ветке переданы в PR без нового коммита';
     return true;
    }
    const tracked=(await git('ls-files')).stdout.split(/\r?\n/).filter(Boolean);
@@ -462,7 +475,7 @@ async function runJob(job,state,context){
    if(await completeWithoutEdits(attempt))return;
    if(timeLeft()<45000)throw Error('Не представлены ни изменения, ни подтверждение готовой реализации; времени на повторную попытку недостаточно');
    state.message='Уточняет результат разработки: изменения, повторное использование PR или доказательство готового кода';
-   attempt=await runCodex(prompt+'\n\nПовторная попытка: докажи существующую реализацию с RESULT и IMPLEMENTATION_EVIDENCE, либо сделай действительно необходимые изменения. Не меняй файлы только ради коммита. Предыдущий ответ: '+String(attempt.answer||'').slice(-1100));
+   attempt=await runCodex(prompt+'\n\nПовторная попытка: если код уже соответствует замечаниям QA, обязательно предъяви RESULT: no_changes_needed и REWORK_REVIEW с явным объяснением, ссылками на файлы и проверяемыми причинами; если реализация уже в базовой ветке — используй RESULT: already_implemented и IMPLEMENTATION_EVIDENCE. Иначе исправь код. Не меняй файлы только ради коммита. Предыдущий ответ: '+String(attempt.answer||'').slice(-1100));
    if(!attempt.files.stdout.trim()){
     if(await completeWithoutEdits(attempt))return;
     throw Error('Агент не представил изменений или проверяемого доказательства уже реализованной задачи: '+String(attempt.answer||'').slice(-1300));
