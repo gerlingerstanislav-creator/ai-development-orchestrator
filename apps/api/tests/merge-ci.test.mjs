@@ -60,18 +60,22 @@ test('branch and ruleset CI diagnostics use current commit evidence and expected
  assert.ok(readPages.some(([isHead,page])=>isHead&&page===2));
 });
 
-test('unprotected main does not require inaccessible branch rule API or optional CI results',async t=>{
+test('unprotected main avoids inaccessible branch rules but still checks reported CI failures',async t=>{
  const original=globalThis.fetch;
  t.after(()=>{globalThis.fetch=original;});
- let reads=0;
+ let reads=[],conclusion='success';
  globalThis.fetch=async url=>{
-  reads++;
   const path=new URL(url).pathname;
-  assert.match(path,/\/branches\/main$/,'No rule or check discovery is necessary on an unprotected branch');
-  return Response.json({name:'main',protected:false,protection:{enabled:false,required_status_checks:{enforcement_level:'off',contexts:[]}}});
+  reads.push(path);
+  if(path.endsWith('/branches/main'))return Response.json({name:'main',protected:false});
+  if(path.endsWith('/check-runs'))return Response.json({total_count:1,check_runs:[check('build',conclusion)]});
+  if(path.endsWith('/statuses'))return Response.json([]);
+  assert.fail('Rules API must not be called on an unprotected branch: '+path);
  };
  await requireMergeCi({...input,branch:'main'});
- assert.equal(reads,1,'Do not require extra CI API privileges just to merge an unprotected branch');
+ assert.equal(reads.filter(path=>path.includes('/rules/')).length,0);
+ conclusion='failure';
+ await assert.rejects(requireMergeCi({...input,branch:'main'}),/build — failure/);
 });
 test('protected branches still fail closed when required CI rules cannot be read',async t=>{
  const original=globalThis.fetch;
