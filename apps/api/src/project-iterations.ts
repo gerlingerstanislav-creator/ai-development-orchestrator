@@ -336,7 +336,11 @@ function planItems(plan:Plan,current:TaskPlanRow[]){
     clarifications.push({epicKey:epic.key,key:task.key,title:task.title,description:task.description});
     continue;
    }
-   items.push({...task,parent:epic.key,existing:find(task,false,existing?.id??null,!!existing)});
+   // A dependency on an old clarification-only card is now satisfied
+   // inside this task's own analysis. It must not point to a missing task ID.
+   const clarificationDependency=epic.tasks.some(other=>other.kind==='analysis'&&other.key===task.depends_on);
+   items.push({...task,depends_on:clarificationDependency?undefined:task.depends_on,
+    parent:epic.key,existing:find(task,false,existing?.id??null,!!existing)});
   }
  }
  return {items,clarifications,unmentioned:current.filter(task=>!claimed.has(task.id)).map(({id,title})=>({id,title}))};
@@ -426,7 +430,7 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
  }
  // Questions are notes of real work items; never create analysis-only cards.
  for(const clarification of clarifications){
-  const target=items.find(item=>item.parent===clarification.epicKey);
+  const target=items.find(item=>item.parent===clarification.epicKey&&plan.epics.some(epic=>epic.key===clarification.epicKey&&epic.tasks.some(task=>task.key===item.key&&task.depends_on===clarification.key)))||items.find(item=>item.parent===clarification.epicKey);
   if(!target)throw problem(409,'Эпик содержит вопросы без задачи реализации; создай основную задачу, которая сначала пройдёт анализ');
   const taskId=ids.get(target.key)!;
   await db.query(`INSERT INTO task_agent_notes
