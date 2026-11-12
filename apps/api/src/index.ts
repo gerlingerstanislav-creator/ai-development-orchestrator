@@ -1824,6 +1824,12 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
     const current=(await client.query('SELECT stage,analysis_state,pr_url,git_branch FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[projectId,taskId])).rows[0];
     if(!current||current.stage!==row.stage||current.analysis_state!==row.analysis_state)
      throw Object.assign(Error('Стадия задачи изменилась. Прочитай карточку повторно.'),{statusCode:409});
+    const sourceKey='pm-stage:'+sourceMessageId+':'+target;
+    const previous=await client.query('SELECT 1 FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND source_key=$3',[projectId,taskId,sourceKey]);
+    if(previous.rowCount){
+     await client.query('ROLLBACK');
+     return {status:'already_applied',stage:row.stage,message:'Это решение ПМ уже было применено к задаче; повторно перезапускать работу не нужно'};
+    }
     const running=await client.query(`SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'
      UNION ALL SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')
      UNION ALL SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')
