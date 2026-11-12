@@ -6,9 +6,11 @@ import {qaWaiverAssessment} from './qa-waiver.js';
 import {pendingAgentQuestions} from './task-agent-notes.js';
 
 async function requireQaForMerge(db:Pick<Pool,'query'>,projectId:string,taskId:string,headSha:string){
- const spec=(await db.query('SELECT spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId])).rows[0];
- if(!spec||spec.spec_review_status!=='current'||spec.spec_version!==spec.spec_reviewed_version||spec.spec_reviewed_commit!==headSha)
-  throw Object.assign(Error('Аналитик не сверил текущую версию ТЗ с коммитом PR. Запустите сверку и QA в карточке задачи.'),{statusCode:409});
+ // Analyst reviews requirements before the development stage. A separate
+ // post-implementation model review for this exact PR SHA is advisory, never a
+ // merge prerequisite. QA evidence, PR SHA and GitHub CI remain mandatory.
+ const spec=(await db.query('SELECT spec_version FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId])).rows[0];
+ if(!spec)throw Object.assign(Error('Задача не найдена'),{statusCode:404});
  const run=(await db.query('SELECT id,task_id,verdict,report,status,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[projectId,taskId])).rows[0];
  const snapshot=run?.qa_plan_snapshot;
  const adHoc=snapshot?.singlePass===true&&snapshot.adHoc===true;
