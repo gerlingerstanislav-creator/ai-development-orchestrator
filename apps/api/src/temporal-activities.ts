@@ -567,7 +567,7 @@ export async function startDevelopment(args:TaskRef){
  const agentPrompt=composeAgentPrompt(agentPromptParts);
  const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,agentPrompt,agentPromptZones:agentPromptZones(agentPromptParts),projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
+  title:task.title,description,reworkFeedback:feedback,agentPrompt,agentPromptZones:agentPromptZones(agentPromptParts),projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
  if(!await dispatch(job,beforeStart))return;
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
