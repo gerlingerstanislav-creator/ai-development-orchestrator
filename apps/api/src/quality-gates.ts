@@ -22,9 +22,10 @@ export async function initQualityGateSchema(pool:Pool){
   status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','failed')),
   verdict text,report jsonb NOT NULL DEFAULT '{}'::jsonb,message text NOT NULL DEFAULT '',
   started_at timestamptz NOT NULL DEFAULT now(),completed_at timestamptz,
-  UNIQUE(project_id,task_id,kind,head_sha,base_sha)
+  CONSTRAINT quality_gate_sha_format CHECK(length(head_sha)=40 AND length(base_sha)=40)
  );
  CREATE INDEX IF NOT EXISTS idx_quality_gate_project ON quality_gate_runs(project_id,started_at DESC);
+ CREATE INDEX IF NOT EXISTS idx_quality_gate_sha ON quality_gate_runs(project_id,task_id,kind,head_sha,base_sha,started_at DESC);
  `);
 }
 
@@ -74,14 +75,13 @@ async function readPr(pool:Pool,decrypt:(secret:string)=>string,projectId:string
 async function gate(pool:Pool,ctx:GateContext,kind:GateKind,settings:Awaited<ReturnType<typeof readPr>>,
  decrypt:(secret:string)=>string,runnerUrl:string,runnerKey:string,onHeartbeat:()=>void):Promise<RunResult>{
  const {task,token,headSha,baseSha,baseBranch}=settings;
- const find=await pool.query('SELECT id,status,verdict,message FROM quality_gate_runs WHERE project_id=$1 AND task_id=$2 AND kind=$3 AND head_sha=$4 AND base_sha=$5',
+ const find=await pool.query('SELECT id,status,verdict,message FROM quality_gate_runs WHERE project_id=$1 AND task_id=$2 AND kind=$3 AND head_sha=$4 AND base_sha=$5 ORDER BY started_at DESC,id DESC LIMIT 1',
   [ctx.projectId,ctx.taskId,kind,headSha,baseSha]);
  let record=find.rows[0] as {id:string;status:string;verdict:string|null;message:string}|undefined;
- if(record?.status==='completed')return {passed:record.verdict==='passed',kind,message:record.message,headSha,baseSha};
- if(record?.status==='failed')return {passed:false,kind,message:record.message,headSha,baseSha};
- if(!record){
+ if(record?.status==='completed'&&record.verdict==='passed')return {passed:true,kind,message:record.message,headSha,baseSha};
+ if(!record||['failed','completed'].includes(record.status)){
   const created=await pool.query(`INSERT INTO quality_gate_runs(id,project_id,task_id,kind,head_sha,base_sha)
-   VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id,status,verdict,message`,
+   VALUES($1,$2,$3,$4,$5,$6) RETURNING id,status,verdict,message`,
    [randomUUID(),ctx.projectId,ctx.taskId,kind,headSha,baseSha]);
   record=created.rows[0]??(await pool.query('SELECT id,status,verdict,message FROM quality_gate_runs WHERE project_id=$1 AND task_id=$2 AND kind=$3 AND head_sha=$4 AND base_sha=$5',
    [ctx.projectId,ctx.taskId,kind,headSha,baseSha])).rows[0];
@@ -155,9 +155,9 @@ export async function runQualityGates(pool:Pool,ctx:GateContext,decrypt:(secret:
 
 /** Do not accept quality reports from a previous PR commit or previous base. */
 export async function requireQualityGates(pool:Pick<Pool,'query'>,projectId:string,taskId:string,headSha:string,baseSha:string){
- const result=await pool.query(`SELECT kind,status,verdict FROM quality_gate_runs
+ const result=await pool.query(`SELECT DISTINCT ON (kind) kind,status,verdict FROM quality_gate_runs
   WHERE project_id=$1 AND task_id=$2 AND head_sha=$3 AND base_sha=$4
-  AND kind IN ('ci','review')`,[projectId,taskId,headSha,baseSha]);
+  AND kind IN ('ci','review') ORDER BY kind,started_at DESC,id DESC`,[projectId,taskId,headSha,baseSha]);
  const passed=new Set(result.rows.filter(r=>r.status==='completed'&&r.verdict==='passed').map(r=>r.kind));
  if(!passed.has('ci')||!passed.has('review'))
   throw Object.assign(new Error('Нет успешного собственного CI и ревью архитектора для текущего SHA/base. Повторите проверку качества перед слиянием.'),{statusCode:409});
