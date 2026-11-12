@@ -8,6 +8,11 @@ export const readerPrompt=[
  'Перед выполнением работы по назначенной задаче обязательно сначала прочитай её актуальное состояние через tasks.read. Затем самостоятельно решай, нужны ли processes.list, дополнительные документы, результаты других агентов или требования. Не заменяй актуальное состояние старым описанием из промпта.'
 ].join(' ');
 
+/** Already-zoned contracts must not receive a second, overlapping prefix. */
+export function scopedAgentPrompt(context,prompt){
+ return String(prompt||'').startsWith('[[ADO:IDENTITY]]')?prompt:String(context?.prefix||'')+prompt;
+}
+
 export function agentMcp(token,base){
  if(!tokenPattern.test(token))throw Error('Некорректная сессия агента');
  return {
