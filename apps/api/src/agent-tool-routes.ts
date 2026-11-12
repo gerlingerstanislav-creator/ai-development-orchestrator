@@ -153,7 +153,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
      return {result,cached:true};
     }
    }
-   const delegated=['approvals.decide','approvals.answer_question','approvals.deliver_task_answer','tasks.delete','tasks.cancel','workflow.move_task','workflow.approve_development','workflow.release_task','tasks.update_dependency','qa.retry'].includes(name);
+   const delegated=['approvals.decide','approvals.answer_question','approvals.deliver_task_answer','tasks.delete','tasks.cancel','tasks.close','workflow.move_task','workflow.approve_development','workflow.release_task','tasks.update_dependency','qa.retry'].includes(name);
    if(delegated&&(!delegateManagerAction||session.role!=='manager'))throw Error('Недоступно делегированное действие ПМ');
    const result=delegated
     ?await delegateManagerAction!(session,name,args)
