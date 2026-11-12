@@ -458,10 +458,6 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      await store(id,null,null,'assistant',answer,null,resultSaved.created_document_id,mode,client);
      if(questionId)await client.query("UPDATE tasks SET question_status='resolved',stage='done',updated_at=now() WHERE id=$1 AND project_id=$2 AND document_id=$3 AND type='question' AND question_status='answered'",[questionId,id,documentId]);
      await client.query("UPDATE document_import_jobs SET status='completed',message='Анализ завершён',result=$2,saved_documents=$3,updated_at=now() WHERE id=$1",[jobId,JSON.stringify(resultSaved),prepared.length]);
-     if(!questions.length){
-      await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed',$3)",
-       [randomUUID(),taskId,'Аналитик подтвердил актуальное ТЗ после уточнений владельца.']);
-     }
      await client.query('COMMIT');
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
     return resultSaved;
@@ -807,6 +803,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      await updateCurrentSpecification(client,id,taskId,current.rows[0].title,summary!);
      await client.query("UPDATE tasks SET clarification_questions=$1,related_task_ids=$2,analysis_state=$3,spec_review_status='current',spec_reviewed_version=spec_version,updated_at=now() WHERE id=$4 AND project_id=$5",
       [JSON.stringify(questions),JSON.stringify(related),questions.length?'needs_clarification':'ready_for_development',taskId,id]);
+     if(!questions.length)await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed',$3)",
+      [randomUUID(),taskId,'Аналитик уточнил условия задачи и передал результат разработчику.']);
      await client.query('COMMIT');
     }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
     if(!task.git_branch&&task.dependency_source==='ai'){
