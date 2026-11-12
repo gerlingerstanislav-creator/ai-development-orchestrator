@@ -45,7 +45,7 @@ export function startQaBrowserGateway(){
      return reply(res,400,{ok:false,error:'Invalid QA assertion identity'});
    }
    const remote=await fetch(upstream+'/action',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body),signal:AbortSignal.timeout(35000)});
+    body:JSON.stringify(body),signal:AbortSignal.timeout(body.action==='start'?85000:35000)});
    const data=await remote.json();
    if(body.action==='assert'&&kind&&['passed','failed'].includes(data.assertion)&&session.assertions.length<200){
     session.assertions.push({kind,id,result:data.assertion,expression:String(body.expression||'').slice(0,1800),
