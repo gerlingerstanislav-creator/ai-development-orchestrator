@@ -19,6 +19,9 @@ type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
 type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
+type WorkflowProfileId='fast'|'standard'|'extended';
+type WorkflowProfile={id:WorkflowProfileId;title:string;usage:string;description:string;planning:string};
+type WorkflowProfileInfo={selected:WorkflowProfileId;profiles:WorkflowProfile[];stage_sequence:string[]};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
  const tail=/(?:^|\s)@([a-z]*)$/i.exec(value);
@@ -49,8 +52,9 @@ type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
 const boardLaneFor=(task:Task)=>task.stage;
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
- {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
- {key:'results',title:'Итоги',ids:['deployment','documentation','done']}
+ {key:'development',title:'Разработка',ids:['development']},
+ {key:'testing',title:'Тестирование',ids:['testing']},
+ {key:'merging',title:'Выкатка',ids:['merge_queue','deployment','documentation','done']}
 ];
 
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
@@ -322,6 +326,9 @@ function App(){
  },[selected?.id,token]);
 
  const [workflowModal,setWorkflowModal]=useState<Stage|null>(null);
+ const [workflowProfile,setWorkflowProfile]=useState<WorkflowProfileId>('standard');
+ const [workflowProfiles,setWorkflowProfiles]=useState<WorkflowProfile[]>([]);
+ const [workflowProfileSaving,setWorkflowProfileSaving]=useState(false);
  const [workflowEditing,setWorkflowEditing]=useState<'description'|'agent'|'mode'|'instructions'|null>(null);
  const [workflowSaving,setWorkflowSaving]=useState(false);
  const [deploymentMode,setDeploymentMode]=useState<'skip'|'manual'|'automatic'>('skip');
@@ -756,8 +763,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setDeploymentEnvironment(deployment.environment??'production');
    const ssh=await api<{configured:boolean;host?:string;username?:string;remote_path?:string}>('/projects/'+id+'/deployment/ssh').catch(()=>({configured:false,host:'',username:'',remote_path:''}));
    setDeploymentSsh({host:ssh.host||'',username:ssh.username||'',path:ssh.remote_path||'',privateKey:'',knownHosts:'',configured:ssh.configured});
-   const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
-   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
+   const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals,profileInfo]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals'),api<WorkflowProfileInfo>('/projects/'+id+'/workflow/profile')]);
+   setLoadedProjectId(id);setTasks(t);setStages(s);setWorkflowProfile(profileInfo.selected);setWorkflowProfiles(profileInfo.profiles);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
@@ -1035,6 +1042,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    })});
    setDeploymentSsh(value=>({...value,privateKey:'',knownHosts:'',configured:true}));
   }catch(e){fail(e);}finally{setSshSaving(false);}
+ }
+ async function saveWorkflowProfile(profile:WorkflowProfileId){
+  if(!selected||workflowProfileSaving||workflowProfile===profile)return;
+  setWorkflowProfileSaving(true);
+  try{
+   const result=await api<WorkflowProfileInfo>('/projects/'+selected.id+'/workflow/profile',{method:'PUT',body:JSON.stringify({profile})});
+   setWorkflowProfile(result.selected);
+   setWorkflowProfiles(result.profiles);
+  }catch(e){fail(e);}finally{setWorkflowProfileSaving(false);}
  }
  async function saveWorkflowStage(){
   if(!selected||!workflowModal)return;
@@ -2277,6 +2293,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {section==='qa'&&<QaPanel projectId={selected.id} api={api} onError={fail}/>}
  {section==='team'&&<ProjectTeam projectId={selected.id} request={api}/>}
  {section==='workflow'&&<section className="panel workflow-settings-panel">
+  <div className="workflow-profile-header">
+   <div><h3>Профиль работы команды</h3><p className="muted">Выбирает глубину планирования и контекст для агентов. Не пропускает обязательные этапы, CI, QA и ревью.</p></div>
+   <div className="workflow-profiles" role="group" aria-label="Профиль сложности workflow">
+    {workflowProfiles.map(profile=><button type="button" key={profile.id}
+     className={'workflow-profile-option '+(workflowProfile===profile.id?'is-active':'')}
+     disabled={workflowProfileSaving} aria-pressed={workflowProfile===profile.id}
+     title={profile.usage} onClick={()=>void saveWorkflowProfile(profile.id)}>
+      <strong>{profile.title}</strong>
+      <small>{profile.description}</small>
+     </button>)}
+   </div>
+  </div>
   <div className="row-line">
    <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы посмотреть его назначение или настроить агента.</p></div>
    <span className="workflow-key"><span className="workflow-key-line"/> Переходы</span>
@@ -2295,7 +2323,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        title={'Настройки этапа «'+stage.label+'»'}>
        <span className="workflow-stage-label">{stage.label}</span>
        <span className="workflow-stage-description">{stage.description||'Описание не задано'}</span>
-       <span className="workflow-stage-agent">{serviceStages[stage.stage]?'Служебный этап':stage.agent_name?aiAgentName(stage.agent_name):'Исполнитель не указан'}</span>
+       <span className="workflow-stage-agent">{stage.responsibility?.role?(workflowRoleLabels[stage.responsibility.role]||stage.responsibility.role):'Служебный этап'}</span>
        <span className="workflow-stage-mode">{stage.stage==='deployment'?(deploymentMode==='skip'?'Пропуск без окружения':deploymentMode==='automatic'?'GitHub Actions + проверка':'Ручное подтверждение'):stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
        <Settings2 size={14} className="workflow-stage-icon"/>
       </button>
