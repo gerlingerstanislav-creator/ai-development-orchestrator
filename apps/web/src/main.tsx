@@ -1,3 +1,5 @@
+import {TaskBoard} from './features/tasks/TaskBoard.js';
+import type {KanbanGroupKey} from './features/tasks/board-model.js';
 import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.js';
 import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/AgentPromptDisclosure.js';
 import {parseAppRoute,projectUrl,uuidPattern,type ProjectSection,type AppRoute} from './features/navigation/routes.js';
@@ -47,16 +49,6 @@ const agentRunLabels={
  documentation:{name:'Документатор',active:'Обновляется документация'}
 };
 type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[]};
-type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
-type KanbanLane=Pick<Stage,'stage'|'label'>;
-type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
-const boardLaneFor=(task:Task)=>task.stage;
-const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
- {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
- {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
- {key:'results',title:'Итоги',ids:['deployment','documentation','done']}
-];
-
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
 type Connection={id:string,name:string,provider:string};
 type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
@@ -545,7 +537,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   else if(from==='merge_queue')await mergeTask(task);
   else if(from==='documentation')await updateDocumentation();
  }
- const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){if(e instanceof AuthExpiredError)return;setError(e instanceof Error?e.message:'Неизвестная ошибка');}
  async function toggleProjectAgents(){
   if(!selected||agentToggleBusy)return;
@@ -1633,12 +1624,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>;
   });
  }
- const kanbanGroups:KanbanGroup[]=stageGroupDefinitions.map(def=>({
-  key:def.key,title:def.title,
-  stages:stages.filter(stage=>def.ids.includes(stage.stage))
- })).filter(group=>group.stages.length>0);
- const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
- if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
  function renderTaskPlanningLabels(task:Task){
   const iteration=iterations.find(item=>item.id===task.iteration_id);
   const sprint=planningOptions.sprints.find(item=>item.id===task.sprint_id);
@@ -1652,15 +1637,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {(task.tags?.length??0)>3&&<span title={task.tags?.join(', ')}>+{task.tags!.length-3}</span>}
   </span>;
  }
- function dependencyReady(task:Task){
-  if(!task.depends_on_task_id)return true;
-  const dep=tasks.find(t=>t.id===task.depends_on_task_id);
-  return !!dep&&(['deployment','documentation','done'].includes(dep.stage)||(dep.stage==='merge_queue'&&!!dep.pr_url&&!!dep.git_branch));
- }
- function kanbanOrder(a:Task,b:Task){
-  const blockedA=dependencyReady(a)&&!a.awaits_product_owner?0:1,blockedB=dependencyReady(b)&&!b.awaits_product_owner?0:1;
-  return blockedA-blockedB||(a.priority??3)-(b.priority??3)||new Date(a.created_at).getTime()-new Date(b.created_at).getTime()||a.id.localeCompare(b.id);
- }
  async function updateTaskPriority(task:Task,priority:number){
   if(!selected)return;
   try{
@@ -1668,65 +1644,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setTasks(old=>old.map(t=>t.id===task.id?{...t,priority}:t));
    setActiveTask(old=>old?.id===task.id?{...old,priority}:old);
   }catch(e){fail(e);}
- }
- function renderKanbanCard(t:Task,showStage=false){
-  if(t.type==='question')return renderDocQuestionCard(t);
-  return <a className="task-card" href={projectUrl(selected!.id,'tasks')+'/'+t.id}
-    draggable={!t.awaits_product_owner} onDragStart={t.awaits_product_owner?undefined:e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
-    onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
-    <span className="task-card-top"><span className="task-type">{t.type==='question'?'Вопрос к ПО':t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
-    <span className="task-name-line"><strong>{t.title}</strong>{t.awaits_product_owner&&<span className="task-owner-question-icon" title={t.owner_question_source_task_id&&t.owner_question_source_task_id!==t.id?'Нужен ответ владельца в связанной задаче эпика':'Нужен ответ или решение владельца для продолжения'} aria-label="Необходим ответ владельца"><AlertTriangle size={16}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
-    {renderTaskPlanningLabels(t)}
-    <small className="task-card-priority">{!dependencyReady(t)?'Ожидает зависимость · ':''}Приоритет {t.priority??3}</small>
-    <p>{t.description||'Без описания'}</p>
-    {t.awaits_product_owner&&<small className="task-warning">
-     {t.owner_question_source_task_id&&t.owner_question_source_task_id!==t.id?'Вопросы в связанной задаче':'Нужен ответ владельца'}
-    </small>}
-  </a>;
- }
- function renderDocQuestionCard(question:Task){
-  return <div className="task-card docs-question-card" key={'doc-question-'+question.id}>
-   <span className="task-type">Уточнение документации</span>
-   <strong>{question.description}</strong>
-   {question.document_id&&<a href={projectUrl(selected!.id,'docs')+'/'+question.document_id} onClick={e=>followLink(e,projectUrl(selected!.id,'docs')+'/'+question.document_id)}>ТЗ: {question.document_title||'Документ'}</a>}
-   <a href={projectUrl(selected!.id,'tasks')+'/'+question.id} onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+question.id)}>Открыть карточку #{question.display_number}</a>
-   {question.question_status==='answered'?<small className="muted">Ответ получен. Аналитик обновляет страницу.</small>:<>
-    <textarea rows={3} value={questionAnswers[question.id]||''} onChange={e=>setQuestionAnswers(old=>({...old,[question.id]:e.target.value}))} placeholder="Решение владельца продукта"/>
-    <button className="secondary" disabled={processActionBusy||!(questionAnswers[question.id]||'').trim()} onClick={()=>void answerDocumentationQuestion(question)}>Ответить аналитику</button>
-   </>}
-  </div>;
- }
- function renderKanbanLane(s:KanbanLane){
-  const stageTasks=filtered.filter(t=>boardLaneFor(t)===s.stage).sort(kanbanOrder);
-  return <div className="lane" key={s.stage}
-   onDragOver={e=>e.preventDefault()}
-   onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
-   <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
-    {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
-    {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
-   </div>
-   <div className="cards">
-     {stageTasks.map(t=>renderKanbanCard(t))}
-      {stageTasks.length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}
-    </div>
-  </div>;
- }
- function renderCollapsedGroup(group:KanbanGroup){
-  const groupTasks=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t)));
-  // One list, not nested stage columns. Keep stage identity on each card.
-  const ordered=groupTasks.slice().sort((a,b)=>{
-   const ai=group.stages.findIndex(stage=>stage.stage===boardLaneFor(a));
-   const bi=group.stages.findIndex(stage=>stage.stage===boardLaneFor(b));
-   return ai-bi || kanbanOrder(a,b);
-  });
-  return <div className="kanban-group-combined">
-   {ordered.length?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}</div>:
-     <div className="lane-empty">В группе пока нет задач</div>}
-   {group.stages.some(stage=>stage.stage==='merge_queue')&&tasks.some(t=>t.stage==='merge_queue')&&
-    <button className="secondary group-action" disabled={mergeBusy} onClick={()=>void mergeReady()}>Слить готовые</button>}
-   {group.stages.some(stage=>stage.stage==='documentation')&&tasks.some(t=>t.stage==='documentation')&&
-    <button className="secondary group-action" disabled={knowledgeBusy} onClick={()=>void updateDocumentation()}>Обновить документацию</button>}
-  </div>;
  }
  async function answerDocumentationQuestion(question:Task){
   if(!selected||processActionBusy)return;
@@ -1942,20 +1859,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  <select aria-label="Фильтр по тегу" value={tagFilter} onChange={e=>setTagFilter(e.target.value)}>
   <option value="">Все теги</option>{taskTags.map(tag=><option key={tag} value={tag}>{tag}</option>)}
  </select></div><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>openProjectChat('project','Создай задачу: ')}><FileText size={17}/></button></div></div>
- {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<div className="board board-groups">
- {kanbanGroups.map(group=>{
-  const expanded=expandedGroups.includes(group.key);
-  const count=filtered.filter(t=>group.stages.some(stage=>stage.stage===boardLaneFor(t))).length;
-  return <section key={group.key} className={'kanban-group '+(expanded?'is-expanded':'is-collapsed')} style={{['--kanban-stage-count' as string]:group.stages.length} as React.CSSProperties}>
-   <button className="kanban-group-heading" type="button" aria-expanded={expanded} onClick={()=>toggleKanbanGroup(group.key)}
-    title={expanded?'Свернуть этапы':'Развернуть этапы'}><span className="group-mark"/>
-    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.length} эт.</span><span className="group-task-count">{count}</span>
-    <ChevronDown size={16} className={'group-chevron '+(expanded?'expanded':'')}/>
-   </button>
-   {expanded?<div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage))}</div>:renderCollapsedGroup(group)}
-  </section>;
- })}
- </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{t.awaits_product_owner&&<span className="task-owner-question-icon" title="Требуется решение владельца"><AlertTriangle size={15}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
+ {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<TaskBoard
+ projectId={selected.id} tasks={tasks} filtered={filtered} stages={stages}
+ expandedGroups={expandedGroups} onToggleGroup={toggleKanbanGroup}
+ renderTaskPlanningLabels={renderTaskPlanningLabels}
+ agentWorking={agentWorking} onFollowLink={followLink}
+ onMoveTask={(task,stage)=>void moveTask(task,stage)}
+ questionAnswers={questionAnswers}
+ onQuestionDraft={(taskId,answer)=>setQuestionAnswers(old=>({...old,[taskId]:answer}))}
+ onAnswerQuestion={task=>void answerDocumentationQuestion(task)}
+ processActionBusy={processActionBusy} mergeBusy={mergeBusy}
+ onMerge={()=>void mergeReady()} knowledgeBusy={knowledgeBusy}
+ onUpdateDocumentation={()=>void updateDocumentation()}/>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{t.awaits_product_owner&&<span className="task-owner-question-icon" title="Требуется решение владельца"><AlertTriangle size={15}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='processes'&&<div className="process-center">
   <div className="process-center-heading">
     <div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div>
