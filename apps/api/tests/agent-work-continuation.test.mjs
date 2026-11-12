@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {planManagerStageMove} from '../dist/task-stage-operations.js';
+import {canManagerCloseTask,planManagerStageMove} from '../dist/task-stage-operations.js';
 import {toolsForRole,toolAllowedForRole} from '../dist/agent-tools.js';
 import {readTaskWorkBrief} from '../dist/task-work-brief.js';
 
@@ -36,6 +36,16 @@ test('PM transitions never bypass owner questions, QA, deployment or post-merge 
  ];
  for(const [from,to,hasPr,expected] of cases)
   assert.equal(planManagerStageMove(from,to,hasPr).operation,expected,from+' → '+to);
+});
+
+test('PM can close only proven documentation-complete work, never fake done',()=>{
+ assert.equal(canManagerCloseTask('documentation',true,true,false),true);
+ for(const args of [
+  ['analysis',true,true,false],['development',true,true,false],
+  ['testing',true,true,false],['merge_queue',true,true,false],
+  ['deployment',true,true,false],['documentation',false,true,false],
+  ['documentation',true,false,false],['documentation',true,true,true]
+ ])assert.equal(canManagerCloseTask(...args),false,args.join(' / '));
 });
 
 test('new owner comments, durable QA defects and existing PR survive bounded context gathering',async()=>{
