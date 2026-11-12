@@ -24,7 +24,7 @@ export type AgentPromptParts={
 export function agentPromptZones(input:AgentPromptParts){
  const identity=[
   input.role.trim(),
-  input.instructions?.trim()?'Профиль специалиста и дополнительные инструкции роли:\n'+input.instructions.trim().slice(0,1400):''
+  input.instructions?.trim()?'Профиль специалиста и дополнительные инструкции роли:\n'+input.instructions.trim():''
  ].filter(Boolean).join('\n');
  return {
   identity,
