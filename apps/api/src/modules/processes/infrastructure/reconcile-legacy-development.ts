@@ -1,4 +1,4 @@
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {developmentProcessDetail} from '../domain/development-process-detail.js';
 
@@ -40,7 +40,7 @@ export function createLegacyDevelopmentReconciler(
   if(!['queued','running','completed','failed'].includes(status))return;
   const terminal=status==='completed'||status==='failed';
   if(!terminal&&status===row.status&&detail===row.message)return;
-  let tx:Awaited<ReturnType<Pool['connect']>>|undefined;
+  let tx:PoolClient|undefined;
   try{
    tx=await db.connect();
    await tx.query('BEGIN');
