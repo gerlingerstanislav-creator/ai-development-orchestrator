@@ -95,6 +95,7 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
    THEN 'iteration_changed'
   WHEN NOT q.automatic AND t.spec_version IS DISTINCT FROM q.spec_version THEN 'spec_changed'
   WHEN t.stage IN ('testing','merge_queue','deployment','documentation','done') THEN 'advanced'
+  WHEN NOT project_runtime.agents_running THEN 'paused'
   WHEN NOT COALESCE(settings.enabled,false) THEN 'ai_disabled'
   WHEN NOT EXISTS(SELECT 1 FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id
    WHERE g.project_id=q.project_id AND c.provider='github_token') THEN 'github'
@@ -119,6 +120,7 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
  CASE WHEN dep.stage='merge_queue' THEN dep.git_branch END AS base_branch,
  settings.model,settings.reasoning,settings.enabled
  FROM iteration_execution_queue q
+ JOIN projects project_runtime ON project_runtime.id=q.project_id
  JOIN tasks t ON t.id=q.task_id AND t.project_id=q.project_id
  LEFT JOIN project_iterations i ON i.id=q.iteration_id AND i.project_id=q.project_id
  LEFT JOIN project_ai_settings settings ON settings.project_id=q.project_id
@@ -128,6 +130,7 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
 const reasonText:Record<string,string>={
  iteration_changed:'План изменился. Подтвердите запуск для актуальной ревизии.',
  spec_changed:'Версия ТЗ изменилась. Подтвердите запуск повторно.',
+ paused:'Агенты проекта остановлены. Нажмите Play рядом с проектом.',
  ai_disabled:'AI отключён в настройках проекта.',
  github:'Ожидается подключение репозитория GitHub.',
  stage:'Задача ещё не готова к разработке.',
@@ -183,7 +186,8 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
   // one project must not hold up ready work in every other project for a tick.
   const pending=(await db.query(`SELECT q.project_id,q.task_id,q.run_id,r.status AS run_status
    FROM iteration_execution_queue q LEFT JOIN ai_task_runs r ON r.id=q.run_id
-   WHERE q.status='dispatching' ORDER BY q.updated_at LIMIT 100`)).rows;
+   WHERE q.status='dispatching' AND EXISTS(SELECT 1 FROM projects p WHERE p.id=q.project_id AND p.agents_running)
+   ORDER BY q.updated_at LIMIT 100`)).rows;
   for(const run of pending){
    try{
     if(['queued','running'].includes(run.run_status))await dispatch(db,temporal,run);
@@ -205,7 +209,7 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    (project_id,iteration_id,task_id,requested_by,spec_version,run_id,automatic)
    SELECT t.project_id,t.iteration_id,t.id,p.owner_id,t.spec_version,gen_random_uuid(),true
    FROM tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
-   WHERE t.type IN ('task','bug','improvement') AND t.stage='development' AND t.analysis_state='approved'
+   WHERE p.agents_running AND t.type IN ('task','bug','improvement') AND t.stage='development' AND t.analysis_state='approved'
     -- Never restart finished work without a real rework reason. For returns
     -- from QA or PM, test_feedback is the explicit outstanding delta.
     AND (NULLIF(t.test_feedback,'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id))
