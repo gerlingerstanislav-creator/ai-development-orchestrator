@@ -38,4 +38,4 @@ jobs:
       - name: Project-scoped scheduling and queue integration tests
         run: |
           node --test apps/codex-runner/job-scheduler.test.mjs
-          node --test apps/api/tests/development-queue.test.mjs apps/api/tests/project-agent-parallelism.test.mjs
+          node --test --test-concurrency=1 apps/api/tests/development-queue.test.mjs apps/api/tests/project-agent-parallelism.test.mjs
