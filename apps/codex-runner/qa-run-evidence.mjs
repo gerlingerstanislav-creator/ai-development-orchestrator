@@ -84,9 +84,12 @@ function proofOutcome(kind,id,browserEvidence,receipts){
 }
 export function verifyQaExecution(report,commands,baseline=[],{receipts=[],browserEvidence=[]}={}){
  const cases=report.caseResults.map(({command,...scenario})=>{
-  if(!['passed','failed'].includes(scenario.result))return scenario;
+  // A focused follow-up can prove a previously blocked/not_run case. Trust
+  // comes from browser evidence or correlated qa-exec receipts, not the
+  // agent's claimed status. Never transfer proof across different case IDs.
   const proof=proofOutcome('case',scenario.case_id,browserEvidence,receipts);
   if(proof)return {...scenario,...proof,evidence:(proof.evidence+' '+scenario.evidence).slice(0,3000)};
+  if(!['passed','failed'].includes(scenario.result))return scenario;
   const ran=legacyCommand(commands,command,scenario.result);
   if(!ran)return {...scenario,result:'not_run',reason:'unknown',evidence:'Runner не нашёл структурированное подтверждение этой проверки в журнале Codex.'};
   return {...scenario,reason:'executed',evidence:(ran.command+' → код '+ran.exitCode+'. '+scenario.evidence).slice(0,3000)};

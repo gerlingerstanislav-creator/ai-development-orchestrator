@@ -13,6 +13,7 @@ import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './jo
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
 import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from './qa-run-evidence.mjs';
+import {incompleteQaCases,qaCompletionPrompt,completedQaSummary} from './qa-completion.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext} from './agent-context.mjs';
@@ -720,9 +721,52 @@ async function runTestJob(job,state,context){
   }
   assertJobActive(job.id);
   const executedCommands=[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout),...readQaCommands(correctionOutput)];
-  const receiptText=await readFile(join(dir,'.ado-qa-executions.jsonl'),'utf8').catch(()=>'');
-  const receipts=readQaReceipts(receiptText.slice(0,250000),executedCommands);
-  report=verifyQaExecution(report,executedCommands,baseline,{receipts,browserEvidence:getQaBrowserEvidence(qaBrowserSessionId)});
+  const verifyActualExecution=async()=>{
+   const receiptText=await readFile(join(dir,'.ado-qa-executions.jsonl'),'utf8').catch(()=>'');
+   const receipts=readQaReceipts(receiptText.slice(0,250000),executedCommands);
+   return verifyQaExecution(report,executedCommands,baseline,{
+    receipts,browserEvidence:getQaBrowserEvidence(qaBrowserSessionId)
+   });
+  };
+  let verified=await verifyActualExecution();
+  // A successfully formatted JSON report is not the end of QA. The model can
+  // overlook one case ID even when it verified overlapping cases in Chromium.
+  // Give it one small, focused opportunity to collect the MISSING evidence.
+  // The second model response is never trusted; only new gateway/receipt
+  // events may change results.
+  const plannedCases=(job.testPlan?.cases||[]).length?job.testPlan.cases:verified.cases;
+  const gaps=incompleteQaCases(verified,plannedCases,{browserAvailable,maxCases:8});
+  if(gaps.length){
+   state.message='Допроверяет '+gaps.length+' сценариев без подтверждённых доказательств';
+   const focus=qaCompletionPrompt(gaps,{taskTitle:job.title,taskDescription:job.description});
+   await auditCodexPrompt(job,'testing',focus);
+   try{
+    const extra=await command('codex',[...args,...context.args,context.prefix+focus],{
+     cwd:dir,env:{...cliEnv,...context.env},
+     timeout:Math.min(180000,job.maxRuntimeSeconds*1000),
+     maxOutputChars:170000,jobId:job.id
+    });
+    executedCommands.push(...readQaCommands(extra.stdout));
+    try{
+     const parsedExtra=codexJsonResult(extra.stdout);
+     state.usage=addUsage(state.usage,parsedExtra.usage);
+    }catch{ /* We audit executed evidence, never rely on the follow-up prose. */ }
+    verified=await verifyActualExecution();
+   }catch(error){
+    // A failed follow-up never invalidates previous genuine checks nor
+    // silently waives the missing ones.
+    state.qaFollowUpError=String(error.message||error).slice(0,650);
+   }finally{
+    // Browser assertions may have been executed before a Codex CLI failure.
+    // Preserve their real results, including confirmed failures, rather than
+    // converting them back into generic blocked status.
+    verified=await verifyActualExecution();
+   }
+   verified.summary=completedQaSummary(verified,{retriedIds:gaps.map(item=>item.id)});
+   if(verified.verdict==='passed')
+    verified.handoffNote='Все тест-кейсы подтверждены, включая адресную допроверку '+gaps.map(item=>item.id).join(', ')+'.';
+  }
+  report=verified;
   state.executionVerified=true;
   if(adHoc)state.cases=report.cases;
   state.verdict=report.verdict;
