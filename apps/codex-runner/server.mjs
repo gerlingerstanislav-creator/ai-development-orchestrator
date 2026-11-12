@@ -349,7 +349,11 @@ async function resumePublishedCommit(job,state,git){
  if(!state.checkpoint)return false;
  const remote=(await git('ls-remote','origin','refs/heads/'+job.taskId)).stdout.trim().split(/\s+/)[0];
  const action=recoveryAction(state.checkpoint,remote);
- if(action==='changed')throw Error('Ветка GitHub изменилась после прерывания. async function runJob(job,state,context){
+ if(action==='changed')throw Error('Ветка GitHub изменилась после прерывания. Требуется проверка перед повтором.');
+ return action==='published';
+}
+
+async function runJob(job,state,context){
  const deadline=Date.now()+job.maxRuntimeSeconds*1000;
  const timeLeft=()=>Math.max(0,deadline-Date.now());
  let cumulativeUsage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
@@ -512,7 +516,6 @@ async function auditCodexPrompt(job,role,prompt){
 
 // A first-pass AI test agent runs within the disposable Codex container.
 // No persistent environment provisioning or Docker socket is exposed to it.
-persistent environment provisioning or Docker socket is exposed to it.
 async function runTestJob(job,state,context){
  // Every attempt gets a fresh browser identity, even when the durable QA job ID
  // is retried. The browser host may still hold an orphan from an earlier run.
