@@ -45,6 +45,38 @@ function isCustomerQuestion(body:string){
  return !isPrEvidenceRequest(body)&&!(/(?:скриншот|браузер)/i.test(body)&&/(?:предостав|пришл|не вижу|нужен|отсутств)/i.test(body));
 }
 
+/**
+ * A user's one chat answer is a durable decision on the current ANALYSIS task.
+ * Do not ask the conversational PM model to guess how to alter task state.
+ * The analyst will review the answer and either ask follow-ups or finalize the spec.
+ */
+export async function acceptAnalysisAnswer(pool:Pool,projectId:string,taskId:string,actorId:string,answer:string){
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const task=(await client.query("SELECT id,stage,analysis_state,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
+  if(!task||task.stage!=='analysis'){await client.query('ROLLBACK');return {accepted:false,reason:'Задача сейчас не находится на этапе аналитики'};}
+  const pending=await client.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND requires_customer=true FOR UPDATE",[projectId,taskId]);
+  const legacy=Array.isArray(task.clarification_questions)?task.clarification_questions.filter((q:unknown)=>typeof q==='string'&&q.trim()):[];
+  if(!pending.rowCount&&!legacy.length){await client.query('ROLLBACK');return {accepted:false,reason:'Нет открытых вопросов аналитика'};}
+  const trimmed=answer.trim().slice(0,3000);
+  if(trimmed.length<3){await client.query('ROLLBACK');return {accepted:false,reason:'Ответ слишком короткий'};}
+  await client.query("UPDATE task_agent_notes SET status='answered',answer=$3,answered_at=now(),answered_by=$4,answer_author='Владелец через ПМ',processing_at=NULL WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND requires_customer=true",[projectId,taskId,trimmed,actorId]);
+  for(const [index,question] of legacy.entries()){
+   await client.query(`INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,actor_id,status,requires_customer,answer,answered_at,answered_by,answer_author)
+    VALUES($1,$2,$3,'analysis','Системный аналитик','all','question',$4,'human',$5,$6,'answered',true,$7,now(),$6,'Владелец через ПМ')
+    ON CONFLICT(task_id,source_key) DO UPDATE SET answer=EXCLUDED.answer,status='answered',answered_at=now(),answered_by=EXCLUDED.answered_by`,
+    [randomUUID(),projectId,taskId,String(question).slice(0,650),'legacy-clarification:'+taskId+':'+index,actorId,trimmed]);
+  }
+  await client.query("UPDATE tasks SET clarification_questions='[]'::jsonb,analysis_state='new',updated_at=now() WHERE project_id=$1 AND id=$2",[projectId,taskId]);
+  await client.query("UPDATE manager_requests SET status='resolved',decision='answer',decided_by=$3,resolved_at=now() WHERE project_id=$1 AND task_id=$2 AND status IN ('open','waiting') AND kind IN ('analysis_clarifications','question') AND (kind='analysis_clarifications' OR source_id=ANY($4::uuid[]))",[projectId,taskId,actorId,pending.rows.map(r=>r.id)]);
+  await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
+   [randomUUID(),taskId,actorId,'Получен ответ владельца на '+(pending.rows.length+legacy.length)+' вопросов аналитика. Повторный анализ обязателен.']);
+  await client.query('COMMIT');
+  return {accepted:true,answered:pending.rows.length+legacy.length,reason:'Ответ сохранён. Аналитик повторно проверит требования, и только после этого задача сможет перейти в разработку.'};
+ }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
+}
+
 /** Read the live sources, even if nobody has opened the task chat yet. */
 export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,projectId:string){
  const result=await pool.query(`
@@ -195,6 +227,10 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    }
    if(!await isTurnActive())return {message:'',handled:true};
    if(action==='reply')return {message:''};
+   if(action==='clarify'){
+    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message);
+    if(saved.accepted)return handled(saved.reason);
+   }
    const startRequested=action==='start_development';
    const previousTask=snapshot.task;
    snapshot=await managerSnapshot(pool,projectId,taskId);
@@ -331,6 +367,11 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    await pool.query("INSERT INTO manager_messages(id,project_id,task_id,role,body) VALUES($1,$2,$3,'manager',$4)",
     [randomUUID(),id,taskId,'Решение принято: ждём инструменты для полноценного тестирования. Непроверенные сценарии остаются непроверенными, слияние PR не разрешено.']);
    return {ok:true,stage:'testing',status:'waiting'};
+  }
+  if(choice==='answer'&&request.kind==='analysis_clarifications'){
+   const saved=await acceptAnalysisAnswer(pool,id,taskId,uid(req),answer);
+   if(!saved.accepted)return reply.code(409).send({error:saved.reason});
+   return {ok:true,message:saved.reason,analyst_recheck:true};
   }
   const route=request.kind==='analysis_clarifications'?'/api/projects/'+id+'/tasks/'+taskId+'/assistant'
    :choice==='approve_without_visual'?'/api/projects/'+id+'/tasks/'+taskId+'/qa-waiver'
