@@ -28,6 +28,7 @@ export function composeAgentPrompt(input:AgentPromptParts):string{
  const required=[
   part('Роль',input.role,1000),
   'Текущая задача:\n'+input.objective.trim(),
+  'Принцип самостоятельности: отвечай за достижение ожидаемого результата этапа, а не за обязательное выполнение заранее заданных действий. Самостоятельно исследуй факты, выбирай разрешённые инструменты, проверяй выполненное и привлекай профильного специалиста при техническом блокере. Уже достигнутую цель подтверди доказательствами, а не фиктивными изменениями. Не меняй утверждённые требования, не обходи QA, согласования, ограничения доступа или неизменяемые проверки и не объявляй неподтверждённое успешным.',
   part('Доступные инструменты',input.tools,1400),
   part('Общение с пользователем',taskCommunication,1400)
  ].filter(Boolean).join('\n\n');
@@ -35,10 +36,10 @@ export function composeAgentPrompt(input:AgentPromptParts):string{
  let result=required;
  // Optional sections have independent caps. They can never displace the task.
  for(const section of [
-  part('Обязательные инструкции роли',input.instructions,5500),
+  part('Ожидаемый результат',input.output,2600),
   part('Область работы',input.scope,1800),
   part('Текущее продолжение',input.continuation,1700),
-  part('Ожидаемый результат',input.output,2600),
+  part('Обязательные инструкции роли',input.instructions,5500),
   part('Связанный контекст',input.context,3800)
  ]){
   if(!section)continue;
