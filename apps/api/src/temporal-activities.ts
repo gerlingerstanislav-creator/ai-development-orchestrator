@@ -528,6 +528,14 @@ export async function startDevelopment(args:TaskRef){
   WHERE id=$1 AND status IN ('queued','running') AND COALESCE(runner_spec_version,$2)=$2 RETURNING id`,[runId,task.spec_version]);
  if(!pinned.rowCount)throw ApplicationFailure.nonRetryable('Попытка разработки изменилась или отменена');
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
+ // Branch identity belongs to the TASK, not to the Codex attempt or cycle.
+ // A resumed QA rework must continue the same task-owned branch.
+ const linkedBranch=String(task.git_branch||'');
+ if(linkedBranch&&linkedBranch!==taskId&&linkedBranch!==baseBranch&&task.implementation_kind!=='already_implemented')
+  throw ApplicationFailure.nonRetryable('Задача уже привязана к другой рабочей ветке: '+linkedBranch+'. Автоматически менять её нельзя.');
+ await pool.query("UPDATE tasks SET git_branch=$3 WHERE id=$1 AND project_id=$2 AND (git_branch IS NULL OR git_branch=$3 OR git_branch=$4 OR implementation_kind='already_implemented')",
+  [taskId,projectId,taskId,baseBranch]);
+ await pool.query("UPDATE ai_task_runs SET branch=$2 WHERE id=$1 AND status IN ('queued','running')",[runId,taskId]);
  const feedback=String(task.test_feedback||'').slice(0,3800);
  // A stale project-document review is advisory. Only live owner questions and
  // task analysis gates block the initial development; rework may proceed on PR.
@@ -650,6 +658,8 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
      [projectId,taskId,String(remote.prUrl)]);
     await db.query("UPDATE tasks SET stage='testing',implementation_kind='pr',implementation_commit=NULL,implementation_evidence=NULL,git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
      [taskId,remote.branch||taskId,remote.prUrl,match?Number(match[1]):null,remote.baseBranch||null,projectId]);
+    await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,NULL,'pr_created',$3)",
+     [randomUUID(),taskId,'Рабочая ветка '+(remote.branch||taskId)+' · PR: '+String(remote.prUrl||'')]);
    }
    await db.query('COMMIT');
   }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
