@@ -3,7 +3,7 @@ import React from 'react';
 export type QaEvidenceRun={
  id:string;status:string;verdict?:string|null;
  qa_plan_snapshot?:{cases?:Array<{id:string;title?:string;description?:string;preconditions?:string;steps?:Array<{action:string;expected:string}>;purpose?:string}>}|null;
- report?:{summary?:string;capabilities?:string;caseResults?:Array<{case_id:string;result:string;reason?:string;evidence?:string}>;checks?:Array<{name:string;result:string;details?:string}>}|null;
+ report?:{summary?:string;screenshots?:Array<{mime:string;data:string;name:string}>;capabilities?:string;caseResults?:Array<{case_id:string;result:string;reason?:string;evidence?:string}>;checks?:Array<{name:string;result:string;details?:string}>}|null;
 };
 const statusText:Record<string,string>={passed:'Пройден',failed:'Ошибка',blocked:'Недоступен',not_run:'Не проверялся'};
 export function QaRunEvidence({run}:{run:QaEvidenceRun}){
@@ -36,6 +36,9 @@ export function QaRunEvidence({run}:{run:QaEvidenceRun}){
   {checks.length>0&&<details className="qa-evidence-case">
    <summary>Дополнительные проверки ({checkPassed}/{checks.length})</summary>
    {checks.map((check,index)=><p key={index}><strong>{statusText[check.result]||check.result}: {check.name}</strong> — {check.details||'Нет сведений'}</p>)}
+  </details>}
+  {!!run.report?.screenshots?.length&&<details className="qa-evidence-case"><summary>Скриншоты проверки ({run.report.screenshots.length})</summary>
+   <div className="qa-evidence-images">{run.report.screenshots.map((shot,i)=><a key={shot.name||i} href={'data:'+shot.mime+';base64,'+shot.data} target="_blank" rel="noreferrer"><img src={'data:'+shot.mime+';base64,'+shot.data} alt={'Скриншот QA '+(i+1)}/></a>)}</div>
   </details>}
   {run.report?.capabilities&&<details className="qa-evidence-case"><summary>Инструменты QA</summary><pre>{run.report.capabilities}</pre></details>}
  </section>;
