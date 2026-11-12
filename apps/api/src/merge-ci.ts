@@ -3,7 +3,7 @@ type CheckRun={name:string;status:string;conclusion:string|null;app?:{id?:number
 type CommitStatus={context:string;state:string};
 type Evidence={checks:CheckRun[]|null;statuses:CommitStatus[]|null};
 type Rule={type:string;parameters?:{required_status_checks?:Array<{context:string;integration_id?:number}>}};
-type Branch={name:string;protection?:{required_status_checks?:{contexts?:string[];enforcement_level?:string}}};
+type Branch={name:string;protected?:boolean;protection?:{required_status_checks?:{contexts?:string[];enforcement_level?:string}}};
 
 const passing=new Set(['success','neutral','skipped']);
 const blocked=(message:string)=>Object.assign(Error(message),{statusCode:409});
@@ -42,13 +42,19 @@ export async function requireMergeCi(input:{
   throw blocked('GitHub вернул слишком много страниц: '+label);
  }
  const ref=encodeURIComponent(branch);
- const [branchResponse,rules]=await Promise.all([
-  read('/branches/'+ref,'защиту целевой ветки'),
-  pages<Rule>('/rules/branches/'+ref,'правила целевой ветки',data=>data)
- ]);
- if(!branchResponse||!rules)throw blocked('Не удалось подтвердить список обязательных проверок CI для ветки '+branch);
+ const branchResponse=await read('/branches/'+ref,'защиту целевой ветки');
+ if(!branchResponse)throw blocked('Нет доступа к сведениям о целевой ветке '+branch);
  const details=await branchResponse.json() as Branch;
- if(details.name!==branch)throw blocked('GitHub не подтвердил правила для целевой ветки '+branch);
+ if(details.name!==branch)throw blocked('GitHub не подтвердил целевую ветку '+branch);
+ // GitHub reports "protected=false" only when neither classic branch protection
+ // nor a matching branch ruleset is active. There are no required checks to
+ // discover in this case, and checking optional jobs must not block merging.
+ // GitHub itself still enforces the final merge endpoint's authoritative rules.
+ if(details.protected===false)return;
+ // For a protected branch we must verify its required CI: a missing rules
+ // response is an authorization problem, never proof that requirements are empty.
+ const rules=await pages<Rule>('/rules/branches/'+ref,'правила целевой ветки',data=>data);
+ if(!rules)throw blocked('Недостаточно прав GitHub для чтения обязательных проверок защищённой ветки '+branch);
  const required:RequiredCheck[]=[];
  const add=(name:string,appId?:number)=>{
   if(typeof name!=='string'||!name.trim())throw blocked('GitHub вернул неполное правило обязательной проверки CI');
