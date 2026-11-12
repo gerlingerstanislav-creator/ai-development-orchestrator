@@ -46,7 +46,6 @@ async function application(session){
  const packageFile=join(root,'package.json');
  const pkg=await readFile(packageFile,'utf8').then(JSON.parse).catch(()=>null);
  const dist=['dist','build','apps/web/dist','out'].map(p=>join(root,p));
- const ready=dist.find(()=>false); // selection is asynchronous below
  let built=null;
  for(const p of dist)if(await exists(join(p,'index.html'))){built=p;break;}
  if(pkg?.scripts?.dev&&await exists(join(root,'node_modules'))){
@@ -92,7 +91,7 @@ async function run(s,body){
  if(action==='start'){
   if(s.page)return {ok:true,message:'Browser already started'};
   const port=await application(s);
-  s.browser=await chromium.launch({headless:true,args:['--disable-dev-shm-usage']});
+  s.browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
   s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
   s.page=await s.context.newPage();
   s.origin='http://127.0.0.1:'+port;
@@ -139,7 +138,7 @@ const server=http.createServer(async(req,res)=>{
  try{
   if(req.method==='GET'&&req.url==='/health'){
    // Exercise Chromium; an installed binary without a launchable browser is not healthy.
-   const b=await chromium.launch({headless:true,args:['--disable-dev-shm-usage'],timeout:12000});
+   const b=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage'],timeout:12000});
    await b.close();return send(res,200,{ok:true,browser:'chromium'});
   }
   if(req.method!=='POST'||req.url!=='/action'||req.headers['content-type']!=='application/json')return send(res,404,{error:'Not found'});
