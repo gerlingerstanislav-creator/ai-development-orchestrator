@@ -683,6 +683,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
    :{taskId,approveAnalysis};
   const {tasks:[intent]}=await enqueueDevelopment(client,id,uid(req),scope);
   const ai=await resolveRoleAiSettings(client,id,'development');
+  await client.query('UPDATE projects SET agents_running=true WHERE id=$1',[id]);
   await client.query('COMMIT');
   return reply.code(202).send({id:intent.run_id,task_id:taskId,status:'queued',
    message:'Запуск принят. Подробности ожидания — в Центре процессов.',model:ai.model,created_at:intent.created_at});
@@ -835,6 +836,7 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
    await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Повторное тестирование перед слиянием')",
     [randomUUID(),taskId,uid(req)]);
   }
+  await db.query('UPDATE projects SET agents_running=true WHERE id=$1',[id]);
   await db.query('COMMIT');
  }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
  try{
