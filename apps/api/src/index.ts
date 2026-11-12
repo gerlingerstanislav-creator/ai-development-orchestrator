@@ -1725,6 +1725,27 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    return {status:'analyst_queued',task_id:taskId,source_message_id:sourceMessageId,answered_questions:saved.answered,
     message:saved.reason};
   }
+  if(name==='tasks.delete'){
+   const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
+   const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
+   const source=await pool.query(`
+    SELECT body,task_id FROM manager_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
+    UNION ALL
+    SELECT body,task_id FROM assistant_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
+   `,[sourceMessageId,projectId,session.actor_id]);
+   if(!owner.rowCount||source.rows.length!==1)throw Object.assign(Error('Для удаления требуется реальное поручение владельца проекта'),{statusCode:403});
+   if(source.rows[0].task_id&&source.rows[0].task_id!==taskId)
+    throw Object.assign(Error('Нельзя удалять другую задачу по сообщению из этой карточки'),{statusCode:403});
+   const text=String(source.rows[0].body||'').trim();
+   if(!/(?:удал(?:и|ить|ите|яй)|delete|remove)/i.test(text)||/(?:не|нельзя|запрещено)\\s+удал/i.test(text))
+    throw Object.assign(Error('В сообщении владельца нет явного поручения удалить задачу'),{statusCode:409});
+   const token=await accessToken(session.actor_id,user.email);
+   const response=await app.inject({method:'DELETE',url:'/api/projects/'+projectId+'/tasks/'+taskId,
+    headers:{authorization:'Bearer '+token},payload:{confirm_task_id:taskId}});
+   const body=response.json() as {error?:string;ok?:boolean;display_number?:number};
+   if(response.statusCode>=400)throw Object.assign(Error(String(body.error||'Не удалось удалить задачу')),{statusCode:response.statusCode});
+   return {...body,status:'deleted',task_id:taskId};
+  }
   const taskId=id.parse(args.task_id);
  const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
  if(!task)throw Object.assign(Error('Задача не найдена'),{statusCode:404});
