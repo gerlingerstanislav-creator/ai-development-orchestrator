@@ -181,4 +181,20 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  await dispatch();
  assert.equal(starts.length,7,'a real QA failure can authorize developer rework');
  assert.equal(starts.at(-1).args[0].taskId,qaBlocked);
+
+ // Only unresolved decisions of the owner may gate development queue dispatch.
+ // The DevOps question about Runner test discovery is internal and must not
+ // prevent the original task/PR from reaching QA once analysis is ready.
+ const technicalTask=randomUUID(),customerTask=randomUUID();
+ await db.query("INSERT INTO tasks(id,project_id,stage,analysis_state) VALUES($1,$3,'development','approved'),($2,$3,'development','approved')",
+  [technicalTask,customerTask,project]);
+ await db.query("INSERT INTO task_agent_notes(task_id,project_id,kind,status,target_stage,requires_customer) VALUES($1,$3,'question','open','devops',false),($2,$3,'question','open','all',true)",
+  [technicalTask,customerTask,project]);
+ await launch({taskId:technicalTask,approveAnalysis:false});
+ await launch({taskId:customerTask,approveAnalysis:false});
+ const queued=await readDevelopmentQueue(db,project);
+ assert.notEqual(queued.find(item=>item.task_id===technicalTask).reason,'questions',
+  'internal technical consultations do not count as an outstanding customer decision');
+ assert.equal(queued.find(item=>item.task_id===customerTask).reason,'questions',
+  'a real pending owner question still blocks development');
 });
