@@ -85,3 +85,12 @@ test('a failed browser assertion cannot be overridden by a claimed pass',()=>{
  assert.equal(result.caseResults[0].result,'failed');
  assert.equal(result.verdict,'failed');
 });
+
+test('unverified optional diagnostics cannot erase independently verified acceptance cases',()=>{
+ const evidence=[{kind:'case',id:'qa-1',result:'passed',expression:'document.querySelectorAll(".circle").length===10'}];
+ const outcome=verifyQaExecution({verdict:'blocked',caseResults:[scenario('passed','')],
+  checks:[{name:'Optional lint',result:'not_run',details:'not available'}],findings:[]},[],[],{browserEvidence:evidence});
+ assert.equal(outcome.caseResults[0].result,'passed');
+ assert.equal(outcome.verdict,'passed');
+ assert.equal(outcome.checks[0].result,'not_run');
+});
