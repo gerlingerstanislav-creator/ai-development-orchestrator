@@ -738,7 +738,7 @@ async function runDeterministicCiJob(job,state){
    await command('/usr/lib/postgresql/15/bin/initdb',['-D',postgresData,'-U','orchestrator','--auth-local=trust','--auth-host=reject','--no-instructions'],
     {cwd:workspace,timeout:120000,jobId:job.id,maxOutputChars:6000});
    await command('/usr/lib/postgresql/15/bin/pg_ctl',['-D',postgresData,'-l',join(workspace,'ci-postgres.log'),
-    '-o',"-c listen_addresses='' -k "+socketDir+" -p 5432",'start','-w'],
+    '-o',"-c listen_addresses='' -c shared_buffers=16MB -c max_connections=20 -c fsync=off -k "+socketDir+" -p 5432",'start','-w'],
     {cwd:workspace,timeout:90000,jobId:job.id,maxOutputChars:6000});
    postgresStarted=true;
    await command('/usr/bin/createdb',['-h',socketDir,'-U','orchestrator','orchestrator'],
