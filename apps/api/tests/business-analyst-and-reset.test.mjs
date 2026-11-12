@@ -22,15 +22,16 @@ import {registerProjectTeamRoutes,initProjectTeamSchema,mergeDevopsInstructions}
 import {registerBusinessAnalystHandoff} from '../dist/business-analyst-handoff.js';
 import {toolsForRole,toolAllowedForRole} from '../dist/agent-tools.js';
 
-test('BA can edit documentation, but cannot create technical tasks or owner questions',()=>{
+test('unified BA/SA can author requirements and create tasks without destructive PM permissions',()=>{
  const tools=toolsForRole('analyst').map(t=>t.name);
  assert.ok(tools.includes('documents.create'));
  assert.ok(tools.includes('documentation.rebuild'));
- assert.ok(!tools.includes('tasks.create'));
+ assert.ok(tools.includes('tasks.create'));
+ assert.ok(!tools.includes('tasks.delete'));
  assert.ok(!tools.includes('questions.create'));
  assert.equal(toolAllowedForRole('manager','tasks.create'),true);
- assert.equal(toolAllowedForRole('analyst','tasks.create'),false);
- assert.equal(toolAllowedForRole('business_analyst','tasks.create'),false);
+ assert.equal(toolAllowedForRole('analyst','tasks.create'),true);
+ assert.equal(toolAllowedForRole('business_analyst','tasks.create'),true);
 });
 
 test('documentation reset is previewed, project-scoped, one-time and removes only content',async t=>{
