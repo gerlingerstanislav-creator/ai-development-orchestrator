@@ -602,10 +602,27 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   await event(projectId,runId,'development',status,message);
  }
  if(status==='completed'||status==='failed'){
-  if(status==='completed'&&!remote.prUrl){
-   const msg='Разработка завершилась без PR; передавать в тестирование нечего';
+  const reusedBase=remote.completionKind==='already_implemented';
+  if(status==='completed'&&!remote.prUrl&&!reusedBase){
+   const msg='Разработка завершилась без PR и без проверяемого доказательства существующей реализации';
    await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,msg]);
    return {status:'failed',message:msg};
+  }
+  if(status==='completed'&&reusedBase){
+   const proof=remote.implementationEvidence,sha=String(remote.verifiedCommit||'');
+   if(!/^[a-f0-9]{40}$/i.test(sha)||proof?.commit!==sha||!Array.isArray(proof?.files)||!proof.files.length||!Array.isArray(proof?.criteria)||!proof.criteria.length){
+    return failRunnerRun('development',projectId,runId,'Нет проверяемого обоснования уже выполненной реализации');
+   }
+   const {repo,token,task}=await jobSettings(projectId,taskId);
+   const base=task.pr_base_branch||repo.target_branch||repo.default_branch;
+   const response=await fetch('https://api.github.com/repos/'+repo.repository+'/branches/'+encodeURIComponent(base),{
+    headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+    signal:AbortSignal.timeout(20000)
+   });
+   if(!response.ok)throw Error('Не удалось подтвердить базовую ветку для проверки существующего кода: GitHub HTTP '+response.status);
+   const data=await response.json() as {commit?:{sha?:string}};
+   if(data.commit?.sha!==sha)
+    return failRunnerRun('development',projectId,runId,'Целевая ветка изменилась после анализа кода; требуется повторная проверка');
   }
   if(remote.usage){
    const u=remote.usage;
@@ -626,11 +643,16 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
     await db.query('ROLLBACK');
     return {status:'failed',message:'Попытка уже завершена или отменена'};
    }
-   if(status==='completed'){
+   if(status==='completed'&&reusedBase){
+    await db.query("UPDATE tasks SET stage='testing',implementation_kind='already_implemented',implementation_commit=$2,implementation_evidence=$3::jsonb,git_branch=$4,pr_url=NULL,pr_number=NULL,updated_at=now() WHERE id=$1 AND project_id=$5",
+     [taskId,remote.verifiedCommit,JSON.stringify(remote.implementationEvidence),remote.branch,projectId]);
+    await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'already_implemented',$4)",
+     [randomUUID(),taskId,null,'Разработчик предъявил существующую реализацию на SHA '+remote.verifiedCommit+'; ожидается независимый QA']);
+   }else if(status==='completed'){
     const match=/\/pull\/(\d+)$/.exec(String(remote.prUrl));
     await db.query("INSERT INTO knowledge_artifact_links(id,project_id,document_id,artifact_kind,artifact_ref,relation) SELECT gen_random_uuid(),$1,l.document_id,'pr',$3,'implemented_by' FROM knowledge_task_links l WHERE l.project_id=$1 AND l.task_id=$2 ON CONFLICT DO NOTHING",
      [projectId,taskId,String(remote.prUrl)]);
-    await db.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
+    await db.query("UPDATE tasks SET stage='testing',implementation_kind='pr',implementation_commit=NULL,implementation_evidence=NULL,git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
      [taskId,remote.branch||taskId,remote.prUrl,match?Number(match[1]):null,remote.baseBranch||null,projectId]);
    }
    await db.query('COMMIT');
