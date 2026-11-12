@@ -24,7 +24,7 @@ const body={...session,action,...(qaKind?{qaKind,qaId}:{})};
 if(action==='start')body.path=args[0]||undefined;
 else if(action==='goto')body.path=args[0]||'/';
 else if(action==='viewport'){body.width=Number(args[0]);body.height=Number(args[1]);}
-else if(action==='click'||action==='count'||action==='text')body.selector=args[0];
+else if(['click','count','text','inspect'].includes(action))body.selector=args[0];
 else if(action==='fill'){body.selector=args[0];body.value=args[1]||'';}
 else if(action==='assert')body.expression=args[0];
 else if(!['start','restart','screenshot','close'].includes(action))throw Error('Unknown action: '+action);
