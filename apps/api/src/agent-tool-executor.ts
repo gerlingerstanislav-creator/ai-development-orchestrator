@@ -53,7 +53,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  _startWorkflow:(jobId:string)=>Promise<void>):Promise<unknown>{
  const projectId=session.project_id,actorId=session.actor_id;
  const params={...(args&&typeof args==='object'&&!Array.isArray(args)?args:{})} as Record<string,unknown>;
- if(session.task_id&&['knowledge.read','knowledge.section','tasks.read','processes.list'].includes(name)){
+ if(session.task_id&&['knowledge.read','knowledge.section','knowledge.context','tasks.read','processes.list'].includes(name)){
   if(params.task_id!==undefined&&params.task_id!==session.task_id)throw rejected('Сессия агента привязана к другой задаче',403);
   params.task_id=session.task_id;
  }
