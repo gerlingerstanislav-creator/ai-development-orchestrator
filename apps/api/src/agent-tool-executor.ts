@@ -58,6 +58,54 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   params.task_id=session.task_id;
  }
  switch(name){
+ case 'blockers.list':{
+  const {task_id}=z.object({task_id:uuid}).parse(params);
+  if(session.task_id&&session.task_id!==task_id)throw rejected('Другую задачу читать нельзя',403);
+  return {blockers:(await pool.query("SELECT id,role,kind,summary,evidence,resolution_hint,status,resolution_evidence,created_at,updated_at FROM agent_blockers WHERE project_id=$1 AND task_id=$2 ORDER BY (status='open') DESC,created_at DESC LIMIT 60",[projectId,task_id])).rows};
+ }
+ case 'blockers.report':{
+  const {task_id,kind,summary,evidence,resolution_hint}=z.object({
+   task_id:uuid,kind:z.enum(['requirements','tool','ci','qa','github','dependency','environment','code','other']),
+   summary:z.string().trim().min(12).max(500),evidence:z.string().trim().min(12).max(2500),
+   resolution_hint:z.string().trim().max(1000).default('')
+  }).parse(params);
+  if(session.task_id!==task_id&&session.role!=='manager')throw rejected('Блокер можно сообщить только для своей задачи',403);
+  if(!await pool.query('SELECT id FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]).then(r=>r.rowCount))throw rejected('Задача не найдена',404);
+  const id=randomUUID();
+  await pool.query("INSERT INTO agent_blockers(id,project_id,task_id,process_id,role,kind,summary,evidence,resolution_hint) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+   [id,projectId,task_id,session.process_id||null,session.role,kind,summary,evidence,resolution_hint]);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level,task_id) VALUES($1,$2,$3,'agent','blocker_open',$4,'warning',$5)",
+   [randomUUID(),projectId,session.process_id||id,kind+': '+summary,task_id]);
+  return {id,status:'open',task_id,kind};
+ }
+ case 'blockers.resolve':{
+  const {blocker_id,resolution_evidence}=z.object({blocker_id:uuid,resolution_evidence:z.string().trim().min(12).max(2500)}).parse(params);
+  const blocker=await pool.query('SELECT id,task_id,role,status FROM agent_blockers WHERE project_id=$1 AND id=$2 FOR UPDATE',[projectId,blocker_id]);
+  if(!blocker.rowCount)throw rejected('Блокер не найден',404);
+  const item=blocker.rows[0];
+  if(session.task_id&&session.task_id!==item.task_id)throw rejected('Блокер другой задачи',403);
+  if(session.role!=='manager'&&session.role!==item.role)throw rejected('Снять блокер может его автор или менеджер',403);
+  const result=await pool.query("UPDATE agent_blockers SET status='resolved',resolution_evidence=$3,updated_at=now() WHERE project_id=$1 AND id=$2 AND status='open' RETURNING id",[projectId,blocker_id,resolution_evidence]);
+  if(result.rowCount)await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,task_id) VALUES($1,$2,$3,'agent','blocker_resolved',$4,$5)",
+    [randomUUID(),projectId,session.process_id||blocker_id,resolution_evidence.slice(0,1600),item.task_id]);
+  return {id:blocker_id,status:'resolved',already_resolved:!result.rowCount};
+ }
+ case 'agents.consult':{
+  const {task_id,target_role,question,idempotency_key}=z.object({
+   task_id:uuid,target_role:z.enum(['analysis','development','testing','architect','devops','documentation','manager']),
+   question:z.string().trim().min(12).max(2000),idempotency_key:z.string().min(8).max(120).optional()
+  }).parse(params);
+  if(session.task_id!==task_id&&session.role!=='manager'&&session.role!=='analyst')throw rejected('Консультация разрешена только для своей задачи',403);
+  if(!await pool.query('SELECT id FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]).then(r=>r.rowCount))throw rejected('Задача не найдена',404);
+  const key='agent-consult:'+(session.process_id||session.id)+':'+hashSecret(idempotency_key||target_role+':'+question).slice(0,40);
+  const id=randomUUID(),needsOwner=target_role==='manager';
+  const note=await pool.query(`INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,source_run_id,status,requires_customer)
+   VALUES($1,$2,$3,$4,$5,$6,'question',$7,'agent',$8,$9,'open',$10)
+   ON CONFLICT(task_id,source_key) DO UPDATE SET body=task_agent_notes.body
+   RETURNING id,status`,
+   [id,projectId,task_id,session.role,session.role,needsOwner?'all':target_role,question,key,session.process_id||null,needsOwner]);
+  return {note_id:note.rows[0].id,status:note.rows[0].status,recipient:target_role,waiting_for:needsOwner?'owner':'specialist'};
+ }
  case 'project.agents.start':{
   if(session.role!=='manager')throw rejected('Только ПМ может запускать агентов по поручению владельца',403);
   const result=await pool.query('UPDATE projects SET agents_running=true WHERE id=$1 AND deleted_at IS NULL RETURNING agents_running',[projectId]);
