@@ -99,7 +99,16 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
   WHEN NOT EXISTS(SELECT 1 FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id
    WHERE g.project_id=q.project_id AND c.provider='github_token') THEN 'github'
   WHEN t.type IN ('epic','question') OR t.stage NOT IN ('analysis','development') THEN 'stage'
+  WHEN t.parent_id IS NOT NULL AND EXISTS(
+   SELECT 1 FROM tasks sibling WHERE sibling.project_id=t.project_id AND sibling.parent_id=t.parent_id
+    AND sibling.id<>t.id AND sibling.type IN ('task','bug','improvement')
+    AND sibling.stage IN ('backlog','analysis') AND sibling.analysis_state NOT IN ('ready_for_development','approved')
+  ) THEN 'stage'
   WHEN COALESCE(jsonb_array_length(t.clarification_questions),0)>0 OR EXISTS(
+   SELECT 1 FROM task_agent_notes n JOIN tasks sibling ON sibling.id=n.task_id
+   WHERE sibling.project_id=t.project_id AND sibling.parent_id=t.parent_id
+    AND t.parent_id IS NOT NULL AND n.kind='question' AND n.status IN ('open','processing')
+  ) OR EXISTS(
    SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id AND n.kind='question'
     AND n.status IN ('open','processing')) THEN 'questions'
   WHEN NOT q.automatic AND (t.spec_review_status IN ('pending','needs_approval') OR t.spec_version IS DISTINCT FROM t.spec_reviewed_version)
