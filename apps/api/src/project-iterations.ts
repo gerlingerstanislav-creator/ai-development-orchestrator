@@ -4,7 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {parseAgentObject} from './structured-agent-response.js';
 import {boundedIterationPrompt} from './iteration-prompt-budget.js';
-import {saveSpecRevision} from './requirements.js';
+import {updateCurrentSpecification} from './requirements.js';
 import {enqueueDevelopment,initAgentWorkQueue} from './agent-work-scheduler.js';
 
 type Db=Pick<Pool,'query'>;
@@ -120,7 +120,7 @@ export async function readIteration(db:Db,projectId:string,id:string){
  const [documents,tasks,questions]=await Promise.all([
   sourceDocuments(db,id),
   db.query<TaskPlanRow & {stage:string;display_number:number;tags:string[]}>(`SELECT id,title,display_number,type,stage,analysis_state,spec_review_status,spec_version,spec_reviewed_version,
-    clarification_questions,parent_id,depends_on_task_id,iteration_item_key,iteration_work_kind,tags,
+    clarification_questions,parent_id,depends_on_task_id,iteration_item_key,iteration_work_kind,tags,updated_at,
     (t.depends_on_task_id IS NULL OR EXISTS(SELECT 1 FROM tasks d
      WHERE d.project_id=t.project_id AND d.id=t.depends_on_task_id AND
       (d.stage IN ('deployment','documentation','done') OR (d.stage='merge_queue' AND d.git_branch IS NOT NULL AND d.pr_url IS NOT NULL)))) AS dependency_ready
@@ -136,20 +136,21 @@ export async function saveIteration(db:Db,projectId:string,input:unknown){
  const documents=await db.query('SELECT id FROM documents WHERE project_id=$1 AND id=ANY($2::uuid[]) FOR SHARE',[projectId,documentIds]);
  if(documents.rows.length!==documentIds.length)throw problem(400,'Одна из страниц не найдена в проекте');
  const id=data.iteration_id??randomUUID();
+ let currentRevision=1;
  if(data.iteration_id){
   const current=await iteration(db,projectId,id,true);
-  if(data.expected_revision!==current.revision)throw problem(409,'Описание итерации изменилось. Обнови страницу.');
+  currentRevision=current.revision;
   const previous=await sourceDocuments(db,id);
   if(current.title===data.title&&current.body===data.body&&JSON.stringify(previous.map(d=>d.id))===JSON.stringify(documentIds.slice().sort()))
    return {id,revision:current.revision};
-  await db.query('UPDATE project_iterations SET title=$3,body=$4,revision=revision+1,approved_revision=NULL,recommended_task_ids=ARRAY[]::uuid[] WHERE project_id=$1 AND id=$2',
+  await db.query('UPDATE project_iterations SET title=$3,body=$4 WHERE project_id=$1 AND id=$2',
    [projectId,id,data.title,data.body]);
   await db.query('DELETE FROM iteration_documents WHERE iteration_id=$1',[id]);
  }else{
   await db.query('INSERT INTO project_iterations(id,project_id,title,body) VALUES($1,$2,$3,$4)',[id,projectId,data.title,data.body]);
  }
  if(documentIds.length)await db.query('INSERT INTO iteration_documents(iteration_id,document_id) SELECT $1,unnest($2::uuid[])',[id,documentIds]);
- return {id,revision:data.iteration_id?data.expected_revision!+1:1};
+ return {id,revision:currentRevision};
 }
 
 function validatePlan(plan:Plan){
@@ -177,18 +178,10 @@ function validatePlan(plan:Plan){
  }
 }
 
-async function assertPlanCurrent(db:Db,projectId:string,plan:Plan){
- const current=await iteration(db,projectId,plan.iteration_id,true);
- if(current.revision!==plan.expected_revision||current.approved_revision!==plan.expected_revision)
-  throw problem(409,'Сначала подтверди актуальный объём итерации в «Плане разработки»');
- if(sourceRevision(await sourceDocuments(db,plan.iteration_id,true))!==plan.source_revision)
-  throw problem(409,'Исходные страницы изменились. Подготовь новый план по текущим версиям.');
-}
-
 export async function proposeIterationPlan(db:Db,projectId:string,actorId:string,input:unknown){
  const plan=planInput.parse(input);
  validatePlan(plan);
- await assertPlanCurrent(db,projectId,plan);
+ await iteration(db,projectId,plan.iteration_id,true);
  const existing=(await db.query(
   'SELECT id FROM iteration_plans WHERE iteration_id=$1 AND published_at IS NULL AND content=$2::jsonb ORDER BY created_at DESC LIMIT 1',
   [plan.iteration_id,JSON.stringify(plan)])).rows[0];
@@ -207,7 +200,6 @@ async function planningEvent(db:Db,projectId:string,id:string,stage:string,detai
 export async function queueIterationPlanning(db:Db,projectId:string,actorId:string,input:unknown){
  const data=z.object({iteration_id:uuid,request:z.string().trim().max(2000).default('')}).parse(input);
  const current=await iteration(db,projectId,data.iteration_id,true);
- if(current.approved_revision!==current.revision)throw problem(409,'Сначала согласуй объём итерации');
  const enabled=(await db.query('SELECT enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0]?.enabled;
  if(!enabled)throw problem(409,'Включи AI в настройках проекта');
  const active=(await db.query("SELECT id,status FROM iteration_planning_runs WHERE iteration_id=$1 AND status IN ('queued','running')",[data.iteration_id])).rows[0];
@@ -227,9 +219,7 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   JOIN project_iterations i ON i.id=r.iteration_id WHERE r.id=$1`,[runId])).rows[0];
  if(!run||run.status==='completed'||run.status==='failed')return;
  const details=await readIteration(pool,run.project_id,run.iteration_id);
- const planScope={iteration_id:run.iteration_id,expected_revision:run.iteration_revision,source_revision:run.source_revision};
- if(details.revision!==run.iteration_revision||details.approved_revision!==run.iteration_revision||details.source_revision!==run.source_revision)
-  throw problem(409,'Объём или исходные документы изменились. Запусти подготовку заново.');
+ const planScope={iteration_id:run.iteration_id,expected_revision:details.revision,source_revision:details.source_revision};
  await transaction(pool,async db=>{
   const started=await db.query("UPDATE iteration_planning_runs SET status='running',message='СА изучает объём, документы и задачи',updated_at=now() WHERE id=$1 AND status='queued'",[runId]);
   if(started.rowCount)await planningEvent(db,run.project_id,runId,'running','СА изучает объём, документы и задачи');
@@ -269,70 +259,36 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
   'Общие документы проекта:\n'+JSON.stringify(common.rows).slice(0,1500),
   'Правила проекта и инструкции СА:\n'+(rules.rows.map(row=>row.body).join('\n')+'\n'+(profile.rows[0]?.agent_instructions??'')).slice(0,1500)
  ],[650,900,300,4500,2000,3800,3000,1200,450,1300,3200,600,900]);
- const analyst=epicPlan.parse(parseAgentObject(await ask(prompt,run.project_id,'analysis')));
- const hasDevelopment=analyst.epics.some(epic=>epic.tasks.some(task=>task.kind==='development'));
- const technical=z.object({subtasks:z.array(z.object({
-  epic_key:key,key,title,description:z.string().trim().min(1).max(6000),tags:tags.default([]),depends_on:key.optional()
- })).max(40)}).strict();
- let proposals:z.infer<typeof technical>={subtasks:[]};
- if(hasDevelopment){
-  await pool.query("UPDATE iteration_planning_runs SET message='Разработчик предлагает технические задачи',updated_at=now() WHERE id=$1",[runId]);
-  await planningEvent(pool,run.project_id,runId,'developer','Разработчик анализирует эпики и ограничения реализации');
-  const developerPrompt=boundedIterationPrompt([
-   'Ты разработчик. СА уже утвердил состав эпиков и задачи требований. Предлагай ТОЛЬКО необходимые технические подзадачи внутри существующих эпиков, не меняй требования, критерии приёмки или границы MVP.',
-   'Используй только существующие epic_key; для новых задач выбери уникальные ключи. depends_on может ссылаться на задачу СА или другую техническую задачу.',
-   'Если дополнительные технические задачи не нужны, верни пустой массив.',
-   'Ответ только JSON: {"subtasks":[{"epic_key":"ключ эпика","key":"новый уникальный ключ","title":"название","description":"техническая работа и проверка","tags":["backend"],"depends_on":"необязательный ключ"}]}.',
-   'Итерация: '+details.title+'\n'+details.body.slice(0,8000),
-   'Декомпозиция СА: '+JSON.stringify(analyst).slice(0,18000),
-   'Правила проекта: '+rules.rows.map(row=>row.body).join('\n').slice(0,4000)
-  ],[750,550,100,250,5000,13000,1000]);
-  proposals=technical.parse(parseAgentObject(await ask(developerPrompt,run.project_id,'development')));
- }
- await pool.query("UPDATE iteration_planning_runs SET message='ПМ собирает общий черновик',updated_at=now() WHERE id=$1",[runId]);
- await planningEvent(pool,run.project_id,runId,'manager','ПМ объединяет требования СА и технические предложения разработчика');
- const managerPrompt=boundedIterationPrompt([
-  'Ты ПМ. Собери единый черновик. Эпики, задачи и критерии СА обязательны и не могут быть удалены или переписаны. Добавь уместные предложения разработчика внутрь существующих эпиков; не создавай задачи вне итерации.',
-  'Формируй карточки для согласованного объёма: система сама атомарно разместит новые задачи на доске. Это не разрешает запуск разработки. Не меняй уже работающие задачи без отдельного согласования.',
-  'Ответ строго JSON {"epics":[{"key":"...","title":"...","description":"...","tasks":[{"key":"...","title":"...","description":"...","kind":"development","tags":[],"depends_on":"optional"}]}]}.',
-  'СА: '+JSON.stringify(analyst).slice(0,20000),
-  'Предложения разработчика: '+JSON.stringify(proposals).slice(0,14000),
-  'Исходные границы: '+details.body.slice(0,7000)
- ],[500,250,350,14500,6000,900]);
- const draft=epicPlan.parse(parseAgentObject(await ask(managerPrompt,run.project_id,'manager')));
- // Analyst requirements remain authoritative. PM can propose additions, not rewrite them.
- const analystKeys=new Set(analyst.epics.flatMap(epic=>[epic.key,...epic.tasks.map(task=>task.key)]));
- const mergedByEpic=new Map(draft.epics.map(epic=>[epic.key,epic]));
- const finalized=epicPlan.parse({epics:analyst.epics.map(epic=>({
-  ...epic,tasks:[...epic.tasks,...(mergedByEpic.get(epic.key)?.tasks??[]).filter(task=>!analystKeys.has(task.key))]
- }))});
+ const finalized=epicPlan.parse(parseAgentObject(await ask(prompt,run.project_id,'analysis')));
  validatePlan({...planScope,...finalized});
  await transaction(pool,async db=>{
   const state=(await db.query('SELECT status FROM iteration_planning_runs WHERE id=$1 FOR UPDATE',[runId])).rows[0];
   if(!state||state.status!=='running')return;
-  // A customer answer arrived while the analyst was generating the draft.
-  // Do not publish a stale plan: enqueue a fresh analysis with all answers.
+  const latest=await iteration(db,run.project_id,run.iteration_id,true);
+  const latestSources=sourceRevision(await sourceDocuments(db,run.iteration_id,true));
   const newer=await db.query("SELECT 1 FROM iteration_owner_decisions WHERE iteration_id=$1 AND created_at>$2 LIMIT 1",[run.iteration_id,run.updated_at]);
-  if(newer.rowCount){
-   await db.query("UPDATE iteration_planning_runs SET status='completed',message='Поступили новые ответы владельца; подготовка перезапущена с актуальным контекстом',updated_at=now() WHERE id=$1",[runId]);
+  if(newer.rowCount||latest.title!==details.title||latest.body!==details.body||latestSources!==details.source_revision){
+   await db.query("UPDATE iteration_planning_runs SET status='completed',message='Появились уточнения. Аналитик обновит план.',updated_at=now() WHERE id=$1",[runId]);
    const nextId=randomUUID();
-   await db.query("INSERT INTO iteration_planning_runs(id,iteration_id,iteration_revision,source_revision,request_text,actor_id) VALUES($1,$2,$3,$4,$5,$6)",[nextId,run.iteration_id,run.iteration_revision,run.source_revision,'Продолжить подготовку с новыми ответами владельца',run.actor_id]);
-   await planningEvent(db,run.project_id,nextId,'queued','Автоматическое продолжение после новых ответов владельца');
+   await db.query("INSERT INTO iteration_planning_runs(id,iteration_id,iteration_revision,source_revision,request_text,actor_id) VALUES($1,$2,$3,$4,$5,$6)",[nextId,run.iteration_id,latest.revision,latestSources,run.request_text,run.actor_id]);
+   await planningEvent(db,run.project_id,nextId,'queued','Продолжение по актуальным требованиям');
    return;
   }
-  const result=await proposeIterationPlan(db,run.project_id,run.actor_id,{...planScope,...finalized});
-  // Preparation and publication are one durable operation. The iteration's
-  // scope has already been approved, so creating NEW backlog cards requires
-  // no second owner approval. Keep changes to existing cards out of this
-  // automatic path, particularly cards with ongoing development or PRs.
-  const publication=options.autoPublish===false?null:await publishPlan(
-   db,run.project_id,run.iteration_id,result.id,run.actor_id,
-   sourceRevision(await currentPlanItems(db,run.project_id,run.iteration_id,true)),[]);
-  const created=publication?.created.length??0;
+  const plan={...planScope,...finalized};
+  const previous=(await db.query('SELECT id FROM iteration_plans WHERE iteration_id=$1 ORDER BY published_at DESC NULLS LAST,created_at DESC LIMIT 1',[run.iteration_id])).rows[0];
+  let planId:string;
+  if(previous&&options.autoPublish!==false){
+   planId=previous.id;
+   await db.query('UPDATE iteration_plans SET iteration_revision=$2,source_revision=$3,content=$4,published_at=NULL WHERE id=$1',
+    [planId,plan.expected_revision,plan.source_revision,JSON.stringify(plan)]);
+  }else{
+   planId=(await proposeIterationPlan(db,run.project_id,run.actor_id,plan)).id;
+  }
+  const publication=options.autoPublish===false?null:await publishPlan(db,run.project_id,run.iteration_id,planId,run.actor_id,undefined,undefined,details.tasks);
   const message=publication
-   ?'План опубликован: создано '+created+' карточек. Разработка не запущена.'
+   ?'План готов. Создано карточек: '+publication.created.length+'. Обновлено: '+publication.updated.length+'.'
    :'Черновик готов к предпросмотру';
-  await db.query("UPDATE iteration_planning_runs SET status='completed',message=$3,plan_id=$2,updated_at=now() WHERE id=$1",[runId,result.id,message]);
+  await db.query("UPDATE iteration_planning_runs SET status='completed',message=$3,plan_id=$2,updated_at=now() WHERE id=$1",[runId,planId,message]);
   await planningEvent(db,run.project_id,runId,'completed',message);
  });
 }
@@ -397,15 +353,15 @@ async function readPlan(db:Db,id:string,planId:string){
  return row;
 }
 
-async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){
+async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorId:string,previewRevision?:string,selectedChanges?:string[],baseline:TaskPlanRow[]=[]){
  await iteration(db,projectId,id,true);
  const record=await readPlan(db,id,planId);
  if(record.published_at)return record.result;
  const plan=planInput.parse(record.content);
- await assertPlanCurrent(db,projectId,plan);
  const documents=await sourceDocuments(db,id,true);
  const current=await currentPlanItems(db,projectId,id,true);
- if(sourceRevision(current)!==previewRevision)throw problem(409,'Состав задач изменился. Открой предпросмотр заново.');
+ if(previewRevision&&(sourceRevision(documents)!==plan.source_revision||sourceRevision(current)!==previewRevision))
+  throw problem(409,'Документы или задачи изменились. Открой предпросмотр заново.');
  const {items}=planItems(plan,current);
  const differences=planDiff(items);
  // The plan creates every new card, regardless of selected_changes.
@@ -413,10 +369,12 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
  // fresh previews with stale=false. Ignore those known keys; selections only
  // authorize modifications to EXISTING cards.
  const knownKeys=new Set(differences.map(item=>item.key));
- if(selectedChanges.some(itemKey=>!knownKeys.has(itemKey)))
+ if(selectedChanges?.some(itemKey=>!knownKeys.has(itemKey)))
   throw problem(409,'В плане больше нет указанных позиций. Открой предпросмотр заново.');
+ const before=new Map(baseline.map(item=>[item.id,String(item.updated_at)]));
  const selected=new Set(differences.filter(item=>item.existing&&item.changes.length)
-  .map(item=>item.key).filter(itemKey=>selectedChanges.includes(itemKey)));
+  .filter(item=>selectedChanges?selectedChanges.includes(item.key):['backlog','analysis'].includes(item.existing!.stage)&&before.get(item.existing!.id)===String(item.existing!.updated_at))
+  .map(item=>item.key));
  const ids=new Map(items.map(item=>[item.key,item.existing?.id??randomUUID()]));
  const inserted=items.filter(item=>!item.existing);
  const names=new Set<string>();
@@ -432,22 +390,16 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
    [taskId,projectId,item.title,item.description,item.parent?'task':'epic',item.parent?'analysis':'backlog',item.kind==='development'?'ready_for_development':'new',item.parent?ids.get(item.parent):null,position++,id,item.key,item.kind??null,item.tags??[]]);
   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'created',$4)",
-   [randomUUID(),taskId,actorId,'Опубликован план итерации, редакция '+plan.expected_revision]);
-  if(item.parent)await db.query(`INSERT INTO task_spec_versions(id,project_id,task_id,version,title,description,origin,actor_id,reason)
-   VALUES($1,$2,$3,1,$4,$5,'analyst',$6,$7)`,
-   [randomUUID(),projectId,taskId,item.title,item.description,actorId,'Согласованный план итерации, редакция '+plan.expected_revision]);
+   [randomUUID(),taskId,actorId,'Создана карточка из плана разработки']);
  }
  const updated:string[]=[];
  for(const item of differences){
   if(!item.existing||!selected.has(item.key))continue;
   const old=item.existing;
   const changedRequirements=item.changes.includes('title')||item.changes.includes('description');
-  if(changedRequirements&&item.parent){
-   // Both callers provide a transactional PoolClient (MCP outer route or UI/Planning transaction).
-   await saveSpecRevision(db as PoolClient,old,{title:item.title,description:item.description,origin:'iteration_plan',actorId,
-    reason:'Изменение плана итерации',reviewStatus:['analysis','backlog'].includes(old.stage)?'current':'pending'});
-  }else if(changedRequirements){
-   await db.query('UPDATE tasks SET title=$3,description=$4,updated_at=now() WHERE project_id=$1 AND id=$2',[projectId,old.id,item.title,item.description]);
+  if(changedRequirements){
+   if(item.parent)await updateCurrentSpecification(db,projectId,old.id,item.title,item.description);
+   else await db.query('UPDATE tasks SET title=$3,description=$4,updated_at=now() WHERE project_id=$1 AND id=$2',[projectId,old.id,item.title,item.description]);
   }
   await db.query(`UPDATE tasks SET parent_id=$3,depends_on_task_id=$4,iteration_work_kind=$5,tags=$6,updated_at=now()
    WHERE project_id=$1 AND id=$2`,[projectId,old.id,item.parent?ids.get(item.parent):null,item.depends_on?ids.get(item.depends_on):null,item.kind??null,item.tags??[]]);
@@ -531,7 +483,7 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
  app.put(base+'/:iterationId',async(req:any,reply)=>{
   const {id,iterationId}=scope.parse(req.params);
   if(!await canWrite(req,reply,id))return;
-  const input=iterationInput.extend({expected_revision:revision}).parse(req.body);
+  const input=iterationInput.parse(req.body);
   return transaction(pool,db=>saveIteration(db,id,{...input,iteration_id:iterationId}));
  });
  app.post(base+'/:iterationId/questions/:questionId/answer',async(req:any,reply)=>{
@@ -543,10 +495,7 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
     [id,iterationId,questionId,answer]);
    if(!changed.rowCount)throw problem(409,'Вопрос уже закрыт или не найден');
    await recordIterationDecision(db,id,iterationId,uid(req),changed.rows[0].question,answer);
-   const current=await iteration(db,id,iterationId);
-   const queued=current.approved_revision===current.revision
-    ?await queueIterationPlanning(db,id,uid(req),{iteration_id:iterationId,request:'Обновить план по новому ответу владельца'})
-    :null;
+   const queued=await queueIterationPlanning(db,id,uid(req),{iteration_id:iterationId,request:'Обновить план по новому ответу владельца'});
    return {answered:true,planning_run_id:queued?.planning_run_id,status:queued?.status};
   });
   if(startPlanning&&result.planning_run_id&&result.status==='queued')
@@ -581,13 +530,12 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
  app.get(base+'/:iterationId/plans/:planId',async(req:any,reply)=>{
   const {id,iterationId,planId}=scope.extend({planId:uuid}).parse(req.params);
   if(!await access(req,reply,id))return;
-  const current=await iteration(pool,id,iterationId);
+  await iteration(pool,id,iterationId);
   const record=await readPlan(pool,iterationId,planId);
   const plan=planInput.parse(record.content);
   const tasks=await currentPlanItems(pool,id,iterationId);
   const {items,unmentioned}=planItems(plan,tasks);
-  const stale=current.revision!==plan.expected_revision||current.approved_revision!==plan.expected_revision||
-   sourceRevision(await sourceDocuments(pool,iterationId))!==plan.source_revision;
+  const stale=sourceRevision(await sourceDocuments(pool,iterationId))!==plan.source_revision;
   return {id:planId,items:planDiff(items),unmentioned,stale,preview_revision:sourceRevision(tasks),published_at:record.published_at,result:record.result};
  });
  app.post(base+'/:iterationId/plans/:planId/publish',async(req:any,reply)=>{
@@ -635,13 +583,12 @@ export async function approveIterationViaManager(db:Db,projectId:string,iteratio
  return {approved:true,iteration_id:iterationId,revision:result.rows[0].revision};
 }
 export async function previewIterationPlanViaManager(db:Db,projectId:string,iterationId:string,planId:string){
- const current=await iteration(db,projectId,iterationId);
+ await iteration(db,projectId,iterationId);
  const record=await readPlan(db,iterationId,planId);
  const plan=planInput.parse(record.content);
  const tasks=await currentPlanItems(db,projectId,iterationId);
  const {items,unmentioned}=planItems(plan,tasks);
- const stale=current.revision!==plan.expected_revision||current.approved_revision!==plan.expected_revision||
-  sourceRevision(await sourceDocuments(db,iterationId))!==plan.source_revision;
+ const stale=sourceRevision(await sourceDocuments(db,iterationId))!==plan.source_revision;
  return {plan_id:planId,items:planDiff(items),unmentioned,stale,preview_revision:sourceRevision(tasks),published_at:record.published_at};
 }
 export async function publishIterationPlanViaManager(db:Db,projectId:string,iterationId:string,planId:string,actorId:string,previewRevision:string,selectedChanges:string[]){

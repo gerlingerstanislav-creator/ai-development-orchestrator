@@ -13,10 +13,11 @@ async function requireQaForMerge(db:Pick<Pool,'query'>,projectId:string,taskId:s
  if(!plan?.spec_hash||plan.spec_version!==spec.spec_version)
   throw Object.assign(Error('Нет QA-плана для текущей версии ТЗ. Запустите QA в карточке задачи.'),{statusCode:409});
  const run=(await db.query('SELECT id,task_id,verdict,report,status,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[projectId,taskId])).rows[0];
- if(!run||run.status!=='completed'||run.report?.commit!==headSha||run.qa_spec_version!==spec.spec_version||
+ if(!run||run.status!=='completed'||run.report?.commit!==headSha||run.report?.staleSpecification===true||run.qa_spec_version!==spec.spec_version||
   run.qa_plan_snapshot?.spec_hash!==plan.spec_hash||(!Array.isArray(run.qa_plan_snapshot?.cases)||!run.qa_plan_snapshot.cases.length))
   throw Object.assign(Error('Нет завершённого QA-отчёта для текущего SHA, версии ТЗ и плана. Повторите QA в карточке задачи.'),{statusCode:409});
  if(run.verdict==='blocked'){
+  if(run.qa_plan_snapshot?.simplified===true&&qaWaiverAssessment(run).eligible)return;
   const waiver=(await db.query('SELECT commit_sha,spec_version FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 AND test_run_id=$3',
    [projectId,taskId,run.id])).rows[0];
   if(!waiver||!qaWaiverAssessment(run).eligible||waiver.commit_sha!==headSha||waiver.spec_version!==spec.spec_version)

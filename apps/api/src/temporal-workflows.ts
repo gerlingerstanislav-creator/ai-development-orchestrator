@@ -88,6 +88,8 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:development.message,stage:'development'});
    return 'development_failed';
   }
+  const simplified=patched('simplified-task-handoff');
+  if(!simplified){
   await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
   // Analyst is an ongoing owner of the specification, not a one-time Kanban executor.
   // Reconcile the actual PR before QA is allowed to author the final test plan.
@@ -111,13 +113,14 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    runId=await steps.scheduleRequirementFix({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt:attempt+1});
    continue;
   }
-  try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId});}
+  }
+  try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId,...(simplified?{simplified}: {})});}
   catch(error){
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Не удалось актуализировать тестовую документацию: '+String(error),stage:'qa_preparation'});
    return 'qa_plan_failed';
   }
   let testId:string;
-  try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt});}
+  try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt,...(simplified?{simplified}: {})});}
   catch(error){
    if(!patched('record-qa-start-failure'))throw error;
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,
@@ -135,11 +138,11 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    return 'testing_runner_failed';
   }
   if(testing.verdict==='blocked'){
-   await steps.noteBlockedTests({projectId:input.projectId,taskId:input.taskId,testId});
-   return 'testing_awaits_explicit_decision';
+   await steps.noteBlockedTests({projectId:input.projectId,taskId:input.taskId,testId,...(simplified?{simplified}: {})});
+   return simplified?'ready_to_merge_partial':'testing_awaits_explicit_decision';
   }
   if(testing.verdict==='passed'){
-   await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId});
+   await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId,...(simplified?{simplified}: {})});
    return 'ready_to_merge';
   }
   const next=await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,testId,attempt,allowFix:attempt<input.maxFixes});
@@ -154,6 +157,8 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
  try {
+ const simplified=patched('simplified-manual-testing');
+ if(!simplified){
  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
  let status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
  if(patched('resolve-manual-testing-questions')&&status==='needs_approval'){
@@ -166,13 +171,14 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
   if(status==='pending')status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
  }
  if(status==='rejected')return 'requirements_rejected';
- try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});}
+ }
+ try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,...(simplified?{simplified}: {})});}
  catch(error){
   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,message:'Не удалось подготовить QA-документацию: '+String(error),stage:'qa_preparation'});
   return 'qa_plan_failed';
  }
  let testId:string;
- try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0});}
+ try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0,...(simplified?{simplified}: {})});}
  catch(error){
   if(!patched('record-qa-start-failure'))throw error;
   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,
@@ -190,11 +196,11 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
   return 'testing_runner_failed';
  }
  if(testing.verdict==='blocked'){
-  await steps.noteBlockedTests({projectId:input.projectId,taskId:input.taskId,testId});
-  return 'testing_awaits_explicit_decision';
+  await steps.noteBlockedTests({projectId:input.projectId,taskId:input.taskId,testId,...(simplified?{simplified}: {})});
+  return simplified?'ready_to_merge_partial':'testing_awaits_explicit_decision';
  }
  if(testing.verdict==='passed'){
-  await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId});
+  await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId,...(simplified?{simplified}: {})});
   return 'ready_to_merge';
  }
  await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,testId,attempt:0,allowFix:false});

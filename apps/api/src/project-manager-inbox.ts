@@ -262,11 +262,11 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    instructions:[
     instructions.slice(0,3200),
     'Координируй работу специалистов; не подменяй аналитика, разработчика, QA или DevOps.',
-    'Подтверждение объёма итерации разрешает создание новых карточек: iterations.prepare_plan автоматически размещает их на доске после планирования. Не запрашивай ещё одно подтверждение публикации. Изменения существующих карточек требуют отдельного явного решения. Разработка начинается только по отдельной команде владельца.',
+    'При просьбе подготовить или уточнить ТЗ передай вводные аналитику через documentation.prepare_spec. Для плана используй iterations.prepare_plan: аналитик обновляет текущие карточки и создаёт недостающие. Готовые задачи автоматически идут в разработку.',
     'Если запрос просто вопрос — отвечай без побочных изменений. При неизвестном факте используй адресное чтение.',
     'Если поступило событие завершения, продолжи соответствующее поручение; новые вопросы ПМ оформляй через discussions.open, после ответа закрывай тему.',
-    'Для повторного QA используй qa.retry только после проверки текущих процессов; blocked не равен passed. Пропуск визуальных проверок требует явного решения владельца.',
-    'Решения владельца фиксируй через pm.decisions.record; не придумывай подтверждения, проверки, PR или ссылки.',
+    'Для повторного QA используй qa.retry после проверки текущих процессов. При неполном QA укажи, что не проверено. Для подробностей используй processes.list с process_id.',
+    'Ответ владельца на вопрос из карточки передавай через approvals.answer_question, для вопроса по ТЗ — через documentation.answer_question. Прочие решения фиксируй через pm.decisions.record.',
     'Не запускай несколько одинаковых процессов и не ожидай другие поручения синхронно.',
     'После завершения подготовки проверь iterations.read: карточки должны быть на доске. При отсутствии GitHub сообщи: «Задачи созданы, но разработка ожидает подключения/доступа GitHub». GitHub не нужен для создания задач. При ошибке публикации назови конкретную причину; не перезапускай СА без новых требований.',
    ].join('\n'),
@@ -278,7 +278,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
     recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,950):'',
      images.length?'Приложены изображения: '+images.map(image=>image.name).join(', ')+'. Рассмотри их визуальное содержимое.':''
    ].filter(Boolean).join('\n\n'),
-   output:'Ответь по-русски кратко. При действиях назови подтверждённый результат; при ожидании — конкретную причину.'
+    output:'Ответь по-русски. При действиях назови подтверждённый результат. При ожидании объясни конкретную причину. Для запроса подробностей получи относящиеся к нему факты через доступные инструменты.'
   });
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   const response=await fetch(runnerUrl+'/agent',{
@@ -289,7 +289,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
-  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','qa.retry','iterations.launch','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
+  const toolEvents=await pool.query("SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true AND tool IN ('iterations.prepare_plan','documentation.prepare_spec','documentation.answer_question','documentation.import','documentation.rebuild','documentation.organize','workflow.approve_development','qa.retry','iterations.launch','discussions.open','iterations.ask_question','pm.orders.update','pm.decisions.record')",[projectId,session.id]);
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
@@ -448,7 +448,7 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
  const title=watch.kind==='iteration_plan'?'Подготовка задач итерации «'+process.name+'»':watch.kind==='development'?'Разработка задачи «'+process.name+'»':'Работа с документацией';
  const message=process.status==='completed'
   ?watch.kind==='iteration_plan'
-   ?title+' завершена. '+String(process.message||'')+' План разработки: '+String(process.plan_id||'не указан')+'. Проверь, какие карточки появились на доске; повторного согласования публикации не требуется. Разработка запускается отдельно.'
+   ?title+' завершена. '+String(process.message||'')+' План разработки: '+String(process.plan_id||'не указан')+'. Карточки готовы. Задачи без открытых вопросов передаются в разработку.'
    :watch.kind==='development'
    ?title+' завершена. '+String(process.message||'')+(process.pr_url?' PR: '+process.pr_url:'')
    :title+' завершена. '+String(process.message||'Документация обновлена')

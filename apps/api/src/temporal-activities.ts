@@ -2,7 +2,6 @@ import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {runnerAssistantPrompt} from './runner-assistant-prompt.js';
-import {carryDevelopmentAuthorizationAfterAnalysis} from './agent-work-scheduler.js';
 import {heartbeat} from '@temporalio/activity';
 import {createAssistantService} from './assistant.js';
 import {executeProjectManagerInbox,failProjectManagerInbox,readProjectManagerWatchResume,type ProjectManagerWatch} from './project-manager-inbox.js';
@@ -21,7 +20,7 @@ import {managerSnapshot,syncManagerInbox} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
-import {saveSpecRevision} from './requirements.js';
+import {updateCurrentSpecification} from './requirements.js';
 import {z} from 'zod';
 import {checkedWithActualCapabilities} from './qa-evidence.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
@@ -188,7 +187,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
    'Используй актуальное ТЗ и приложенные относящиеся к задаче сведения. Не придумывай продуктовые решения вместо владельца.',
    'Если техническое описание достаточно для разработки, верни outcome="ready", уточнённое исполнимое ТЗ и конкретное краткое резюме.',
-   'Если без решения пользователя реализация неоднозначна, верни outcome="needs_input" и вопросы, которые действительно нельзя разрешить по документации.',
+   'Если без решения пользователя реализация неоднозначна, верни outcome="needs_input" и вопросы, которые действительно нельзя разрешить по документации. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
@@ -203,18 +202,17 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    await client.query('BEGIN');
    const stillActive=await client.query("SELECT status FROM agent_analysis_runs WHERE id=$1 FOR UPDATE",[runId]);
    const latest=(await client.query("SELECT * FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[projectId,taskId])).rows[0];
-   if(stillActive.rows[0]?.status==='cancelled'||!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||latest.spec_version!==run.spec_version){
+   if(stillActive.rows[0]?.status==='cancelled'||!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||(latest.title!==task.title||latest.description!==task.description)){
     await client.query("UPDATE agent_analysis_runs SET status='completed',message='Задача изменилась до сохранения результата',updated_at=now() WHERE id=$1 AND status<>'cancelled'",[runId]);
     await client.query('COMMIT');return;
    }
    if(output.outcome==='ready'){
-    const version=await saveSpecRevision(client,latest,{title:latest.title,description:output.refined_description,origin:'analyst',reason:output.summary,reviewStatus:'current'});
+    await updateCurrentSpecification(client,projectId,taskId,latest.title,output.refined_description);
     const questions=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND kind='question' AND status IN ('open','processing') LIMIT 1",[taskId]);
     if(questions.rowCount||latest.clarification_questions?.length){
      await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
     }else{
      await client.query("UPDATE tasks SET analysis_state='ready_for_development',updated_at=now() WHERE id=$1",[taskId]);
-     await carryDevelopmentAuthorizationAfterAnalysis(client,{projectId,taskId,iterationId:latest.iteration_id,previousVersion:run.spec_version,version});
      await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed',$3)",[randomUUID(),taskId,output.summary]);
     }
     await client.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status) VALUES($1,$2,$3,'analysis',$4,'development','handoff',$5,'agent',$6,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING",
@@ -330,7 +328,7 @@ export async function noteReviewFailure(args:{projectId:string;taskId:string;run
  await event(args.projectId,args.runId,'analysis','failed',message,'error');
 }
 
-export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:string}):Promise<number>{
+export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:string;simplified?:boolean}):Promise<number>{
  const {projectId,taskId,runId}=args;
  const settings=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=settings.rows[0];
@@ -339,11 +337,16 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
  await event(projectId,runId,'testing','test_design_started','AI-тестировщик формирует тесты по актуализированному ТЗ перед проверкой PR');
  await recordAgentActivity(pool,projectId,[taskId],runId,'qa_design','running','Тестировщик готовит сценарии проверки.');
  try{
-  if(await pendingAgentQuestions(pool,projectId,taskId))throw new Error('Нельзя готовить тестирование: вопросы участников процесса остались без ответа');
+  if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw new Error('Нельзя готовить тестирование: вопросы участников процесса остались без ответа');
   const evidence=await prEvidence(projectId,taskId);
-  const current=await pool.query("SELECT spec_reviewed_commit,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2",[taskId,projectId]);
-  if(current.rows[0]?.spec_review_status!=='current'||!evidence.commitSha||current.rows[0].spec_reviewed_commit!==evidence.commitSha)
-   throw new Error('Код PR изменился после сверки аналитиком. Требуется повторная проверка требований.');
+  if(!evidence.commitSha)throw new Error('Нет коммита PR для тестирования');
+  if(args.simplified){
+   await pool.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing'",[taskId,projectId,evidence.commitSha]);
+  }else{
+   const current=await pool.query("SELECT spec_reviewed_commit,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2",[taskId,projectId]);
+   if(current.rows[0]?.spec_review_status!=='current'||current.rows[0].spec_reviewed_commit!==evidence.commitSha)
+    throw new Error('Код PR изменился после сверки аналитиком. Требуется повторная проверка требований.');
+  }
   const qaKnowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',runId));
   const handoff=await taskHandoffContext(projectId,taskId,'testing');
   const count=await prepareQaDocumentation(pool,{...args,implementationEvidence:evidence.patch},async(prompt)=>{
@@ -551,21 +554,23 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
  }
  return {status,message};
 }
-export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number;recovery?:boolean}):Promise<string>{
+export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number;recovery?:boolean;simplified?:boolean}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
- if(await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
+ if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
  if(task.spec_review_status!=='current'||task.spec_reviewed_version!==task.spec_version)throw ApplicationFailure.nonRetryable('ТЗ изменилось: требуется повторная сверка аналитиком');
  const testPlan=await readQaPlan(pool,projectId,taskId);
  if(!testPlan?.cases.length||testPlan.spec_version!==task.spec_version)throw ApplicationFailure.nonRetryable('QA-план устарел относительно актуальной версии ТЗ');
+ if(!args.simplified){
  const stale=await pool.query("SELECT count(*)::int AS total FROM qa_plan_cases pc JOIN qa_test_cases c ON c.id=pc.case_id JOIN qa_test_plans p ON p.id=pc.plan_id WHERE p.project_id=$1 AND p.task_id=$2 AND c.status<>'active'",[projectId,taskId]);
  if(stale.rows[0].total>0)throw ApplicationFailure.nonRetryable('Тест-кейсы требуют ручного пересмотра');
+ }
 
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const testId=existing.rowCount?existing.rows[0].id:randomUUID();
  if(!existing.rowCount){
   await pool.query("INSERT INTO ai_test_runs(id,project_id,task_id,cycle_id,attempt,status,message,qa_spec_version,qa_plan_snapshot,runner_commit_sha) VALUES($1,$2,$3,$4,$5,'queued','Ожидает запуска проверки',$6,$7,$8) ON CONFLICT(cycle_id,attempt) DO NOTHING",
-   [testId,projectId,taskId,cycleId,attempt,task.spec_version,JSON.stringify(testPlan),task.spec_reviewed_commit||null]);
+   [testId,projectId,taskId,cycleId,attempt,task.spec_version,JSON.stringify(args.simplified?{...testPlan,simplified:true}:testPlan),task.spec_reviewed_commit||null]);
  }
  const record=await pool.query('SELECT id,status,qa_spec_version,qa_plan_snapshot,runner_commit_sha FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  const id=record.rows[0].id;
@@ -611,7 +616,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  if(remote.status==='interrupted'){
   const test=row.rows[0];
   if(!test.cycle_id)return failRunnerRun('testing',projectId,testId,'У старого QA-прогона отсутствует идентификатор цикла');
-  try{await startTesting({projectId,taskId:test.task_id,cycleId:test.cycle_id,attempt:test.attempt,recovery:true});}
+  try{await startTesting({projectId,taskId:test.task_id,cycleId:test.cycle_id,attempt:test.attempt,recovery:true,simplified:test.qa_plan_snapshot?.simplified===true});}
   catch(error){
    if(error instanceof ApplicationFailure&&error.nonRetryable)return failRunnerRun('testing',projectId,testId,error.message);
    return trackRunnerWait('testing',projectId,testId,error);
@@ -637,14 +642,15 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   });
   const {cases:checked,visualToolGap}=checkedWithActualCapabilities(expected,supplied,String(remote.capabilities||''));
   let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
-  const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
-  const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version;
+  const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
+  const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version||
+   (row.rows[0].qa_plan_snapshot?.simplified===true&&remote.testedCommit!==currentSpec.rows[0].spec_reviewed_commit);
   if(!expected.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
   if(checked.some(c=>c.result==='failed')||(Array.isArray(remote.checks)&&remote.checks.some((c:any)=>c.result==='failed'))||(Array.isArray(remote.findings)&&remote.findings.length>0))verdict='failed';
   else if((checked.some(c=>c.result!=='passed')||visualToolGap)&&verdict==='passed')verdict='blocked';
   // A changed specification invalidates the entire run even if old cases failed.
   if(staleSpecification)verdict='blocked';
-  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version};
+  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -672,22 +678,39 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  return {status,message};
 }
 /** Tool limitations are not defects; retain the tested code for human review. */
-export async function noteBlockedTests(args:{projectId:string;taskId:string;testId:string}):Promise<void>{
+export async function noteBlockedTests(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}):Promise<void>{
  const {projectId,taskId,testId}=args;
- const test=await pool.query('SELECT status,verdict,report FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3',[testId,projectId,taskId]);
+ const test=await pool.query('SELECT status,verdict,report,qa_plan_snapshot FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3',[testId,projectId,taskId]);
  if(!test.rowCount||test.rows[0].status!=='completed'||test.rows[0].verdict!=='blocked')
   throw ApplicationFailure.nonRetryable('Нельзя согласовать не завершённый или не заблокированный QA-прогон');
  const cases=Array.isArray(test.rows[0].report?.caseResults)?test.rows[0].report.caseResults:[];
  const missing=cases.filter((c:any)=>['blocked','not_run'].includes(c.result));
- const msg='Не удалось проверить '+missing.length+' сценариев: '+missing.map((c:any)=>c.case_id+': '+String(c.evidence||'нет объяснения')).join('; ').slice(0,1700);
- await pool.query("UPDATE tasks SET stage='testing',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",[taskId,projectId,msg]);
- await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_tools_unavailable',msg.slice(0,2400)]);
- await event(projectId,testId,'testing','awaiting_manual_qa_decision','Проверки ограничены средой. Согласование исключений доступно только при подтверждённой недоступности инструментов.','warning');
- // Materialize the owner decision without requiring the owner to open the task first.
- await syncManagerInbox(pool,projectId,taskId);
+ const planned=Array.isArray(test.rows[0].qa_plan_snapshot?.cases)?test.rows[0].qa_plan_snapshot.cases:[];
+ const names=new Map<string,string>(planned.map((c:{id:string;title:string})=>[c.id,c.title]));
+ const ran=cases.filter((c:any)=>['passed','failed'].includes(c.result)).length;
+ const reasons:Record<string,string>={tool_unavailable:'нет нужного инструмента',environment_unavailable:'нет подходящей среды',manual_only:'нужна ручная проверка'};
+ const summary=String(test.rows[0].report?.summary||'').slice(0,450);
+ const stale=test.rows[0].report?.staleSpecification===true?' Во время проверки изменилось ТЗ или PR. Нужна повторная проверка.':'';
+ const msg=('Проверено '+ran+' из '+planned.length+'. Не удалось проверить '+missing.length+'. '+
+  missing.slice(0,3).map((c:any)=>(names.get(c.case_id)||'Сценарий')+' — '+(reasons[c.reason]||'результат не подтверждён')).join('; ')+
+  (missing.length>3?' и ещё '+(missing.length-3)+'.':'')+(summary?' '+summary:'')+stale).slice(0,1200);
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' RETURNING id",
+   [taskId,projectId,msg,args.simplified?'merge_queue':'testing']);
+  if(updated.rowCount){
+   await client.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_tools_unavailable',msg]);
+   await client.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level) VALUES($1,$2,$3,'testing',$4,$5,'warning')",
+    [randomUUID(),projectId,testId,args.simplified?'partial':'awaiting_manual_qa_decision',msg]);
+  }
+  await client.query('COMMIT');
+  if(!updated.rowCount)return;
+ }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
+ if(!args.simplified)await syncManagerInbox(pool,projectId,taskId);
 }
-export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string}){
- if(await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
+export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
+ if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
  const verified=await pool.query("SELECT 1 FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed' AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL AND t.spec_review_status='current' AND t.spec_reviewed_version=t.spec_version AND r.qa_spec_version=t.spec_version",[testId,projectId,taskId]);
  if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного тестирования коммита PR');
@@ -774,6 +797,12 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     author:n.author_name,recipient:n.target_stage,kind:n.kind,
     note:String(n.body).slice(0,420),status:n.status
    }));
+   const qaDetails=latest?JSON.stringify(latest.report??{}).slice(0,2100):'';
+   const detailContext=[
+    'Последний отчёт QA: '+qaDetails,
+    'Недавние комментарии агентов: '+JSON.stringify(agentNotes).slice(0,1100),
+    'Недавний диалог: '+JSON.stringify(history.slice(-4)).slice(0,450)
+   ].join('\n');
    const replyTarget=snapshot.messages.find(m=>m.id===msg.rows[0].reply_to);
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
@@ -781,7 +810,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     tools:'В этом вызове нет инструментов изменения проекта. Не утверждай о выполненных действиях или запуске процессов без подтверждённых фактов сервера.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
     scope:JSON.stringify({task_id:taskId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
-    context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict,summary:String(latest.report?.summary||'').slice(0,650)}:null,images:images.map(image=>image.name)}).slice(0,1600),
+    context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,1000):'',
     output:'Отвечай по фактам и по-русски. Если инструментальная проверка недоступна, назови именно непроверенные сценарии, не объявляй их пройденными.'
    });
@@ -792,9 +821,9 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     tools:'Это ответ в чате задачи. Не утверждай о запуске кода или тестов без доказательств.',
     instructions:mentionedAgent.instructions.slice(0,2600),
     scope:JSON.stringify({task_id:taskId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,2200)}),
-    context:JSON.stringify({latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,600),
+    context:detailContext,
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,800):'',
-    output:'Краткий ответ; в конце LEARNING_SUGGESTION: <подтверждённый урок> либо none.'
+    output:'После ответа отдельной строкой добавь LEARNING_SUGGESTION: <подтверждённый урок> либо none.'
    }):prompt;
     const rawReply=String(await askRunnerAssistant(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager',await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]),110000,images)).trim();
     const suggestion=mentionedAgent?rawReply.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim():undefined;

@@ -85,7 +85,7 @@ type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={images?:ChatImageMeta[];id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
-type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
+type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;test_feedback?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
 type AssistantMessage={images?:ChatImageMeta[];id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;topic_title?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
@@ -608,7 +608,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     const data=await api<RequirementInfo>('/projects/'+projectId+'/tasks/'+taskId+'/requirements');
     if(live){
      setRequirements(data);
-     setActiveTask(old=>old&&old.id===data.task.id&&old.spec_version!==data.task.spec_version&&editingField===null
+     setActiveTask(old=>old&&old.id===data.task.id&&(old.title!==data.task.title||old.description!==data.task.description||old.spec_review_status!==data.task.spec_review_status)&&editingField===null
       ?{...old,title:data.task.title,description:data.task.description,spec_version:data.task.spec_version,spec_review_status:data.task.spec_review_status as Task['spec_review_status'],spec_review_note:data.task.spec_review_note}:old);
     }
    }catch{/* Keep previous review data while reconnecting. */}
@@ -899,9 +899,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     const current=manager.task;
     if(current.id===taskId&&current.analysis_state!==undefined){
      const workflow={stage:current.stage,analysis_state:current.analysis_state,
-      clarification_questions:current.clarification_questions,spec_review_status:current.spec_review_status};
+      clarification_questions:current.clarification_questions,spec_review_status:current.spec_review_status,test_feedback:current.test_feedback};
      setActiveTask(old=>old?.id===taskId?{...old,...workflow,
-      ...(!editingField&&current.spec_version!==undefined&&old.spec_version!==current.spec_version
+      ...(!editingField&&current.spec_version!==undefined
        ?{title:current.title,description:current.description??old.description,spec_version:current.spec_version}:{})}:old);
      setTasks(old=>old.map(task=>task.id===taskId?{...task,...workflow}:task));
     }
@@ -1285,7 +1285,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setAnswerNoteId(null);setAnswerText('');
    await refreshTaskActivity(id,taskId);
    await loadRequirements(id,taskId);
-   setTaskFeedback(response.pending_questions>0?'Ответ сохранён. Осталось ответить на '+response.pending_questions+' вопрос(а).':response.requires_approval?'Вопрос закрыт, но изменение поведения требует отдельного согласования. Рассмотри предложение аналитика.':response.requirements_review?.message||'Ответ сохранён. Сверка аналитика требуется перед продолжением.');
+   setTaskFeedback(response.pending_questions>0?'Ответ сохранён. Осталось ответить на '+response.pending_questions+' вопрос(а).':response.requires_approval?'Вопрос закрыт, но изменение поведения требует отдельного согласования. Рассмотри предложение аналитика.':response.requirements_review?.message||'Ответ сохранён. Аналитик продолжит работу.');
   }catch(e){fail(e);}finally{setNoteBusy(false);}
  }
  async function showTaskCancellation(){
@@ -2537,6 +2537,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </details>
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
 
+     {activeTask.stage==='merge_queue'&&newestTaskTest?.verdict==='blocked'&&<div className="qa-waiver-panel" role="status"><strong>Тестирование завершено частично</strong><p>{activeTask.test_feedback||'Некоторые сценарии остались без проверки. Подробности есть в отчёте QA.'}</p></div>}
      {activeTask.stage==='testing'&&newestTaskTest?.status==='failed'&&
       <div className="qa-waiver-panel" role="status">
        <strong>Тестировщик не смог завершить работу</strong>

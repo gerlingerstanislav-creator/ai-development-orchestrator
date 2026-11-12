@@ -6,7 +6,7 @@ import pg from 'pg';
 import {initProjectIterations,proposeIterationPlan,readIteration,registerProjectIterationRoutes,runIterationPlanning} from '../dist/project-iterations.js';
 import {toolAllowedForRole} from '../dist/agent-tools.js';
 
-test('iteration scope, preview and launch are separate, project-scoped decisions',async t=>{
+test('current iteration and cards update in place while explicit preview remains project scoped',async t=>{
  const db=new pg.Client({connectionString:process.env.DATABASE_URL});
  await db.connect();
  const app=Fastify();
@@ -60,7 +60,6 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
    {key:'order',title:'Заказ',description:'Проверить правила',kind:'analysis',depends_on:'form'}
   ]}]};
  const propose=()=>proposeIterationPlan(db,project,actor,proposal);
- await assert.rejects(propose,{statusCode:409});
  const question=randomUUID();
  await db.query("INSERT INTO iteration_questions(id,iteration_id,question) VALUES($1,$2,'Какой интервал повторов?')",[question,id]);
  assert.equal((await request('POST',url+'/approve',{expected_revision:1})).statusCode,409,'open owner questions block approval');
@@ -79,24 +78,16 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
   calls++;
   assert.equal(projectId,project);
   assert.ok(prompt.length<=23000,'Every role prompt must fit the Runner request limit');
-  if(calls===1){
-   assert.match(prompt,/Ты системный аналитик/);
-   assert.match(prompt,/Согласован объём|Ручное оформление/i);
-   assert.match(prompt,/Первый рабочий сценарий/);
-   assert.match(prompt,/5 минут, настройка через Telegram-бота/,'owner answer must reach SA');
-   return JSON.stringify({epics:proposal.epics});
-  }
-  if(calls===2){
-   assert.match(prompt,/Ты разработчик/);
-   return JSON.stringify({subtasks:[{epic_key:'checkout',key:'form-validation',title:'Валидация формы',description:'Добавить и протестировать валидацию полей',tags:['frontend'],depends_on:'form'}]});
-  }
-  assert.match(prompt,/Ты ПМ/);
+  assert.match(prompt,/Ты системный аналитик/);
+  assert.match(prompt,/Согласован объём|Ручное оформление/i);
+  assert.match(prompt,/Первый рабочий сценарий/);
+  assert.match(prompt,/5 минут, настройка через Telegram-бота/,'owner answer must reach SA');
   return JSON.stringify({epics:[{...proposal.epics[0],tasks:[...proposal.epics[0].tasks,
    {key:'form-validation',title:'Валидация формы',description:'Добавить и протестировать валидацию полей',kind:'development',tags:['frontend'],depends_on:'form'}]}]});
  },{autoPublish:false});
  await complete();
  await complete();
- assert.equal(calls,3,'Temporal retry does not regenerate a completed draft');
+ assert.equal(calls,1,'Temporal retry does not regenerate a completed draft');
  const status=(await request('GET',url)).json();
  assert.equal(status.planning_runs[0].status,'completed');
  const plan={id:status.planning_runs[0].plan_id};
@@ -127,7 +118,7 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal(order.stage,'analysis');
  assert.equal(order.analysis_state,'new');
  assert.equal(form.analysis_state,'ready_for_development');
- assert.equal((await db.query('SELECT count(*)::int n FROM task_spec_versions')).rows[0].n,3);
+ assert.equal((await db.query('SELECT count(*)::int n FROM task_spec_versions')).rows[0].n,0);
  assert.equal((await db.query('SELECT count(*)::int n FROM knowledge_task_links')).rows[0].n,3);
  const changedProposal=structuredClone(proposal);
  changedProposal.epics[0].tasks[0].title='Форма заказа';
@@ -150,7 +141,7 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal(after.title,'Форма заказа');
  assert.equal(after.description,'Ввод и проверка данных');
  assert.deepEqual(after.tags,['frontend']);
- assert.equal(Number(after.spec_version),2);
+ assert.equal(Number(after.spec_version),1);
  assert.deepEqual((await request('POST',changeUrl+'/publish',{confirm:true,preview_revision:fresh.preview_revision,selected_changes:['form']})).json(),changedPublish.json());
  const rerun=await propose(),rerunUrl=url+'/plans/'+rerun.id;
  const rerunPreview=(await request('GET',rerunUrl)).json();
@@ -190,17 +181,13 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal((await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{
   iteration_id:id,tags:[],sprint_id:foreignSprint.json().id,version_id:null})).statusCode,400);
  const change=await request('PUT',url,{title:'MVP 1',body:scope.body,document_ids:[source],expected_revision:1});
- assert.deepEqual(change.json(),{id,revision:2});
- assert.equal((await request('POST',url+'/approve',{expected_revision:2})).statusCode,200);
- assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id]})).statusCode,409);
+ assert.deepEqual(change.json(),{id,revision:1});
 
- // The real PM planning workflow publishes NEW cards immediately after the
- // approved scope is decomposed. GitHub does not need to be configured.
+ // Normal planning publishes without another approval or a linked GitHub repository.
  const iteration2=await request('POST',path,{title:'Сайт без GitHub',body:'Согласованный набор задач без команды на разработку',document_ids:[]});
  assert.equal(iteration2.statusCode,200,iteration2.body);
  const iteration2Id=iteration2.json().id;
  const scope2=path+'/'+iteration2Id;
- assert.equal((await request('POST',scope2+'/approve',{expected_revision:1})).statusCode,200);
  const prepare2=await request('POST',scope2+'/prepare',{request:'Размести задачи на доске'});
  assert.equal(prepare2.statusCode,202,prepare2.body);
  const draft={epics:[{key:'site-epic',title:'Сайт',description:'Реализовать сайт',tasks:[
@@ -211,15 +198,13 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  const autoRun=()=>runIterationPlanning(pool,prepare2.json().planning_run_id,async(prompt,projectId)=>{
   autoCalls++;
   assert.equal(projectId,project);
-  if(autoCalls===1)return JSON.stringify(draft);
-  if(autoCalls===2)return JSON.stringify({subtasks:[]});
   return JSON.stringify(draft);
  });
  await autoRun();
- assert.equal(autoCalls,3);
+ assert.equal(autoCalls,1);
  const prepared=(await request('GET',scope2)).json();
  assert.equal(prepared.planning_runs[0].status,'completed');
- assert.match(prepared.planning_runs[0].message,/План опубликован/);
+ assert.match(prepared.planning_runs[0].message,/План готов/);
  const autoPlanId=prepared.planning_runs[0].plan_id;
  const autoPreview=(await request('GET',scope2+'/plans/'+autoPlanId)).json();
  assert.ok(autoPreview.published_at,'task plan must be published automatically');
@@ -231,24 +216,17 @@ test('iteration scope, preview and launch are separate, project-scoped decisions
  assert.equal((await db.query('SELECT count(*)::int n FROM iteration_execution_queue WHERE iteration_id=$1',[iteration2Id])).rows[0].n,0,
   'automatic publication must not start development');
  await autoRun();
- assert.equal(autoCalls,3,'completed planning must be idempotent');
+ assert.equal(autoCalls,1,'completed planning must be idempotent');
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE iteration_id=$1',[iteration2Id])).rows[0].n,3);
- // The same iteration may receive an updated plan; approved existing cards
- // are never overwritten by automatic publication.
- const stored=await readIteration(db,project,iteration2Id);
+ // A later clarification updates the same card and the same plan.
  const changedDraft=structuredClone(draft);
  changedDraft.epics[0].tasks[0].description='Изменение требований после публикации';
  changedDraft.epics[0].tasks.push({key:'site-extra',title:'Страница контактов',description:'Новая страница контактов',kind:'development',tags:[]});
- const followup=await proposeIterationPlan(db,project,actor,{
-  iteration_id:iteration2Id,expected_revision:1,source_revision:stored.source_revision,...changedDraft
- });
- const newer=await request('GET',scope2+'/plans/'+followup.id);
- assert.equal(newer.statusCode,200,newer.body);
- const toPublish=await request('POST',scope2+'/plans/'+followup.id+'/publish',{
-  confirm:true,preview_revision:newer.json().preview_revision,selected_changes:['site-extra']
- });
- assert.equal(toPublish.statusCode,200,toPublish.body);
- assert.equal(toPublish.json().created.length,1);
- assert.equal((await db.query('SELECT description FROM tasks WHERE id=$1',[newTasks[1].id])).rows[0].description,
-  'Подтвердить страницы и содержание','unchanged existing requirements remain safe');
+ const followup=await request('POST',scope2+'/prepare',{request:'Учти уточнение владельца'});
+ await runIterationPlanning(pool,followup.json().planning_run_id,async()=>JSON.stringify(changedDraft));
+ const refreshed=(await request('GET',scope2)).json();
+ assert.equal(refreshed.planning_runs[0].plan_id,autoPlanId);
+ const updated=(await db.query('SELECT description,spec_version FROM tasks WHERE id=$1',[newTasks[1].id])).rows[0];
+ assert.deepEqual(updated,{description:'Изменение требований после публикации',spec_version:1});
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE iteration_id=$1',[iteration2Id])).rows[0].n,4);
 });

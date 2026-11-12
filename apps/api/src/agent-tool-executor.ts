@@ -44,7 +44,7 @@ async function updatePage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<
  }
  if(revision(old.updated_at)!==revision(params.expected_revision))throw rejected('Страница изменилась с момента чтения. Получи новую revision через documents.read.');
  const updated=await db.query(
-  'WITH updated AS (UPDATE documents SET title=$3,body=$4,parent_id=$5,updated_at=clock_timestamp() WHERE project_id=$1 AND id=$2 RETURNING id,body,updated_at), revision AS (INSERT INTO document_versions(id,document_id,body) SELECT gen_random_uuid(),id,body FROM updated) SELECT updated_at FROM updated',
+  'UPDATE documents SET title=$3,body=$4,parent_id=$5,updated_at=clock_timestamp() WHERE project_id=$1 AND id=$2 RETURNING updated_at',
   [projectId,params.document_id,title,params.body??old.body,parent]);
  return {id:params.document_id,revision:revision(updated.rows[0].updated_at)};
 }
@@ -63,7 +63,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    WHERE project_id=$1 AND id=$2 AND stage='analysis' AND analysis_state='waiting_questions'
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$2 AND n.kind='question' AND n.status IN ('open','processing'))
    RETURNING id`,[projectId,task_id]);
-  return {answered:true,task_id,note_id,analyst_resumed:!!resumed.rowCount,requires_requirements_recheck:true,
+  return {answered:true,task_id,note_id,analyst_resumed:!!resumed.rowCount,requires_requirements_recheck:false,
    message:'Ответ сохранён в задаче. После получения всех ответов СА продолжит работу автоматически.'};
  }
  case 'approvals.list':{
@@ -136,9 +136,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   let planning:{planning_run_id?:string;status?:string}|null=null;
   if(saved.rowCount&&iteration_id){
    await recordIterationDecision(pool,projectId,iteration_id,actorId,question,answer);
-   const scope=await pool.query('SELECT revision,approved_revision FROM project_iterations WHERE id=$1 AND project_id=$2',[iteration_id,projectId]);
-   if(scope.rows[0]?.revision===scope.rows[0]?.approved_revision)
-    planning=await queueIterationPlanning(pool,projectId,actorId,{iteration_id,request:'Перепроверь план с новым подтверждённым решением: '+question.slice(0,250)});
+   planning=await queueIterationPlanning(pool,projectId,actorId,{iteration_id,request:'Перепроверь план с новым подтверждённым решением: '+question.slice(0,250)});
   }
   return {id:saved.rows[0]?.id||null,recorded:!!saved.rowCount,iteration_id:iteration_id||null,planning_run_id:planning?.planning_run_id,status:planning?.status};
  }
@@ -346,12 +344,25 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    [randomUUID(),projectId,question.slice(0,300),question,document_id,key]);
   return {document_id,question_key:key};
  }
- case 'documentation.import':case 'documentation.rebuild':case 'documentation.organize':{
-  const data=z.object({source_url:z.string().url().max(1000).optional(),instructions:z.string().max(4000).default('')}).parse(params);
+ case 'documentation.answer_question':{
+  const {question_id,answer}=z.object({question_id:uuid,answer:z.string().trim().min(3).max(4000)}).parse(params);
+  const changed=await pool.query("UPDATE tasks SET question_status='answered',question_answer=$3,question_answered_at=now(),updated_at=now() WHERE id=$1 AND project_id=$2 AND type='question' AND question_status='open' RETURNING document_id,description",
+   [question_id,projectId,answer]);
+  if(!changed.rowCount)throw rejected('Вопрос уже обработан или не найден');
+  const question=changed.rows[0],jobId=randomUUID();
+  const input={location:null,attachments:[],mode:'documentation',documentId:question.document_id,questionId:question_id};
+  await pool.query("INSERT INTO document_import_jobs(id,project_id,actor_id,status,message,request_text,source_key,analyst_input) VALUES($1,$2,$3,'queued','Аналитик обновит ТЗ по ответу',$4,$5,$6)",
+   [jobId,projectId,actorId,'Ответ на вопрос: '+question.description+'\n\n'+answer,'po-answer:'+question_id,JSON.stringify(input)]);
+  return {import_job_id:jobId,status:'queued'};
+ }
+ case 'documentation.prepare_spec':case 'documentation.import':case 'documentation.rebuild':case 'documentation.organize':{
+  const data=z.object({source_url:z.string().url().max(1000).optional(),instructions:z.string().max(16000).default(''),document_id:uuid.optional()}).parse(params);
   const location=name==='documentation.import'?extractGitHubDocumentLocation(data.source_url||''):null;
   if(name==='documentation.import'&&!location)throw rejected('Укажи URL папки или Markdown-файла GitHub');
+  if(name==='documentation.prepare_spec'&&!data.instructions.trim())throw rejected('Нужны вводные для аналитика',400);
+  if(data.document_id&&!await parentExists(pool,projectId,data.document_id))throw rejected('Документ не найден',404);
   const jobId=randomUUID(),sourceUrl=data.source_url||null;
-  const input={location,attachments:[],mode:'documentation',documentId:null,
+  const input={location,attachments:[],mode:'documentation',documentId:data.document_id??null,
    structureOnly:name==='documentation.organize',rebuildSpec:name==='documentation.rebuild'};
   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:name+':'+jobId;
   const competing=await pool.query(
@@ -366,7 +377,17 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {import_job_id:jobId,status:'queued',kind:name};
  }
  case 'processes.list':{
-  const {task_id}=z.object({task_id:uuid.optional()}).parse(params);
+  const {task_id,process_id}=z.object({task_id:uuid.optional(),process_id:uuid.optional()}).parse(params);
+  if(process_id){
+   const test=(await pool.query('SELECT id,task_id,status,verdict,report,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND id=$2',[projectId,process_id])).rows[0];
+   if(test){
+    const names=new Map((test.qa_plan_snapshot?.cases??[]).map((item:{id:string;title:string})=>[item.id,item.title]));
+    const {qa_plan_snapshot:_,report,...run}=test;
+    return {...run,report:report?{...report,caseResults:(report.caseResults??[]).map((item:{case_id:string})=>({...item,title:names.get(item.case_id)}))}:null};
+   }
+   const events=await pool.query('SELECT stage,detail,created_at FROM process_events WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 20',[projectId,process_id]);
+   return {process_id,events:events.rows};
+  }
   const [a,b,queue,testing,reviews]=await Promise.all([
    pool.query('SELECT id,status,message,created_at,updated_at FROM document_import_jobs WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30',[projectId]),
    pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
