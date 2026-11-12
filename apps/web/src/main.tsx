@@ -17,7 +17,10 @@ import {BrowserPmVoice} from './BrowserPmVoice.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type WorkflowProfile='fast'|'standard'|'extended';
+type WorkflowProfileDetail={id:WorkflowProfile;label:string;audience:string;summary:string;steps:Array<{stage:string;owner:string;participants:readonly string[];outcome:string}>};
+type WorkflowCatalog={default_profile:WorkflowProfile;profiles:WorkflowProfileDetail[]};
+type Task={workflow_profile?:WorkflowProfile;document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -43,14 +46,15 @@ const agentRunLabels={
  documentation:{name:'Документатор',active:'Обновляется документация'}
 };
 type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[]};
-type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
+type KanbanGroupKey='analytics'|'development'|'testing'|'release'|'other';
 type KanbanLane=Pick<Stage,'stage'|'label'>;
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
 const boardLaneFor=(task:Task)=>task.stage;
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
- {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
- {key:'results',title:'Итоги',ids:['deployment','documentation','done']}
+ {key:'development',title:'Разработка',ids:['development']},
+ {key:'testing',title:'Тестирование',ids:['testing']},
+ {key:'release',title:'Выкатка',ids:['merge_queue','deployment','documentation','done']}
 ];
 
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
@@ -368,6 +372,9 @@ function App(){
  },[backgroundProcessMenuOpen]);
 
  const [tasks,setTasks]=useState<Task[]>([]);const [stages,setStages]=useState<Stage[]>([]);
+ const [workflowCatalog,setWorkflowCatalog]=useState<WorkflowCatalog>({default_profile:'standard',profiles:[]});
+ const [newTaskProfile,setNewTaskProfile]=useState<WorkflowProfile>('standard');
+ const [profileSaving,setProfileSaving]=useState(false);
  const [projectProcesses,setProjectProcesses]=useState<ProjectProcess[]>([]);
   const [diagnosticHours,setDiagnosticHours]=useState(24);
   const [diagnosticIncludeMessages,setDiagnosticIncludeMessages]=useState(false);
@@ -402,16 +409,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
  const [expandedGroups,setExpandedGroups]=useState<KanbanGroupKey[]>(()=>{
-  const all:KanbanGroupKey[]=['analytics','development','results','other'];
+  const all:KanbanGroupKey[]=['analytics','development','testing','release','other'];
   try{
    // New layout starts fully expanded, while retaining subsequent user choices.
-   const saved=localStorage.getItem('ado-kanban-groups-expanded-v3');
+   const saved=localStorage.getItem('ado-kanban-groups-expanded-v4');
    if(!saved)return all;
    const value:unknown=JSON.parse(saved);
    return Array.isArray(value)?value.filter((id):id is KanbanGroupKey=>all.includes(id as KanbanGroupKey)):all;
   }catch{return all;}
  });
- useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded-v3',JSON.stringify(expandedGroups));},[expandedGroups]);
+ useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded-v4',JSON.stringify(expandedGroups));},[expandedGroups]);
  function toggleKanbanGroup(group:KanbanGroupKey){
   setExpandedGroups(old=>old.includes(group)?old.filter(x=>x!==group):[...old,group]);
  }
@@ -750,6 +757,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function loadProject(id:string){
   try{
+   const workflowConfig=await api<WorkflowCatalog>('/projects/'+id+'/workflow/profiles');
+   setWorkflowCatalog(workflowConfig);setNewTaskProfile(workflowConfig.default_profile);
    const deployment=await api<{mode:'skip'|'manual'|'automatic';health_url:string;environment:string}>('/projects/'+id+'/deployment/settings');
    setDeploymentMode(deployment.mode);
    setDeploymentHealthUrl(deployment.health_url??'');
@@ -1010,7 +1019,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{setTaskMessages([]);setTaskInput('');setTaskImages([]);if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
- async function createTask(e:React.FormEvent){e.preventDefault();if(!selected)return;setBusy(true);try{await api('/projects/'+selected.id+'/tasks',{method:'POST',body:JSON.stringify({title:form.title,description:form.description,type:form.type,parent_id:form.parent_id||null})});await loadProject(selected.id);setShowTask(false);setForm({...form,title:'',description:'',parent_id:''});}catch(e){fail(e);}finally{setBusy(false);}}
+ async function createTask(e:React.FormEvent){e.preventDefault();if(!selected)return;setBusy(true);try{await api('/projects/'+selected.id+'/tasks',{method:'POST',body:JSON.stringify({title:form.title,description:form.description,type:form.type,parent_id:form.parent_id||null,workflow_profile:newTaskProfile})});await loadProject(selected.id);setShowTask(false);setForm({...form,title:'',description:'',parent_id:''});}catch(e){fail(e);}finally{setBusy(false);}}
  async function autoSaveField(field:'title'|'description',value:string){if(!selected||!activeTask)return;
   const taskId=activeTask.id;
   setEditingField(null);setSavingField(true);
@@ -1035,6 +1044,26 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    })});
    setDeploymentSsh(value=>({...value,privateKey:'',knownHosts:'',configured:true}));
   }catch(e){fail(e);}finally{setSshSaving(false);}
+ }
+ async function changeWorkflowDefault(profile:WorkflowProfile){
+  if(!selected||profileSaving)return;
+  setProfileSaving(true);
+  try{
+   const result=await api<WorkflowCatalog>('/projects/'+selected.id+'/workflow/profile',{
+    method:'PATCH',body:JSON.stringify({profile})
+   });
+   setWorkflowCatalog(result);
+   setNewTaskProfile(result.default_profile);
+  }catch(e){fail(e);}finally{setProfileSaving(false);}
+ }
+ async function changeTaskWorkflowProfile(task:Task,profile:WorkflowProfile){
+  if(!selected||profileSaving)return;
+  setProfileSaving(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({workflow_profile:profile})});
+   setTasks(old=>old.map(value=>value.id===task.id?{...value,workflow_profile:profile,analysis_state:value.stage==='analysis'?'new':value.analysis_state}:value));
+   setActiveTask(old=>old?.id===task.id?{...old,workflow_profile:profile,analysis_state:old.stage==='analysis'?'new':old.analysis_state}:old);
+  }catch(e){fail(e);}finally{setProfileSaving(false);}
  }
  async function saveWorkflowStage(){
   if(!selected||!workflowModal)return;
@@ -2277,6 +2306,35 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  {section==='qa'&&<QaPanel projectId={selected.id} api={api} onError={fail}/>}
  {section==='team'&&<ProjectTeam projectId={selected.id} request={api}/>}
  {section==='workflow'&&<section className="panel workflow-settings-panel">
+  <div className="workflow-profile-config">
+   <div className="row-line">
+    <div><h3>Профиль workflow</h3><p className="muted">Один процесс, разная глубина анализа и тестирования. Изменение настройки влияет только на новые задачи.</p></div>
+    <label className="workflow-profile-select">По умолчанию
+     <select aria-label="Профиль проекта по умолчанию" value={workflowCatalog.default_profile} disabled={profileSaving}
+      onChange={e=>void changeWorkflowDefault(e.target.value as WorkflowProfile)}>
+      {workflowCatalog.profiles.map(profile=><option key={profile.id} value={profile.id}>{profile.label}</option>)}
+     </select>
+    </label>
+   </div>
+   <div className="workflow-profile-cards">
+    {workflowCatalog.profiles.map(profile=><button type="button" key={profile.id}
+      className={'workflow-profile-card '+(workflowCatalog.default_profile===profile.id?'selected':'')}
+      disabled={profileSaving} onClick={()=>void changeWorkflowDefault(profile.id)}>
+      <strong>{profile.label}</strong><small>{profile.audience}</small><span>{profile.summary}</span>
+    </button>)}
+   </div>
+   <p className="muted">Во всех профилях сохраняются обязательные анализ, ревью, CI, QA и защищённое слияние PR. При ошибках QA — возврат в разработку.</p>
+   <details className="workflow-profile-roles">
+    <summary>Роли и результаты этапов · {workflowCatalog.profiles.find(profile=>profile.id===workflowCatalog.default_profile)?.label||'Стандартный'}</summary>
+    <div className="workflow-profile-roles-list">
+     {workflowCatalog.profiles.find(profile=>profile.id===workflowCatalog.default_profile)?.steps.map(step=><div className="workflow-profile-role" key={step.stage}>
+      <strong>{stages.find(stage=>stage.stage===step.stage)?.label||step.stage}</strong>
+      <span>{workflowRoleLabels[step.owner]||step.owner}{step.participants.length?' · участие: '+step.participants.map(role=>workflowRoleLabels[role]||role).join(', '):''}</span>
+      <small>{step.outcome}</small>
+     </div>)}
+    </div>
+   </details>
+  </div>
   <div className="row-line">
    <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы посмотреть его назначение или настроить агента.</p></div>
    <span className="workflow-key"><span className="workflow-key-line"/> Переходы</span>
@@ -2525,7 +2583,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
  </div>}
  {showProject&&<div className="overlay" onMouseDown={()=>setShowProject(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createProject}><div className="modal-heading"><h2>Новый проект</h2><button type="button" onClick={()=>setShowProject(false)}><X/></button></div><label>Название<input required value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label><label>Описание<textarea value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowProject(false)}>Отмена</button><button className="primary" disabled={busy}>Создать</button></footer></form></div>}
- {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.filter(t=>t.type!=='question').map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
+ {showTask&&<div className="overlay" onMouseDown={()=>setShowTask(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={createTask}><div className="modal-heading"><h2>Новая задача</h2><button type="button" onClick={()=>setShowTask(false)}><X/></button></div><label>Название<input required value={form.title} onChange={e=>setForm({...form,title:e.target.value})}/></label><label>Тип<select value={form.type} onChange={e=>setForm({...form,type:e.target.value})}><option value="task">Задача</option><option value="bug">Ошибка</option><option value="improvement">Улучшение</option><option value="epic">Эпик</option></select></label><label>Родительская задача<select value={form.parent_id} onChange={e=>setForm({...form,parent_id:e.target.value})}><option value="">Нет</option>{tasks.filter(t=>t.type!=='question').map(t=><option key={t.id} value={t.id}>{t.title}</option>)}</select></label><label>Описание<textarea rows={5} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label><label>Профиль workflow
+  <select value={newTaskProfile} onChange={e=>setNewTaskProfile(e.target.value as WorkflowProfile)}>
+   {workflowCatalog.profiles.map(profile=><option key={profile.id} value={profile.id}>{profile.label} · {profile.audience}</option>)}
+  </select></label><footer><button type="button" className="secondary" onClick={()=>setShowTask(false)}>Отмена</button><button className="primary" disabled={busy}>Создать задачу</button></footer></form></div>}
  {activeTask&&<div className="overlay task-modal-overlay" onMouseDown={()=>{if(!editingField&&selected)navigate(projectUrl(selected.id,'tasks'));}}>
   <div className="dialog task-dialog task-dialog-wide" role="dialog" aria-modal="true" aria-label={'Задача #'+activeTask.display_number+': '+activeTask.title} onMouseDown={e=>e.stopPropagation()}>
    <div className="task-modal-top">
@@ -2560,7 +2621,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <><h2>{activeTask.title}</h2><button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
      </div>
      {savingField&&<small className="muted">Сохранение…</small>}
-     <div className="task-top-meta"><span className="task-meta-heading">Теги</span>{activeTask.tags?.length?<div className="task-top-tags">{activeTask.tags.map(tag=><span key={tag}>{tag}</span>)}</div>:<small className="muted">Без тегов</small>}<label className="task-priority-select">Приоритет<select value={activeTask.priority??3} onChange={e=>void updateTaskPriority(activeTask,Number(e.target.value))}>{[1,2,3,4,5].map(n=><option value={n} key={n}>{n} · {n===1?'Критический':n===2?'Высокий':n===3?'Обычный':n===4?'Низкий':'Минимальный'}</option>)}</select></label></div>
+     <div className="task-top-meta"><span className="task-meta-heading">Теги</span>{activeTask.tags?.length?<div className="task-top-tags">{activeTask.tags.map(tag=><span key={tag}>{tag}</span>)}</div>:<small className="muted">Без тегов</small>}<label className="task-priority-select">Приоритет<select value={activeTask.priority??3} onChange={e=>void updateTaskPriority(activeTask,Number(e.target.value))}>{[1,2,3,4,5].map(n=><option value={n} key={n}>{n} · {n===1?'Критический':n===2?'Высокий':n===3?'Обычный':n===4?'Низкий':'Минимальный'}</option>)}</select></label>
+      <label className="task-priority-select">Профиль<select value={activeTask.workflow_profile||'standard'}
+       disabled={profileSaving||!['backlog','analysis'].includes(activeTask.stage)||activeTask.analysis_state==='processing'||!!activeTask.pr_url||!!activeTask.git_branch}
+       onChange={e=>void changeTaskWorkflowProfile(activeTask,e.target.value as WorkflowProfile)}>
+       {workflowCatalog.profiles.map(profile=><option key={profile.id} value={profile.id}>{profile.label}</option>)}
+      </select></label></div>
      <div className="task-editable task-description-editable">
       <div className="task-field-label">Описание / техническое задание</div>
       {editingField==='description'?
