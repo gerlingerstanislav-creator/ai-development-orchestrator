@@ -121,8 +121,8 @@ async function run(s,body){
  if(action==='screenshot'){
   const evidence=join(s.root,'.ado-qa-evidence');
   await mkdir(evidence,{recursive:true,mode:0o700});
-  const filename=randomUUID()+'.png';
-  await page.screenshot({path:join(evidence,filename),fullPage:true,timeout:20000});
+  const filename=randomUUID()+'.jpg';
+  await page.screenshot({path:join(evidence,filename),type:'jpeg',quality:68,fullPage:false,timeout:20000});
   return {ok:true,screenshot:'.ado-qa-evidence/'+filename,viewport:page.viewportSize()};
  }
  if(action==='assert'){
