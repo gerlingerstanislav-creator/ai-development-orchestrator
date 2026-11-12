@@ -442,7 +442,7 @@ async function runJob(job,state,context){
     if(!diff)throw Error('Ветка отличается от базовой, но изменений для PR не обнаружено');
     const rework=String(job.reworkFeedback||'').trim();
     if(rework){
-     const tracked=(await git('ls-files')).stdout.split(/\\r?\\n/).filter(Boolean);
+     const tracked=(await git('ls-files')).stdout.split(/\r?\n/).filter(Boolean);
      const review=parseNoChangesNeeded(attempt.answer||'',{headSha:head,trackedFiles:tracked});
      if(!review)return false; // Ask the developer to explain the no-change decision.
      assertJobActive(job.id);
