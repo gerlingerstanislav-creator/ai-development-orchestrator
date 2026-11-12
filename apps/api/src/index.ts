@@ -4,6 +4,7 @@ import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-st
 import {formatQaReportMessage,qaEventDetail} from './qa-report-message.js';
 import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
+import {WORKFLOW_PRESETS,DEFAULT_WORKFLOW_PRESET,WORKFLOW_STAGE_SEQUENCE} from './workflow-presets.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
 import Fastify from 'fastify';
@@ -107,6 +108,8 @@ async function dbInit() {
  CREATE TABLE IF NOT EXISTS projects (id uuid primary key, name text not null, description text not null default '', owner_id uuid not null references users(id), created_at timestamptz not null default now());
  ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
  CREATE INDEX IF NOT EXISTS idx_projects_owner_trash ON projects(owner_id,deleted_at,created_at DESC);
+ ALTER TABLE projects ADD COLUMN IF NOT EXISTS workflow_profile text NOT NULL DEFAULT 'standard';
+ UPDATE projects SET workflow_profile='standard' WHERE workflow_profile NOT IN ('fast','standard','extended');
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
  ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS agent_name text NOT NULL DEFAULT '';
@@ -1191,6 +1194,21 @@ app.post('/api/projects/:id/tasks/:taskId/deployment/resolve',async(req:any,repl
   await client.query('COMMIT');
   return {stage:'documentation',deployment_status:outcome};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+});
+app.get('/api/projects/:id/workflow/profile',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const row=await pool.query('SELECT workflow_profile FROM projects WHERE id=$1',[id]);
+ if(!row.rowCount)return reply.code(404).send({error:'Проект не найден'});
+ return {selected:row.rows[0].workflow_profile||DEFAULT_WORKFLOW_PRESET,profiles:WORKFLOW_PRESETS,stage_sequence:WORKFLOW_STAGE_SEQUENCE};
+});
+app.put('/api/projects/:id/workflow/profile',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {profile}=parse(z.object({profile:z.enum(['fast','standard','extended'])}),req.body);
+ const current=await pool.query('UPDATE projects SET workflow_profile=$2 WHERE id=$1 RETURNING workflow_profile',[id,profile]);
+ if(!current.rowCount)return reply.code(404).send({error:'Проект не найден'});
+ return {selected:current.rows[0].workflow_profile,profiles:WORKFLOW_PRESETS,stage_sequence:WORKFLOW_STAGE_SEQUENCE};
 });
 app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position,agent_name,agent_instructions,description FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)}));});
 app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
