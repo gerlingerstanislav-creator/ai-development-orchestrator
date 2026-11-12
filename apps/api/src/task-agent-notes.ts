@@ -35,7 +35,7 @@ export async function recordTaskAgentNote(pool:Pool,note:AgentNoteInput){
 }
 
 export async function pendingAgentQuestions(pool:Pick<Pool,'query'>,projectId:string,taskId:string):Promise<number>{
- const r=await pool.query("SELECT count(*)::int AS count FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND (target_stage='all' OR requires_customer)",[projectId,taskId]);
+ const r=await pool.query(`SELECT count(*)::int AS count FROM task_agent_notes n WHERE n.project_id=$1 AND n.task_id=$2 AND ${PENDING_OWNER_QUESTION_SQL}`,[projectId,taskId]);
  return r.rows[0].count;
 }
 
