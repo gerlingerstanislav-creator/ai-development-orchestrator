@@ -98,9 +98,14 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:development.message,stage:'development'});
    return 'development_failed';
   }
-  let quality;
+  // The developer may prove that implementation already exists on the target
+  // branch. An empty PR is impossible; independently run QA on that pinned SHA.
+  // Old workflows keep their prior deterministic history on replay.
+  const reusedBase=patched('goal-driven-developer-v1')&&await steps.developmentVerificationSource({projectId:input.projectId,taskId:input.taskId})==='already_implemented';
+  let quality:{passed:boolean;message:string};
   await waitForProjectAgents({projectId:input.projectId});
-  try{quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId});}
+  if(reusedBase)quality={passed:true,message:'Код уже находится в базовой ветке; обязательный QA проверит его SHA'};
+  else try{quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId});}
   catch(error){
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Не удалось выполнить собственный CI/ревью: '+String(error),stage:'quality_gates'});
    return 'quality_gates_blocked';
@@ -174,7 +179,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
   }
   if(testing.verdict==='passed'){
    await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId,...(simplified?{simplified}: {})});
-   return 'ready_to_merge';
+   return reusedBase?'already_implemented_verified':'ready_to_merge';
   }
   const next=await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,testId,attempt,allowFix:attempt<input.maxFixes});
   if(!next)return 'manual_intervention';
@@ -189,11 +194,14 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
  await waitForProjectAgents({projectId:input.projectId});
  try {
- const quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});
- if(!quality.passed){
-  await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,
-   message:'Собственный CI / ревью архитектора: '+quality.message,stage:'quality_gates'});
-  return 'quality_gates_failed';
+ const reusedBase=patched('goal-driven-manual-qa-v1')&&await steps.developmentVerificationSource({projectId:input.projectId,taskId:input.taskId})==='already_implemented';
+ if(!reusedBase){
+  const quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});
+  if(!quality.passed){
+   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,
+    message:'Собственный CI / ревью архитектора: '+quality.message,stage:'quality_gates'});
+   return 'quality_gates_failed';
+  }
  }
  const simplified=patched('simplified-manual-testing');
  if(!simplified&&!patched('skip-post-implementation-requirements-gate-v1')){
@@ -240,7 +248,7 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
  }
  if(testing.verdict==='passed'){
   await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId,...(simplified?{simplified}: {})});
-  return 'ready_to_merge';
+  return reusedBase?'already_implemented_verified':'ready_to_merge';
  }
  await steps.rejectTestedTask({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,testId,attempt:0,allowFix:false});
  return 'manual_intervention';
