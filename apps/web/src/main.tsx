@@ -2066,7 +2066,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return <section key={group.key} className={'kanban-group '+(expanded?'is-expanded':'is-collapsed')} style={{['--kanban-stage-count' as string]:group.stages.length} as React.CSSProperties}>
    <button className="kanban-group-heading" type="button" aria-expanded={expanded} onClick={()=>toggleKanbanGroup(group.key)}
     title={expanded?'Свернуть этапы':'Развернуть этапы'}><span className="group-mark"/>
-    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.filter(stage=>stage.stage!==productOwnerLane.stage).length} эт.</span><span className="group-task-count">{count}</span>
+    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.length} эт.</span><span className="group-task-count">{count}</span>
     <ChevronDown size={16} className={'group-chevron '+(expanded?'expanded':'')}/>
    </button>
    {expanded?<div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage))}</div>:renderCollapsedGroup(group)}
