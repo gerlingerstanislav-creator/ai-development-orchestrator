@@ -828,8 +828,11 @@ async function runDeterministicCiJob(job,state){
   const makefileName=files.find(file=>['Makefile','GNUmakefile','makefile'].includes(file));
   const makefile=makefileName?await readFile(join(dir,makefileName),'utf8').catch(()=> ''):'';
   const discovery=discoverProjectCi(files,makefile);
-  if(discovery.makeTest){executed++;await run('make test',['make','test'],360000);}
-  else if(discovery.pytest){executed++;await run('python tests',['python3','-m','pytest','-q'],360000);}
+  // Prefer the existing pytest suite when both pytest and Makefile exist:
+  // it needs no extra tools and avoids a false CI rejection due to a missing
+  // make binary in minimal Runner images.
+  if(discovery.pytest){executed++;await run('python tests',['python3','-m','pytest','-q'],360000);}
+  else if(discovery.makeTest){executed++;await run('make test',['make','test'],360000);}
   if(!executed){
    // Absence of a test runner is a capability/configuration gap, NOT an
    // application defect. Never send the same PR back to the developer
