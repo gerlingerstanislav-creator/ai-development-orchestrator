@@ -29,7 +29,7 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
   await client.query(`INSERT INTO agent_peer_queue(note_id,project_id,task_id,role)
    SELECT n.id,n.project_id,n.task_id,CASE WHEN n.target_stage='all' THEN 'manager' ELSE n.target_stage END FROM task_agent_notes n
    WHERE n.kind='question' AND n.source_kind='agent' AND n.status='open'
-    AND NOT n.requires_customer AND n.target_stage IN ('analysis','development','testing','documentation','deployment','analyst','all')
+    AND NOT n.requires_customer AND n.target_stage IN ('analysis','development','testing','documentation','deployment','analyst','architect','devops','all')
    ON CONFLICT(note_id) DO NOTHING`);
   await client.query(`UPDATE agent_peer_queue q SET status='completed',updated_at=now()
    FROM task_agent_notes n WHERE q.note_id=n.id AND n.status='answered' AND q.status<>'completed'`);
