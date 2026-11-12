@@ -25,6 +25,13 @@ export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>
    END IF;
    IF COALESCE(jsonb_array_length(NEW.clarification_questions),0)>0
     OR EXISTS (
+     SELECT 1 FROM tasks sibling WHERE sibling.project_id=NEW.project_id
+      AND NEW.parent_id IS NOT NULL AND sibling.parent_id=NEW.parent_id
+      AND sibling.id<>NEW.id AND sibling.type IN ('task','bug','improvement')
+      AND sibling.stage IN ('backlog','analysis')
+      AND sibling.analysis_state NOT IN ('ready_for_development','approved')
+    )
+    OR EXISTS (
      SELECT 1 FROM task_agent_notes n
      JOIN tasks other ON other.id=n.task_id
      WHERE other.project_id=NEW.project_id
@@ -37,6 +44,12 @@ export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>
   RETURN NEW;
  END;
  $$ LANGUAGE plpgsql;
+ -- Legacy planner-ready cards without an analyst outcome must be re-analysed.
+ UPDATE tasks t SET analysis_state='new',updated_at=now()
+ WHERE t.type IN ('task','bug','improvement') AND t.stage='analysis'
+  AND t.analysis_state='ready_for_development'
+  AND NOT EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event='analysis_completed')
+  AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status='completed');
  DROP TRIGGER IF EXISTS trg_ado_analysis_first_guard ON tasks;
  CREATE TRIGGER trg_ado_analysis_first_guard
  BEFORE INSERT OR UPDATE OF stage,analysis_state ON tasks
