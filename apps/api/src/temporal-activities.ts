@@ -759,16 +759,16 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
  try{
   await client.query('BEGIN');
   const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' RETURNING id",
-   [taskId,projectId,msg,args.simplified?'merge_queue':'testing']);
+   [taskId,projectId,msg,'testing']);
   if(updated.rowCount){
    await client.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_tools_unavailable',msg]);
    await client.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level) VALUES($1,$2,$3,'testing',$4,$5,'warning')",
-    [randomUUID(),projectId,testId,args.simplified?'partial':'awaiting_manual_qa_decision',msg]);
+    [randomUUID(),projectId,testId,'awaiting_manual_qa_decision',msg]);
   }
   await client.query('COMMIT');
   if(!updated.rowCount)return;
  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
- if(!args.simplified)await syncManagerInbox(pool,projectId,taskId);
+ await syncManagerInbox(pool,projectId,taskId);
 }
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
