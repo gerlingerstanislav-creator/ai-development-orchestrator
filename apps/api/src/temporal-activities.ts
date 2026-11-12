@@ -710,7 +710,8 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   if(staleSpecification)verdict='blocked';
   const ran=checked.filter(c=>c.result==='passed'||c.result==='failed').length;
   const outcome=singlePass&&status==='completed'?'Проверено '+ran+' из '+cases.length+'.':message;
-  const report={summary:remote.summary||outcome,...(singlePass?{executionVerified:remote.executionVerified===true}:{}),findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
+  const screenshots=Array.isArray(remote.screenshots)?remote.screenshots.filter((s:any)=>s?.mime==='image/jpeg'&&typeof s.data==='string'&&s.data.length<=250000&&/^[A-Za-z0-9+/=]+$/.test(s.data)).slice(0,3):[];
+  const report={screenshots,summary:remote.summary||outcome,...(singlePass?{executionVerified:remote.executionVerified===true}:{}),findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
