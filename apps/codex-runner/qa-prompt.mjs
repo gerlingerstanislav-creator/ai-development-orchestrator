@@ -23,7 +23,7 @@ export function buildQaPrompt(job,{singlePass=false,adHoc=false,browserAvailable
   'Справочник команд и ограничений: .ado-qa-tools.md — читай только нужные разделы.',
   'Запись подтверждений: node /opt/codex-runner/qa-exec.mjs case CASE_ID -- КОМАНДА.',
   browserAvailable
-   ?'Визуальные проверки: node /opt/codex-runner/browser-client.mjs start; node /opt/codex-runner/browser-client.mjs inspect; затем assert --case CASE_ID "JS-условие" для каждого визуального критерия.'
+   ?'Визуальные проверки: node /opt/codex-runner/browser-client.mjs start; node /opt/codex-runner/browser-client.mjs inspect; затем node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "JS-условие" для каждого визуального критерия.'
    :'Браузерный сервис недоступен. Не объявляй визуальные проверки успешными.',
   'План: .ado-qa-plan.json; схема ответа проверяется самим Runner.'
  ].join('\n');
