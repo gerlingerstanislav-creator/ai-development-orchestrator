@@ -37,7 +37,7 @@ export function startQaBrowserGateway(){
    for await(const part of req){raw+=part.toString();if(raw.length>12000)throw Error('Request too large');}
    const body=JSON.parse(raw),session=sessions.get(body.session);
    if(!session||!equal(session.token,body.token))return reply(res,403,{ok:false,error:'Session expired'});
-   if(!['start','close','goto','viewport','click','fill','count','text','screenshot','assert'].includes(body.action))
+   if(!['start','close','restart','goto','viewport','click','fill','count','text','screenshot','assert'].includes(body.action))
     return reply(res,400,{ok:false,error:'Unsupported browser operation'});
    const kind=String(body.qaKind||''),id=String(body.qaId||'');
    if(kind||id){
@@ -45,7 +45,7 @@ export function startQaBrowserGateway(){
      return reply(res,400,{ok:false,error:'Invalid QA assertion identity'});
    }
    const remote=await fetch(upstream+'/action',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body),signal:AbortSignal.timeout(35000)});
+    body:JSON.stringify(body),signal:AbortSignal.timeout(body.action==='start'?85000:35000)});
    const data=await remote.json();
    if(body.action==='assert'&&kind&&['passed','failed'].includes(data.assertion)&&session.assertions.length<200){
     session.assertions.push({kind,id,result:data.assertion,expression:String(body.expression||'').slice(0,1800),

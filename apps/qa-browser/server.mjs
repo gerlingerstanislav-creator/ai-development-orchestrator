@@ -2,7 +2,7 @@
 // an internal Docker network with no Docker socket, application secrets or egress.
 import http from 'node:http';
 import {spawn} from 'node:child_process';
-import {readFile,stat,realpath,mkdir} from 'node:fs/promises';
+import {readFile,stat,realpath,mkdir,readdir} from 'node:fs/promises';
 import {join,resolve,extname,sep} from 'node:path';
 import {randomUUID,timingSafeEqual} from 'node:crypto';
 import {chromium} from 'playwright';
@@ -26,7 +26,11 @@ async function staticServer(folder){
    if(target!==folder&&!target.startsWith(folder+sep)){res.writeHead(403);res.end();return;}
    let file=target;
    if((await stat(file).catch(()=>null))?.isDirectory())file=join(file,'index.html');
-   if(!await exists(file))file=join(folder,'index.html'); // SPA client routing
+   if(!await exists(file)){
+    const fallback=join(folder,'index.html');
+    if(!await exists(fallback)){res.writeHead(404);res.end('Not found');return;}
+    file=fallback; // SPA client routing only when an index really exists
+   }
    const canonical=await realpath(file);
    if(canonical!==folder&&!canonical.startsWith(folder+sep)){res.writeHead(403);res.end();return;}
    const data=await readFile(canonical);
@@ -44,6 +48,17 @@ async function portNumber(){
  await new Promise(resolve=>server.close(resolve));
  return port;
 }
+async function htmlEntry(folder){
+ const pages=(await readdir(folder,{withFileTypes:true})).filter(entry=>entry.isFile()&&/\.html?$/i.test(entry.name))
+  .map(entry=>entry.name).sort();
+ return {pages,entry:pages.includes('index.html')?'/':pages.length?'/'+encodeURIComponent(pages[0]):'/'};
+}
+function localPagePath(path){
+ const value=String(path||'/');
+ if(!value.startsWith('/')||value.startsWith('//')||value.includes('\\')||value.includes('\0'))
+  throw Error('Only local application paths are allowed');
+ return value;
+}
 async function application(session){
  const root=session.root;
  const packageFile=join(root,'package.json');
@@ -51,7 +66,10 @@ async function application(session){
  const dist=['dist','build','apps/web/dist','out'].map(p=>join(root,p));
  let built=null;
  for(const p of dist)if(await exists(join(p,'index.html'))){built=p;break;}
- if(pkg?.scripts?.dev&&await exists(join(root,'node_modules'))){
+ // Prefer an already built application; standalone HTML projects need no index.html.
+ const folder=built||root;
+ const {pages,entry}=await htmlEntry(folder);
+ if(!built&&pkg?.scripts?.dev&&await exists(join(root,'node_modules'))){
   const port=await portNumber();
   const vite=/\bvite\b/.test(pkg.scripts.dev);
   const argv=['run','dev',...(vite?['--','--host','127.0.0.1','--port',String(port),'--strictPort']:[])];
@@ -59,17 +77,16 @@ async function application(session){
   session.proc=proc;
   for(let i=0;i<60;i++){
    if(proc.exitCode!==null)break;
-   try{const r=await fetch('http://127.0.0.1:'+port+'/',{signal:AbortSignal.timeout(750)});if(r.status<500)return port;}catch{}
+   try{const r=await fetch('http://127.0.0.1:'+port+entry,{signal:AbortSignal.timeout(750)});if(r.status<500)return {port,entry,pages};}catch{}
    await new Promise(r=>setTimeout(r,250));
   }
   proc.kill('SIGTERM');session.proc=null;
   if(!built)throw Error('Dev server did not start; run npm install and npm run build in QA workspace');
  }
- const folder=built||(await exists(join(root,'index.html'))?root:null);
- if(!folder)throw Error('No browser-ready index.html found; build the application first');
+ if(!pages.length)throw Error('No browser-ready HTML entry point found; build the application or provide an HTML page');
  const app=await staticServer(folder);
  session.server=app.server;
- return app.port;
+ return {port:app.port,entry,pages};
 }
 async function prepare(id,token){
  if(!idPattern.test(id))throw Error('Invalid QA session');
@@ -109,26 +126,50 @@ const staleSessionTimer=setInterval(()=>{
 staleSessionTimer.unref();
 async function run(s,body){
  const action=body.action;
- if(action==='close'){await stop(s);return {ok:true};}
+ if(action==='close'||action==='restart'){
+  await stop(s);
+  return {ok:true,restartable:action==='restart'};
+ }
  if(action==='start'){
-  if(s.page)return {ok:true,message:'Browser already started'};
-  const port=await application(s);
-  s.browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage']});
-  s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
-  s.page=await s.context.newPage();
-  s.origin='http://127.0.0.1:'+port;
-  await s.page.goto(s.origin+'/',{waitUntil:'domcontentloaded',timeout:20000});
-  return {ok:true,origin:'local QA application',title:await s.page.title(),browser:'Chromium / Playwright'};
+  if(s.page)return {ok:true,message:'Browser already started',path:s.path};
+  try{
+   const {port,entry,pages}=await application(s);
+   const path=localPagePath(body.path||entry);
+   s.origin='http://127.0.0.1:'+port;
+   // Verify the application HTTP endpoint before starting Chromium, so a
+   // Vite/static-server failure is distinguishable from a browser failure.
+   const response=await fetch(s.origin+path,{signal:AbortSignal.timeout(7000)});
+   if(!response.ok)throw Error('Local application HTTP '+response.status+' at '+path);
+   s.browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server']});
+   s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
+   s.page=await s.context.newPage();
+   // DOMContentLoaded may be indefinitely delayed by third-party scripts
+   // (Chromium is deliberately offline). A committed local navigation is
+   // sufficient to begin real DOM assertions; never fake their result.
+   const navigation=await s.page.goto(s.origin+path,{waitUntil:'commit',timeout:12000});
+   // Give local DOM time to settle without blocking on offline CDN scripts.
+   await s.page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
+   if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
+   s.path=path;
+   return {ok:true,origin:'local QA application',path,availablePages:pages,
+    readyState:await s.page.evaluate(()=>document.readyState),
+    title:await s.page.title(),browser:'Chromium / Playwright'};
+  }catch(error){
+   await stop(s);
+   throw Error('QA browser start failed: '+String(error.message||error));
+  }
  }
  if(!s.page)throw Error('Start QA browser first: browser-client.mjs start');
  const page=s.page;
  const selector=String(body.selector||'').slice(0,500);
  const timeout=7000;
  if(action==='goto'){
-  const path=String(body.path||'/');
-  if(!path.startsWith('/')||path.startsWith('//')||path.includes('\\'))throw Error('Only local application paths are allowed');
-  await page.goto(s.origin+path,{waitUntil:'domcontentloaded',timeout:20000});
-  return {ok:true,title:await page.title(),path};
+  const path=localPagePath(body.path||'/');
+  const navigation=await page.goto(s.origin+path,{waitUntil:'commit',timeout:12000});
+  await page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
+  if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
+  s.path=path;
+  return {ok:true,title:await page.title(),path,readyState:await page.evaluate(()=>document.readyState)};
  }
  if(action==='viewport'){
   const width=Number(body.width),height=Number(body.height);
@@ -160,7 +201,7 @@ const server=http.createServer(async(req,res)=>{
  try{
   if(req.method==='GET'&&req.url==='/health'){
    // Exercise Chromium; an installed binary without a launchable browser is not healthy.
-   const b=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage'],timeout:12000});
+   const b=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server'],timeout:12000});
    await b.close();return send(res,200,{ok:true,browser:'chromium'});
   }
   if(req.method!=='POST'||req.url!=='/action'||req.headers['content-type']!=='application/json')return send(res,404,{error:'Not found'});

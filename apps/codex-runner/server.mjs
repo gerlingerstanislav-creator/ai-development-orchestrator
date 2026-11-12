@@ -553,8 +553,9 @@ async function runTestJob(job,state,context){
   });
   const browserAvailable=await browserHealth();
   const capabilities=(probe.stdout.trim()+'\nqa_browser: '+(browserAvailable?'playwright chromium available':'unavailable')).slice(0,2500);
+  let browserSession=null;
   if(browserAvailable){
-   const browserSession=openQaBrowserSession(qaBrowserSessionId,(job.testPlan?.cases||[]).map(test=>test.id),{adHoc});
+   browserSession=openQaBrowserSession(qaBrowserSessionId,(job.testPlan?.cases||[]).map(test=>test.id),{adHoc});
    await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
   }
   state.capabilities=capabilities;
@@ -580,6 +581,32 @@ async function runTestJob(job,state,context){
     }
    }
   }
+  // For standalone HTML (including pages without index.html), prove the real
+  // browser can open the application before asking the model to test it.
+  // Rich frontend projects may need npm install/build, so leave their setup
+  // to the QA agent and let it start Chromium after preparing dependencies.
+  let browserStartupEvidence='';
+  if(browserSession&&tracked.some(name=>/\.html?$/i.test(name))){
+   const pkg=tracked.includes('package.json')
+    ?await readFile(join(dir,'package.json'),'utf8').then(JSON.parse).catch(()=>null):null;
+   if(!pkg?.scripts?.dev&&!pkg?.scripts?.build){
+    state.message='Открывает HTML-страницу в настоящем Chromium';
+    try{
+     const started=await fetch('http://127.0.0.1:4311/action',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({...browserSession,action:'start'}),
+      signal:AbortSignal.timeout(85000)
+     });
+     const report=await started.json();
+     browserStartupEvidence=started.ok&&report.ok
+      ?'Runner открыл страницу '+String(report.path||'/')+' через реальный Chromium; readyState='+String(report.readyState||'unknown')+'.'
+      :'Начальная загрузка Chromium не удалась: '+String(report.error||started.status).slice(0,900)+'. QA может подготовить среду и повторить start.';
+    }catch(error){
+     browserStartupEvidence='Начальная загрузка Chromium не удалась: '+String(error.message||error).slice(0,900)+'. QA может повторить start.';
+    }
+    state.browserStartup=browserStartupEvidence;
+   }
+  }
   // Keep complete case data in the isolated workspace instead of embedding a huge JSON in the prompt.
   await writeFile(join(dir,'.ado-qa-plan.json'),JSON.stringify(job.testPlan||{}),{mode:0o600});
   const prompt=[
@@ -601,7 +628,7 @@ async function runTestJob(job,state,context){
    'Проверяй текущий PR и ранее слитую регрессию. Не требуй уже готового бота, прогноза или пользовательского пути от отдельного Python-модуля, если они реализуются другими незавершёнными задачами.',
    'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
    'ВАЖНО: сетевой proxy Codex сбрасывает NO_PROXY для каждой sandbox-команды. Если Node.js fetch, Playwright или тесты обращаются к локальному HTTP-серверу, запускай клиентскую команду с явными NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 (например: env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test). Это исключает только localhost из прокси; произвольные внешние хосты по-прежнему запрещены.',
-   browserAvailable?'Playwright Chromium ДОСТУПЕН через отдельный защищённый контейнер. Запусти node /opt/codex-runner/browser-client.mjs start, затем для КАЖДОГО проверяемого визуального тест-кейса выполни node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "выражение JS, возвращающее true при выполнении ожидаемого результата". CASE_ID должен ТОЧНО совпадать с case_id из .ado-qa-plan.json. Допустимы дополнительные assert для одного кейса, viewport WIDTH HEIGHT, goto /, click CSS_SELECTOR, fill CSS_SELECTOR VALUE, screenshot. Для дополнительных проверок применяй assert --check CHECK_ID и указывай evidenceId=CHECK_ID в checks. Браузерное подтверждение автоматически сохраняется на стороне Runner и не зависит от текста command. Для отзывчивой вёрстки используй типовые мобильные и десктопные viewport; если в ТЗ нет конкретных размеров, НЕ объявляй их отсутствие нехваткой инструмента или блокером, проверяй отсутствие выхода элементов за границы экрана на репрезентативных ширинах. Отсутствие утверждённого макета само по себе не делает функциональные критерии непроверяемыми: не выдумывай требования о точном расположении. После установки зависимостей или сборки повтори start. Браузер не имеет доступа к интернету или Docker. Не засчитывай скриншот без проверяемого утверждения.':'Браузерный сервис недоступен — браузерные кейсы должны получить blocked/tool_unavailable; не устанавливай Chromium в sandbox.',
+   browserAvailable?'Playwright Chromium ДОСТУПЕН через отдельный защищённый контейнер. '+browserStartupEvidence+' Сначала открой страницу: node /opt/codex-runner/browser-client.mjs start (по умолчанию index.html или первая HTML-страница) либо start /lines.html, если в задаче явно указан файл lines.html. Проверь поле path в ответе. Затем для КАЖДОГО проверяемого визуального тест-кейса выполни node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "выражение JS, возвращающее true при выполнении ожидаемого результата". CASE_ID должен ТОЧНО совпадать с case_id из .ado-qa-plan.json. Допустимы дополнительные assert для одного кейса, viewport WIDTH HEIGHT, goto /имя-страницы.html, click CSS_SELECTOR, fill CSS_SELECTOR VALUE, screenshot. Для дополнительных проверок применяй assert --check CHECK_ID и указывай evidenceId=CHECK_ID в checks. Браузерное подтверждение автоматически сохраняется на стороне Runner и не зависит от текста command. Для отзывчивой вёрстки используй типовые мобильные и десктопные viewport; если в ТЗ нет конкретных размеров, НЕ объявляй их отсутствие нехваткой инструмента или блокером, проверяй отсутствие выхода элементов за границы экрана на репрезентативных ширинах. Отсутствие утверждённого макета само по себе не делает функциональные критерии непроверяемыми: не выдумывай требования о точном расположении. После установки зависимостей или сборки выполни browser-client.mjs restart, затем start, чтобы браузерный хост заново выбрал собранную страницу. Браузер не имеет доступа к интернету или Docker. Не засчитывай скриншот без проверяемого утверждения.':'Браузерный сервис недоступен — браузерные кейсы должны получить blocked/tool_unavailable; не устанавливай Chromium в sandbox.',
    'Тестовая среда не имеет доступа к Docker-сокету, секретам приложения, внутренним сервисам платформы или произвольному интернету. Все команды выполняются в изоляции.',
    'Сбой Codex CLI — не доказательство отсутствия инструментов и не основание автоматически разрешать пропуск проверок.',
    'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
