@@ -665,7 +665,8 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
- if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
+ const reusedBase=task.implementation_kind==='already_implemented'&&!!task.implementation_commit;
+ if(!reusedBase&&(!task.pr_url||!task.git_branch))throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  if(!existing.rowCount){
   const storedPlan=await readQaPlan(pool,projectId,taskId);
@@ -679,25 +680,36 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   }
   const snapshot={...(testPlan??{cases:[]}),...(args.simplified?{simplified:true}:{}),...(args.singlePass?{singlePass:true,adHoc:!testPlan}:{})};
   let commit=task.spec_reviewed_commit;
-  if(args.singlePass){
-   const pr=await fetch('https://api.github.com/repos/'+repo.repository+'/pulls/'+task.pr_number,{
+  if(args.singlePass||reusedBase){
+   const branch=task.pr_base_branch||repo.target_branch||repo.default_branch;
+   const url=reusedBase?'/branches/'+encodeURIComponent(branch):'/pulls/'+task.pr_number;
+   const response=await fetch('https://api.github.com/repos/'+repo.repository+url,{
     headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
     signal:AbortSignal.timeout(20000)
    });
-   if(!pr.ok)throw Error('Не удалось прочитать PR перед QA: GitHub HTTP '+pr.status);
-   const head=await pr.json() as any;
-   if(head.state!=='open'||head.head?.ref!==task.git_branch||!/^[0-9a-f]{40}$/i.test(String(head.head?.sha||'')))
-    throw ApplicationFailure.nonRetryable('Не удалось подтвердить открытую ветку PR для QA');
-   commit=head.head.sha;
+   if(!response.ok)throw Error('GitHub не подтвердил исходный код перед QA: HTTP '+response.status);
+   const source=await response.json() as any;
+   if(reusedBase){
+    commit=String(source.commit?.sha||'');
+    if(!/^[0-9a-f]{40}$/i.test(commit)||commit!==task.implementation_commit)
+     throw ApplicationFailure.nonRetryable('Целевая ветка изменилась после подтверждения реализации; требуется повторный анализ');
+   }else{
+    if(source.state!=='open'||source.head?.ref!==task.git_branch||!/^[0-9a-f]{40}$/i.test(String(source.head?.sha||'')))
+     throw ApplicationFailure.nonRetryable('Не удалось подтвердить открытый PR для QA');
+    commit=source.head.sha;
+   }
   }else if(task.spec_review_status!=='current'||task.spec_reviewed_version!==task.spec_version){
    throw ApplicationFailure.nonRetryable('ТЗ изменилось: требуется повторная сверка аналитиком');
   }
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
-   if(args.singlePass){
-    const pinned=await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND git_branch=$5 AND pr_number=$6",
-     [taskId,projectId,commit,task.spec_version,task.git_branch,task.pr_number]);
+   if(args.singlePass||reusedBase){
+    const pinned=reusedBase
+     ?await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND implementation_kind='already_implemented' AND implementation_commit=$3",
+      [taskId,projectId,commit,task.spec_version])
+     :await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND git_branch=$5 AND pr_number=$6",
+      [taskId,projectId,commit,task.spec_version,task.git_branch,task.pr_number]);
     if(!pinned.rowCount)throw ApplicationFailure.nonRetryable('ТЗ или PR изменились перед запуском QA');
     task.spec_reviewed_commit=commit;
    }
@@ -718,14 +730,15 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   objective:'Независимо проверь задачу: '+task.title+'\n'+String(task.description||'').slice(0,6500),
   tools:'Изолированная копия репозитория, команды npm/pytest/API и локальный HTTP-сервер. Если браузера нет, визуальные проверки помечай blocked, не выдумывай результаты.',
   instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
-  scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||''),
+  scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||'')+
+   (reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
   context:'История, новая обратная связь, предыдущие QA:\n'+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
   output:'Сначала изучи результаты предыдущего QA и новые комментарии. Повторно проверь только необходимые затронутые кейсы, но не признавай устаревшие результаты действительными для другого commit SHA. Невыполненные проверки всегда blocked/not_run, не passed.'
  });
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
   title:task.title,description:task.description,agentPrompt:qaPrompt,projectRules:'',testPlan:record.qa_plan_snapshot,
-  expectedCommit:record.runner_commit_sha,branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
+  expectedCommit:record.runner_commit_sha,branch:reusedBase?task.pr_base_branch||repo.target_branch||repo.default_branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1 AND status IN ('queued','running')",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
