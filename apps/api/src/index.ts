@@ -1800,7 +1800,8 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
      throw Object.assign(Error('Стадия задачи изменилась. Прочитай карточку повторно.'),{statusCode:409});
     const running=await client.query(`SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'
      UNION ALL SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')
-     UNION ALL SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')`,[projectId,taskId]);
+     UNION ALL SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')
+     UNION ALL SELECT 1 FROM agent_analysis_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')`,[projectId,taskId]);
     if(running.rowCount)throw Object.assign(Error('В задаче уже работает агент. Сначала дождись окончания или останови активный процесс.'),{statusCode:409});
     if(move.operation==='reanalyze'&&row.stage==='analysis'&&['waiting_questions','needs_clarification'].includes(row.analysis_state))
      throw Object.assign(Error('Аналитик ожидает ответов владельца, а не повторного запуска без новых фактов'),{statusCode:409});
