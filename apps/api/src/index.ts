@@ -1,4 +1,4 @@
-import {registerAuthRoutes} from './modules/auth/api.js';
+import {registerAuthRoutes,issueAccessToken} from './modules/auth/api.js';
 import {applyLegacySchema,pauseAllProjectAgents,ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
 import {runSchemaMigrations} from './database/schema-migrations.js';
 import {initEpicStageSync} from './epic-stage-sync.js';
@@ -108,6 +108,7 @@ app.setErrorHandler((error,_,reply) => {
  return reply.code(status).send({error:status<500?err.message:'Ошибка сервера'});
 });
 registerAuthRoutes(app,pool,jwtKey);
+const accessToken=(userId:string,email:string)=>issueAccessToken(jwtKey,userId,email);
 const uid=(req:any):string=>req.userId;
 async function canAccess(projectId:string,userId:string) {
  const r=await pool.query('SELECT 1 FROM memberships m JOIN projects p ON p.id=m.project_id WHERE m.project_id=$1 AND m.user_id=$2 AND p.deleted_at IS NULL',[projectId,userId]);
