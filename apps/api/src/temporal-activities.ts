@@ -1,3 +1,4 @@
+import {type AgentReaderScope} from './agent-tools.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
@@ -129,17 +130,17 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
   role:stage==='analysis'?'Системный аналитик':stage==='testing'?'QA-инженер':'Аналитик документации',
   objective:prompt,
   instructions:(await agentMemoryContext(pool,projectId,stage)).slice(0,1400),
-  tools:'Доступен только структурированный ответ; не заявляй о вызовах инструментов или изменениях без факта выполнения.',
+  tools:'Поиск и чтение проектных знаний; итог верни в запрошенном структурированном формате.',
   scope:'Проект '+projectId+', задача '+taskId,
   context:knowledge.documents.slice(0,1300)+'\n'+knowledge.modules.slice(0,850)
  });
  await recordAgentPrompt(pool,{projectId,processId:processId||taskId,role:stage,operation,prompt:composed}).catch(()=>{});
- return askRunnerAssistant(composed,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai));
+ return askRunnerAssistant(composed,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai),110000,[],{role:stage,processId});
 }
-async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000,images:RunnerImage[]=[]):Promise<string>{
+async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000,images:RunnerImage[]=[],reader?:Omit<AgentReaderScope,'projectId'|'taskId'>):Promise<string>{
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-  body:JSON.stringify({prompt:runnerAssistantPrompt(prompt),model:ai.model,reasoning:ai.reasoning,images}),
+  body:JSON.stringify({prompt:runnerAssistantPrompt(prompt),model:ai.model,reasoning:ai.reasoning,images,context:reader?{...reader,projectId,taskId:taskId??undefined}:undefined}),
   signal:AbortSignal.timeout(timeoutMs)});
  const data=await response.json().catch(()=>({})) as any;
  if(!response.ok||typeof data.message!=='string')throw Error(String(data.error||'Codex не вернул результат').slice(0,500));
@@ -242,7 +243,7 @@ export async function prepareIterationPlanDraft(runId:string){
   const ai=(await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])).rows[0];
   if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
   await recordAgentPrompt(pool,{projectId,processId:runId,role:role||'analysis',operation:'iteration_planning',prompt}).catch(()=>{});
-  return askRunnerAssistant(prompt,projectId,null,'iteration_planning',await resolveRoleAiSettings(pool,projectId,role||'analysis',ai),210000);
+  return askRunnerAssistant(prompt,projectId,null,'iteration_planning',await resolveRoleAiSettings(pool,projectId,role||'analysis',ai),210000,[],{role:role||'analysis',processId:runId});
  });
 }
 export async function failIterationPlanDraft(runId:string,message:string){
@@ -359,14 +360,8 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
     instructions:qaKnowledge.modules.slice(0,900)
    });
    await recordAgentPrompt(pool,{projectId,processId:runId,role:'testing',operation:'qa_plan',prompt:bounded}).catch(()=>{});
-   const response=await fetch(codexUrl+'/assistant',{method:'POST',
-    headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-    body:JSON.stringify({prompt:bounded,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning}),
-    signal:AbortSignal.timeout(105000)});
-   const data=await response.json().catch(()=>({})) as any;
-   if(!response.ok)throw new Error(String(data.error||'Не удалось получить QA-план от Codex'));
-   if(typeof data.message!=='string')throw new Error('Codex не вернул QA-документацию');
-   return data.message;
+   return askRunnerAssistant(bounded,projectId,taskId,'qa_plan',
+    await resolveRoleAiSettings(pool,projectId,'testing',ai),105000,[],{role:'testing',processId:runId});
   });
   // Derived links attach the actual current QA plan to the requirements governing the task.
   await pool.query("INSERT INTO knowledge_artifact_links(id,project_id,document_id,artifact_kind,artifact_ref,relation) SELECT gen_random_uuid(),$1,l.document_id,'qa_case',pc.case_id::text,'tested_by' FROM knowledge_task_links l JOIN qa_test_plans p ON p.project_id=l.project_id AND p.task_id=l.task_id JOIN qa_plan_cases pc ON pc.plan_id=p.id WHERE l.project_id=$1 AND l.task_id=$2 AND l.relation IN ('requires','implements','tests') ON CONFLICT DO NOTHING",[projectId,taskId]);
@@ -476,7 +471,7 @@ export async function startDevelopment(args:TaskRef){
   context:'Правила: '+rules.slice(0,1200)+'\nДокументация по задаче: '+knowledge.documents.slice(0,1200)+'\nПередача от коллег: '+(await taskHandoffContext(projectId,taskId,'development')).slice(0,1200),
   output:'Измени файлы в рабочей копии, проверь доступные тесты. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
  });
- const job={id:runId,taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
+ const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
   title:task.title,description,agentPrompt,projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
  if(!await dispatch(job,beforeStart))return;
@@ -775,7 +770,7 @@ export async function noteCycleFailure(args:{projectId:string;taskId:string;mess
 export async function completeManagerMessage(args:{projectId:string;taskId:string;messageId:string;continuation?:string;handled?:boolean}):Promise<void>{
  const {projectId,taskId,messageId}=args;
  const msg=await pool.query(
-  "SELECT id,role,body,status,reply_to FROM manager_messages WHERE id=$1 AND project_id=$2 AND task_id=$3",
+  "SELECT id,role,body,status,reply_to,actor_id FROM manager_messages WHERE id=$1 AND project_id=$2 AND task_id=$3",
   [messageId,projectId,taskId]);
  if(!msg.rowCount||msg.rows[0].role!=='user')return;
  if(msg.rows[0].status==='completed'||msg.rows[0].status==='cancelled')return;
@@ -807,7 +802,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
-    tools:'В этом вызове нет инструментов изменения проекта. Не утверждай о выполненных действиях или запуске процессов без подтверждённых фактов сервера.',
+    tools:'Доступны инструменты чтения проекта. Не утверждай о выполненных действиях или запуске процессов без подтверждённых фактов сервера.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
     scope:JSON.stringify({task_id:taskId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
@@ -825,7 +820,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,800):'',
     output:'После ответа отдельной строкой добавь LEARNING_SUGGESTION: <подтверждённый урок> либо none.'
    }):prompt;
-    const rawReply=String(await askRunnerAssistant(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager',await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]),110000,images)).trim();
+    const rawReply=String(await askRunnerAssistant(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager',await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]),110000,images,{role:mentionedAgent?.stage||'manager',processId:messageId,actorId:msg.rows[0].actor_id??undefined})).trim();
     const suggestion=mentionedAgent?rawReply.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim():undefined;
     if(mentionedAgent)await recordAgentLearning(pool,{projectId,role:mentionedAgent.stage,runId:messageId,body:suggestion,evidence:'Прямой диалог в задаче '+taskId});
     const generated=rawReply.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
@@ -926,7 +921,7 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
    ].join('\n\n');
    const ai=settings.rows[0];
    if(!ai?.enabled)throw Error('AI отключён в настройках проекта');
-   const raw=await askRunnerAssistant(prompt,projectId,taskId,'peer_question_'+note.target_stage,await resolveRoleAiSettings(pool,projectId,note.target_stage,ai),65000);
+   const raw=await askRunnerAssistant(prompt,projectId,taskId,'peer_question_'+note.target_stage,await resolveRoleAiSettings(pool,projectId,note.target_stage,ai),65000,[],{role:note.target_stage,processId:note.id});
    const from=raw.indexOf('{'),to=raw.lastIndexOf('}');
    const answer=JSON.parse(raw.slice(from,to+1)) as {status:string;answer:string;source:keyof typeof sources;quote:string};
    const text=String(answer.answer||'').trim().slice(0,2200);

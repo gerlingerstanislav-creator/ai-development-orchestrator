@@ -13,6 +13,7 @@ import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,ru
 import {qaPrerequisiteError} from './qa-preflight.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
+import {agentMcp,withReaderContext} from './agent-context.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -142,6 +143,7 @@ const MAX_PARALLEL_DEVELOPMENT=20; // Actual per-project role limits come from s
 const MAX_PARALLEL_PER_ROLE=1;
 const activeByRole=new Map();
 const jobRole=job=>job.kind==='test'?'testing':'development';
+const agentApi=process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools';
 const MAX_PARALLEL_CHAT=4;
 const jobQueue=[];
 const activeBranches=new Set();
@@ -182,7 +184,12 @@ function startNextJobs(){
    cancelledJobs.add(job.id);
    stopCommand(jobChildren.get(job.id));
   },job.maxRuntimeSeconds*1000).unref();
-  void (job.kind==='test'?runTestJob(job,state):job.kind==='resolve-conflict'?runConflictJob(job,state):runJob(job,state)).catch(e=>{if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}}).finally(()=>{
+  const scope=job.projectId?{projectId:job.projectId,taskId:job.taskId,processId:job.id,role,actorId:job.actorId}:null;
+  void withReaderContext(agentApi,jobKey,scope,context=>{
+   if(job.kind==='test')return runTestJob(job,state,context);
+   if(job.kind==='resolve-conflict')return runConflictJob(job,state,context);
+   return runJob(job,state,context);
+  }).catch(e=>{if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1500);}}).finally(()=>{
    clearTimeout(deadline);
    if(expiredPhase&&state.status!=='cancelled'&&state.status!=='completed')
     Object.assign(state,runtimeLimitResult(state,expiredPhase,job.maxRuntimeSeconds));
@@ -211,16 +218,18 @@ function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}=
   const timer=setTimeout(()=>{timedOut=true;stopCommand(child);},timeout);
   child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
   child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
+  const secret=env?.ADO_AGENT_SESSION_TOKEN;
+  const redact=value=>secret?value.replaceAll(secret,'[REDACTED]'):value;
   const settle=(err)=>{
    if(done)return;done=true;clearTimeout(timer);
    if(jobId&&jobChildren.get(jobId)===child)jobChildren.delete(jobId);
-   if(err)reject(err);else resolve({stdout:output,stderr:errors});
+   if(err)reject(err);else resolve({stdout:redact(output),stderr:redact(errors)});
   };
   child.on('error',settle);
   child.on('close',(code)=>{
    if(timedOut)return settle(new Error(binary+' превысил ограничение времени'));
    if(code!==0){
-    const detail=binary==='codex'?codexFailureDetail(output,errors):errors.slice(-1200);
+    const detail=binary==='codex'?codexFailureDetail(redact(output),redact(errors)):errors.slice(-1200);
     return settle(new Error(binary+' завершился с кодом '+code+': '+(detail||'Codex CLI не вернул причину ошибки. Проверь авторизацию Codex и подробный журнал Runner.')));
    }
    settle();
@@ -291,7 +300,7 @@ async function resumePublishedCommit(job,state,git){
  return action==='published';
 }
 
-async function runJob(job,state){
+async function runJob(job,state,context){
  const deadline=Date.now()+job.maxRuntimeSeconds*1000;
  const timeLeft=()=>Math.max(0,deadline-Date.now());
  let cumulativeUsage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
@@ -353,11 +362,11 @@ async function runJob(job,state){
    assertJobActive(job.id);
    const remaining=timeLeft();
    if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
-   await auditCodexPrompt(job,'development',instruction);
+   await auditCodexPrompt(job,'development',context.prefix+instruction);
    const result=await command('codex',[
     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,instruction
-   ],{cwd:dir,env:cliEnv,timeout:remaining,jobId:job.id});
+    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,context.prefix+instruction
+   ],{cwd:dir,env:{...cliEnv,...context.env},timeout:remaining,jobId:job.id});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    const parsed=codexJsonResult(result.stdout);
    cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
@@ -433,7 +442,7 @@ async function auditCodexPrompt(job,role,prompt){
 
 // A first-pass AI test agent runs within the disposable Codex container.
 // No persistent environment provisioning or Docker socket is exposed to it.
-async function runTestJob(job,state){
+async function runTestJob(job,state,context){
  const workdir=await mkdtemp(join(tmpdir(),'ado-test-'));
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
@@ -540,9 +549,9 @@ async function runTestJob(job,state){
   const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,
    '--output-schema',schemaPath];
-  await auditCodexPrompt(job,'testing',prompt+'\n\nПоле learningSuggestion: краткий вывод или пустая строка.');
-  const firstRun=await command('codex',[...args,prompt+'\n\nПоле learningSuggestion: краткий вывод или пустая строка.'],{
-   cwd:dir,env:cliEnv,timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
+  await auditCodexPrompt(job,'testing',context.prefix+prompt+'\n\nПоле learningSuggestion: краткий вывод или пустая строка.');
+  const firstRun=await command('codex',[...args,...context.args,context.prefix+prompt+'\n\nПоле learningSuggestion: краткий вывод или пустая строка.'],{
+   cwd:dir,env:{...cliEnv,...context.env},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
   });
   let parsed=codexJsonResult(firstRun.stdout);
   state.usage=parsed.usage;
@@ -582,7 +591,7 @@ async function runTestJob(job,state){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
  }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
 }
-async function runConflictJob(job,state){
+async function runConflictJob(job,state,context){
  const workspace=await mkdtemp(join(tmpdir(),'ado-conflict-'));
  const dir=join(workspace,'repo');
  const gitEnv=gitEnvironment(job.token);
@@ -623,8 +632,8 @@ async function runConflictJob(job,state){
    const policy=await isolatedTaskPolicy(workspace,dir,job.id);
    const result=await command('codex',[
      'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-     '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,prompt
-   ],{cwd:dir,env:cliEnv,jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
+     '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,context.prefix+prompt
+   ],{cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
    const parsed=codexJsonResult(result.stdout);
    state.usage=parsed.usage;
    const answer=parsed.message||'';
@@ -720,23 +729,12 @@ http.createServer(async(req,res)=>{
     activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
-    // Token is supplied only in the child process environment; it is never
-    // embedded into the instruction, Codex configuration or CLI argv.
+    // The shell policies keep the MCP session out of project commands.
+    const context=agentMcp(data.session_token,agentApi);
     const result=await withRunnerImages(data.images,imageArgs=>command('codex',[
      'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-     '-c','mcp_servers.orchestrator.command="node"',
-     '-c','mcp_servers.orchestrator.args=["/opt/codex-runner/agent-mcp.mjs"]',
-     '-c','mcp_servers.orchestrator.env_vars=["ADO_AGENT_SESSION_TOKEN","ADO_AGENT_API_URL"]',
-     '-c','mcp_servers.orchestrator.startup_timeout_sec=15',
-     '-c','mcp_servers.orchestrator.tool_timeout_sec=90',
-     // This MCP server only exposes tools authorized by the project-scoped API session.
-     // Operations that require a human decision use separate application endpoints.
-     '-c','mcp_servers.orchestrator.default_tools_approval_mode="approve"',
-     '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...imageArgs,data.prompt
-    ],{cwd:'/opt/codex-runner',
-     env:{...cliEnv,ADO_AGENT_SESSION_TOKEN:data.session_token,
-      ADO_AGENT_API_URL:process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools'},
-     timeout:240000,maxOutputChars:500000}));
+     '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,data.prompt
+    ],{cwd:'/opt/codex-runner',env:{...cliEnv,...context.env},timeout:240000,maxOutputChars:500000}));
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Агент не вернул итоговое сообщение'});
@@ -758,10 +756,11 @@ http.createServer(async(req,res)=>{
    activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
-    const result=await withRunnerImages(data.images,imageArgs=>command('codex',[
+    const result=await withReaderContext(agentApi,jobKey,data.context,context=>
+     withRunnerImages(data.images,imageArgs=>command('codex',[
       'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...imageArgs,data.prompt
-    ],{cwd:'/opt/codex-runner',env:cliEnv,timeout:240000,maxOutputChars:500000}));
+      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,context.prefix+data.prompt
+     ],{cwd:'/opt/codex-runner',env:{...cliEnv,...context.env},timeout:240000,maxOutputChars:500000})));
     const parsed=codexJsonResult(result.stdout);
     const message=parsed.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
