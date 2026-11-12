@@ -658,14 +658,17 @@ async function runTestJob(job,state,context){
    state.message='AI-тестировщик завершил проверки, но отчёт некорректен. Повторное форматирование отчёта';
    // The second attempt must not invent successful checks. It only reformats
    // the prior agent's actual evidence into the strict machine-readable schema.
-   const correction=[
-    'Сформируй валидный JSON-отчёт по указанной схеме. Ранее тестировщик вернул некорректный формат.',
-    'Не утверждай о выполнении тестов, для которых нет реальных доказательств в предыдущем ответе.',
-    'Неподтверждённые кейсы отмечай blocked/not_run, reason=unknown; не выдавай отсутствие данных за tool_unavailable.',
-    'Причина переформатирования: '+String(error.message||error),
-    'Case IDs: '+JSON.stringify((job.testPlan?.cases||[]).map(c=>c.id)),
-    'Предыдущий ответ тестировщика: '+String(parsed.message||'').slice(0,45000)
-   ].join('\n\n');
+   const correction=assembleAgentPrompt({
+    identity:'QA, форматирование отчёта по уже выполненным тестам',
+    objective:'Исправь структуру уже полученного отчёта без повторного выполнения тестов.',
+    policy:'Не изобретай новые результаты. Для отсутствующих доказательств ставь blocked/not_run с reason=unknown; сбой форматирования не означает недоступность инструмента.',
+    tools:'Используй только прежний ответ и сохранённые доказательства текущей попытки.',
+    protocol:'Сопоставь case_id с планом и ранее выполненными действиями. Исправь только JSON и недостающие поля.',
+    output:'Только валидный JSON в соответствии с тем же --output-schema, включая caseResults по всем case_id.',
+    runtime:'Ошибка формата: '+String(error.message||error)+'. Case IDs: '+JSON.stringify((job.testPlan?.cases||[]).map(c=>c.id)),
+    context:String(parsed.message||'').slice(0,6000),
+    budget:9000
+   });
    await auditCodexPrompt(job,'testing',correction);
    const second=await command('codex',[...args,correction],{
     cwd:dir,env:cliEnv,timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000,jobId:job.id
@@ -721,20 +724,19 @@ async function runArchitectureReviewJob(job,state,context){
   if(head!==job.expectedCommit)throw Error('PR изменился до архитектурного ревью');
   await command('git',['fetch','origin',job.baseBranch],{cwd:dir,env:gitEnvironment(job.token),jobId:job.id,timeout:90000});
   const policy=await isolatedTaskPolicy(workspace,dir,job.id,false,false);
-  const prompt=[
-   'Ты независимый архитектор платформы и Tech Lead. Проведи CODE REVIEW конкретного коммита PR, не меняй файлы.',
-   'Изучи реальный код, diff относительно origin/'+job.baseBranch+', соседние модули, тесты, миграции и совместимость.',
-   'Опирайся только на доказанные дефекты, не придумывай нарушения и не блокируй PR из-за вкусовых пожеланий.',
-   'Блокирующие находки: ошибки архитектуры, нарушение контрактов, security, несовместимость миграций или реальная регрессия.',
-   'Если существенных дефектов нет — APPROVED. Некритичные улучшения перечисли как advice, они не блокируют.',
-   'ВЕРНИ ТОЛЬКО JSON без markdown: {"verdict":"approved|changes_requested","summary":"...","findings":[{"severity":"blocking|advice","file":"...","reason":"...","suggestion":"..."}]}.',
-   'При наличии blocking finding verdict обязан быть changes_requested. Укажи проверяемые конкретные файлы.',
-   'Задача: '+job.title+'\n'+String(job.description).slice(0,8000),
-   'Инструкции роли: '+String(job.agentInstructions||'').slice(0,6000)
-  ].join('\n\n');
+  const prompt=assembleAgentPrompt({
+   identity:'Независимый архитектор / Tech Lead. '+String(job.agentInstructions||'').slice(0,1200),
+   objective:'Независимо проверь код текущего PR на соответствие требованиям. '+job.title+'\n'+String(job.description||'').slice(0,8000),
+   scope:'Репозиторий '+job.repository+'; базовая ветка '+job.baseBranch+'; проверяемый SHA '+head,
+   policy:'Не изменяй файлы, не выполняй git push/commit; не объявляй предположения доказанными дефектами.',
+   tools:'Локальный diff origin/'+job.baseBranch+', исходные файлы, тесты, связанные модули, MCP задачи и документации.',
+   protocol:'Проверь реальный diff, соседние модули, совместимость контрактов/БД/API, безопасность и регрессии. При необходимости прочитай актуальную задачу через orchestrator.tasks.read. Блокируют только подтверждённые нарушения, не вкусовые замечания.',
+   output:'Только JSON: {"verdict":"approved|changes_requested","summary":"...","findings":[{"severity":"blocking|advice","file":"путь","reason":"факт","suggestion":"исправление"}]}. При blocking verdict=changes_requested, иначе approved; каждый пункт с конкретным файлом.',
+   budget:13000
+  });
   state.message='Независимое ревью архитектора';
   const result=await command('codex',['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-   '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,context.prefix+prompt],{
+   '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,prompt],{
    cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(1200000,job.maxRuntimeSeconds*1000),maxOutputChars:150000
   });
   const parsed=codexJsonResult(result.stdout);
@@ -861,22 +863,21 @@ async function runConflictJob(job,state,context){
   }
   if(conflicts.length){
    state.message='Codex устраняет '+conflicts.length+' конфликт(ов) в локальной копии';
-   const prompt=[
-    'Ты устраняешь Git merge conflicts после объединения целевой ветки с PR.',
-    'Работай ТОЛЬКО в этой локальной копии. Не выполняй git commit, push, checkout, reset или команды с GitHub API.',
-    'Изучи обе версии конфликтующих участков, исходную задачу и окружающий код.',
-    'Сохрани все совместимые изменения целевой ветки и PR. Не удаляй функциональность ради завершения merge.',
-    'Если невозможно достоверно определить правильное поведение без решения пользователя, напиши NEEDS_USER: и конкретный вопрос. Не подменяй неоднозначность произвольным решением.',
-    'Иначе разреши каждый конфликт, удали конфликтные маркеры и, по возможности, запусти локальные проверки.',
-    'Не создавай и не изменяй .env, credential или файлы авторизации.',
-    'Задача: '+job.title,
-    'Требования: '+job.description.slice(0,12000),
-    'Конфликтующие файлы: '+conflicts.join(', ').slice(0,5000)
-   ].join('\n\n');
+   const prompt=assembleAgentPrompt({
+    identity:'AI-разработчик, разрешающий конфликт слияния',
+    objective:'Сохрани совместимые изменения PR и целевой ветки при разрешении Git merge conflicts. '+job.title+'\n'+String(job.description||'').slice(0,10000),
+    scope:'Репозиторий '+job.repository+'; целевая ветка '+job.baseBranch+'; PR '+job.taskId,
+    policy:'Работай только в локальной копии. Запрещены git commit/push/checkout/reset, GitHub API и изменения секретов.',
+    tools:'Локальный git diff, файлы с конфликтами, чтение задачи и связанной документации через MCP.',
+    protocol:'Разбери обе версии каждого конфликтующего участка и окружающий код, устрани маркеры, по возможности выполни локальные тесты. Если правильное поведение требует решения владельца — не угадывай.',
+    output:'При невозможности разрешить неоднозначность напиши NEEDS_USER: конкретный вопрос. Иначе оставь разрешённые файлы локально; Runner проверит diff и выполнит коммит.',
+    runtime:'Конфликтующие файлы: '+conflicts.join(', ').slice(0,2200),
+    budget:14000
+   });
    const policy=await isolatedTaskPolicy(workspace,dir,job.id);
    const result=await command('codex',[
      'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-     '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,context.prefix+prompt
+     '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,prompt
    ],{cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
    const parsed=codexJsonResult(result.stdout);
    state.usage=parsed.usage;
