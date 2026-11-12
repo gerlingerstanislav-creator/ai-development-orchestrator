@@ -56,18 +56,18 @@ export async function acceptAnalysisAnswer(pool:Pool,projectId:string,taskId:str
   await client.query('BEGIN');
   const task=(await client.query("SELECT id,stage,analysis_state,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
   if(!task||task.stage!=='analysis'){await client.query('ROLLBACK');return {accepted:false,reason:'Задача сейчас не находится на этапе аналитики'};}
-  const pending=await client.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND (requires_customer=true OR target_stage='all') FOR UPDATE",[projectId,taskId]);
+  const pending=await client.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND (requires_customer=true OR target_stage='all') FOR UPDATE",[projectId,taskId]);
   const legacy=Array.isArray(task.clarification_questions)?task.clarification_questions.filter((q:unknown)=>typeof q==='string'&&q.trim()):[];
   // Legacy tasks may have answered questions in a project chat without note IDs.
   // Record the owner's authenticated source message and let the analyst review it.
-  if(!pending.rowCount&&!legacy.length&&!sourceMessageId){await client.query('ROLLBACK');return {accepted:false,reason:'Нет открытых вопросов аналитика'};}
+  if(!pending.rowCount&&!legacy.length&&(!sourceMessageId||!['waiting_questions','needs_clarification'].includes(task.analysis_state))){await client.query('ROLLBACK');return {accepted:false,reason:'Нет открытых вопросов аналитика'};}
   if(sourceMessageId){
    const previous=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND source_key=$2",[taskId,'owner-answer:'+sourceMessageId]);
    if(previous.rowCount){await client.query('ROLLBACK');return {accepted:false,reason:'Это сообщение владельца уже передано аналитику'};}
   }
   const trimmed=answer.trim().slice(0,3000);
   if(trimmed.length<3){await client.query('ROLLBACK');return {accepted:false,reason:'Ответ слишком короткий'};}
-  await client.query("UPDATE task_agent_notes SET status='answered',answer=$3,answered_at=now(),answered_by=$4,answer_author='Владелец через ПМ',processing_at=NULL WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND (requires_customer=true OR target_stage='all')",[projectId,taskId,trimmed,actorId]);
+  await client.query("UPDATE task_agent_notes SET status='answered',answer=$3,answered_at=now(),answered_by=$4,answer_author='Владелец через ПМ',processing_at=NULL WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND (requires_customer=true OR target_stage='all')",[projectId,taskId,trimmed,actorId]);
   if(sourceMessageId)await client.query(`INSERT INTO task_agent_notes
    (id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,actor_id,status,answer,answered_at,answered_by,answer_author)
    VALUES($1,$2,$3,'human','Владелец','analysis','resolution',$4,'human',$5,$6,'resolved',$4,now(),$6,'Владелец через ПМ')
@@ -128,7 +128,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
   awaits_product_owner:task.type==='question'&&['open','answered'].includes(task.question_status) || task.stage!=='done'&&(
    task.stage==='analysis'&&(task.analysis_state==='waiting_questions'||task.analysis_state==='needs_clarification'||Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0)
    ||task.spec_review_status==='needs_approval'&&material_review
-   ||(open_notes as string[]).some(isCustomerQuestion)
+   ||(open_notes as string[]).some(note=>!isPrEvidenceRequest(note))
    ||!!task.owner_question_source_task_id
    ||!!blocked_qa&&qaWaiverAssessment(blocked_qa as QaRunRow).eligible)
  }));
