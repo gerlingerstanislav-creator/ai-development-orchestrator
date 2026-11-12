@@ -144,6 +144,8 @@ async function run(s,body){
    // (Chromium is deliberately offline). A committed local navigation is
    // sufficient to begin real DOM assertions; never fake their result.
    const navigation=await s.page.goto(s.origin+path,{waitUntil:'commit',timeout:12000});
+   // Give local DOM time to settle without blocking on offline CDN scripts.
+   await s.page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
    if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
    s.path=path;
    return {ok:true,origin:'local QA application',path,availablePages:pages,
@@ -161,6 +163,7 @@ async function run(s,body){
  if(action==='goto'){
   const path=localPagePath(body.path||'/');
   const navigation=await page.goto(s.origin+path,{waitUntil:'commit',timeout:12000});
+  await page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
   if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
   s.path=path;
   return {ok:true,title:await page.title(),path,readyState:await page.evaluate(()=>document.readyState)};
