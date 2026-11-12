@@ -23,7 +23,7 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
  const client=await pool.connect();
  let locked=false;
  try{
-  const l=await client.query("SELECT pg_try_advisory_lock(hashtext('ado-iteration-development-queue')) AS locked");
+  const l=await client.query("SELECT pg_try_advisory_lock(hashtext('ado-agent-peer-queue')) AS locked");
   locked=l.rows[0]?.locked===true;
   if(!locked)return;
   await client.query(`INSERT INTO agent_peer_queue(note_id,project_id,task_id,role)
@@ -37,11 +37,14 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
    FROM task_agent_notes n WHERE q.note_id=n.id AND n.requires_customer AND q.status NOT IN ('completed','waiting')`);
   await client.query("UPDATE agent_peer_queue SET status='queued',next_attempt_at=now(),updated_at=now(),error='Восстановлено после прерванного исполнения' WHERE status='running' AND updated_at<now()-interval '15 minutes'");
   // A peer answer is a separate short assignment and may not preempt active work.
-  const pending=await client.query(`SELECT q.note_id,q.project_id,q.task_id,q.role,q.attempts FROM agent_peer_queue q
-   JOIN task_agent_notes n ON n.id=q.note_id
+  // Fair scan: a large backlog in one project must not crowd every other
+  // project out of the candidate page.
+  const pending=await client.query(`SELECT note_id,project_id,task_id,role,attempts FROM (
+   SELECT q.note_id,q.project_id,q.task_id,q.role,q.attempts,q.next_attempt_at,q.updated_at,
+    row_number() OVER(PARTITION BY q.project_id ORDER BY q.next_attempt_at,q.updated_at,q.note_id) AS project_position
+   FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id
    WHERE q.status='queued' AND q.next_attempt_at<=now() AND n.status='open' AND NOT n.requires_customer
-   AND NOT EXISTS(SELECT 1 FROM agent_peer_queue r WHERE r.project_id=q.project_id AND r.role=q.role AND r.status='running' AND r.note_id=q.note_id)
-   ORDER BY q.next_attempt_at,q.updated_at LIMIT 25`);
+  ) ready ORDER BY project_position,next_attempt_at,updated_at,note_id LIMIT 100`);
   for(const job of pending.rows){
    const capacity=await roleCapacity(pool,job.project_id,job.role);
    const peerRunning=await client.query("SELECT count(*)::int AS count FROM agent_peer_queue WHERE project_id=$1 AND role=$2 AND status='running'",[job.project_id,job.role]);
@@ -53,8 +56,11 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
     busy=Number((await client.query("SELECT count(*)::int AS count FROM ai_task_runs WHERE project_id=$1 AND status IN ('queued','running')",[job.project_id])).rows[0]?.count||0)+Number(peerRunning.rows[0]?.count||0)>=capacity;
    if(job.role==='testing')
     busy=Number((await client.query("SELECT count(*)::int AS count FROM ai_test_runs WHERE project_id=$1 AND status IN ('queued','running')",[job.project_id])).rows[0]?.count||0)+Number(peerRunning.rows[0]?.count||0)>=capacity;
-   if(job.role==='analysis')
-    busy=!!(await client.query("SELECT 1 FROM iteration_planning_runs WHERE status IN ('queued','running') LIMIT 1")).rowCount;
+   if(job.role==='analysis'){
+    const analysis=await client.query("SELECT count(*)::int AS count FROM agent_analysis_runs WHERE project_id=$1 AND status IN ('queued','running')",[job.project_id]);
+    const planning=await client.query("SELECT count(*)::int AS count FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id WHERE i.project_id=$1 AND r.status IN ('queued','running')",[job.project_id]);
+    busy=Number(analysis.rows[0]?.count||0)+Number(planning.rows[0]?.count||0)+Number(peerRunning.rows[0]?.count||0)>=capacity;
+   }
    if(busy)continue;
    const claimed=await client.query("UPDATE agent_peer_queue SET status='running',attempts=attempts+1,updated_at=now() WHERE note_id=$1 AND status='queued' RETURNING attempts",[job.note_id]);
    if(!claimed.rowCount)continue;
@@ -68,11 +74,10 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
    }catch(error){
     await client.query("UPDATE agent_peer_queue SET status='queued',next_attempt_at=now()+interval '1 minute',updated_at=now(),error=$2 WHERE note_id=$1 AND status='running'",[job.note_id,String(error).slice(0,500)]);
    }
-   // Claim one work item per reconciliation. Other roles can run in parallel on subsequent ticks.
-   return;
+   // Continue filling role slots in this and other projects this tick.
   }
  }finally{
-  if(locked)await client.query("SELECT pg_advisory_unlock(hashtext('ado-iteration-development-queue'))").catch(()=>{});
+  if(locked)await client.query("SELECT pg_advisory_unlock(hashtext('ado-agent-peer-queue'))").catch(()=>{});
   client.release();
  }
 }
