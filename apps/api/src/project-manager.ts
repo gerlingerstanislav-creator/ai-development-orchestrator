@@ -88,6 +88,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
    EXISTS(SELECT 1 FROM task_requirement_reviews r
     WHERE r.project_id=t.project_id AND r.task_id=t.id AND r.spec_version=t.spec_version
       AND r.status='needs_approval' AND r.classification='material_change') AS material_review,
+   question_source.task_id AS owner_question_source_task_id,
    CASE WHEN qa.status='completed' AND qa.verdict='blocked'
     AND NOT EXISTS(SELECT 1 FROM qa_merge_waivers w WHERE w.project_id=t.project_id AND w.task_id=t.id)
     AND NOT EXISTS(SELECT 1 FROM manager_requests r WHERE r.project_id=t.project_id AND r.task_id=t.id
@@ -95,6 +96,15 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
     THEN to_jsonb(qa) END AS blocked_qa
   FROM tasks t
   LEFT JOIN documents doc ON doc.id=t.document_id AND doc.project_id=t.project_id
+  LEFT JOIN LATERAL (
+   SELECT n.task_id FROM task_agent_notes n JOIN tasks source ON source.id=n.task_id
+   WHERE source.project_id=t.project_id AND n.kind='question' AND n.requires_customer=true
+    AND n.status IN ('open','processing') AND (
+     source.id=t.id OR source.parent_id=t.id OR
+     (t.parent_id IS NOT NULL AND source.parent_id=t.parent_id)
+    )
+   ORDER BY n.created_at,n.id LIMIT 1
+  ) question_source ON true
   LEFT JOIN LATERAL (
    SELECT id,task_id,status,verdict,qa_spec_version,qa_plan_snapshot,report FROM ai_test_runs
    WHERE t.stage='testing' AND project_id=t.project_id AND task_id=t.id
@@ -108,6 +118,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
    task.stage==='analysis'&&Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0
    ||task.spec_review_status==='needs_approval'&&material_review
    ||(open_notes as string[]).some(isCustomerQuestion)
+   ||!!task.owner_question_source_task_id
    ||!!blocked_qa&&qaWaiverAssessment(blocked_qa as QaRunRow).eligible)
  }));
 }
