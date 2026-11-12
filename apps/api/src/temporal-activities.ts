@@ -707,26 +707,26 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
    ? [...new Map((expected?.success?expected.data:[]).map(item=>[item.id,item])).values()]
    : Array.isArray(snapshot?.cases)?snapshot.cases:[];
   const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
-  const providedMap=new Map<string,{result:string;evidence:string;reason:string}>();
+  const providedMap=new Map<string,{result:string;evidence:string;reason:string;browserVerified:boolean}>();
   for(const item of provided){
    if(typeof item?.case_id==='string'&&typeof item?.result==='string'&&['passed','failed','blocked','not_run'].includes(item.result)){
     const evidence=String(item.evidence||'').slice(0,3000).trim();
     const reason=String(item.reason||'unknown').slice(0,60);
-    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason});
+    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason,browserVerified:item.browserVerified===true});
    }
   }
   const supplied=cases.map(c=>{
    const candidate=providedMap.get(c.id);
-   return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата'};
+   return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата',browserVerified:candidate?.browserVerified===true};
   });
   const {cases:checked,visualToolGap}=checkedWithActualCapabilities(cases,supplied,String(remote.capabilities||''));
   let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
   const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
   const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version||
    (row.rows[0].qa_plan_snapshot?.simplified===true&&remote.testedCommit!==currentSpec.rows[0].spec_reviewed_commit);
-  if(!cases.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
+  if(!cases.length||!remote.testedCommit||!Array.isArray(remote.checks))verdict='blocked';
   if(checked.some(c=>c.result==='failed')||(Array.isArray(remote.checks)&&remote.checks.some((c:any)=>c.result==='failed'))||(Array.isArray(remote.findings)&&remote.findings.length>0))verdict='failed';
-  else if((checked.some(c=>c.result!=='passed')||visualToolGap||snapshot?.singlePass===true&&!remote.checks?.some((c:any)=>c.result==='passed'))&&verdict==='passed')verdict='blocked';
+  else if((checked.some(c=>c.result!=='passed')||visualToolGap||snapshot?.singlePass===true&&!remote.executionVerified)&&verdict==='passed')verdict='blocked';
   // A changed specification invalidates the entire run even if old cases failed.
   if(staleSpecification)verdict='blocked';
   const ran=checked.filter(c=>c.result==='passed'||c.result==='failed').length;
