@@ -19,6 +19,8 @@ test('runner opens a scoped reader and uses the real MCP adapter to read a secti
   if(req.url.endsWith('/reader-sessions')&&req.method==='POST')return res.writeHead(201).end(JSON.stringify({secret}));
   if(req.url.endsWith('/reader-sessions')&&req.method==='DELETE')return res.writeHead(204).end();
   if(req.url.endsWith('/catalog'))return res.end(JSON.stringify({tools:[tool]}));
+  if(req.url.endsWith('/call')&&req.method==='POST'&&JSON.parse(raw).name==='tasks.read')
+   return res.end(JSON.stringify({result:{task:{id:scope.taskId,title:'Неоплаченные заказы',pr_url:'https://github.com/example/orders/pull/8'}}}));
   res.end(JSON.stringify({result:{title:'Неоплаченные заказы',body:'Требование к обработке заказа'}}));
  });
  server.listen(0,'127.0.0.1');
@@ -29,6 +31,8 @@ test('runner opens a scoped reader and uses the real MCP adapter to read a secti
   assert.ok(context.args.some(value=>value.includes('mcp_servers.orchestrator.command')));
   assert.ok(!context.args.join(' ').includes(secret));
   assert.match(context.prefix,/knowledge\.section/);
+  assert.match(context.prefix,/tasks\.read/);
+  assert.match(context.prefix,/unpaid-orders/);
   const adapter=fileURLToPath(new URL('./agent-mcp.mjs',import.meta.url));
   const child=spawn(process.execPath,[adapter],{env:context.env,stdio:['pipe','pipe','pipe']});
   let output='',errors='';
@@ -46,8 +50,29 @@ test('runner opens a scoped reader and uses the real MCP adapter to read a secti
  assert.match(JSON.parse(replies[1].result.content[0].text).body,/заказа/);
  assert.deepEqual(requests[0],{method:'POST',url:'/internal/agent-tools/reader-sessions',runner:runnerSecret,agent:undefined,body:scope});
  assert.equal(requests[1].agent,secret);
+ assert.equal(requests[1].body.name,'tasks.read');
+ assert.equal(requests[1].body.arguments.task_id,scope.taskId);
+ assert.equal(requests[2].agent,secret);
  assert.equal(requests[1].runner,undefined);
- assert.equal(requests[2].body.name,'knowledge.section');
+ assert.equal(requests[3].body.name,'knowledge.section');
  assert.equal(requests.at(-1).method,'DELETE');
  assert.equal(requests.at(-1).agent,secret);
+});
+
+test('task-bound jobs fail before Codex when the task API is unavailable',async t=>{
+ const server=createServer((req,res)=>{
+  res.setHeader('Content-Type','application/json');
+  if(req.url.endsWith('/reader-sessions')&&req.method==='POST')
+   return res.writeHead(201).end(JSON.stringify({secret:'b'.repeat(64)}));
+  if(req.url.endsWith('/call'))return res.writeHead(503).end(JSON.stringify({error:'task storage offline'}));
+  res.writeHead(204).end();
+ });
+ server.listen(0,'127.0.0.1');await once(server,'listening');
+ t.after(()=>{server.closeAllConnections();server.close();});
+ const base='http://127.0.0.1:'+server.address().port+'/internal/agent-tools';
+ let invoked=false;
+ await assert.rejects(withReaderContext(base,'test-secret',
+  {projectId:'project',taskId:'task',role:'development'},async()=>{invoked=true;}),
+  /Нельзя безопасно выполнять задачу.*tasks.read HTTP 503/);
+ assert.equal(invoked,false,'Codex cannot start without live task facts');
 });
