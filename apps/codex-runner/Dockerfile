@@ -17,7 +17,7 @@ ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
 COPY apps/codex-runner/browser-gateway.mjs apps/codex-runner/browser-client.mjs apps/codex-runner/qa-exec.mjs ./
-COPY apps/codex-runner/agent-context.mjs apps/codex-runner/agent-mcp.mjs apps/codex-runner/job-journal.mjs apps/codex-runner/job-scheduler.mjs apps/codex-runner/execution-policy.mjs apps/codex-runner/qa-preflight.mjs apps/codex-runner/qa-run-evidence.mjs apps/codex-runner/rate-limits.mjs apps/codex-runner/chat-images.mjs ./
+COPY apps/codex-runner/agent-context.mjs apps/codex-runner/agent-mcp.mjs apps/codex-runner/job-journal.mjs apps/codex-runner/job-scheduler.mjs apps/codex-runner/development-outcome.mjs apps/codex-runner/execution-policy.mjs apps/codex-runner/qa-preflight.mjs apps/codex-runner/qa-run-evidence.mjs apps/codex-runner/rate-limits.mjs apps/codex-runner/chat-images.mjs ./
 # Run exactly the import+HTTP smoke check used in CI against the image
 # rather than just checking server.mjs syntax on the GitHub host.
 COPY apps/codex-runner/startup-smoke.mjs ./startup-smoke.mjs
