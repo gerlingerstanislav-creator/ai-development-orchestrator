@@ -19,9 +19,9 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run check
       - run: npm run build
-      - run: node --check apps/codex-runner/server.mjs
+      - run: node --check apps/codex-runner/server.mjs && node --check apps/codex-runner/browser-gateway.mjs && node --check apps/codex-runner/browser-client.mjs && node --check apps/qa-browser/server.mjs && node --check apps/codex-runner/browser-smoke.mjs
       - run: node --test apps/codex-runner/agent-context.test.mjs apps/codex-runner/qa-preflight.test.mjs apps/codex-runner/qa-run-evidence.test.mjs apps/codex-runner/rate-limits.test.mjs
-      - run: node --test apps/api/tests/qa-report-message.test.mjs apps/api/tests/agent-prompt.test.mjs apps/api/tests/agent-mentions.test.mjs apps/api/tests/diagnostics.test.mjs apps/api/tests/cloud-diagnostics.test.mjs apps/api/tests/qa-regression-scope.test.mjs apps/api/tests/qa-waiver-runtime.test.mjs
+      - run: node --test apps/api/tests/qa-report-message.test.mjs apps/api/tests/agent-prompt.test.mjs apps/api/tests/agent-mentions.test.mjs apps/api/tests/diagnostics.test.mjs apps/api/tests/cloud-diagnostics.test.mjs apps/api/tests/qa-regression-scope.test.mjs apps/api/tests/qa-waiver-runtime.test.mjs apps/api/tests/acceptance-criteria.test.mjs
   runner-isolation:
     runs-on: ubuntu-latest
     env:
@@ -33,7 +33,14 @@ jobs:
       CREDENTIALS_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose build codex
+      - run: docker compose build codex qa-browser
+      - name: Start isolated Chromium service
+        run: docker compose up -d qa-browser
+      - name: Verify real browser checks, responsive viewport and screenshot evidence
+        run: |
+          docker compose run --no-deps --rm -T --entrypoint node \
+            -v "$PWD/apps/codex-runner/browser-smoke.mjs:/opt/codex-runner/browser-smoke.mjs:ro" \
+            codex /opt/codex-runner/browser-smoke.mjs
       - name: Verify Codex Runner starts inside the built image
         run: |
           docker compose run --no-deps --rm -T --entrypoint node \
