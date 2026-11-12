@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
-import {listProjectProcesses} from '../dist/modules/processes/application/project-process-list.js';
+import {listProjectProcesses} from '../dist/modules/processes/infrastructure/project-process-list.js';
 import {registerProjectProcessRoutes} from '../dist/modules/processes/project-api.js';
 
 const project='123e4567-e89b-42d3-a456-426614174001';
