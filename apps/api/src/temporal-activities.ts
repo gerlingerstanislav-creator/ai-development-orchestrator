@@ -11,6 +11,7 @@ import {executeProjectManagerInbox,failProjectManagerInbox,readProjectManagerWat
 import {runIterationPlanning} from './project-iterations.js';
 import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
 import {runQualityGates} from './quality-gates.js';
+import {deploymentDecision} from './deployment-stage.js';
 import pg from 'pg';
 import {randomUUID,createDecipheriv,createHash} from 'node:crypto';
 import {createMergeService} from './merge-service.js';
@@ -660,6 +661,13 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   await event(projectId,runId,'development',status==='completed'?'testing':status,message,status==='failed'?'error':'info');
  }
  return {status,message};
+}
+/** A deterministic workflow branch chooses which quality contract applies. */
+export async function developmentVerificationSource(input:{projectId:string;taskId:string}):Promise<'pr'|'already_implemented'>{
+ const task=await pool.query("SELECT implementation_kind,implementation_commit,stage FROM tasks WHERE project_id=$1 AND id=$2",[input.projectId,input.taskId]);
+ if(!task.rowCount||task.rows[0].stage!=='testing')throw ApplicationFailure.nonRetryable('Разработка ещё не передала задачу в QA');
+ if(task.rows[0].implementation_kind==='already_implemented'&&/^[a-f0-9]{40}$/i.test(String(task.rows[0].implementation_commit||'')))return 'already_implemented';
+ return 'pr';
 }
 export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number;recovery?:boolean;simplified?:boolean;singlePass?:boolean}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
