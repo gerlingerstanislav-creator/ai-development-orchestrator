@@ -160,7 +160,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
     :await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow);
    // A successful PM delegation is explicit authorization to wake the
    // project's specialists. Informational tools and chat leave Stop intact.
-   if(session.role==='manager'&&new Set([
+   if(session.role==='manager'&&(result as any)?.ok!==false&&(result as any)?.recorded!==false&&new Set([
     'tasks.create','iterations.prepare_plan','iterations.launch',
     'workflow.approve_development','workflow.move_task','workflow.release_task',
     'qa.retry','documentation.import','documentation.prepare_spec',
