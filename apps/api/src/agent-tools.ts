@@ -6,7 +6,7 @@ export const hashSecret=(text:string)=>createHash('sha256').update(text).digest(
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
  'pm.decisions.list','pm.orders.list','iterations.preview_plan','approvals.list','discussions.list',
- 'tasks.list','tasks.read','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','memory.list','documentation.request_reset',
+ 'tasks.list','tasks.read','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','blockers.list','memory.list','documentation.request_reset',
  'history.search','discussions.read','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
