@@ -34,15 +34,9 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
    }catch{/* The next reconciliation retries. */ return;}
   }
 
-  // Ready means the analyst already finalized the specification (e.g. published SA plan).
+  // Ready means the analyst finalized this task's requirements, independent of epic siblings.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'
-    AND NOT EXISTS(SELECT 1 FROM tasks sibling WHERE t.parent_id IS NOT NULL AND sibling.parent_id=t.parent_id
-      AND sibling.id<>t.id AND sibling.type IN ('task','bug','improvement')
-      AND sibling.stage IN ('backlog','analysis') AND sibling.analysis_state NOT IN ('ready_for_development','approved'))
-    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n JOIN tasks sibling ON sibling.id=n.task_id
-     WHERE t.parent_id IS NOT NULL AND sibling.parent_id=t.parent_id
-      AND n.kind='question' AND n.status IN ('open','processing'))
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
@@ -51,12 +45,6 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   for(const t of ready.rows){
    const updated=await db.query(`UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now()
     WHERE id=$1 AND project_id=$2 AND stage='analysis' AND analysis_state='ready_for_development'
-    AND NOT EXISTS(SELECT 1 FROM tasks sibling WHERE tasks.parent_id IS NOT NULL AND sibling.parent_id=tasks.parent_id
-      AND sibling.id<>tasks.id AND sibling.type IN ('task','bug','improvement')
-      AND sibling.stage IN ('backlog','analysis') AND sibling.analysis_state NOT IN ('ready_for_development','approved'))
-    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n JOIN tasks sibling ON sibling.id=n.task_id
-     WHERE tasks.parent_id IS NOT NULL AND sibling.parent_id=tasks.parent_id
-      AND n.kind='question' AND n.status IN ('open','processing'))
     AND coalesce(jsonb_array_length(clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$1 AND n.kind='question' AND n.status IN ('open','processing'))
     RETURNING id`,[t.id,t.project_id]);
