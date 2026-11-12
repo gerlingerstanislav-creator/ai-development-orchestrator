@@ -16,6 +16,9 @@ import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext} from './agent-context.mjs';
+import {assembleAgentPrompt} from '../api/src/prompt-assembler.mjs';
+import {buildQaPrompt} from './qa-prompt.mjs';
+import {buildDeveloperPrompt} from './developer-prompt.mjs';
 import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
 import {parseExistingImplementation} from './development-outcome.mjs';
 
@@ -394,33 +397,16 @@ async function runJob(job,state,context){
   }
   state.branch=branch;
   state.message='Изменяет код';
-  const prompt=[
-   'Ты AI-разработчик, работаешь в настоящей локальной копии GitHub-репозитория.',
-   'Рабочая директория является корнем репозитория. У тебя ЕСТЬ доступ на чтение и запись файлов в этой директории.',
-   'Цель — довести ЭТАП разработки до подтверждаемого соответствия критериям приёмки. Сам реши, нужны ли изменения кода, переиспользование прежнего PR или проверка уже существующей реализации.',
-   'Сначала осмотри файлы проекта. Если в репозитории только README или нет исходников, СОЗДАЙ необходимые исходные файлы с нуля.',
-   'Для задачи про простую HTML-страницу достаточно index.html со встроенными CSS и JavaScript; не требуется публикация GitHub Pages.',
-   'Когда задача требует сайт или страницу, создай работающий HTML/JS/CSS, не ограничивайся рекомендациями.',
-   'Не задавай вопросов о GitHub-репозитории: он уже клонирован и привязан к проекту.',
-   'Не трогай секреты, .env, credentials или настройки доступа. Не запускай git push, git commit, git checkout.',
-   'Не используй GitHub MCP, GitHub API или другие удалённые инструменты для записи файлов: все изменения выполняй ТОЛЬКО в локальной рабочей папке. За commit, push и PR отвечает оркестратор.',
-   'Не изменяй файлы вне рабочей директории. Не устанавливай пакеты из сети.',
-   'Используй инструменты чтения задачи, проектных знаний и истории адресно. Для технических неопределённостей можешь консультироваться с другими специалистами и регистрировать доказанные блокеры. Не считай их закрытыми без подтверждения.',
-   'Если задача полностью реализована в текущей БАЗОВОЙ ветке и правки не нужны, не создавай фиктивные изменения. Заверши строкой RESULT: already_implemented и отдельной строкой IMPLEMENTATION_EVIDENCE: {"summary":"не менее 40 символов, что реализовано","files":["существующий/путь.ext"],"criteria":["критерий и объяснение с привязкой к файлу"]}. Перечисли только реальные отслеживаемые файлы. QA независимо проверит утверждение; отсутствие PR не означает автоматического успеха.',
-   'Если нужны правки, внеси их в доступную рабочую копию. Если задача заблокирована, назови конкретную причину и передай вопрос/блокер подходящему агенту через доступные MCP-инструменты.',
-   'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||['Задача: '+job.title+'\n'+job.description,'Инструкции: '+String(job.agentInstructions||'').slice(0,2000),'Правила: '+String(job.projectRules||'').slice(0,1300),'Документация: '+String(job.knowledgeContext||'').slice(0,1700),'Передача: '+String(job.handoffContext||'').slice(0,1100)].join('\n\n')),
-   'В конце ответа отдельной строкой укажи HANDOFF_NOTE: <1–3 предложения простым языком для карточки: что изменилось, как это влияет на задачу и что требует внимания>. Если отдельного комментария нет, напиши HANDOFF_NOTE: none. Детали реализации оставь в основном отчёте. Не включай секреты.',
-    'Если выявлен один повторно применимый урок для твоей роли, в последней строке укажи LEARNING_SUGGESTION: <конкретное правило с основанием на фактах запуска>; иначе LEARNING_SUGGESTION: none. Это предложение на согласование, не обязательное правило. Не включай секреты или персональные данные.'
-  ].join('\n\n');
+  const prompt=buildDeveloperPrompt(job);
   const policy=await isolatedTaskPolicy(workdir,dir,job.id);
   const runCodex=async(instruction)=>{
    assertJobActive(job.id);
    const remaining=timeLeft();
    if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
-   await auditCodexPrompt(job,'development',context.prefix+instruction);
+   await auditCodexPrompt(job,'development',instruction);
    const result=await command('codex',[
     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,context.prefix+instruction
+    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,instruction
    ],{cwd:dir,env:{...cliEnv,...context.env},timeout:remaining,jobId:job.id});
    // Codex emits tool-use and sandbox diagnostics on stderr.
    const parsed=codexJsonResult(result.stdout);
@@ -609,41 +595,12 @@ async function runTestJob(job,state,context){
   }
   // Keep complete case data in the isolated workspace instead of embedding a huge JSON in the prompt.
   await writeFile(join(dir,'.ado-qa-plan.json'),JSON.stringify(job.testPlan||{}),{mode:0o600});
-  const prompt=[
-   'Ты независимый AI-тестировщик в отдельной временной копии репозитория.',
-   'СНАЧАЛА исследуй проект и реальные возможности среды. Затем запусти ВСЕ доступные и относящиеся к ТЗ проверки (сборка, unit, integration, API, пользовательские сценарии, если для них есть инструменты). Записывай фактические команды и результаты.',
-   'Если проект не требует зависимостей, не объявляй его непроверяемым только из-за отсутствия node_modules.',
-   baseline.length?'Runner уже запустил стандартные проверки в изоляции. Используй их результаты, если они проверяют нужное поведение. Если команда не прошла из-за зависимостей, подготовь среду и повтори. Сам определи, указывает ли её вывод на дефект или ограничение среды. Фактический результат: '+JSON.stringify(baseline):'',
-   singlePass?'Сначала запусти доступную проверку проекта. Для Python используй python3 -m pytest, если в проекте есть тесты. Для Node запусти имеющийся скрипт тестов, установив зависимости при необходимости. Если готовых тестов для требования нет, выполни конкретную проверку с утверждением об ожидаемом результате, например вызови функцию или локальный API с тестовыми данными.': '',
-   'Для каждой проверки используй подтверждаемую команду с ID теста: node /opt/codex-runner/qa-exec.mjs case CASE_ID -- node --test ... (или другую конкретную команду). Для дополнительных проверок: node /opt/codex-runner/qa-exec.mjs check CHECK_ID -- npm test, а тот же CHECK_ID верни в поле checks[].evidenceId. Программа сама записывает код выхода и результат; не выдумывай результаты. Для blocked/not_run команду не запускай и оставь command и evidenceId пустыми. В поле command можешь вернуть запускаемую команду, но Runner сверяет ID с реальным протоколом исполнения.',
-   'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run. Не требуй дополнительных макетов, точных брейкпоинтов или геометрии, если их нет в утверждённых требованиях. Если задача прямо требует следования конкретному макету, а ссылка/правила действительно отсутствуют, назови это пробелом в требованиях, но не объявляй имеющийся браузер недоступным. Приоритет — проверить все однозначные критерии.',
-   'Не утверждай, что пользовательский путь, браузерное действие или ручная проверка выполнены без реального инструмента и воспроизведения.',
-   (adHoc?'Для каждого выбранного сценария':'Для КАЖДОГО case_id из плана')+' верни result, evidence и reason. reason для passed/failed = executed; для недоступных сценариев = tool_unavailable|environment_unavailable|manual_only. Если настоящая причина не установлена, reason = unknown (слияние без проверки нельзя рекомендовать).',
-   'Для недоступного сценария evidence должно назвать отсутствующий инструмент или среду, конкретную проверку, которая не запускалась, и почему. Не заменяй это общими фразами.',
-   'Невозможность установить отсутствующую зависимость из сети — ограничение среды, а не дефект приложения. Указывай такие проверки в checks как not_run; найденную настоящую ошибку проверенного кода показывай как failed.',
-   'Массив findings используй ТОЛЬКО для подтверждённых дефектов приложения, а не для отсутствующих инструментов; последние описывай в caseResults.',
-   'Разрешено устанавливать зависимости проекта через npm и pip только из разрешённых registry.npmjs.org и PyPI в рабочую копию проекта или локальный venv. Не устанавливай глобальные пакеты, не меняй GitHub, не читай секреты и не пытайся обойти сетевую политику.',
-   'Если в проекте есть package-lock.json, используй npm ci; если есть Python-проект, используй python3 -m venv внутри рабочей копии и pip. Запускай unit, integration и API проверки. Записывай фактические команды и коды возврата.',
-   'Для очередей с задержками проверяй время через управляемые часы и временную SQLite-базу: НЕ жди настоящие 5 или 15 минут. Для интеграций Telegram используй заглушки отправки; реальные токены не нужны для локальных модульных тестов.',
-   'Проверяй текущий PR и ранее слитую регрессию. Не требуй уже готового бота, прогноза или пользовательского пути от отдельного Python-модуля, если они реализуются другими незавершёнными задачами.',
-   'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
-   'ВАЖНО: сетевой proxy Codex сбрасывает NO_PROXY для каждой sandbox-команды. Если Node.js fetch, Playwright или тесты обращаются к локальному HTTP-серверу, запускай клиентскую команду с явными NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 (например: env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test). Это исключает только localhost из прокси; произвольные внешние хосты по-прежнему запрещены.',
-   browserAvailable?'Playwright Chromium ДОСТУПЕН через отдельный защищённый контейнер. '+browserStartupEvidence+' Сначала открой страницу: node /opt/codex-runner/browser-client.mjs start (по умолчанию index.html или первая HTML-страница) либо start /lines.html, если в задаче явно указан файл lines.html. Проверь поле path в ответе. Затем для КАЖДОГО проверяемого визуального тест-кейса выполни node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "выражение JS, возвращающее true при выполнении ожидаемого результата". CASE_ID должен ТОЧНО совпадать с case_id из .ado-qa-plan.json. Допустимы дополнительные assert для одного кейса, viewport WIDTH HEIGHT, goto /имя-страницы.html, click CSS_SELECTOR, fill CSS_SELECTOR VALUE, screenshot. Для дополнительных проверок применяй assert --check CHECK_ID и указывай evidenceId=CHECK_ID в checks. Браузерное подтверждение автоматически сохраняется на стороне Runner и не зависит от текста command. Для отзывчивой вёрстки используй типовые мобильные и десктопные viewport; если в ТЗ нет конкретных размеров, НЕ объявляй их отсутствие нехваткой инструмента или блокером, проверяй отсутствие выхода элементов за границы экрана на репрезентативных ширинах. Отсутствие утверждённого макета само по себе не делает функциональные критерии непроверяемыми: не выдумывай требования о точном расположении. После установки зависимостей или сборки выполни browser-client.mjs restart, затем start, чтобы браузерный хост заново выбрал собранную страницу. Браузер не имеет доступа к интернету или Docker. Не засчитывай скриншот без проверяемого утверждения.':'Браузерный сервис недоступен — браузерные кейсы должны получить blocked/tool_unavailable; не устанавливай Chromium в sandbox.',
-   'Тестовая среда не имеет доступа к Docker-сокету, секретам приложения, внутренним сервисам платформы или произвольному интернету. Все команды выполняются в изоляции.',
-   'Сбой Codex CLI — не доказательство отсутствия инструментов и не основание автоматически разрешать пропуск проверок.',
-   'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
-   'При невозможности проверки не скрывай её. Если все реально доступные проверки выполнены без ошибок, но несколько сценариев недоступны, верни verdict=blocked и точный список таких сценариев. НЕ разрешай слияние самостоятельно — его может согласовать только пользователь.',
-   'Если инструмент есть и проверку можно провести, обязательно попробуй. Отсутствие времени, ошибка теста или неподтверждённый результат НЕ является доказательством, что инструмент недоступен.',
-   (!singlePass?'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","handoffNote":"процедурное замечание другому агенту, не часть документации; пустая строка если замечаний нет","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","reason":"executed|tool_unavailable|environment_unavailable|manual_only|unknown","evidence":"команда и результат или причина недоступности"}]}.':'Сформируй JSON по заданной схеме. У каждого caseResults должны быть case_id и title.'),
-   'Вердикт failed при обнаружении воспроизводимых проблем. Вердикт passed только при достаточных проверках и отсутствии дефектов. blocked — если проверить нельзя.',
-   singlePass?'В summary и handoffNote кратко объясни, что получилось и что мешало. Число проверок подсчитает система.':'Поля summary и handoffNote видны человеку. Коротко объясни результат простым языком, включая сколько сценариев проверено, что осталось и почему. Подробные команды и доказательства запиши в checks и caseResults.',
-   'В поле learningSuggestion запиши одно полезное повторно применимое улучшение процесса QA, основанное на фактических проверках этого запуска, или пустую строку. Это предложение на утверждение пользователю, не обязательная инструкция. Не добавляй секреты или персональные данные.',
-   'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||['Задача: '+job.title+'\n'+String(job.description).slice(0,6000),'Инструкции: '+String(job.agentInstructions||'').slice(0,1600),'Правила: '+String(job.projectRules||'').slice(0,800),'Документация: '+String(job.knowledgeContext||'').slice(0,900),'Передача: '+String(job.handoffContext||'').slice(0,800)].join('\n\n')),
-   'Возможности текущего контейнера, обнаруженные автоматически: '+capabilities,
-   prerequisite?'Ограничение среды: '+prerequisite+' Выполни остальные доступные проверки.':'',
-   adHoc?'Файл плана пуст. Сам выбери до 20 проверок по ТЗ и изменённому поведению, выполни доступные сразу. Верни для каждой запись caseResults с уникальным case_id qa-1, qa-2 и так далее и понятным title. Включи недоступные сценарии, если они нужны для приёмки.':'План тестирования находится в файле .ado-qa-plan.json в корне текущей временной рабочей копии. Прочитай его полностью перед проверками; проверь КАЖДЫЙ case_id, используй шаги и ожидаемые результаты из файла.',
-   'Текущий git commit: '+state.testedCommit
-  ].join('\n\n');
+  // Tool recipes are workspace documentation, not model instructions.
+  // Codex reads relevant sections on demand, avoiding unrelated technology.
+  const qaHandbook=await readFile(new URL('./qa-tools.md',import.meta.url),'utf8');
+  await writeFile(join(dir,'.ado-qa-tools.md'),qaHandbook,{mode:0o600});
+  const prompt=buildQaPrompt(job,{singlePass,adHoc,browserAvailable,
+   browserStartupEvidence,capabilities,baseline,prerequisite,testedCommit:state.testedCommit});
   state.message='Проверяет код и запускает доступные тесты';
   const commandField={command:{type:'string'}};
   const titleField=singlePass?{title:{type:'string'}}:{};
@@ -689,8 +646,8 @@ async function runTestJob(job,state,context){
   const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,
    '--output-schema',schemaPath];
-  await auditCodexPrompt(job,'testing',context.prefix+prompt+'\n\nПоле learningSuggestion: краткий вывод или пустая строка.');
-  const firstRun=await command('codex',[...args,...context.args,context.prefix+prompt+'\n\nПоле learningSuggestion: краткий вывод или пустая строка.'],{
+  await auditCodexPrompt(job,'testing',prompt);
+  const firstRun=await command('codex',[...args,...context.args,prompt],{
    cwd:dir,env:{...cliEnv,...context.env},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
   });
   let parsed=codexJsonResult(firstRun.stdout);
