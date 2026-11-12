@@ -1,3 +1,4 @@
+import {createRunnerRecovery,runnerUnavailable} from './modules/execution/application/runner-recovery.js';
 import {readProjectAgentAvailability,ProjectAgentAvailabilityError,type ProjectAgentScope} from './modules/execution/project-agent-availability.js';
 import {createRunnerHttpClient} from './infrastructure/runner-http-client.js';
 import {preserveAcceptanceCriteria} from './acceptance-criteria.js';
@@ -64,28 +65,7 @@ const runnerRequest=createRunnerHttpClient({baseUrl:codexUrl,secret:runnerKey});
 function runner(path:string,method:'GET'|'POST'='GET',body?:unknown):Promise<any>{
  return runnerRequest(path,method,body);
 }
-function runnerUnavailable(error:unknown){
- const status=(error as {statusCode?:number})?.statusCode;
- if(status&&status<500)throw error;
- return {status:'running' as const,message:'Ожидается восстановление связи с Codex Runner'};
-}
-async function trackRunnerWait(kind:'development'|'testing',projectId:string,id:string,error?:unknown,recoveryDetail?:string){
- const status=(error as {statusCode?:number})?.statusCode;
- if(status&&status<500)return failRunnerRun(kind,projectId,id,(error as Error).message);
- const message=error?'Ожидается восстановление связи с Codex Runner':
-  recoveryDetail?recoveryDetail.slice(0,1200):'Восстанавливается задание в Codex Runner';
- const table=kind==='development'?'ai_task_runs':'ai_test_runs';
- const change=await pool.query(`UPDATE ${table} SET message=$2
-  WHERE id=$1 AND status IN ('queued','running') AND message IS DISTINCT FROM $2 RETURNING id`,[id,message]);
- if(change.rowCount)await event(projectId,id,kind,'runner_recovery',message);
- return {status:'running',message};
-}
-async function failRunnerRun(kind:'development'|'testing',projectId:string,id:string,message:string){
- const table=kind==='development'?'ai_task_runs':'ai_test_runs';
- await pool.query(`UPDATE ${table} SET status='failed',message=$2,completed_at=now() WHERE id=$1 AND status IN ('queued','running')`,[id,message]);
- await event(projectId,id,kind,'failed',message,'error');
- return {status:'failed',message};
-}
+const {trackRunnerWait,failRunnerRun}=createRunnerRecovery(pool,event);
 async function event(projectId:string,processId:string,kind:string,stage:string,detail:string,level='info'){
  await pool.query('INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level) VALUES($1,$2,$3,$4,$5,$6,$7)',
   [randomUUID(),projectId,processId,kind,stage,detail.slice(0,2200),level]);
