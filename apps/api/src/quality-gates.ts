@@ -124,17 +124,24 @@ async function gate(pool:Pool,ctx:GateContext,kind:GateKind,settings:Awaited<Ret
   const report=kind==='ci'?{checks:current.ciChecks,commit:current.testedCommit}:current.reviewReport;
   const passed=kind==='ci'?current.ciVerdict==='passed'&&current.testedCommit===headSha:
    current.reviewReport?.verdict==='approved'&&current.reviewedCommit===headSha;
+  // Missing CI discovery is not a product regression. Prevent Temporal from
+  // scheduling endless developer rework on the same head SHA. The workflow
+  // already treats "Сбой проверки:" as a non-reworkable blocker.
+  const unsupported=kind==='ci'&&current.ciVerdict==='blocked'&&current.testedCommit===headSha;
   if(!report||kind==='review'&&!['approved','changes_requested'].includes(report.verdict))
    throw Error('Исполнитель не предоставил валидный отчёт '+kind);
   const latest=await readPr(pool,decrypt,ctx.projectId,ctx.taskId);
-  if(latest.headSha!==headSha||latest.baseSha!==baseSha)throw Error('PR изменился в процессе проверки; результаты устарели');
+  if(latest.headSha!==headSha||latest.baseSha!==baseSha)throw Error('PR изменён, закрыт или не содержит проверяемых SHA');
+  const verdict=passed?'passed':unsupported?'blocked':'rejected';
   const message=passed?(kind==='ci'?'Собственный CI пройден':'Архитектор одобрил PR'):
+   unsupported?'Не обнаружены исполняемые проверки проекта. CI заблокирован до настройки тестов; разработка не должна запускаться повторно.':
    (kind==='ci'?'Технические проверки не пройдены':String(report.summary||'Архитектор запросил исправления')).slice(0,1400);
   await pool.query("UPDATE quality_gate_runs SET status='completed',verdict=$2,report=$3,message=$4,completed_at=now() WHERE id=$1",
-   [id,passed?'passed':'rejected',JSON.stringify(report),message]);
-  await logEvent(pool,ctx.projectId,id,kind,passed?'passed':'rejected',message,passed?'info':'warning');
-  await publishStatus(pool,{...statusArgs,state:passed?'success':'failure',description:message});
-  return {passed,kind,message:passed?message:message+'\n'+JSON.stringify(report).slice(0,5500),headSha,baseSha};
+   [id,verdict,JSON.stringify(report),message]);
+  await logEvent(pool,ctx.projectId,id,kind,verdict,message,passed?'info':'warning');
+  await publishStatus(pool,{...statusArgs,state:passed?'success':unsupported?'error':'failure',description:message});
+  return {passed,kind,message:passed?message:unsupported?'Сбой проверки: '+message+'\n'+JSON.stringify(report).slice(0,3000):
+   message+'\n'+JSON.stringify(report).slice(0,5500),headSha,baseSha};
  }catch(error){
   const message=errorText(error);
   await pool.query("UPDATE quality_gate_runs SET status='failed',verdict='blocked',message=$2,completed_at=now() WHERE id=$1",[id,message]);
