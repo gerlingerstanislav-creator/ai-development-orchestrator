@@ -52,7 +52,7 @@ export const agentToolCatalog=[
  tool('tasks.list','Получить все задачи и этапы; product_owner_questions_only=true показывает задачи с ожидаемыми ответами владельца, не перемещая их между этапами.',{product_owner_questions_only:field('boolean','Показать задачи с открытыми вопросами владельцу')}),
  tool('tasks.dependency_graph','Проверить реальные технические зависимости, блокировки и этапы задач, прежде чем снимать или менять связи.',{}),
  tool('tasks.update_dependency','Самостоятельно исправить ошибочную техническую зависимость с аудитом. Меняй связь только при доказанном отсутствии реальной кодовой зависимости; не меняй зависимости для уже созданных веток.',{task_id:id,depends_on_task_id:{type:['string','null'],description:'UUID задачи-основания или null для удаления',format:'uuid'},reason:field('string','Обоснование изменения связи'),idempotency_key:idem},['task_id','depends_on_task_id','reason']),
- tool('tasks.read','Прочитать задачу, её открытые вопросы с ID, уже сохранённые ответы и историю. Прежде чем заявлять об отсутствии вопроса, проверь open_questions и clarification_questions.',{task_id:id},['task_id']),
+ tool('tasks.read','Прочитать актуальное состояние задачи, GitHub-ветку и PR, открытые вопросы, сохранённые ответы и историю. Перед работой по задаче прочитай её; дополнительные знания запрашивай адресно. Не считай прежнюю сводку актуальной без проверки.',{task_id:id},['task_id']),
  tool('tasks.request_owner_question_cleanup','По явному запросу пользователя открыть предпросмотр удаления из колонки «Вопросы к ПО». Учти задачи типа question, созданные аналитиком. Удаление — только после явного подтверждения владельца.',{}),
  tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
  tool('tasks.delete','Удалить ошибочную ещё не выполнявшуюся задачу, если владелец явно поручил это. Выполненная работа не удаляется, для неё есть tasks.cancel с предпросмотром.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
@@ -146,7 +146,7 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  if(!result.rowCount)return null;
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
  await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
-  VALUES($1,$2,$3,$4,$5,now()+interval '40 minutes',true,$6,$7)`,
+  VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',true,$6,$7)`,
  [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null]);
  return {id,secret};
 }
