@@ -1,6 +1,6 @@
 import {initEpicStageSync} from './epic-stage-sync.js';
 import {initAnalysisFirstGate} from './analysis-first-gate.js';
-import {planManagerStageMove,type WorkStage} from './task-stage-operations.js';
+import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-stage-operations.js';
 import {formatQaReportMessage,qaEventDetail} from './qa-report-message.js';
 import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
@@ -1776,14 +1776,10 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
      const task=(await db.query("SELECT id,stage,documentation_updated_at,pr_url FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
      if(!task){await db.query('ROLLBACK');return {status:'blocked',reason:'Задача отсутствует'};}
      if(task.stage==='done'){await db.query('ROLLBACK');return {status:'already_closed',stage:'done'};}
-     if(task.stage!=='documentation'||!task.documentation_updated_at||!task.pr_url){
-      await db.query('ROLLBACK');
-      return {status:'blocked',stage:task.stage,reason:'Нельзя пометить задачу готовой: слияние, выкладка или обновление документации ещё не подтверждены'};
-     }
      const pending=await db.query("SELECT 1 FROM knowledge_document_updates u WHERE u.project_id=$1 AND u.status='pending' AND $2=ANY(u.task_ids) LIMIT 1",[projectId,taskId]);
-     if(pending.rowCount){
+     if(!canManagerCloseTask(task.stage as WorkStage,!!task.documentation_updated_at,!!task.pr_url,!!pending.rowCount)){
       await db.query('ROLLBACK');
-      return {status:'blocked',stage:task.stage,reason:'Связанные изменения документации ожидают согласования'};
+      return {status:'blocked',stage:task.stage,reason:pending.rowCount?'Документация ожидает согласования':'Нельзя пометить задачу готовой: слияние, выкладка или обновление документации ещё не подтверждены'};
      }
      const finished=await db.query("UPDATE tasks SET stage='done',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='documentation' RETURNING id",[projectId,taskId]);
      if(!finished.rowCount)throw Object.assign(Error('Задача изменилась во время завершения'),{statusCode:409});
