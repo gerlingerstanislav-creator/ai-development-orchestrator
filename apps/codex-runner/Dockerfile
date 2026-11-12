@@ -18,6 +18,7 @@ WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
 COPY apps/codex-runner/command-executor.mjs ./command-executor.mjs
 COPY apps/codex-runner/codex-proxy.mjs ./codex-proxy.mjs
+COPY apps/codex-runner/device-auth.mjs ./device-auth.mjs
 COPY apps/api/src/prompt-assembler.mjs /opt/api/src/prompt-assembler.mjs
 COPY apps/api/src/qa-visual-case.mjs /opt/api/src/qa-visual-case.mjs
 COPY apps/codex-runner/qa-prompt.mjs apps/codex-runner/developer-prompt.mjs apps/codex-runner/qa-tools.md ./
