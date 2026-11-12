@@ -58,6 +58,12 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   params.task_id=session.task_id;
  }
  switch(name){
+ case 'project.agents.start':{
+  if(session.role!=='manager')throw rejected('Только ПМ может запускать агентов по поручению владельца',403);
+  const result=await pool.query('UPDATE projects SET agents_running=true WHERE id=$1 AND deleted_at IS NULL RETURNING agents_running',[projectId]);
+  if(!result.rowCount)throw rejected('Проект недоступен',404);
+  return {running:true,project_id:projectId};
+ }
  case 'approvals.answer_question':{
   const {task_id,note_id,answer}=z.object({task_id:uuid,note_id:uuid,answer:z.string().trim().min(3).max(3000)}).parse(params);
   const changed=await pool.query("UPDATE task_agent_notes SET status='answered',answer=$4,answered_at=now(),answered_by=$5,answer_author='Владелец через ПМ' WHERE project_id=$1 AND task_id=$2 AND id=$3 AND kind='question' AND status='open' AND requires_customer=true RETURNING id",[projectId,task_id,note_id,answer,actorId]);
@@ -212,7 +218,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
  case 'project.context':{
   const [p,stages,rules,github]=await Promise.all([
-   pool.query('SELECT id,name,description FROM projects WHERE id=$1',[projectId]),
+   pool.query('SELECT id,name,description,agents_running FROM projects WHERE id=$1',[projectId]),
    pool.query('SELECT stage,label,mode,agent_name,agent_instructions,position FROM workflow_stages WHERE project_id=$1 ORDER BY position',[projectId]),
    pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 80',[projectId]),
    pool.query('SELECT repository,target_branch,default_branch FROM project_git_repositories WHERE project_id=$1',[projectId])

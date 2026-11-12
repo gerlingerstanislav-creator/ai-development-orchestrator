@@ -49,6 +49,7 @@ services:
       CODEX_RUNNER_URL: http://codex:4300
       RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:?set RUNNER_SHARED_SECRET}
       TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_ACTIVITY_CONCURRENCY: ${TEMPORAL_ACTIVITY_CONCURRENCY:-48}
     depends_on:
       db: {condition: service_healthy}
       temporal: {condition: service_started}

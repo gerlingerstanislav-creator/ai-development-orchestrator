@@ -25,18 +25,19 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   if(!locked)return;
   // Recover an interrupted API dispatch (idempotent workflow ID).
   const pending=await db.query(`SELECT id,project_id,task_id,status FROM agent_analysis_runs
-   WHERE status='queued' ORDER BY created_at LIMIT 10`);
+   WHERE status='queued' AND EXISTS(SELECT 1 FROM projects p WHERE p.id=agent_analysis_runs.project_id AND p.agents_running) ORDER BY created_at LIMIT 10`);
   for(const run of pending.rows){
    try{
     const c=await temporal();
     try{await c.workflow.start('analyzeTaskStage',{taskQueue:'agent-pipeline',workflowId:'task-analysis-'+run.id,args:[run.id]});}
     catch(e){if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((e as Error).name))throw e;}
-   }catch{/* The next reconciliation retries. */ return;}
+   }catch{/* Retry this run next tick, without blocking other projects. */ continue;}
   }
 
   // Ready means the analyst finalized this task's requirements, independent of epic siblings.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'
+    AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
@@ -56,12 +57,17 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
       [randomUUID(),t.project_id,t.id,'ТЗ готово. Разработчик получит задачу автоматически.','analysis-stage-ready:'+t.id]);
    }
   }
-  const candidates=await db.query(`SELECT t.id,t.project_id,t.spec_version FROM tasks t
-   JOIN project_ai_settings ai ON ai.project_id=t.project_id AND ai.enabled=true
+  // Interleave projects before applying a bounded scan. A busy project's long
+  // backlog must not hide another project's ready analyst work.
+  const candidates=await db.query(`SELECT id,project_id,spec_version FROM (
+   SELECT t.id,t.project_id,t.spec_version,t.priority,t.created_at,
+    row_number() OVER(PARTITION BY t.project_id ORDER BY t.priority,t.created_at,t.id) AS project_position
+   FROM tasks t JOIN project_ai_settings ai ON ai.project_id=t.project_id AND ai.enabled=true
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='new'
+    AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
-   ORDER BY t.priority,t.created_at LIMIT 25`);
+  ) ready ORDER BY project_position,priority,created_at,id LIMIT 100`);
   for(const t of candidates.rows){
    const capacity=await roleCapacity(pool,t.project_id,'analysis');
    const running=await db.query(`SELECT count(*)::int AS total FROM agent_analysis_runs
@@ -84,7 +90,6 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
     const c=await temporal();
     await c.workflow.start('analyzeTaskStage',{taskQueue:'agent-pipeline',workflowId:'task-analysis-'+runId,args:[runId]});
    }catch{/* Queued run will be recovered above. */}
-   return;
   }
  }finally{
   if(locked)await db.query("SELECT pg_advisory_unlock(hashtext('ado-task-analysis-stage'))").catch(()=>{});

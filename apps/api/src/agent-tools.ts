@@ -48,6 +48,7 @@ export const agentToolCatalog=[
  tool('knowledge.section','Читать один Markdown-раздел по стабильному UUID из knowledge.sections; экономит контекст.',{document_id:id,section_id:field('string','UUID раздела из knowledge.sections'),task_id:id},['document_id','section_id']),
  tool('knowledge.related','Найти связанные требования и архитектурные документы.',{document_id:id},['document_id']),
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
+ tool('project.agents.start','Запустить специалистов выбранного проекта после остановки или новой выкладки по прямому поручению владельца; запланированные задачи продолжат обработку.',{}),
  tool('tasks.list','Получить все задачи и этапы; product_owner_questions_only=true показывает задачи с ожидаемыми ответами владельца, не перемещая их между этапами.',{product_owner_questions_only:field('boolean','Показать задачи с открытыми вопросами владельцу')}),
  tool('tasks.dependency_graph','Проверить реальные технические зависимости, блокировки и этапы задач, прежде чем снимать или менять связи.',{}),
  tool('tasks.update_dependency','Самостоятельно исправить ошибочную техническую зависимость с аудитом. Меняй связь только при доказанном отсутствии реальной кодовой зависимости; не меняй зависимости для уже созданных веток.',{task_id:id,depends_on_task_id:{type:['string','null'],description:'UUID задачи-основания или null для удаления',format:'uuid'},reason:field('string','Обоснование изменения связи'),idempotency_key:idem},['task_id','depends_on_task_id','reason']),
@@ -103,7 +104,7 @@ const readerTools=new Set([
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
+const BA_DENIED=new Set(['project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole,readOnly=false){
  if(readOnly||!['manager','analyst','business_analyst'].includes(role))

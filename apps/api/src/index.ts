@@ -106,6 +106,10 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
  CREATE TABLE IF NOT EXISTS projects (id uuid primary key, name text not null, description text not null default '', owner_id uuid not null references users(id), created_at timestamptz not null default now());
  ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ -- Every backend rollout requires an explicit per-project resume. This flag is
+ -- intentionally distinct from project_ai_settings.enabled (account setup).
+ ALTER TABLE projects ADD COLUMN IF NOT EXISTS agents_running boolean NOT NULL DEFAULT false;
+ UPDATE projects SET agents_running=false WHERE agents_running=true;
  CREATE INDEX IF NOT EXISTS idx_projects_owner_trash ON projects(owner_id,deleted_at,created_at DESC);
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
@@ -679,6 +683,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
    :{taskId,approveAnalysis};
   const {tasks:[intent]}=await enqueueDevelopment(client,id,uid(req),scope);
   const ai=await resolveRoleAiSettings(client,id,'development');
+  await client.query('UPDATE projects SET agents_running=true WHERE id=$1',[id]);
   await client.query('COMMIT');
   return reply.code(202).send({id:intent.run_id,task_id:taskId,status:'queued',
    message:'Запуск принят. Подробности ожидания — в Центре процессов.',model:ai.model,created_at:intent.created_at});
@@ -831,6 +836,7 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
    await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Повторное тестирование перед слиянием')",
     [randomUUID(),taskId,uid(req)]);
   }
+  await db.query('UPDATE projects SET agents_running=true WHERE id=$1',[id]);
   await db.query('COMMIT');
  }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
  try{
@@ -1059,8 +1065,19 @@ app.get('/api/projects/:id/merge-ready/:batchId',async(req:any,reply)=>{
 
 app.get('/api/me',async(req)=>{const r=await pool.query('SELECT id,email FROM users WHERE id=$1',[uid(req)]);return r.rows[0];});
 app.get('/api/projects',async(req)=>{
- const r=await pool.query('SELECT p.id,p.name,p.description,p.created_at,(p.owner_id=$1) AS is_owner FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 AND p.deleted_at IS NULL ORDER BY p.created_at DESC',[uid(req)]);
+ const r=await pool.query('SELECT p.id,p.name,p.description,p.agents_running,p.created_at,(p.owner_id=$1) AS is_owner FROM projects p JOIN memberships m ON m.project_id=p.id WHERE m.user_id=$1 AND p.deleted_at IS NULL ORDER BY p.created_at DESC',[uid(req)]);
  return r.rows;
+});
+// Operator control plane: PM remains reachable while specialist dispatch is stopped.
+// An already-running external job is not killed, preserving its git/QA checkpoint.
+app.post('/api/projects/:id/agents/state',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ if(!await requireAdmin(req,reply))return;
+ const {running}=parse(z.object({running:z.boolean()}),req.body||{});
+ const changed=await pool.query('UPDATE projects SET agents_running=$2 WHERE id=$1 AND deleted_at IS NULL RETURNING agents_running',[id,running]);
+ if(!changed.rowCount)return reply.code(404).send({error:'Проект не найден'});
+ return {running:changed.rows[0].agents_running};
 });
 app.get('/api/projects/trash',async(req)=>{
  const r=await pool.query('SELECT id,name,description,deleted_at FROM projects WHERE owner_id=$1 AND deleted_at IS NOT NULL ORDER BY deleted_at DESC',[uid(req)]);

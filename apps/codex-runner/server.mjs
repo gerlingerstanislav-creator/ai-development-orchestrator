@@ -16,6 +16,7 @@ import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext} from './agent-context.mjs';
+import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -145,7 +146,7 @@ function stopCommand(child){
 const MAX_PARALLEL_DEVELOPMENT=20; // Actual per-project role limits come from signed API jobs.
 const MAX_PARALLEL_PER_ROLE=1;
 const activeByRole=new Map();
-const jobRole=job=>job.kind==='test'?'testing':job.kind==='review'?'architect':job.kind==='ci'?'devops':'development';
+const activeByProject=new Map();
 const agentApi=process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools';
 const MAX_PARALLEL_CHAT=4;
 const jobQueue=[];
@@ -156,14 +157,19 @@ let storageRetry;
 let activeChatRequests=0;
 const activeAgentRoles=new Map();
 function startNextJobs(){
- for(let i=0;i<jobQueue.length && runningJobs<MAX_PARALLEL_DEVELOPMENT;){
+ // Drop cancelled requests first; then select fairly across ready projects.
+ for(let i=0;i<jobQueue.length;){
+  if(cancelledJobs.has(jobQueue[i].job.id))jobQueue.splice(i,1);
+  else i++;
+ }
+ while(runningJobs<MAX_PARALLEL_DEVELOPMENT){
+  const i=nextRunnableJobIndex(jobQueue,{activeBranches,activeByRole,activeByProject,defaultRoleCapacity:MAX_PARALLEL_PER_ROLE});
+  if(i<0)break;
   const {job,state}=jobQueue[i];
-  if(cancelledJobs.has(job.id)){jobQueue.splice(i,1);continue;}
   const branchKey=job.repository+':'+job.taskId;
   const role=jobRole(job);
-  const roleKey=(job.projectId||job.repository)+':'+role;
-  const capacity=Number.isInteger(job.roleCapacity)?Math.min(10,Math.max(1,job.roleCapacity)):MAX_PARALLEL_PER_ROLE;
-  if(activeBranches.has(branchKey)||(activeByRole.get(roleKey)||0)>=capacity){i++;continue;}
+  const key=projectKey(job);
+  const roleKey=key+':'+role;
   state.status='running';state.startedAt=new Date().toISOString();
   state.message='Исполнитель приступил к заданию';
   try{saveJob(job,state);}
@@ -179,6 +185,7 @@ function startNextJobs(){
   runningJobIds.add(job.id);
   runningJobs++;
   activeByRole.set(roleKey,(activeByRole.get(roleKey)||0)+1);
+  activeByProject.set(key,(activeByProject.get(key)||0)+1);
   let expiredPhase;
   const deadline=setTimeout(()=>{
    if(state.status!=='running')return;
@@ -201,7 +208,9 @@ function startNextJobs(){
    try{saveJob(job,state);activeJobs.delete(job.id);}
    catch(error){process.stderr.write('Не удалось сохранить результат задания '+job.id+': '+error.message+'\n');}
    activeBranches.delete(branchKey);runningJobIds.delete(job.id);cancelledJobs.delete(job.id);runningJobs--;
-   activeByRole.set(roleKey,Math.max(0,(activeByRole.get(roleKey)||1)-1));startNextJobs();
+   activeByRole.set(roleKey,Math.max(0,(activeByRole.get(roleKey)||1)-1));
+   activeByProject.set(key,Math.max(0,(activeByProject.get(key)||1)-1));
+   startNextJobs();
   });
  }
  for(let i=0;i<jobQueue.length;i++)jobQueue[i].state.message='Ожидает свободного исполнителя своей роли (очередь '+(i+1)+')';
@@ -284,17 +293,55 @@ function addUsage(a,b){
   output_tokens:(a.output_tokens||0)+(b.output_tokens||0)};
 }
 async function ensureTaskPullRequest(job,branch,commit,summary){
- const existing=await fetch('https://api.github.com/repos/'+job.repository+'/pulls?state=open&head='+
-  encodeURIComponent(job.repository.split('/')[0]+':'+branch),{
-  headers:{Authorization:'Bearer '+job.token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
-  signal:AbortSignal.timeout(20000)
- });
- if(!existing.ok)throw Error('Не удалось проверить существующий PR: GitHub HTTP '+existing.status);
- const open=await existing.json();
- const matching=open.find(pr=>pr.base?.ref===job.baseBranch);
+ const url='https://api.github.com/repos/'+job.repository;
+ const headers={Authorization:'Bearer '+job.token,Accept:'application/vnd.github+json',
+  'X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
+ const list=async state=>{
+  const response=await fetch(url+'/pulls?state='+state+'&head='+
+   encodeURIComponent(job.repository.split('/')[0]+':'+branch)+'&per_page=100',{
+    headers,signal:AbortSignal.timeout(20000)
+   });
+  if(!response.ok)throw Error('Не удалось проверить '+state+' PR: GitHub HTTP '+response.status);
+  return response.json();
+ };
+ const patch=async(number,body)=>{
+  const response=await fetch(url+'/pulls/'+number,{
+   method:'PATCH',headers:{...headers,'Content-Type':'application/json'},
+   body:JSON.stringify(body),signal:AbortSignal.timeout(20000)
+  });
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok)throw Error('Не удалось восстановить PR #'+number+': GitHub HTTP '+response.status+
+   ' '+String(data.message||'').slice(0,220));
+  return data;
+ };
  assertJobActive(job.id);
- const pr=matching||await createPullRequest(job,branch,summary);
- if(pr.head?.sha!==commit||!pr.html_url)throw Error('Ветка PR изменилась. Проверьте актуальную версию в GitHub.');
+ const open=await list('open');
+ let pr=open.find(item=>item.base?.ref===job.baseBranch);
+ if(!pr&&open.length){
+  // A PR for this task branch already exists against another base. Creating
+  // another would hit 422; change the target explicitly and keep its history.
+  pr=await patch(open[0].number,{base:job.baseBranch});
+ }
+ if(!pr){
+  const closed=await list('closed');
+  const recoverable=closed.find(item=>!item.merged_at&&item.base?.ref===job.baseBranch);
+  if(recoverable)pr=await patch(recoverable.number,{state:'open'});
+ }
+ if(!pr){
+  try{pr=await createPullRequest(job,branch,summary);}
+  catch(error){
+   // A concurrent writer may have created the PR between list and POST.
+   const again=await list('open');
+   pr=again.find(item=>item.base?.ref===job.baseBranch);
+   if(!pr)throw error;
+  }
+ }
+ if(pr.head?.sha!==commit||!pr.html_url){
+  const current=await fetch(url+'/pulls/'+pr.number,{headers,signal:AbortSignal.timeout(20000)});
+  if(current.ok)pr=await current.json();
+ }
+ if(pr.head?.sha!==commit||!pr.html_url)
+  throw Error('PR #'+pr.number+' существует, но SHA ветки не совпадает с опубликованным коммитом. Не перезаписываем чужие изменения.');
  return pr.html_url;
 }
 async function resumePublishedCommit(job,state,git){

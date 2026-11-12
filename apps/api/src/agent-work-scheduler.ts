@@ -95,6 +95,7 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
    THEN 'iteration_changed'
   WHEN NOT q.automatic AND t.spec_version IS DISTINCT FROM q.spec_version THEN 'spec_changed'
   WHEN t.stage IN ('testing','merge_queue','deployment','documentation','done') THEN 'advanced'
+  WHEN NOT project_runtime.agents_running THEN 'paused'
   WHEN NOT COALESCE(settings.enabled,false) THEN 'ai_disabled'
   WHEN NOT EXISTS(SELECT 1 FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id
    WHERE g.project_id=q.project_id AND c.provider='github_token') THEN 'github'
@@ -119,6 +120,7 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
  CASE WHEN dep.stage='merge_queue' THEN dep.git_branch END AS base_branch,
  settings.model,settings.reasoning,settings.enabled
  FROM iteration_execution_queue q
+ JOIN projects project_runtime ON project_runtime.id=q.project_id
  JOIN tasks t ON t.id=q.task_id AND t.project_id=q.project_id
  LEFT JOIN project_iterations i ON i.id=q.iteration_id AND i.project_id=q.project_id
  LEFT JOIN project_ai_settings settings ON settings.project_id=q.project_id
@@ -128,6 +130,7 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
 const reasonText:Record<string,string>={
  iteration_changed:'План изменился. Подтвердите запуск для актуальной ревизии.',
  spec_changed:'Версия ТЗ изменилась. Подтвердите запуск повторно.',
+ paused:'Агенты проекта остановлены. Нажмите Play рядом с проектом.',
  ai_disabled:'AI отключён в настройках проекта.',
  github:'Ожидается подключение репозитория GitHub.',
  stage:'Задача ещё не готова к разработке.',
@@ -179,13 +182,19 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
  try{
   acquired=(await db.query("SELECT pg_try_advisory_lock(hashtext('ado-iteration-development-queue')) AS locked")).rows[0].locked===true;
   if(!acquired)return;
+  // Recover multiple interrupted dispatches in one reconciliation. A dispatch in
+  // one project must not hold up ready work in every other project for a tick.
   const pending=(await db.query(`SELECT q.project_id,q.task_id,q.run_id,r.status AS run_status
    FROM iteration_execution_queue q LEFT JOIN ai_task_runs r ON r.id=q.run_id
-   WHERE q.status='dispatching' ORDER BY q.updated_at LIMIT 1`)).rows[0];
-  if(pending){
-   if(['queued','running'].includes(pending.run_status))await dispatch(db,temporal,pending);
-   else await db.query("UPDATE iteration_execution_queue SET status='dispatched',detail='Попытка завершена',updated_at=now() WHERE run_id=$1 AND status='dispatching'",[pending.run_id]);
-   return;
+   WHERE q.status='dispatching' AND EXISTS(SELECT 1 FROM projects p WHERE p.id=q.project_id AND p.agents_running)
+   ORDER BY q.updated_at LIMIT 100`)).rows;
+  for(const run of pending){
+   try{
+    if(['queued','running'].includes(run.run_status))await dispatch(db,temporal,run);
+    else await db.query("UPDATE iteration_execution_queue SET status='dispatched',detail='Попытка завершена',updated_at=now() WHERE run_id=$1 AND status='dispatching'",[run.run_id]);
+   }catch{
+    // The attempt is still durable and will retry; do not stop other projects.
+   }
   }
 
   await db.query(`WITH terminal AS (SELECT project_id,task_id,run_id,reason FROM (${queueState} WHERE q.status='queued') work
@@ -216,11 +225,15 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
     spec_version=EXCLUDED.spec_version,run_id=EXCLUDED.run_id,automatic=true,status='queued',detail='',updated_at=now()
    WHERE iteration_execution_queue.status IN ('stale','dispatched')`);
 
-  // Blocked tasks never consume candidate slots, even if many have higher priority.
-  const candidate=(await db.query(`SELECT * FROM (${queueState} WHERE q.status='queued') work WHERE reason IS NULL
-   ORDER BY priority,task_created_at,task_id LIMIT 1`)).rows[0];
-  if(!candidate)return;
-  await db.query('BEGIN');
+  // Fill available developer slots across ALL projects in the same tick. The
+  // database checks capacity by project_id, so a busy project cannot consume
+  // another project's slots. The bound prevents monopolizing the API loop.
+  for(let dispatched=0;dispatched<100;dispatched++){
+   // Blocked tasks never consume candidate slots, even if higher priority.
+   const candidate=(await db.query(`SELECT * FROM (${queueState} WHERE q.status='queued') work WHERE reason IS NULL
+    ORDER BY priority,task_created_at,task_id LIMIT 1`)).rows[0];
+   if(!candidate)break;
+   await db.query('BEGIN');
   try{
    if(candidate.iteration_id)await db.query('SELECT id FROM project_iterations WHERE id=$1 AND project_id=$2 FOR SHARE',[candidate.iteration_id,candidate.project_id]);
    await db.query('SELECT id FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[candidate.task_id,candidate.project_id]);
@@ -228,7 +241,7 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    const locked=(await db.query(`SELECT * FROM (${queueState} WHERE q.project_id=$1 AND q.task_id=$2 AND q.run_id=$3
     AND q.status='queued' FOR UPDATE OF q) work WHERE reason IS NULL`,[candidate.project_id,candidate.task_id,candidate.run_id])).rows[0];
    if(!locked||!await acquireTaskOrchestration(db,locked.project_id,locked.task_id,locked.run_id,'task-cycle-'+locked.run_id,'development')){
-    await db.query('ROLLBACK');return;
+    await db.query('ROLLBACK');continue;
    }
    if(locked.stage==='analysis'){
     await db.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE id=$1",[locked.task_id]);
@@ -245,7 +258,12 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    await db.query("UPDATE iteration_execution_queue SET status='dispatching',detail='',updated_at=now() WHERE run_id=$1",[locked.run_id]);
    await db.query('COMMIT');
   }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}
-  await dispatch(db,temporal,candidate);
+   try{await dispatch(db,temporal,candidate);}
+   catch{
+    // A failed handoff is recorded on this run; independent project slots
+    // must still be allowed to start during the same reconciliation.
+   }
+  }
  }finally{
   if(acquired)await db.query("SELECT pg_advisory_unlock(hashtext('ado-iteration-development-queue'))").catch(()=>{});
   db.release();

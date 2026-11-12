@@ -158,6 +158,16 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    const result=delegated
     ?await delegateManagerAction!(session,name,args)
     :await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow);
+   // A successful PM delegation is explicit authorization to wake the
+   // project's specialists. Informational tools and chat leave Stop intact.
+   if(session.role==='manager'&&(result as any)?.ok!==false&&(result as any)?.recorded!==false&&new Set([
+    'tasks.create','iterations.prepare_plan','iterations.launch',
+    'workflow.approve_development','workflow.move_task','workflow.release_task',
+    'qa.retry','documentation.import','documentation.prepare_spec',
+    'documentation.rebuild','documentation.organize',
+    'approvals.answer_question','approvals.deliver_task_answer','approvals.decide'
+   ]).has(name))
+    await db.query('UPDATE projects SET agents_running=true WHERE id=$1 AND deleted_at IS NULL',[session.project_id]);
    await db.query(
     'INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,true,$7)',
     [randomUUID(),session.id,session.project_id,name,JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify(session.read_only?{read:true}:result),key]);

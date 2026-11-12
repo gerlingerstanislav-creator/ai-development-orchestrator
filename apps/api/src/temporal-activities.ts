@@ -32,6 +32,22 @@ import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
 const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
+/** Durable pause gate. Temporal workflows sleep without occupying a worker
+ * slot until this project's operators or PM explicitly resume the team. */
+export async function projectAgentsRunning(scope:{projectId?:string;runId?:string;kind?:'analysis'|'peer'|'planning'|'documentation'}):Promise<boolean>{
+ let sql:string;
+ const id=scope.projectId||scope.runId;
+ if(!id)throw ApplicationFailure.nonRetryable('Не задан проект или процесс для проверки активности');
+ if(scope.projectId)sql='SELECT agents_running FROM projects WHERE id=$1 AND deleted_at IS NULL';
+ else if(scope.kind==='analysis')sql='SELECT p.agents_running FROM agent_analysis_runs r JOIN projects p ON p.id=r.project_id WHERE r.id=$1';
+ else if(scope.kind==='peer')sql='SELECT p.agents_running FROM agent_peer_queue r JOIN projects p ON p.id=r.project_id WHERE r.note_id=$1';
+ else if(scope.kind==='planning')sql='SELECT p.agents_running FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id JOIN projects p ON p.id=i.project_id WHERE r.id=$1';
+ else if(scope.kind==='documentation')sql='SELECT p.agents_running FROM document_import_jobs r JOIN projects p ON p.id=r.project_id WHERE r.id=$1';
+ else throw ApplicationFailure.nonRetryable('Неизвестный тип рабочего процесса');
+ const result=await pool.query(sql,[id]);
+ if(!result.rowCount)throw ApplicationFailure.nonRetryable('Проект или рабочий процесс удалён');
+ return result.rows[0].agents_running===true;
+}
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
 const runnerKey=process.env.RUNNER_SHARED_SECRET||'';
 
@@ -453,8 +469,29 @@ async function finishExistingTaskBranch(args:TaskRef,git:{repository:string;base
  if(!existing.response.ok)throw Object.assign(new Error(existing.response.status===403
   ?'GitHub HTTP 403: у подключённого токена нет доступа к Pull Requests. В GitHub выдай ему разрешение Pull requests: Read and write и сохрани подключение заново.'
   :'Не удалось прочитать Pull Requests: GitHub HTTP '+existing.response.status),{statusCode:existing.response.status===403?409:502});
- const previous=(Array.isArray(existing.data)?existing.data:[]).find((pr:any)=>pr.base?.ref===baseBranch);
- let pr=previous;
+ const open=(Array.isArray(existing.data)?existing.data:[]) as any[];
+ let pr=open.find(item=>item.base?.ref===baseBranch);
+ // A PR on this task branch may target an older base. Repair its target
+ // rather than attempting a duplicate PR (GitHub 422).
+ if(!pr&&open.length){
+  const changed=await gh('/pulls/'+open[0].number,{method:'PATCH',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({base:baseBranch})});
+  if(!changed.response.ok)throw Object.assign(new Error('Не удалось обновить базовую ветку PR #'+open[0].number+
+   ': HTTP '+changed.response.status+' '+String(changed.data.message||'')),{statusCode:409});
+  pr=changed.data;
+ }
+ if(!pr){
+  const closed=await gh('/pulls?state=closed&head='+encodeURIComponent(repository.split('/')[0]+':'+branch)+'&per_page=100');
+  if(!closed.response.ok)throw Object.assign(new Error('Не удалось проверить закрытые PR: HTTP '+closed.response.status),{statusCode:502});
+  const recoverable=(Array.isArray(closed.data)?closed.data:[]).find((item:any)=>!item.merged_at&&item.base?.ref===baseBranch);
+  if(recoverable){
+   const reopened=await gh('/pulls/'+recoverable.number,{method:'PATCH',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({state:'open'})});
+   if(!reopened.response.ok)throw Object.assign(new Error('Не удалось переоткрыть PR #'+recoverable.number+
+    ': HTTP '+reopened.response.status+' '+String(reopened.data.message||'')),{statusCode:409});
+   pr=reopened.data;
+  }
+ }
  if(!pr){
   const created=await gh('/pulls',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({title:'AI: '+title.slice(0,180),body:'Изменения по задаче '+taskId+'\n\nПодготовлено AI Development Orchestrator. Проверь изменения перед слиянием.',head:branch,base:baseBranch,draft:false})});

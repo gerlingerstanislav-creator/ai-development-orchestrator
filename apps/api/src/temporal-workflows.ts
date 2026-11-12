@@ -5,6 +5,13 @@ const steps=proxyActivities<typeof activities>({
  startToCloseTimeout:'4 minutes',
  retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}
 });
+/** Waiting Temporal workflows occupy no Codex/worker activity slot. */
+async function waitForProjectAgents(scope:{projectId?:string;runId?:string;kind?:'analysis'|'peer'|'planning'|'documentation'}){
+ // Workflows created before this deployment have a persisted history. Skip
+ // the new wait during their replay to preserve Temporal determinism.
+ if(!patched('per-project-agent-runtime-v1'))return;
+ while(!await steps.projectAgentsRunning(scope))await sleep('20 seconds');
+}
 const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'>>({
  startToCloseTimeout:'6 minutes',scheduleToCloseTimeout:'1 day',
  retry:{maximumAttempts:20,initialInterval:'10 seconds',maximumInterval:'1 minute',backoffCoefficient:2}
@@ -52,14 +59,15 @@ export async function automaticDeployment(runId:string):Promise<void>{
  }
 }
 export async function analyzeTaskStage(runId:string):Promise<void>{
+ await waitForProjectAgents({runId,kind:'analysis'});
  await steps.runTaskStageAnalysis(runId);
 }
 export async function processPeerQuestionWork(noteId:string):Promise<void>{
- try{await steps.runPeerQuestionWork(noteId);}
+ try{await waitForProjectAgents({runId:noteId,kind:'peer'});await steps.runPeerQuestionWork(noteId);}
  catch(error){await steps.failPeerQuestionWork(noteId,String(error));}
 }
 export async function prepareIterationPlan(runId:string):Promise<void>{
- try{await planningSteps.prepareIterationPlanDraft(runId);}
+ try{await waitForProjectAgents({runId,kind:'planning'});await planningSteps.prepareIterationPlanDraft(runId);}
  catch(error){
   let cause=error;
   while(cause instanceof Error&&cause.cause instanceof Error)cause=cause.cause;
@@ -74,6 +82,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
  try {
  let runId=input.runId;
  for(let attempt=0;attempt<=input.maxFixes;attempt++){
+  await waitForProjectAgents({projectId:input.projectId});
   try{await steps.startDevelopment({projectId:input.projectId,taskId:input.taskId,runId,attempt});}
   catch(error){
    await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:'Разработка не запущена: '+String(error),stage:'development'});
@@ -90,6 +99,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    return 'development_failed';
   }
   let quality;
+  await waitForProjectAgents({projectId:input.projectId});
   try{quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId});}
   catch(error){
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Не удалось выполнить собственный CI/ревью: '+String(error),stage:'quality_gates'});
@@ -140,6 +150,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    return 'qa_plan_failed';
   }
   let testId:string;
+  await waitForProjectAgents({projectId:input.projectId});
   try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt,...(simplified?{simplified}: {}),...(singlePass?{singlePass}: {})});}
   catch(error){
    if(!patched('record-qa-start-failure'))throw error;
@@ -176,6 +187,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 }
 
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
+ await waitForProjectAgents({projectId:input.projectId});
  try {
  const quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});
  if(!quality.passed){
@@ -239,6 +251,7 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
 
 /** An independently started review for user edits at any stage (including completed tasks). */
 export async function requirementsReview(input:{projectId:string;taskId:string;runId:string}):Promise<string>{
+ await waitForProjectAgents({projectId:input.projectId});
  try{
   const args={...input,mode:'edit' as const};
   const status=await steps.reconcileRequirements(args);
@@ -292,6 +305,7 @@ const analyst=proxyActivities<Pick<typeof activities,'runProjectSpecification'>>
 });
 
 export async function prepareProjectSpecification(jobId:string):Promise<void>{
+ await waitForProjectAgents({runId:jobId,kind:'documentation'});
  try{await analyst.runProjectSpecification(jobId);}
  catch{await steps.failProjectSpecification(jobId);}
 }
@@ -336,5 +350,6 @@ export async function mergeReadyBatch(batchId:string):Promise<void>{
 
 /** Explicit retry of the independent quality gate without running a redundant QA cycle. */
 export async function manualQualityGates(input:{projectId:string;taskId:string;runId:string}){
+ await waitForProjectAgents({projectId:input.projectId});
  return qualitySteps.runSelfHostedQualityGates(input);
 }

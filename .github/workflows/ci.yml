@@ -1,0 +1,42 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: orchestrator
+          POSTGRES_PASSWORD: orchestrator_ci
+          POSTGRES_DB: orchestrator
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orchestrator"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://orchestrator:orchestrator_ci@localhost:5432/orchestrator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+      - name: TypeScript checks
+        run: npm run check
+      - name: Build frontend and backend
+        run: npm run build
+      - name: Project-scoped scheduling and queue integration tests
+        run: |
+          node --check apps/codex-runner/server.mjs
+          node --test apps/codex-runner/job-scheduler.test.mjs
+          node --test --test-concurrency=1 apps/api/tests/development-queue.test.mjs apps/api/tests/project-agent-parallelism.test.mjs

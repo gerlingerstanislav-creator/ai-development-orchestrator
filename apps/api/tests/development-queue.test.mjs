@@ -13,7 +13,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  const db=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
  t.after(async()=>{await db.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
  await db.query(`
-  CREATE TABLE projects(id uuid PRIMARY KEY,owner_id uuid,deleted_at timestamptz);
+  CREATE TABLE projects(id uuid PRIMARY KEY,owner_id uuid,deleted_at timestamptz,agents_running boolean NOT NULL DEFAULT true);
   CREATE TABLE users(id uuid PRIMARY KEY);
   CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,revision int,approved_revision int);
   CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,iteration_id uuid,title text DEFAULT '',display_number int DEFAULT 1,
@@ -89,7 +89,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  assert.match((await readDevelopmentQueue(db,project)).find(row=>row.task_id===blocked[0]).detail,/задачи-основания/);
 
  failDelivery=true;
- await assert.rejects(dispatch,/temporary Temporal outage/);
+ await dispatch(); // A transient outage is recorded for retry, not propagated across projects.
  assert.equal((await status(first)).status,'dispatching');
  await dispatch();
  assert.equal((await status(first)).status,'dispatched');

@@ -354,6 +354,14 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .sidebar-bottom .account-settings-button,.sidebar-bottom .logout-button{margin:0;flex:0 0 28px;width:28px;height:28px;display:grid;place-items:center;color:#8993a6;border:0;border-radius:7px;background:transparent;text-decoration:none;padding:0}
 .sidebar-bottom .account-settings-button:hover,.sidebar-bottom .logout-button:hover,.sidebar-bottom .account-settings-button.active{background:#edf0ff;color:#5362d2}
 .sidebar-projects{position:relative;flex:0 0 auto;padding:0 3px 5px}
+.project-selector-row{display:flex;align-items:stretch;gap:5px;min-width:0}
+.project-selector-row .project-selector{flex:1;min-width:0;width:0}
+.project-agent-toggle{display:flex;align-items:center;justify-content:center;width:34px;flex:0 0 34px;padding:0;border:1px solid #dce3ed;border-radius:8px;cursor:pointer;background:#f4f6fb;color:#64748b}
+.project-agent-toggle.running{color:#be4c53;background:#fff6f7;border-color:#f0d4d8}
+.project-agent-toggle.stopped{color:#268258;background:#f3fbf6;border-color:#d4e9da}
+.project-agent-toggle:hover:not(:disabled){filter:brightness(.96)}
+.project-agent-toggle:disabled{cursor:wait;opacity:.55}
+.assistant-message-time{display:block;margin:2px 0 5px;font-size:10px;font-variant-numeric:tabular-nums;color:#8c96a8}
 .project-selector{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;min-width:0;text-align:left;border:1px solid #e1e5ef;border-radius:9px;background:#f8f9fd;color:#2f3a50;padding:11px 9px;font-size:12px;font-weight:700}
 .project-selector-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
 .project-selector svg{flex:0 0 auto;transition:transform .18s}

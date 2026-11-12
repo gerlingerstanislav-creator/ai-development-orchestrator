@@ -1,6 +1,6 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle,Play,Square} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {QaRunEvidence} from './QaRunEvidence.js';
@@ -15,7 +15,7 @@ import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 import {ChatImagePicker,ChatImageGallery,ChatImageDropZone,prepareChatImages,type ChatImageDraft,type ChatImageMeta} from './ChatImages.js';
 import {BrowserPmVoice} from './BrowserPmVoice.js';
 
-type Project={id:string,name:string,description:string,is_owner?:boolean};
+type Project={id:string,name:string,description:string,is_owner?:boolean;agents_running?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
 type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
@@ -334,6 +334,7 @@ function App(){
   const [developmentModeBusy,setDevelopmentModeBusy]=useState(false);
   const [developmentModeError,setDevelopmentModeError]=useState('');
  const [projectMenuOpen,setProjectMenuOpen]=useState(false);
+  const [agentToggleBusy,setAgentToggleBusy]=useState(false);
  const [rateLimits,setRateLimits]=useState<CodexRateLimits|null>(null);
  const [tokenUsage,setTokenUsage]=useState<TokenUsageResponse|null>(null);
  const [rateLimitsBusy,setRateLimitsBusy]=useState(false);
@@ -710,6 +711,28 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const [drag,setDrag]=useState<string|null>(null);
  function fail(e:unknown){if(e instanceof AuthExpiredError)return;setError(e instanceof Error?e.message:'Неизвестная ошибка');}
+ async function toggleProjectAgents(){
+  if(!selected||agentToggleBusy)return;
+  const projectId=selected.id;
+  const running=!(projects.find(project=>project.id===projectId)?.agents_running??false);
+  setAgentToggleBusy(true);
+  try{
+   const status=await api<{running:boolean}>('/projects/'+projectId+'/agents/state',{method:'POST',body:JSON.stringify({running})});
+   setProjects(current=>current.map(project=>project.id===projectId?{...project,agents_running:status.running}:project));
+  }catch(e){fail(e);}finally{setAgentToggleBusy(false);}
+ }
+ // PM may wake specialists for a new assignment, so also refresh the
+ // indicator when the user did not press Play.
+ useEffect(()=>{
+  if(!token||!selected?.id)return;
+  let alive=true;
+  const id=selected.id;
+  const refresh=()=>{if(document.hidden)return;void api<Project>('/projects/'+id).then(project=>{
+   if(alive)setProjects(current=>current.map(row=>row.id===id?{...row,agents_running:project.agents_running}:row));
+  }).catch(()=>{});};
+  const timer=window.setInterval(refresh,12000);
+  return()=>{alive=false;window.clearInterval(timer);};
+ },[token,selected?.id]);
  async function loadProjects(){
   try{
    const [active,trashed]=await Promise.all([api<Project[]>('/projects'),api<TrashedProject[]>('/projects/trash')]);
@@ -1945,9 +1968,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  return <div className="shell">
  <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
   <div className="sidebar-projects">
-   <button type="button" className="project-selector" aria-expanded={projectMenuOpen} aria-label="Выбрать проект" onClick={()=>setProjectMenuOpen(open=>!open)}>
-    <span className="project-selector-title">{selected?.name||'Выбрать проект'}</span><ChevronDown size={17} className={projectMenuOpen?'rotate':''}/>
-   </button>
+   <div className="project-selector-row">
+    <button type="button" className="project-selector" aria-expanded={projectMenuOpen} aria-label="Выбрать проект" onClick={()=>setProjectMenuOpen(open=>!open)}>
+     <span className="project-selector-title">{selected?.name||'Выбрать проект'}</span><ChevronDown size={17} className={projectMenuOpen?'rotate':''}/>
+    </button>
+    {selected&&<button type="button" className={'project-agent-toggle '+(projects.find(p=>p.id===selected.id)?.agents_running?'running':'stopped')}
+      aria-label={projects.find(p=>p.id===selected.id)?.agents_running?'Остановить запуск агентов проекта':'Запустить агентов проекта'}
+      title={projects.find(p=>p.id===selected.id)?.agents_running?'Остановить запуск новых задач проекта (уже исполняемые завершаются)':'Запустить агентов проекта и продолжить очередь'}
+      disabled={agentToggleBusy||!selected.is_owner} onClick={()=>void toggleProjectAgents()}>
+      {agentToggleBusy?<LoaderCircle size={15} className="spin"/>:projects.find(p=>p.id===selected.id)?.agents_running?<Square size={15} fill="currentColor"/>:<Play size={15} fill="currentColor"/>}
+    </button>}
+   </div>
    {projectMenuOpen&&<div className="project-menu">
     <a href="/projects" onClick={e=>{setProjectMenuOpen(false);followLink(e,'/projects');}}><LayoutGrid size={15}/> Все проекты</a>
     {projects.map(p=><a key={p.id} href={projectUrl(p.id)} className={selected?.id===p.id?'selected':''} onClick={e=>{setProjectMenuOpen(false);followLink(e,projectUrl(p.id));}}><span className="project-menu-name">{p.name}</span>{selected?.id===p.id&&<CheckCircle2 size={15}/>}</a>)}
@@ -2402,7 +2433,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.reply_to&&<div className="pm-quoted-message">Ответ на: {projectMessages.find(x=>x.id===m.reply_to)?.body.slice(0,180)||'сообщение из истории'}</div>}
       {m.topic_id&&<small className="pm-message-topic">{m.topic_title||projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
-      {m.role==='assistant'?<div className="pm-chat-markdown"><DocumentMarkdown source={pmDisplayText(m.body)}/></div>:<div>{m.body}</div>}
+      {m.created_at&&<time className="assistant-message-time" dateTime={m.created_at}>{new Date(m.created_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</time>}
+       {m.role==='assistant'?<div className="pm-chat-markdown"><DocumentMarkdown source={pmDisplayText(m.body)}/></div>:<div>{m.body}</div>}
        <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
       {m.status==='queued'&&<small className="chat-message-status">Сообщение сохранено · ожидает обработки</small>}
