@@ -1025,7 +1025,7 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
   try{
    const [task,stage,rules,settings]=await Promise.all([
     pool.query('SELECT title,description,spec_version FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]),
-    pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,note.target_stage]),
+    pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2 UNION ALL SELECT agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 AND role=$2 LIMIT 1',[projectId,note.target_stage]),
     pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at DESC LIMIT 12',[projectId]),
     pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])
    ]);
@@ -1063,12 +1063,14 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
     if(!saved.rowCount)throw Error('ТЗ изменилось во время поиска ответа');
     resolved++;
    }else if(answer.status==='needs_tool'){
-    // A missing browser or code-reading tool is a capability gap, not an
-    // unanswered business question for the customer. Preserve its evidence
-    // and let independent QA report the affected cases as blocked.
-    await pool.query("UPDATE task_agent_notes SET status='answered',answer=$2,answer_author='Система инструментов',answered_at=now(),processing_at=NULL,requires_customer=false WHERE id=$1 AND status='processing'",
-     [note.id,'Средство недоступно: '+(text||'нужна инструментальная проверка')]);
-    resolved++;
+    // A tool gap is NOT an answer. Keep it unresolved and visible, with
+    // a concrete owner and evidence. No fabricated successful verification.
+    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=false WHERE id=$1 AND status='processing'",[note.id]);
+    await pool.query(`INSERT INTO agent_blockers(id,project_id,task_id,process_id,role,kind,summary,evidence,resolution_hint)
+     SELECT $1,$2,$3,$4,$5,'tool',$6,$7,'Найти доступную альтернативу; при отсутствии возможностей запросить настройку через DevOps'
+     WHERE NOT EXISTS(SELECT 1 FROM agent_blockers WHERE project_id=$2 AND task_id=$3 AND process_id=$4 AND status='open')`,
+     [randomUUID(),projectId,taskId,note.id,note.target_stage,'Для ответа недоступен инструмент',text||'Для решения не удалось получить необходимые технические доказательства']);
+    await event(projectId,note.id,'analysis','tool_unavailable',text||'Нужна техническая возможность для разрешения вопроса','warning');
    }else if(answer.status==='needs_customer'){
     await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=true WHERE id=$1 AND status='processing'",[note.id]);
    }else{
