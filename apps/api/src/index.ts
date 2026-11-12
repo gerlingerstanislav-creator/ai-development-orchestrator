@@ -915,7 +915,7 @@ function developmentProcessDetail(message:string){
  return message.replace('Codex изменяет код','Изменяет код').replace('Codex не создал файлы.','Файлы не изменились.');
 }
 
-type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 app.get('/api/background-processes',async(req:any)=>{
  const userId=uid(req);
  const [developments,imports,tests,merges,analyses,iterationRuns,taskAnalyses]=await Promise.all([
@@ -944,7 +944,19 @@ app.get('/api/background-processes',async(req:any)=>{
    FROM agent_analysis_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
    JOIN tasks t ON t.id=a.task_id WHERE a.status IN ('queued','running') ORDER BY a.created_at DESC LIMIT 50`,[userId])
  ]);
+ const qualityGateProcesses=await pool.query(`SELECT g.id,g.project_id,g.task_id,g.kind,g.status,g.message,g.started_at,
+  p.name AS project_name,t.title AS task_title,t.display_number
+  FROM quality_gate_runs g JOIN projects p ON p.id=g.project_id JOIN memberships m ON m.project_id=g.project_id AND m.user_id=$1
+  JOIN tasks t ON t.id=g.task_id WHERE g.status IN ('queued','running')
+  ORDER BY g.started_at DESC LIMIT 60`,[userId]);
  const processes:BackgroundProcess[]=[];
+ for(const gate of qualityGateProcesses.rows){
+  processes.push({id:gate.kind+':'+gate.id,kind:gate.kind==='ci'?'ci':'review',role:gate.kind==='ci'?'devops':'architect',
+   projectId:gate.project_id,projectName:gate.project_name,taskId:gate.task_id,
+   title:(gate.kind==='ci'?'Собственный CI':'Ревью архитектора')+' #'+gate.display_number+' · '+gate.task_title,
+   detail:gate.message||'Проверяется PR',status:gate.status==='queued'?'queued':'running',
+   createdAt:gate.started_at,url:'/projects/'+gate.project_id+'/processes?process='+gate.id});
+ }
  for(const row of developments.rows){
   let status:string=row.status,detail:string=developmentProcessDetail(row.message||'Работа над задачей');
   if(row.cycle_id){
@@ -1466,10 +1478,15 @@ app.get('/api/projects/:id/processes',async(req:any,reply)=>{
   pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[id]),
   pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.updated_at,t.title,t.display_number FROM agent_analysis_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
  ]);
+ const qualityGateHistory=await pool.query(
+  "SELECT g.id,g.kind,g.task_id,g.head_sha,g.base_sha,g.status,g.verdict,g.report,g.message,g.started_at,g.completed_at,t.title,t.display_number FROM quality_gate_runs g JOIN tasks t ON t.id=g.task_id WHERE g.project_id=$1 ORDER BY g.started_at DESC LIMIT 70",[id]);
  const promptRecords=await pool.query(
   'SELECT * FROM (SELECT DISTINCT ON (process_id) process_id AS id,role,operation,created_at FROM agent_prompt_audit WHERE project_id=$1 ORDER BY process_id,created_at DESC) entries ORDER BY created_at DESC LIMIT 50',
   [id]);
  const processes:any[]=[
+  ...qualityGateHistory.rows.map((r:any)=>({id:r.id,kind:r.kind,title:(r.kind==='ci'?'Собственный CI':'Ревью архитектора')+' #'+r.display_number+' · '+r.title,
+   status:r.status,detail:r.message,createdAt:r.started_at,updatedAt:r.completed_at,taskId:r.task_id,
+   result:{message:r.message,verdict:r.verdict,commit:r.head_sha,base:r.base_sha,...r.report}})),
   ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
    status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,taskId:r.task_id,
    result:{message:r.message,sha:r.sha,github_url:r.github_url}})),
