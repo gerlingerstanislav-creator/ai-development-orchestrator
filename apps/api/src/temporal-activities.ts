@@ -758,7 +758,7 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
-  const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' RETURNING id",
+  const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' AND test_feedback IS DISTINCT FROM $3 RETURNING id",
    [taskId,projectId,msg,'testing']);
   if(updated.rowCount){
    await client.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,'qa_tools_unavailable',msg]);
