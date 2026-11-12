@@ -1,3 +1,4 @@
+import {registerProjectProcessRoutes} from './modules/processes/project-api.js';
 import {registerProjectCoreRoutes} from './modules/projects/api.js';
 import {workflowStageDescriptions} from './modules/projects/domain/workflow-defaults.js';
 import {createLegacyDevelopmentReconciler} from './modules/processes/infrastructure/reconcile-legacy-development.js';
@@ -12,7 +13,7 @@ import {initEpicStageSync} from './epic-stage-sync.js';
 import {initAnalysisFirstGate} from './analysis-first-gate.js';
 import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-stage-operations.js';
 import {formatQaReportMessage,qaEventDetail} from './qa-report-message.js';
-import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
+import {initAgentPromptAudit} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
@@ -44,7 +45,7 @@ import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuesti
 import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
-import {enqueueDevelopment,readDevelopmentQueue,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
+import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {initAgentPeerQueue,reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {initTaskAnalysisQueue,reconcileTaskAnalysisQueue} from './task-analysis-queue.js';
 import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
@@ -748,198 +749,7 @@ async function validDocParent(projectId:string, docId:string|null, parentId:stri
  }
  return true;
 }
-// Project-scoped process center. The global counter uses this same data model.
-// Read-only, project-scoped audit of the actual prompt sent to an AI agent.
-// Only administrators can view potentially sensitive task text; secrets are redacted at write time.
-app.get('/api/projects/:id/processes/:processId/prompts',async(req:any,reply)=>{
- const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const rows=await pool.query('SELECT id,role,operation,prompt,original_chars,truncated,created_at FROM agent_prompt_audit WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 10',[id,processId]);
- return {prompts:rows.rows};
-});
-// Codex Runner sends the exact final development/QA prompt after adding sandbox rules.
-app.post('/internal/agent-prompt',async(req:any,reply)=>{
- const secret=process.env.RUNNER_SHARED_SECRET||'';
- if(!secret||req.headers['x-runner-secret']!==secret)return reply.code(403).send({error:'Forbidden'});
- const data=parse(z.object({
-  projectId:z.string().uuid(),processId:z.string().uuid(),
-  role:z.enum(['development','testing']),prompt:z.string().min(1).max(80000)
- }),req.body);
- const belongs=await pool.query(
-  'SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND id=$2 UNION ALL SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND id=$2 LIMIT 1',
-  [data.projectId,data.processId]);
- if(!belongs.rowCount)return reply.code(404).send({error:'Process not found'});
- await recordAgentPrompt(pool,{projectId:data.projectId,processId:data.processId,role:data.role,operation:'codex_exec',prompt:data.prompt});
- return {ok:true};
-});
-app.get('/api/projects/:id/processes',async(req:any,reply)=>{
- const {id}=parse(z.object({id:z.string().uuid()}),req.params);
- if(!await access(req,reply,id))return;
- const [imports,developments,tests,merges,analyses,iterationRuns,deployments,queuedTasks,peerQuestions,pmOrders,taskAnalyses]=await Promise.all([
-  pool.query("SELECT j.id,j.status,j.message,j.source_url,j.request_text,j.source_file_count,j.analyzed_chunks,j.total_chunks,j.saved_documents,j.created_at,j.updated_at,j.result,j.draft_result IS NOT NULL AS has_draft,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id) AS topic_total,(SELECT count(*)::int FROM document_import_topics tp WHERE tp.job_id=j.id AND tp.status IN ('complete','conflict')) AS topic_completed FROM document_import_jobs j WHERE j.project_id=$1 ORDER BY j.created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.model,r.created_at,r.completed_at,t.title AS task_title,t.display_number,r.pr_url FROM ai_task_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT t.id,t.task_id,t.status,t.message,t.verdict,t.report,t.attempt,t.created_at,t.completed_at,k.title AS task_title,k.display_number FROM ai_test_runs t JOIN tasks k ON k.id=t.task_id WHERE t.project_id=$1 ORDER BY t.created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT id,status,message,created_at,finished_at,results FROM merge_process_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 70",[id]),
-  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.completed_at,r.spec_version,t.display_number,t.title AS task_title FROM requirement_review_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
-  pool.query(`SELECT r.id,r.status,r.message,r.created_at,r.updated_at,r.plan_id,i.id AS iteration_id,i.title
-   FROM iteration_planning_runs r JOIN project_iterations i ON i.id=r.iteration_id
-   WHERE i.project_id=$1 ORDER BY r.created_at DESC LIMIT 70`,[id]),
-  pool.query("SELECT r.id,r.status,r.message,r.sha,r.github_url,r.task_id,r.created_at,r.updated_at,t.title,t.display_number FROM deployment_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id]),
-  readDevelopmentQueue(pool,id),
-  pool.query("SELECT q.note_id AS id,q.task_id,q.role,q.status,q.error AS detail,q.updated_at,n.body,t.display_number FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed') ORDER BY q.updated_at DESC LIMIT 60",[id]),
-  pool.query("SELECT id,status,summary AS detail,updated_at,created_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[id]),
-  pool.query("SELECT r.id,r.task_id,r.status,r.message,r.created_at,r.updated_at,t.title,t.display_number FROM agent_analysis_runs r JOIN tasks t ON t.id=r.task_id WHERE r.project_id=$1 ORDER BY r.created_at DESC LIMIT 70",[id])
- ]);
- const qualityGateHistory=await pool.query(
-  "SELECT g.id,g.kind,g.task_id,g.head_sha,g.base_sha,g.status,g.verdict,g.report,g.message,g.started_at,g.completed_at,t.title,t.display_number FROM quality_gate_runs g JOIN tasks t ON t.id=g.task_id WHERE g.project_id=$1 ORDER BY g.started_at DESC LIMIT 70",[id]);
- const promptRecords=await pool.query(
-  'SELECT * FROM (SELECT DISTINCT ON (process_id) process_id AS id,role,operation,created_at FROM agent_prompt_audit WHERE project_id=$1 ORDER BY process_id,created_at DESC) entries ORDER BY created_at DESC LIMIT 50',
-  [id]);
- const processes:any[]=[
-  ...qualityGateHistory.rows.map((r:any)=>({id:r.id,kind:r.kind,title:(r.kind==='ci'?'Собственный CI':'Ревью архитектора')+' #'+r.display_number+' · '+r.title,
-   status:r.status,detail:r.message,createdAt:r.started_at,updatedAt:r.completed_at,taskId:r.task_id,
-   result:{message:r.message,verdict:r.verdict,commit:r.head_sha,base:r.base_sha,...r.report}})),
-  ...deployments.rows.map((r:any)=>({id:r.id,kind:'deployment',title:'Выкладка #'+r.display_number+' · '+r.title,
-   status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,taskId:r.task_id,
-   result:{message:r.message,sha:r.sha,github_url:r.github_url}})),
-  ...iterationRuns.rows.map(row=>({id:row.id,kind:'analysis',title:'План задач · '+row.title,status:row.status,
-   detail:row.message,createdAt:row.created_at,updatedAt:row.updated_at,iterationId:row.iteration_id,result:{message:row.message}})),
-  ...imports.rows.map((r:any)=>({id:r.id,kind:'document_import',title:(r.source_url?'Анализ материалов · '+r.source_url.split('/').slice(-1)[0]:'Подготовка ТЗ'),status:r.status,detail:r.message,createdAt:r.created_at,updatedAt:r.updated_at,sourceUrl:r.source_url,requestText:r.request_text,progress:{completed:r.analyzed_chunks,total:r.total_chunks},topicProgress:{completed:r.topic_completed,total:r.topic_total},result:r.result,savedDocuments:r.saved_documents,hasDraft:r.has_draft,sourceFileCount:r.source_file_count})),
-  ...developments.rows.map((r:any)=>({id:r.id,kind:'development',title:'Разработка #'+r.display_number+' · '+r.task_title,status:r.status,detail:queuedTasks.find(row=>row.run_id===r.id)?.detail||r.message,createdAt:r.created_at,updatedAt:r.completed_at,taskId:r.task_id,result:r.pr_url?{prUrl:r.pr_url}:null}))
- ];
- for(const row of tests.rows){
-  processes.push({id:row.id,kind:'testing',title:'Тестирование #'+row.display_number+' · '+row.task_title,
-   status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,
-   result:row.report?{message:row.report.summary,verdict:row.verdict,findings:row.report.findings,checks:row.report.checks,commit:row.report.commit}:null});
- }
- for(const row of taskAnalyses.rows){
-  processes.push({id:row.id,kind:'analysis',title:'Анализ задачи #'+row.display_number+' · '+row.title,status:row.status,detail:row.message||'Системный аналитик обрабатывает задачу',createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id,result:{message:row.message}});
- }
- for(const row of analyses.rows){
-  if(developments.rows.some((dev:any)=>dev.id===row.id))continue; // Reconciliation is already recorded in the development process events.
-  processes.push({id:row.id,kind:'analysis',title:'Сверка ТЗ #'+row.display_number+' · '+row.task_title,status:row.status,
-   detail:row.message,createdAt:row.created_at,updatedAt:row.completed_at,taskId:row.task_id,result:{message:row.message}});
- }
- for(const row of queuedTasks){
-  if(developments.rows.some(run=>run.id===row.run_id))continue;
-  processes.push({id:row.run_id||row.task_id,kind:'development',title:'Очередь разработки #'+row.display_number+' · '+row.title,
-   status:row.status==='dispatching'?'running':row.status,detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at,taskId:row.task_id});
- }
- for(const row of peerQuestions.rows){
-  processes.push({id:row.id,kind:'analysis',title:'Вопрос специалисту · задача #'+row.display_number,status:row.status,detail:row.detail||row.body,createdAt:row.updated_at,updatedAt:row.updated_at,taskId:row.task_id});
- }
- for(const row of pmOrders.rows){
-  processes.push({id:row.id,kind:'analysis',title:row.status==='waiting_user'?'ПМ · нужен твой ответ в чате':row.status==='waiting_agents'?'ПМ · ожидает команду':'Поручение ПМ',status:row.status==='working'?'running':row.status==='queued'?'queued':['completed','failed'].includes(row.status)?row.status:'waiting',detail:row.detail,createdAt:row.created_at,updatedAt:row.updated_at});
- }
- for(const row of merges.rows){
-  processes.push({id:row.id,kind:'merge',title:'Слияние готовых PR',status:row.status,detail:row.message,createdAt:row.created_at,updatedAt:row.finished_at,result:{results:row.results}});
- }
- const visibleIds=new Set(processes.map(p=>p.id));
- for(const entry of promptRecords.rows){
-  if(visibleIds.has(entry.id))continue;
-  processes.push({id:entry.id,kind:'analysis',title:'AI-запрос · '+entry.role,
-   status:'logged',detail:'Промпт подготовлен для вызова модели ('+entry.operation+'); результат смотри в соответствующем чате.',
-   createdAt:entry.created_at,updatedAt:entry.created_at});
- }
- processes.sort((x,y)=>new Date(y.createdAt).getTime()-new Date(x.createdAt).getTime());
- return {processes,checkedAt:new Date().toISOString()};
-});
-app.post('/api/projects/:id/processes/:processId/instructions',async(req:any,reply)=>{
- const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const {message}=parse(z.object({message:z.string().trim().min(1).max(2000)}),req.body);
- const client=await pool.connect();
- try{
-  await client.query('BEGIN');
-  const job=await client.query("SELECT status,message FROM document_import_jobs WHERE project_id=$1 AND id=$2 AND actor_id=$3 FOR UPDATE",[id,processId,uid(req)]);
-  if(!job.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Процесс импорта не найден'});}
-  if(job.rows[0].status!=='running'){await client.query('ROLLBACK');return reply.code(409).send({error:'Аналитик уже завершил или остановил этот процесс'});}
-  if(/Формирование итоговой структуры|Сохранение документов/.test(String(job.rows[0].message))){
-   await client.query('ROLLBACK');
-   return reply.code(409).send({error:'Аналитик уже сохраняет результат. Уточнение на этой стадии не успеет примениться.'});
-  }
-  await client.query('INSERT INTO process_instructions(id,project_id,process_id,actor_id,body) VALUES($1,$2,$3,$4,$5)',
-   [randomUUID(),id,processId,uid(req),message]);
-  await client.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','user_instruction',$4)",
-   [randomUUID(),id,processId,message]);
-  const acknowledgement='Уточнение принято и передано аналитику. Оно будет учтено на текущем или следующем этапе.';
-  await client.query("INSERT INTO assistant_messages(id,project_id,task_id,actor_id,role,body,channel,created_at) VALUES($1,$2,NULL,$3,'user',$4,'documentation',clock_timestamp()),($5,$2,NULL,NULL,'assistant',$6,'documentation',clock_timestamp())",
-   [randomUUID(),id,uid(req),message,randomUUID(),acknowledgement]);
-  await client.query('COMMIT');
-  return {ok:true,message:acknowledgement};
- }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
-});
-// Stop an active analyst run without rolling back previously committed checkpoints.
- // Locking the job row also serializes the request with document-writing checkpoints.
-app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
- const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- // Stop the actual Codex job and its Temporal workflow, without deleting the task or PR.
- const cancelRunner=async(runId:string)=>{
-  try{
-   await fetch((process.env.CODEX_RUNNER_URL||'http://codex:4300')+'/jobs/'+runId+'/cancel',{
-    method:'POST',headers:{'X-Runner-Secret':process.env.RUNNER_SHARED_SECRET||''},
-    signal:AbortSignal.timeout(8000)
-   });
-  }catch(error){req.log.warn({error,runId},'Codex cancellation needs reconciliation');}
- };
- const cancelWorkflow=async(workflowId:string)=>{
-  try{const client=await temporal();await client.workflow.getHandle(workflowId).cancel();}
-  catch(error){req.log.warn({error,workflowId},'Temporal cancellation needs reconciliation');}
- };
- const analyst=await pool.query("UPDATE agent_analysis_runs SET status='cancelled',message='Прервано пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,spec_version",[id,processId]);
- if(analyst.rowCount){
-  await pool.query("UPDATE tasks SET analysis_state='paused',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='analysis' AND analysis_state='processing' AND spec_version=$3",[id,analyst.rows[0].task_id,analyst.rows[0].spec_version]);
-  await cancelWorkflow('task-analysis-'+processId);
-  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'analysis','cancelled','Анализ задачи остановлен пользователем')",[randomUUID(),id,processId]);
-  return {ok:true,status:'cancelled'};
- }
- const dev=await pool.query("UPDATE ai_task_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
- if(dev.rowCount){
-  await cancelRunner(processId);
-  await cancelWorkflow('task-cycle-'+(dev.rows[0].cycle_id||processId));
-  await releaseTaskOrchestration(pool,id,dev.rows[0].task_id,dev.rows[0].cycle_id||processId);
-  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','cancelled','Разработка остановлена пользователем')",[randomUUID(),id,processId]);
-  return {ok:true,status:'cancelled'};
- }
- const test=await pool.query("UPDATE ai_test_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
- if(test.rowCount){
-  await cancelRunner(processId);
-  const cycle=test.rows[0].cycle_id;
-  if(cycle){await cancelWorkflow('task-cycle-'+cycle);await cancelWorkflow('manual-test-'+cycle);}
-  await releaseTaskOrchestration(pool,id,test.rows[0].task_id,cycle||processId);
-  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'testing','cancelled','Тестирование остановлено пользователем')",[randomUUID(),id,processId]);
-  return {ok:true,status:'cancelled'};
- }
- const queue=await pool.query("UPDATE iteration_execution_queue SET status='cancelled',detail='Запуск отменён пользователем',updated_at=now() WHERE project_id=$1 AND COALESCE(run_id,task_id)=$2 AND status='queued' RETURNING task_id",[id,processId]);
- if(queue.rowCount)return {ok:true,status:'cancelled'};
- const planning=await pool.query("UPDATE iteration_planning_runs r SET status='cancelled',message='Прервано пользователем',updated_at=now() FROM project_iterations i WHERE r.id=$2 AND r.iteration_id=i.id AND i.project_id=$1 AND r.status IN ('queued','running') RETURNING r.id",[id,processId]);
- if(planning.rowCount){
-  await cancelWorkflow('iteration-plan-'+processId);
-  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'analysis','cancelled','Планирование итерации остановлено')",[randomUUID(),id,processId]);
-  return {ok:true,status:'cancelled'};
- }
- const stopped=await pool.query(
-  "UPDATE document_import_jobs SET status='cancelled',message='Остановлен пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND actor_id=$3 AND status='running' RETURNING id",
-  [id,processId,uid(req)]);
- if(!stopped.rowCount)return reply.code(409).send({error:'Процесс уже завершён или не принадлежит пользователю'});
- await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'document_import','stopped','Пользователь остановил работу аналитика')",
-  [randomUUID(),id,processId]);
- // The persisted status prevents subsequent writes even when cancellation reaches an
- // in-flight Codex request later. Workflow cancellation releases its worker slot.
- try{
-  const client=await temporal();
-  await client.workflow.getHandle('analyst-'+processId).cancel();
- }catch(error){req.log.warn({error},'Temporal cancel pending; persisted stop gate already active');}
- return {ok:true,status:'cancelled',message:'Аналитик остановлен. Уже сохранённые контрольные точки и документы не удалены.'};
-});
-app.get('/api/projects/:id/processes/:processId/events',async(req:any,reply)=>{
- const {id,processId}=parse(z.object({id:z.string().uuid(),processId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id))return;
- const rows=await pool.query("SELECT id,process_kind,level,stage,detail,created_at FROM process_events WHERE project_id=$1 AND process_id=$2 ORDER BY created_at ASC LIMIT 500",[id,processId]);
- return rows.rows;
-});
-
+registerProjectProcessRoutes(app,{pool,uid,access,requireAdmin,temporal});
 app.get('/api/projects/:id/documentation/proposals',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
