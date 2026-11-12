@@ -64,7 +64,7 @@ type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:s
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
-type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
+type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;human_report?:string|null;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};topicProgress?:{completed:number;total:number};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
@@ -558,11 +558,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const deferredQa=managerState?.requests.filter(request=>request.status==='waiting'&&request.kind==='qa_visual')||[];
  const activeAgentRuns=taskAgentRuns.filter(run=>run.status==='running'||run.status==='queued');
  const managerWorking=managerSending||managerMessages?.some(message=>message.role==='user'&&(message.status==='queued'||message.status==='processing'));
- const chatEntries=[...(managerMessages||[]),...taskAgentRuns.filter(run=>run.status==='completed'||run.status==='failed')]
-  .sort((left,right)=>{
-   const time=(entry:ManagerMessage|AgentRun)=>Date.parse(('completed_at' in entry?entry.completed_at:null)||entry.created_at);
-   return time(left)-time(right);
-  });
+ const chatEntries=[
+  ...(managerMessages||[]),
+  ...taskAgentRuns.filter(run=>(run.status==='completed'||run.status==='failed')&&!(run.kind==='testing'&&taskTestRuns.some(test=>test.id===run.id))),
+  ...taskTestRuns.filter(test=>['completed','failed'].includes(test.status)&&test.human_report).map(test=>({
+   id:test.id,kind:'qa_report' as const,status:test.status,summary:test.human_report||'',
+   created_at:test.created_at,completed_at:test.completed_at
+  }))
+ ].sort((left,right)=>{
+  const time=(entry:{created_at:string;completed_at?:string|null})=>Date.parse(entry.completed_at||entry.created_at);
+  return time(left)-time(right);
+ });
 
  function timeline(taskId:string):ActivityItem[]{
   return [
@@ -2595,19 +2601,27 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <div>{item.text}</div>
        </div>)}
       </details>
-      {chatEntries.map(m=>'kind' in m?<div className="manager-message from-manager" key={m.kind+'-'+m.id}>
+      {chatEntries.map(m=>'kind' in m&&m.kind==='qa_report'?<div className="manager-message from-manager qa-report-message" key={'qa-'+m.id}>
+       <div className="manager-message-heading">
+        <strong>Тестировщик · Отчёт по тест-кейсам</strong>
+        <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
+       </div>
+       <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={m.summary}/></div>
+      </div>:'kind' in m?<div className="manager-message from-manager" key={m.kind+'-'+m.id}>
        <div className="manager-message-heading">
         <strong>{agentRunLabels[m.kind].name} · {m.status==='failed'?'Ошибка':'Итог'}</strong>
         <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
        </div>
-       <div className="manager-message-body">{m.summary||(m.status==='failed'?'Работа завершилась с ошибкой.':'Работа завершена.')}</div>
+       <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={m.summary||(m.status==='failed'?'Работа завершилась с ошибкой.':'Работа завершена.')}/></div>
        {m.link&&<a href={m.link} target="_blank" rel="noreferrer">Открыть PR</a>}
       </div>:<div className={'manager-message '+(m.role==='user'?'from-user':'from-manager')} key={m.id}>
        <div className="manager-message-heading">
         <strong>{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</strong>
         <small>{new Date(m.created_at).toLocaleString('ru-RU')}</small>
        </div>
-       <div className="manager-message-body">{m.body}</div>
+       <div className={'manager-message-body '+(m.role==='manager'?'pm-chat-markdown':'')}>
+        {m.role==='manager'?<DocumentMarkdown source={pmDisplayText(m.body)}/>:m.body}
+       </div>
         <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
        {m.role==='user'&&['queued','processing'].includes(m.status)&&!m.id.startsWith('pending-')&&
         <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void stopManagerMessage(m.id)}>Прервать ответ ПМ</button>}
