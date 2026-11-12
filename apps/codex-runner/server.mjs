@@ -756,6 +756,11 @@ async function runTestJob(job,state,context){
     // A failed follow-up never invalidates previous genuine checks nor
     // silently waives the missing ones.
     state.qaFollowUpError=String(error.message||error).slice(0,650);
+   }finally{
+    // Browser assertions may have been executed before a Codex CLI failure.
+    // Preserve their real results, including confirmed failures, rather than
+    // converting them back into generic blocked status.
+    verified=await verifyActualExecution();
    }
    verified.summary=completedQaSummary(verified,{retriedIds:gaps.map(item=>item.id)});
   }
