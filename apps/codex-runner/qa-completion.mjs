@@ -12,7 +12,7 @@ export function incompleteQaCases(report,plan=[],{browserAvailable=false,maxCase
  const isVisual=item=>{
   const spec=byId.get(item.case_id)||{};
   const label=[spec.title,item.title,spec.description,spec.area,...(spec.steps||[]).flatMap(step=>[step.action,step.expected])].join(' ');
-  return /(визуальн|отображен|выгляд|интерфейс|кнопк|расположен|окружност|стрелк|фигур|цвет|адаптив|скриншот|браузер|отрисов|верстк|перекрыв|размер(?:а|ов)? экрана|ui\\b|css\\b|canvas|svg|pixel|layout|render|click|responsive|screenshot|viewport)/i.test(label);
+  return /(визуальн|отображен|выгляд|интерфейс|кнопк|расположен|окружност|стрелк|фигур|цвет|адаптив|скриншот|браузер|отрисов|верстк|перекрыв|размер(?:а|ов)? экрана|ui\b|css\b|canvas|svg|pixel|layout|render|click|responsive|screenshot|viewport)/i.test(label);
  };
  return (report?.caseResults||[])
   .filter(item=>['blocked','not_run'].includes(item.result)||
