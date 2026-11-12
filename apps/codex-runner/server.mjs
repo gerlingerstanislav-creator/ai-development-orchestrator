@@ -1,3 +1,4 @@
+import {createCodexDeviceAuth} from './device-auth.mjs';
 import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
 import {createCommandExecutor} from './command-executor.mjs';
@@ -41,39 +42,13 @@ const codexDotenv=join(home,'.env');
 // The Codex binary can load proxy settings from its own .env; provide
 // the same loopback proxy there in addition to the child environment.
 await writeFile(codexDotenv,`HTTP_PROXY=${proxyUrl}\nHTTPS_PROXY=${proxyUrl}\nhttp_proxy=${proxyUrl}\nhttps_proxy=${proxyUrl}\nNO_PROXY=localhost,127.0.0.1,::1\nno_proxy=localhost,127.0.0.1,::1\n`,{mode:0o600});
-let login=null, log='',loginState='idle',started=0,diagnosis='';
-const safeText=()=>log.replace(/\x1b\[[0-9;]*m/g,'').slice(-3000);
 const reply=(res,status,payload)=>{
  const data=JSON.stringify(payload);
  res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','Content-Length':Buffer.byteLength(data)});
  res.end(data);
 };
-async function connected() {
- try { const {stdout,stderr}=await execFileAsync('codex',['login','status'],{timeout:10000,maxBuffer:20000,env:cliEnv});
-  return {connected:true,detail:(stdout||stderr).trim().slice(0,500)};
- } catch(e) {return {connected:false,detail:'Не авторизован'};}
-}
-function runLogin(){
- if(login && !login.killed && login.exitCode===null)return;
- log='';diagnosis='';codexProxy.reset();loginState='waiting';started=Date.now();
- login=spawn('codex',['login','--device-auth'],{env:{...cliEnv,RUST_LOG:'warn,reqwest=debug,hyper_util=debug'},stdio:['ignore','pipe','pipe']});
- const child=login;
- const collect=(chunk)=>{log=(log+chunk.toString('utf8')).slice(-10000)};
- child.stdout.on('data',collect);child.stderr.on('data',collect);
- child.on('error',e=>{loginState='error';log+='\n'+e.message;});
- child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const {attempts:connections,successes,lastError:proxyError}=codexProxy.stats();void Promise.all([probeAuthEndpoint(),codexProxy.probe()]).then(([probe,tunnel])=>{diagnosis=probe+'; '+tunnel+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
- const deadline=setTimeout(()=>{if(login===child){child.kill('SIGTERM');loginState='expired';}},10*60*1000);
- deadline.unref();
-}
-function deviceInfo(){
- const output=safeText();
- // Only show the actual device-sign-in URL and code after the CLI provides one.
- // Do not mistake the /api/accounts/deviceauth/usercode error endpoint for a login link.
- const url=output.match(/https:\/\/auth\.openai\.com\/codex\/device\b/i)?.[0]||null;
- const code=url?output.match(/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,6}\b/)?.[0]||null:null;
- return {state:loginState,url,code,instructions:output,diagnosis,startedAt:started||null};
-}
-
+const deviceAuth=createCodexDeviceAuth({cliEnv,codexProxy,probeAuthEndpoint,execFileAsync,spawnImpl:spawn});
+const {connected,runLogin,deviceInfo}=deviceAuth;
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
@@ -943,7 +918,7 @@ http.createServer(async(req,res)=>{
    }
   }
   if(req.method==='GET'&&req.url==='/status'){
-   const state=await connected();return reply(res,200,{...state,login:loginState!=='idle'?deviceInfo():null});
+   const state=await connected();return reply(res,200,{...state,login:deviceAuth.activeLogin()});
   }
   if(req.method==='POST'&&req.url==='/login'){
    if((await connected()).connected)return reply(res,200,{connected:true});
@@ -952,8 +927,7 @@ http.createServer(async(req,res)=>{
   if(req.method==='GET'&&req.url==='/device')return reply(res,200,{login:deviceInfo()});
   if(req.method==='POST'&&req.url==='/logout'){
    rateLimitCache.invalidate();
-   if(login){login.kill('SIGTERM');login=null;}loginState='idle';log='';
-   try{await execFileAsync('codex',['logout'],{timeout:10000,env:cliEnv});}catch{}
+   await deviceAuth.logout();
    return reply(res,200,{connected:false});
   }
   if(req.url==='/agent'&&req.method==='POST'){
