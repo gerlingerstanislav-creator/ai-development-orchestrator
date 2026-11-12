@@ -1,7 +1,7 @@
 FROM node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      bubblewrap ca-certificates git python3 python3-pip python3-venv python3-pytest postgresql-15 \
+      bubblewrap ca-certificates git make python3 python3-pip python3-venv python3-pytest postgresql-15 \
  && update-ca-certificates \
  && test -s /etc/ssl/certs/ca-certificates.crt \
  && rm -rf /var/lib/apt/lists/* \
@@ -17,6 +17,7 @@ ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
 COPY apps/codex-runner/command-executor.mjs ./command-executor.mjs
+COPY apps/codex-runner/ci-test-discovery.mjs ./ci-test-discovery.mjs
 COPY apps/codex-runner/codex-proxy.mjs ./codex-proxy.mjs
 COPY apps/api/src/prompt-assembler.mjs /opt/api/src/prompt-assembler.mjs
 COPY apps/api/src/qa-visual-case.mjs /opt/api/src/qa-visual-case.mjs
