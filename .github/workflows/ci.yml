@@ -20,7 +20,7 @@ jobs:
       - run: npm run check
       - run: npm run build
       - run: node --check apps/codex-runner/server.mjs
-      - run: node --test apps/codex-runner/qa-preflight.test.mjs
+      - run: node --test apps/codex-runner/qa-preflight.test.mjs apps/codex-runner/rate-limits.test.mjs
       - run: node --test apps/api/tests/agent-prompt.test.mjs apps/api/tests/agent-mentions.test.mjs apps/api/tests/diagnostics.test.mjs apps/api/tests/cloud-diagnostics.test.mjs apps/api/tests/qa-regression-scope.test.mjs apps/api/tests/qa-waiver-runtime.test.mjs
   runner-isolation:
     runs-on: ubuntu-latest
