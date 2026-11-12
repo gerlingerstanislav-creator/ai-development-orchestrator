@@ -34,6 +34,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker compose build codex
+      - name: Verify Codex Runner starts inside the built image
+        run: |
+          docker compose run --no-deps --rm -T --entrypoint node \
+            -v "$PWD/apps/codex-runner/startup-smoke.mjs:/opt/codex-runner/startup-smoke.mjs:ro" \
+            codex /opt/codex-runner/startup-smoke.mjs
       - name: Verify project command isolation
         run: |
           if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ]; then
