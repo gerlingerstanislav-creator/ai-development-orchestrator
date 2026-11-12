@@ -89,6 +89,18 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
  await assert.rejects(attempt,/Нет завершённого QA-отчёта/);
  await db.query('UPDATE ai_test_runs SET qa_plan_snapshot=$2 WHERE id=$1',[testRun,snapshot]);
  await assert.rejects(attempt,/build — результат отсутствует/);
+ await db.query('DELETE FROM qa_test_plans WHERE task_id=$1',[parent]);
+ const singlePass={singlePass:true,adHoc:true,simplified:true,cases:[{id:'qa-1',title:'Проверка заказа'}]};
+ await db.query('UPDATE ai_test_runs SET qa_plan_snapshot=$2 WHERE id=$1',[testRun,singlePass]);
+ await assert.rejects(attempt,/Runner не подтвердил/);
+ await db.query("UPDATE ai_test_runs SET verdict='blocked',report=$2 WHERE id=$1",[testRun,{
+  commit:headSha,executionVerified:true,checks:[],caseResults:[{case_id:'qa-1',result:'not_run',reason:'tool_unavailable',evidence:'Для сценария не установлено окружение'}]
+ }]);
+ await assert.rejects(attempt,/Сценарии QA не подтверждены/);
+ await db.query("UPDATE ai_test_runs SET verdict='passed',report=$2 WHERE id=$1",[testRun,{
+  commit:headSha,executionVerified:true,checks:[{result:'passed',details:'node --test → код 0'}],caseResults:[{case_id:'qa-1',result:'passed',evidence:'node --test → код 0'}]
+ }]);
+ await assert.rejects(attempt,/build — результат отсутствует/);
  assert.equal(puts,0);
  ciPassed=true;
  await assert.rejects(service.mergeTaskPr(project,parent,actor),/connection dropped/);

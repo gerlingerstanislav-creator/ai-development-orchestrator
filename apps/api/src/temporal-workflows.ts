@@ -114,13 +114,14 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    continue;
   }
   }
-  try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId,...(simplified?{simplified}: {})});}
+  const singlePass=simplified&&patched('qa-single-pass');
+  if(!singlePass)try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId,...(simplified?{simplified}: {})});}
   catch(error){
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Не удалось актуализировать тестовую документацию: '+String(error),stage:'qa_preparation'});
    return 'qa_plan_failed';
   }
   let testId:string;
-  try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt,...(simplified?{simplified}: {})});}
+  try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt,...(simplified?{simplified}: {}),...(singlePass?{singlePass}: {})});}
   catch(error){
    if(!patched('record-qa-start-failure'))throw error;
    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,
@@ -172,13 +173,14 @@ export async function manualTesting(input:{projectId:string;taskId:string;cycleI
  }
  if(status==='rejected')return 'requirements_rejected';
  }
- try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,...(simplified?{simplified}: {})});}
+ const singlePass=simplified&&patched('qa-single-pass');
+ if(!singlePass)try{await steps.prepareQaPlan({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,...(simplified?{simplified}: {})});}
  catch(error){
   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,message:'Не удалось подготовить QA-документацию: '+String(error),stage:'qa_preparation'});
   return 'qa_plan_failed';
  }
  let testId:string;
- try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0,...(simplified?{simplified}: {})});}
+ try{testId=await steps.startTesting({projectId:input.projectId,taskId:input.taskId,cycleId:input.cycleId,attempt:0,...(simplified?{simplified}: {}),...(singlePass?{singlePass}: {})});}
  catch(error){
   if(!patched('record-qa-start-failure'))throw error;
   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,

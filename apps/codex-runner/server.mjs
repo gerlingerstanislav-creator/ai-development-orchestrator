@@ -11,6 +11,7 @@ import { timingSafeEqual } from 'node:crypto';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
+import {qaBaselineCommands,readQaCommands,verifyQaExecution} from './qa-run-evidence.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext} from './agent-context.mjs';
@@ -209,7 +210,7 @@ function authorized(req){
  const a=Buffer.from(supplied),b=Buffer.from(jobKey);
  return a.length===b.length && timingSafeEqual(a,b);
 }
-function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}={}){
+function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId,allowNonzero=false}={}){
  return new Promise((resolve,reject)=>{
   if(jobId)assertJobActive(jobId);
   const child=spawn(binary,args,{cwd,env:{...baseEnv,...env},stdio:['ignore','pipe','pipe'],detached:true});
@@ -220,19 +221,19 @@ function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId}=
   child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
   const secret=env?.ADO_AGENT_SESSION_TOKEN;
   const redact=value=>secret?value.replaceAll(secret,'[REDACTED]'):value;
-  const settle=(err)=>{
+  const settle=(err,exitCode)=>{
    if(done)return;done=true;clearTimeout(timer);
    if(jobId&&jobChildren.get(jobId)===child)jobChildren.delete(jobId);
-   if(err)reject(err);else resolve({stdout:redact(output),stderr:redact(errors)});
+   if(err)reject(err);else resolve({stdout:redact(output),stderr:redact(errors),exitCode});
   };
   child.on('error',settle);
   child.on('close',(code)=>{
    if(timedOut)return settle(new Error(binary+' превысил ограничение времени'));
-   if(code!==0){
+   if(code===null||code!==0&&!allowNonzero){
     const detail=binary==='codex'?codexFailureDetail(redact(output),redact(errors)):errors.slice(-1200);
     return settle(new Error(binary+' завершился с кодом '+code+': '+(detail||'Codex CLI не вернул причину ошибки. Проверь авторизацию Codex и подробный журнал Runner.')));
    }
-   settle();
+   settle(undefined,code);
   });
  });
 }
@@ -446,9 +447,11 @@ async function runTestJob(job,state,context){
  const workdir=await mkdtemp(join(tmpdir(),'ado-test-'));
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
+ const singlePass=job.testPlan?.singlePass===true;
+ const adHoc=singlePass&&job.testPlan.adHoc===true;
  try{
   state.message='Получение ветки для независимой проверки';
-  await command('git',['clone','--depth','1','--branch',job.taskId,'https://github.com/'+job.repository+'.git',dir],
+  await command('git',['clone','--depth','1','--branch',job.branch||job.taskId,'https://github.com/'+job.repository+'.git',dir],
    {cwd:workdir,env:gitEnv,timeout:90000,jobId:job.id});
   const rev=await command('git',['rev-parse','HEAD'],{cwd:dir,timeout:10000,jobId:job.id});
   const commit=rev.stdout.trim();
@@ -476,15 +479,37 @@ async function runTestJob(job,state,context){
   const tracked=(await command('git',['ls-files'],{cwd:dir,env:gitEnv,timeout:10000,maxOutputChars:100000,jobId:job.id})).stdout.split(/\r?\n/);
   const prerequisite=qaPrerequisiteError(tracked,capabilities);
   if(prerequisite&&!job.testPlan?.simplified)throw Error(prerequisite);
+  const baseline=[];
+  if(singlePass){
+   const packageJson=tracked.includes('package.json')
+    ? await readFile(join(dir,'package.json'),'utf8').then(JSON.parse).catch(()=>null)
+    : null;
+   for(const check of qaBaselineCommands(tracked,packageJson,capabilities)){
+    state.message='Запускает '+check.name;
+    try{
+     const result=await command('codex',[...policy.sandboxArgs,'--','env',
+      'NO_PROXY=localhost,127.0.0.1,::1','no_proxy=localhost,127.0.0.1,::1','sh','-c',check.command],{
+      cwd:dir,env:cliEnv,timeout:60000,maxOutputChars:5000,jobId:job.id,allowNonzero:true
+     });
+     baseline.push({...check,exitCode:result.exitCode,output:(result.stdout+'\n'+result.stderr).trim().slice(-2200)});
+    }catch(error){
+     assertJobActive(job.id);
+     baseline.push({...check,exitCode:null,output:String(error.message||error).slice(-1000)});
+    }
+   }
+  }
   // Keep complete case data in the isolated workspace instead of embedding a huge JSON in the prompt.
   await writeFile(join(dir,'.ado-qa-plan.json'),JSON.stringify(job.testPlan||{}),{mode:0o600});
   const prompt=[
    'Ты независимый AI-тестировщик в отдельной временной копии репозитория.',
    'СНАЧАЛА исследуй проект и реальные возможности среды. Затем запусти ВСЕ доступные и относящиеся к ТЗ проверки (сборка, unit, integration, API, пользовательские сценарии, если для них есть инструменты). Записывай фактические команды и результаты.',
    'Если проект не требует зависимостей, не объявляй его непроверяемым только из-за отсутствия node_modules.',
+   baseline.length?'Runner уже запустил стандартные проверки в изоляции. Используй их результаты, если они проверяют нужное поведение. Если команда не прошла из-за зависимостей, подготовь среду и повтори. Сам определи, указывает ли её вывод на дефект или ограничение среды. Фактический результат: '+JSON.stringify(baseline):'',
+   singlePass?'Сначала запусти доступную проверку проекта. Для Python используй python3 -m pytest, если в проекте есть тесты. Для Node запусти имеющийся скрипт тестов, установив зависимости при необходимости. Если готовых тестов для требования нет, выполни конкретную проверку с утверждением об ожидаемом результате, например вызови функцию или локальный API с тестовыми данными.': '',
+   singlePass?'В каждом выполненном checks и caseResults укажи в поле command точный текст одной команды, которую ты действительно запускал и которая проверяет это утверждение. Укажи пустую строку для недоступной проверки. Успеху соответствует код 0, провалу — ненулевой код. Чтение файлов, просмотр diff и установка зависимостей не считаются тестами.':'',
    'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run.',
    'Не утверждай, что пользовательский путь, браузерное действие или ручная проверка выполнены без реального инструмента и воспроизведения.',
-   'Для КАЖДОГО case_id из плана верни result, evidence и reason. reason для passed/failed = executed; для недоступных сценариев = tool_unavailable|environment_unavailable|manual_only. Если настоящая причина не установлена, reason = unknown (слияние без проверки нельзя рекомендовать).',
+   (adHoc?'Для каждого выбранного сценария':'Для КАЖДОГО case_id из плана')+' верни result, evidence и reason. reason для passed/failed = executed; для недоступных сценариев = tool_unavailable|environment_unavailable|manual_only. Если настоящая причина не установлена, reason = unknown (слияние без проверки нельзя рекомендовать).',
    'Для недоступного сценария evidence должно назвать отсутствующий инструмент или среду, конкретную проверку, которая не запускалась, и почему. Не заменяй это общими фразами.',
    'Невозможность установить отсутствующую зависимость из сети — ограничение среды, а не дефект приложения. Указывай такие проверки в checks как not_run; найденную настоящую ошибку проверенного кода показывай как failed.',
    'Массив findings используй ТОЛЬКО для подтверждённых дефектов приложения, а не для отсутствующих инструментов; последние описывай в caseResults.',
@@ -500,17 +525,19 @@ async function runTestJob(job,state,context){
    'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
    'При невозможности проверки не скрывай её. Если все реально доступные проверки выполнены без ошибок, но несколько сценариев недоступны, верни verdict=blocked и точный список таких сценариев. НЕ разрешай слияние самостоятельно — его может согласовать только пользователь.',
    'Если инструмент есть и проверку можно провести, обязательно попробуй. Отсутствие времени, ошибка теста или неподтверждённый результат НЕ является доказательством, что инструмент недоступен.',
-   'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","handoffNote":"процедурное замечание другому агенту, не часть документации; пустая строка если замечаний нет","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","reason":"executed|tool_unavailable|environment_unavailable|manual_only|unknown","evidence":"команда и результат или причина недоступности"}]}.',
+   (!singlePass?'Сформируй только JSON: {"verdict":"passed|failed|blocked","summary":"что проверено и результат","handoffNote":"процедурное замечание другому агенту, не часть документации; пустая строка если замечаний нет","findings":[{"severity":"critical|major|minor","description":"дефект","steps":"способ воспроизведения или проверка","expected":"ожидаемый результат","actual":"фактический результат"}],"checks":[{"name":"название проверки","result":"passed|failed|not_run","details":"доказательство"}],"caseResults":[{"case_id":"uuid из плана","result":"passed|failed|blocked|not_run","reason":"executed|tool_unavailable|environment_unavailable|manual_only|unknown","evidence":"команда и результат или причина недоступности"}]}.':'Сформируй JSON по заданной схеме. У каждого caseResults должны быть case_id и title.'),
    'Вердикт failed при обнаружении воспроизводимых проблем. Вердикт passed только при достаточных проверках и отсутствии дефектов. blocked — если проверить нельзя.',
-   'Поля summary и handoffNote видны человеку. Коротко объясни результат простым языком, включая сколько сценариев проверено, что осталось и почему. Подробные команды и доказательства запиши в checks и caseResults.',
+   singlePass?'В summary и handoffNote кратко объясни, что получилось и что мешало. Число проверок подсчитает система.':'Поля summary и handoffNote видны человеку. Коротко объясни результат простым языком, включая сколько сценариев проверено, что осталось и почему. Подробные команды и доказательства запиши в checks и caseResults.',
    'В поле learningSuggestion запиши одно полезное повторно применимое улучшение процесса QA, основанное на фактических проверках этого запуска, или пустую строку. Это предложение на утверждение пользователю, не обязательная инструкция. Не добавляй секреты или персональные данные.',
    'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||['Задача: '+job.title+'\n'+String(job.description).slice(0,6000),'Инструкции: '+String(job.agentInstructions||'').slice(0,1600),'Правила: '+String(job.projectRules||'').slice(0,800),'Документация: '+String(job.knowledgeContext||'').slice(0,900),'Передача: '+String(job.handoffContext||'').slice(0,800)].join('\n\n')),
    'Возможности текущего контейнера, обнаруженные автоматически: '+capabilities,
    prerequisite?'Ограничение среды: '+prerequisite+' Выполни остальные доступные проверки.':'',
-   'План тестирования находится в файле .ado-qa-plan.json в корне текущей временной рабочей копии. Прочитай его полностью перед проверками; проверь КАЖДЫЙ case_id, используй шаги и ожидаемые результаты из файла.',
+   adHoc?'Файл плана пуст. Сам выбери до 20 проверок по ТЗ и изменённому поведению, выполни доступные сразу. Верни для каждой запись caseResults с уникальным case_id qa-1, qa-2 и так далее и понятным title. Включи недоступные сценарии, если они нужны для приёмки.':'План тестирования находится в файле .ado-qa-plan.json в корне текущей временной рабочей копии. Прочитай его полностью перед проверками; проверь КАЖДЫЙ case_id, используй шаги и ожидаемые результаты из файла.',
    'Текущий git commit: '+state.testedCommit
   ].join('\n\n');
   state.message='Проверяет код и запускает доступные тесты';
+  const commandField=singlePass?{command:{type:'string'}}:{};
+  const titleField=singlePass?{title:{type:'string'}}:{};
   const reportSchema={
    type:'object',additionalProperties:false,
    required:['verdict','summary','handoffNote','learningSuggestion','findings','checks','caseResults'],
@@ -521,9 +548,9 @@ async function runTestJob(job,state,context){
      learningSuggestion:{type:'string'},
     findings:{type:'array',items:{type:'object',additionalProperties:false,required:['severity','description','steps','expected','actual'],properties:{
      severity:{type:'string',enum:['critical','major','minor']},description:{type:'string'},steps:{type:'string'},expected:{type:'string'},actual:{type:'string'}}}},
-    checks:{type:'array',items:{type:'object',additionalProperties:false,required:['name','result','details'],properties:{
+    checks:{type:'array',items:{type:'object',additionalProperties:false,required:['name','result','details',...Object.keys(commandField)],properties:{...commandField,
      name:{type:'string'},result:{type:'string',enum:['passed','failed','not_run']},details:{type:'string'}}}},
-    caseResults:{type:'array',items:{type:'object',additionalProperties:false,required:['case_id','result','reason','evidence'],properties:{
+    caseResults:{type:'array',items:{type:'object',additionalProperties:false,required:['case_id','result','reason','evidence',...Object.keys(commandField),...Object.keys(titleField)],properties:{...commandField,...titleField,
      case_id:{type:'string'},result:{type:'string',enum:['passed','failed','blocked','not_run']},
      reason:{type:'string',enum:['executed','tool_unavailable','environment_unavailable','manual_only','unknown']},evidence:{type:'string'}}}}
    }
@@ -544,6 +571,10 @@ async function runTestJob(job,state,context){
     throw Error('Некорректные результаты отдельных тест-кейсов');
    if(required.some(id=>!data.caseResults.some(c=>c.case_id===id)))
     throw Error('В отчёте отсутствуют результаты части тест-кейсов');
+   if(adHoc&&(!data.caseResults.length||data.caseResults.length>20||
+    new Set(data.caseResults.map(c=>c.case_id)).size!==data.caseResults.length||
+    data.caseResults.some(c=>!/^qa-[1-9][0-9]?$/.test(c.case_id)||typeof c.title!=='string'||c.title.trim().length<3||c.title.length>240)))
+    throw Error('Отчёт должен содержать уникальные сценарии проверки с названиями');
    return data;
   };
   const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
@@ -578,6 +609,11 @@ async function runTestJob(job,state,context){
    report=verifyReport(corrected.message||'');
   }
   assertJobActive(job.id);
+  if(singlePass){
+   report=verifyQaExecution(report,[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout)],baseline);
+   state.executionVerified=true;
+   if(adHoc)state.cases=report.cases;
+  }
   state.verdict=report.verdict;
   state.summary=report.summary.slice(0,3500);
   state.handoffNote=String(report.handoffNote||'').slice(0,2500);
@@ -586,7 +622,8 @@ async function runTestJob(job,state,context){
   state.checks=report.checks.slice(0,30);
   state.caseResults=report.caseResults.slice(0,50);
   state.status='completed';
-  state.message='Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
+  state.message=singlePass?'Проверено '+report.caseResults.filter(c=>c.result==='passed'||c.result==='failed').length+' из '+report.caseResults.length:
+   'Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
  }catch(e){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
  }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
@@ -776,6 +813,7 @@ http.createServer(async(req,res)=>{
    if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
     typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
     typeof job.repository!=='string'|| !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(job.repository) ||
+    (job.branch!==undefined&&(typeof job.branch!=='string'||!/^[a-zA-Z0-9_.\/-]+$/.test(job.branch)||job.branch.startsWith('-')))||
     typeof job.baseBranch!=='string'|| !/^[a-zA-Z0-9_.\/-]+$/.test(job.baseBranch) ||
     !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(job.model)||
     !['low','medium'].includes(job.reasoning)||

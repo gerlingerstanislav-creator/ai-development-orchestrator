@@ -549,31 +549,55 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
  }
  return {status,message};
 }
-export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number;recovery?:boolean;simplified?:boolean}):Promise<string>{
+export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number;recovery?:boolean;simplified?:boolean;singlePass?:boolean}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
- if(task.spec_review_status!=='current'||task.spec_reviewed_version!==task.spec_version)throw ApplicationFailure.nonRetryable('ТЗ изменилось: требуется повторная сверка аналитиком');
- const testPlan=await readQaPlan(pool,projectId,taskId);
- if(!testPlan?.cases.length||testPlan.spec_version!==task.spec_version)throw ApplicationFailure.nonRetryable('QA-план устарел относительно актуальной версии ТЗ');
- if(!args.simplified){
- const stale=await pool.query("SELECT count(*)::int AS total FROM qa_plan_cases pc JOIN qa_test_cases c ON c.id=pc.case_id JOIN qa_test_plans p ON p.id=pc.plan_id WHERE p.project_id=$1 AND p.task_id=$2 AND c.status<>'active'",[projectId,taskId]);
- if(stale.rows[0].total>0)throw ApplicationFailure.nonRetryable('Тест-кейсы требуют ручного пересмотра');
- }
-
- const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
- const testId=existing.rowCount?existing.rows[0].id:randomUUID();
- if(!existing.rowCount){
-  await pool.query("INSERT INTO ai_test_runs(id,project_id,task_id,cycle_id,attempt,status,message,qa_spec_version,qa_plan_snapshot,runner_commit_sha) VALUES($1,$2,$3,$4,$5,'queued','Ожидает запуска проверки',$6,$7,$8) ON CONFLICT(cycle_id,attempt) DO NOTHING",
-   [testId,projectId,taskId,cycleId,attempt,task.spec_version,JSON.stringify(args.simplified?{...testPlan,simplified:true}:testPlan),task.spec_reviewed_commit||null]);
- }
- const record=await pool.query('SELECT id,status,qa_spec_version,qa_plan_snapshot,runner_commit_sha FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
- const id=record.rows[0].id;
- if(record.rows[0].status==='cancelled')throw ApplicationFailure.nonRetryable('Тестирование отменено пользователем');
- if(['completed','failed'].includes(record.rows[0].status)||!args.recovery&&record.rows[0].status==='running')return id;
- if(args.recovery&&(record.rows[0].qa_spec_version!==task.spec_version||!record.rows[0].qa_plan_snapshot||!record.rows[0].runner_commit_sha||record.rows[0].runner_commit_sha!==task.spec_reviewed_commit))
-  throw ApplicationFailure.nonRetryable('QA-прогон нельзя восстановить для изменившейся версии ТЗ или PR');
  if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
+ const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
+ if(!existing.rowCount){
+  const storedPlan=await readQaPlan(pool,projectId,taskId);
+  const testPlan=storedPlan?.cases.length&&storedPlan.spec_version===task.spec_version?storedPlan:null;
+  if(!args.singlePass&&!testPlan)throw ApplicationFailure.nonRetryable('QA-план устарел относительно актуальной версии ТЗ');
+  if(!args.simplified){
+   const stale=await pool.query("SELECT count(*)::int AS total FROM qa_plan_cases pc JOIN qa_test_cases c ON c.id=pc.case_id JOIN qa_test_plans p ON p.id=pc.plan_id WHERE p.project_id=$1 AND p.task_id=$2 AND c.status<>'active'",[projectId,taskId]);
+   if(stale.rows[0].total>0)throw ApplicationFailure.nonRetryable('Тест-кейсы требуют ручного пересмотра');
+  }
+  const snapshot={...(testPlan??{cases:[]}),...(args.simplified?{simplified:true}:{}),...(args.singlePass?{singlePass:true,adHoc:!testPlan}:{})};
+  let commit=task.spec_reviewed_commit;
+  if(args.singlePass){
+   const pr=await fetch('https://api.github.com/repos/'+repo.repository+'/pulls/'+task.pr_number,{
+    headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+    signal:AbortSignal.timeout(20000)
+   });
+   if(!pr.ok)throw Error('Не удалось прочитать PR перед QA: GitHub HTTP '+pr.status);
+   const head=await pr.json() as any;
+   if(head.state!=='open'||head.head?.ref!==task.git_branch||!/^[0-9a-f]{40}$/i.test(String(head.head?.sha||'')))
+    throw ApplicationFailure.nonRetryable('Не удалось подтвердить открытую ветку PR для QA');
+   commit=head.head.sha;
+  }else if(task.spec_review_status!=='current'||task.spec_reviewed_version!==task.spec_version){
+   throw ApplicationFailure.nonRetryable('ТЗ изменилось: требуется повторная сверка аналитиком');
+  }
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   if(args.singlePass){
+    const pinned=await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND git_branch=$5 AND pr_number=$6",
+     [taskId,projectId,commit,task.spec_version,task.git_branch,task.pr_number]);
+    if(!pinned.rowCount)throw ApplicationFailure.nonRetryable('ТЗ или PR изменились перед запуском QA');
+    task.spec_reviewed_commit=commit;
+   }
+   await client.query("INSERT INTO ai_test_runs(id,project_id,task_id,cycle_id,attempt,status,message,qa_spec_version,qa_plan_snapshot,runner_commit_sha) VALUES($1,$2,$3,$4,$5,'queued','Ожидает запуска проверки',$6,$7,$8) ON CONFLICT(cycle_id,attempt) DO NOTHING",
+    [randomUUID(),projectId,taskId,cycleId,attempt,task.spec_version,JSON.stringify(snapshot),commit||null]);
+   await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
+ }
+ const record=(await pool.query('SELECT id,status,qa_spec_version,qa_plan_snapshot,runner_commit_sha FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt])).rows[0];
+ const id=record.id;
+ if(record.status==='cancelled')throw ApplicationFailure.nonRetryable('Тестирование отменено пользователем');
+ if(['completed','failed'].includes(record.status)||!args.recovery&&record.status==='running')return id;
+ if(record.qa_spec_version!==task.spec_version||!record.qa_plan_snapshot||!record.runner_commit_sha||record.runner_commit_sha!==task.spec_reviewed_commit)
+  throw ApplicationFailure.nonRetryable('QA-прогон нельзя запустить для изменившейся версии ТЗ или PR');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
  const qaPrompt=composeAgentPrompt({
   role:String(agentSettings.find((s:any)=>s.stage==='testing')?.agent_name||'AI-тестировщик'),
@@ -586,8 +610,8 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  });
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,agentPrompt:qaPrompt,projectRules:'',testPlan:record.rows[0].qa_plan_snapshot??testPlan,
-  expectedCommit:record.rows[0].runner_commit_sha||task.spec_reviewed_commit||undefined,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
+  title:task.title,description:task.description,agentPrompt:qaPrompt,projectRules:'',testPlan:record.qa_plan_snapshot,
+  expectedCommit:record.runner_commit_sha,branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1 AND status IN ('queued','running')",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
@@ -621,7 +645,15 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
  const status=String(remote.status||'running'),message=String(remote.message||'').slice(0,2500);
  if(status==='completed'||status==='failed'){
    if(status==='completed')await recordAgentLearning(pool,{projectId,role:'testing',runId:testId,body:remote.learningSuggestion,evidence:'QA-прогон '+testId+'; вердикт '+String(remote.verdict||'')});
-  const expected:Array<{id:string}>=Array.isArray(row.rows[0].qa_plan_snapshot?.cases)?row.rows[0].qa_plan_snapshot.cases:[];
+  const snapshot=row.rows[0].qa_plan_snapshot;
+  const singlePass=snapshot?.singlePass===true;
+  if(singlePass&&status==='completed'&&remote.executionVerified!==true)
+   return failRunnerRun('testing',projectId,testId,'Runner не подтвердил исполнение проверок. Обновите Codex Runner и повторите QA.');
+  const adHoc=snapshot?.singlePass===true&&snapshot.adHoc===true;
+  const expected=adHoc?z.array(z.object({id:z.string().regex(/^qa-[1-9][0-9]?$/),title:z.string().trim().min(3).max(240)})).max(30).safeParse(remote.cases??[]):null;
+  const cases:Array<{id:string;title?:string}>=adHoc
+   ? [...new Map((expected?.success?expected.data:[]).map(item=>[item.id,item])).values()]
+   : Array.isArray(snapshot?.cases)?snapshot.cases:[];
   const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
   const providedMap=new Map<string,{result:string;evidence:string;reason:string}>();
   for(const item of provided){
@@ -631,21 +663,23 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
     providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason});
    }
   }
-  const supplied=expected.map(c=>{
+  const supplied=cases.map(c=>{
    const candidate=providedMap.get(c.id);
    return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата'};
   });
-  const {cases:checked,visualToolGap}=checkedWithActualCapabilities(expected,supplied,String(remote.capabilities||''));
+  const {cases:checked,visualToolGap}=checkedWithActualCapabilities(cases,supplied,String(remote.capabilities||''));
   let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
   const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
   const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version||
    (row.rows[0].qa_plan_snapshot?.simplified===true&&remote.testedCommit!==currentSpec.rows[0].spec_reviewed_commit);
-  if(!expected.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
+  if(!cases.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
   if(checked.some(c=>c.result==='failed')||(Array.isArray(remote.checks)&&remote.checks.some((c:any)=>c.result==='failed'))||(Array.isArray(remote.findings)&&remote.findings.length>0))verdict='failed';
-  else if((checked.some(c=>c.result!=='passed')||visualToolGap)&&verdict==='passed')verdict='blocked';
+  else if((checked.some(c=>c.result!=='passed')||visualToolGap||snapshot?.singlePass===true&&!remote.checks?.some((c:any)=>c.result==='passed'))&&verdict==='passed')verdict='blocked';
   // A changed specification invalidates the entire run even if old cases failed.
   if(staleSpecification)verdict='blocked';
-  const report={summary:remote.summary||message,findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
+  const ran=checked.filter(c=>c.result==='passed'||c.result==='failed').length;
+  const outcome=singlePass&&status==='completed'?'Проверено '+ran+' из '+cases.length+'.':message;
+  const report={summary:remote.summary||outcome,...(singlePass?{executionVerified:remote.executionVerified===true}:{}),findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,capabilities:String(remote.capabilities||'').slice(0,1500),commit:remote.testedCommit||null,spec_version:row.rows[0].qa_spec_version,staleSpecification};
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -654,17 +688,17 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
     await client.query('ROLLBACK');
     return {status:'failed',message:'QA-прогон уже завершён или отменён'};
    }
-   for(const check of checked){
+   for(const check of adHoc?[]:checked){
     await client.query('INSERT INTO qa_case_results(id,project_id,test_run_id,case_id,result,evidence) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(test_run_id,case_id) DO UPDATE SET result=EXCLUDED.result,evidence=EXCLUDED.evidence',
      [randomUUID(),projectId,testId,check.case_id,check.result,check.evidence]);
    }
-   await client.query('UPDATE ai_test_runs SET status=$2,message=$3,verdict=$4,report=$5,completed_at=now() WHERE id=$1',
-    [testId,status,message,verdict,JSON.stringify(report)]);
+   await client.query('UPDATE ai_test_runs SET status=$2,message=$3,verdict=$4,report=$5,qa_plan_snapshot=COALESCE($6,qa_plan_snapshot),completed_at=now() WHERE id=$1',
+    [testId,status,outcome,verdict,JSON.stringify(report),adHoc?JSON.stringify({...snapshot,cases}):null]);
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId:row.rows[0].task_id,authorStage:'testing',authorName:'AI-тестировщик',targetStage:verdict==='failed'?'development':'all',kind:verdict==='failed'?'risk':'handoff',body:String(remote.handoffNote),sourceKey:'tester:'+testId,sourceRunId:testId});
   await event(projectId,testId,'testing',verdict,JSON.stringify(report).slice(0,2200),verdict==='passed'?'info':verdict==='failed'?'error':'warning');
-  return {status,message,verdict};
+  return {status,message:outcome,verdict};
  }
  if(message!==row.rows[0].message){
   await pool.query("UPDATE ai_test_runs SET status=$2,message=$3 WHERE id=$1 AND status IN ('queued','running')",[testId,status,message]);
