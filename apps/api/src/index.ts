@@ -1946,7 +1946,10 @@ registerKnowledgeContextRoutes(app,{pool,access,requireAdmin});
 registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
 registerProjectIterationRoutes(app,{pool,uid,access,requireAdmin,startPlanning:startIterationPlanning});
-registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,start:async runId=>{
+registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,
+ encrypt:(secret:string)=>{const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',encryptionKey,iv);
+  return Buffer.concat([iv,cipher.getAuthTag(),Buffer.concat([cipher.update(secret,'utf8'),cipher.final()])]).toString('base64');},
+ start:async runId=>{
  const client=await temporal();
  await client.workflow.start('automaticDeployment',{taskQueue:'agent-pipeline',workflowId:'deployment-'+runId,
   workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
