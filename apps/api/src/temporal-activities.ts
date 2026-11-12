@@ -11,6 +11,7 @@ import {executeProjectManagerInbox,failProjectManagerInbox,readProjectManagerWat
 import {runIterationPlanning} from './project-iterations.js';
 import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
 import {runQualityGates} from './quality-gates.js';
+import {deploymentDecision} from './deployment-stage.js';
 import pg from 'pg';
 import {randomUUID,createDecipheriv,createHash} from 'node:crypto';
 import {createMergeService} from './merge-service.js';
@@ -148,7 +149,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
   role:stage==='analysis'?'Системный аналитик':stage==='testing'?'QA-инженер':'Аналитик документации',
   objective:prompt,
   instructions:(await agentMemoryContext(pool,projectId,stage)).slice(0,1400),
-  tools:'Поиск и чтение проектных знаний; итог верни в запрошенном структурированном формате.',
+  tools:'Поиск и чтение проектных знаний, задачи и процесса; MCP agents.consult, blockers.list/report/resolve для доказанных технических блокеров. Итог в запрошенном структурированном формате.',
   scope:'Проект '+projectId+', задача '+taskId,
   context:knowledge.documents.slice(0,1300)+'\n'+knowledge.modules.slice(0,850)
  });
@@ -236,7 +237,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
    'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
    'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику. Сохраняй все действующие критерии приёмки из постановки; не повторяй одинаковые критерии.',
-   'Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
+   'Для технического вопроса сначала проверь доступные факты, используй MCP agents.consult с архитектором/разработчиком и blockers.report при настоящем ограничении. Не превращай технический блокер в продуктовый вопрос. Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
@@ -555,11 +556,11 @@ export async function startDevelopment(args:TaskRef){
  const agentPrompt=composeAgentPrompt({
   role:String(agentSettings.find((s:any)=>s.stage==='development')?.agent_name||'AI-разработчик'),
   objective:task.title+'\n'+description,
-  tools:'Локальная рабочая копия GitHub, терминал и файловые операции. Сначала изучи код. За commit, push и PR отвечает оркестратор.',
+  tools:'Локальная рабочая копия GitHub, терминал, редактирование и проверка файлов, а также адресные MCP: tasks.read, knowledge.search/read, processes.list, agents.consult, blockers.list/report/resolve. Git commit/push/PR выполняет только Runner.',
   instructions:agentInstructions,
   scope:'Репозиторий '+repo.repository+', базовая ветка '+baseBranch+'; задача '+taskId,
   context:'Продолжение задачи и новые комментарии:\n'+(await taskHandoffContext(projectId,taskId,'development')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
-  output:'При первом запуске реализуй задачу. При возврате используй существующую ветку, PR, результаты тестов и все новые комментарии; исправь только недоделанное или изменившиеся требования. Не создавай ту же функциональность с нуля. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
+  output:'Обеспечь соответствие критериям приёмки: реализуй недостающее, возобнови прежний PR или докажи, что функциональность уже есть в базовой ветке. Не создавай пустые коммиты. На возврате учитывай только новые дефекты, текущий SHA и решения владельца. Передай проверяемый HANDOFF_NOTE и при необходимости LEARNING_SUGGESTION.'
  });
  const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
@@ -602,10 +603,27 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   await event(projectId,runId,'development',status,message);
  }
  if(status==='completed'||status==='failed'){
-  if(status==='completed'&&!remote.prUrl){
-   const msg='Разработка завершилась без PR; передавать в тестирование нечего';
+  const reusedBase=remote.completionKind==='already_implemented';
+  if(status==='completed'&&!remote.prUrl&&!reusedBase){
+   const msg='Разработка завершилась без PR и без проверяемого доказательства существующей реализации';
    await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,msg]);
    return {status:'failed',message:msg};
+  }
+  if(status==='completed'&&reusedBase){
+   const proof=remote.implementationEvidence,sha=String(remote.verifiedCommit||'');
+   if(!/^[a-f0-9]{40}$/i.test(sha)||proof?.commit!==sha||!Array.isArray(proof?.files)||!proof.files.length||!Array.isArray(proof?.criteria)||!proof.criteria.length){
+    return failRunnerRun('development',projectId,runId,'Нет проверяемого обоснования уже выполненной реализации');
+   }
+   const {repo,token,task}=await jobSettings(projectId,taskId);
+   const base=task.pr_base_branch||repo.target_branch||repo.default_branch;
+   const response=await fetch('https://api.github.com/repos/'+repo.repository+'/branches/'+encodeURIComponent(base),{
+    headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+    signal:AbortSignal.timeout(20000)
+   });
+   if(!response.ok)throw Error('Не удалось подтвердить базовую ветку для проверки существующего кода: GitHub HTTP '+response.status);
+   const data=await response.json() as {commit?:{sha?:string}};
+   if(data.commit?.sha!==sha)
+    return failRunnerRun('development',projectId,runId,'Целевая ветка изменилась после анализа кода; требуется повторная проверка');
   }
   if(remote.usage){
    const u=remote.usage;
@@ -626,11 +644,16 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
     await db.query('ROLLBACK');
     return {status:'failed',message:'Попытка уже завершена или отменена'};
    }
-   if(status==='completed'){
+   if(status==='completed'&&reusedBase){
+    await db.query("UPDATE tasks SET stage='testing',implementation_kind='already_implemented',implementation_commit=$2,implementation_evidence=$3::jsonb,git_branch=$4,pr_url=NULL,pr_number=NULL,updated_at=now() WHERE id=$1 AND project_id=$5",
+     [taskId,remote.verifiedCommit,JSON.stringify(remote.implementationEvidence),remote.branch,projectId]);
+    await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'already_implemented',$4)",
+     [randomUUID(),taskId,null,'Разработчик предъявил существующую реализацию на SHA '+remote.verifiedCommit+'; ожидается независимый QA']);
+   }else if(status==='completed'){
     const match=/\/pull\/(\d+)$/.exec(String(remote.prUrl));
     await db.query("INSERT INTO knowledge_artifact_links(id,project_id,document_id,artifact_kind,artifact_ref,relation) SELECT gen_random_uuid(),$1,l.document_id,'pr',$3,'implemented_by' FROM knowledge_task_links l WHERE l.project_id=$1 AND l.task_id=$2 ON CONFLICT DO NOTHING",
      [projectId,taskId,String(remote.prUrl)]);
-    await db.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
+    await db.query("UPDATE tasks SET stage='testing',implementation_kind='pr',implementation_commit=NULL,implementation_evidence=NULL,git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
      [taskId,remote.branch||taskId,remote.prUrl,match?Number(match[1]):null,remote.baseBranch||null,projectId]);
    }
    await db.query('COMMIT');
@@ -639,11 +662,19 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
  }
  return {status,message};
 }
+/** A deterministic workflow branch chooses which quality contract applies. */
+export async function developmentVerificationSource(input:{projectId:string;taskId:string}):Promise<'pr'|'already_implemented'>{
+ const task=await pool.query("SELECT implementation_kind,implementation_commit,stage FROM tasks WHERE project_id=$1 AND id=$2",[input.projectId,input.taskId]);
+ if(!task.rowCount||task.rows[0].stage!=='testing')throw ApplicationFailure.nonRetryable('Разработка ещё не передала задачу в QA');
+ if(task.rows[0].implementation_kind==='already_implemented'&&/^[a-f0-9]{40}$/i.test(String(task.rows[0].implementation_commit||'')))return 'already_implemented';
+ return 'pr';
+}
 export async function startTesting(args:{projectId:string;taskId:string;cycleId:string;attempt:number;recovery?:boolean;simplified?:boolean;singlePass?:boolean}):Promise<string>{
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
- if(!task.pr_url||!task.git_branch)throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
+ const reusedBase=task.implementation_kind==='already_implemented'&&!!task.implementation_commit;
+ if(!reusedBase&&(!task.pr_url||!task.git_branch))throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  if(!existing.rowCount){
   const storedPlan=await readQaPlan(pool,projectId,taskId);
@@ -657,25 +688,36 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   }
   const snapshot={...(testPlan??{cases:[]}),...(args.simplified?{simplified:true}:{}),...(args.singlePass?{singlePass:true,adHoc:!testPlan}:{})};
   let commit=task.spec_reviewed_commit;
-  if(args.singlePass){
-   const pr=await fetch('https://api.github.com/repos/'+repo.repository+'/pulls/'+task.pr_number,{
+  if(args.singlePass||reusedBase){
+   const branch=task.pr_base_branch||repo.target_branch||repo.default_branch;
+   const url=reusedBase?'/branches/'+encodeURIComponent(branch):'/pulls/'+task.pr_number;
+   const response=await fetch('https://api.github.com/repos/'+repo.repository+url,{
     headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
     signal:AbortSignal.timeout(20000)
    });
-   if(!pr.ok)throw Error('Не удалось прочитать PR перед QA: GitHub HTTP '+pr.status);
-   const head=await pr.json() as any;
-   if(head.state!=='open'||head.head?.ref!==task.git_branch||!/^[0-9a-f]{40}$/i.test(String(head.head?.sha||'')))
-    throw ApplicationFailure.nonRetryable('Не удалось подтвердить открытую ветку PR для QA');
-   commit=head.head.sha;
+   if(!response.ok)throw Error('GitHub не подтвердил исходный код перед QA: HTTP '+response.status);
+   const source=await response.json() as any;
+   if(reusedBase){
+    commit=String(source.commit?.sha||'');
+    if(!/^[0-9a-f]{40}$/i.test(commit)||commit!==task.implementation_commit)
+     throw ApplicationFailure.nonRetryable('Целевая ветка изменилась после подтверждения реализации; требуется повторный анализ');
+   }else{
+    if(source.state!=='open'||source.head?.ref!==task.git_branch||!/^[0-9a-f]{40}$/i.test(String(source.head?.sha||'')))
+     throw ApplicationFailure.nonRetryable('Не удалось подтвердить открытый PR для QA');
+    commit=source.head.sha;
+   }
   }else if(task.spec_review_status!=='current'||task.spec_reviewed_version!==task.spec_version){
    throw ApplicationFailure.nonRetryable('ТЗ изменилось: требуется повторная сверка аналитиком');
   }
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
-   if(args.singlePass){
-    const pinned=await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND git_branch=$5 AND pr_number=$6",
-     [taskId,projectId,commit,task.spec_version,task.git_branch,task.pr_number]);
+   if(args.singlePass||reusedBase){
+    const pinned=reusedBase
+     ?await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND implementation_kind='already_implemented' AND implementation_commit=$3",
+      [taskId,projectId,commit,task.spec_version])
+     :await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND git_branch=$5 AND pr_number=$6",
+      [taskId,projectId,commit,task.spec_version,task.git_branch,task.pr_number]);
     if(!pinned.rowCount)throw ApplicationFailure.nonRetryable('ТЗ или PR изменились перед запуском QA');
     task.spec_reviewed_commit=commit;
    }
@@ -696,14 +738,15 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   objective:'Независимо проверь задачу: '+task.title+'\n'+String(task.description||'').slice(0,6500),
   tools:'Изолированная копия репозитория, команды npm/pytest/API и локальный HTTP-сервер. Если браузера нет, визуальные проверки помечай blocked, не выдумывай результаты.',
   instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
-  scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||''),
+  scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||'')+
+   (reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
   context:'История, новая обратная связь, предыдущие QA:\n'+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
   output:'Сначала изучи результаты предыдущего QA и новые комментарии. Повторно проверь только необходимые затронутые кейсы, но не признавай устаревшие результаты действительными для другого commit SHA. Невыполненные проверки всегда blocked/not_run, не passed.'
  });
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
   title:task.title,description:task.description,agentPrompt:qaPrompt,projectRules:'',testPlan:record.qa_plan_snapshot,
-  expectedCommit:record.runner_commit_sha,branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
+  expectedCommit:record.runner_commit_sha,branch:reusedBase?task.pr_base_branch||repo.target_branch||repo.default_branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1 AND status IN ('queued','running')",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
@@ -834,8 +877,51 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
- const verified=await pool.query("SELECT 1 FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed' AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL AND r.qa_spec_version=t.spec_version",[testId,projectId,taskId]);
- if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного тестирования коммита PR');
+ const verified=await pool.query(`SELECT t.implementation_kind,t.implementation_commit,r.report
+  FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id
+  WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed'
+   AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL
+   AND r.qa_spec_version=t.spec_version`,[testId,projectId,taskId]);
+ if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного независимого QA для текущей версии требований');
+ const result=verified.rows[0];
+ if(result.implementation_kind==='already_implemented'){
+  const sha=String(result.implementation_commit||'');
+  const report=result.report||{};
+  if(!/^[a-f0-9]{40}$/i.test(sha)||report.commit!==sha||report.executionVerified!==true||
+   !Array.isArray(report.caseResults)||!report.caseResults.length||report.caseResults.some((c:any)=>c.result!=='passed'))
+   throw ApplicationFailure.nonRetryable('Нужен полностью подтверждённый QA существующей реализации на закреплённом SHA');
+  const {repo,token,task}=await jobSettings(projectId,taskId);
+  const base=task.pr_base_branch||repo.target_branch||repo.default_branch;
+  const response=await fetch('https://api.github.com/repos/'+repo.repository+'/branches/'+encodeURIComponent(base),{
+   headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+   signal:AbortSignal.timeout(20000)
+  });
+  if(!response.ok)throw Error('Не удалось перепроверить SHA целевой ветки после QA: GitHub HTTP '+response.status);
+  const current=await response.json() as {commit?:{sha?:string}};
+  if(current.commit?.sha!==sha)throw ApplicationFailure.nonRetryable('Целевая ветка изменилась во время QA: требуется повторная проверка');
+  const client=await pool.connect();
+  let decision:{stage:'documentation'|'deployment';status:'skipped'|'pending';reason:string};
+  try{
+   await client.query('BEGIN');
+   const project=await client.query('SELECT owner_id FROM projects WHERE id=$1',[projectId]);
+   const mode=await client.query('SELECT mode FROM project_deployment_settings WHERE project_id=$1',[projectId]);
+   decision=deploymentDecision(mode.rows[0]?.mode||'skip');
+   const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback='',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' AND implementation_kind='already_implemented' AND implementation_commit=$3 RETURNING id",
+    [taskId,projectId,sha,decision.stage]);
+   if(!updated.rowCount)throw ApplicationFailure.nonRetryable('Задача изменилась после QA');
+   await client.query(`INSERT INTO task_deployment_records(task_id,project_id,status,reason,merge_sha,actor_id)
+    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id) DO UPDATE SET status=EXCLUDED.status,
+    reason=EXCLUDED.reason,merge_sha=EXCLUDED.merge_sha,actor_id=EXCLUDED.actor_id,updated_at=now()`,
+    [taskId,projectId,decision.status,decision.reason,sha,project.rows[0]?.owner_id||null]);
+   await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'existing_implementation_verified',$3)",
+    [randomUUID(),taskId,'QA подтвердил, что требуемый код уже есть в базовой ветке на SHA '+sha+'. Новый PR не нужен.']);
+   await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)",
+    [randomUUID(),taskId,decision.status==='skipped'?'deployment_skipped':'deployment_pending',decision.reason]);
+   await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+  await event(projectId,testId,'testing','already_implemented_verified','QA подтвердил исходную реализацию на '+sha+'. Дальнейший этап: '+decision!.stage);
+  return;
+ }
  await pool.query("UPDATE tasks SET stage='merge_queue',test_feedback='',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",
   [taskId,projectId]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',
@@ -1025,7 +1111,7 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
   try{
    const [task,stage,rules,settings]=await Promise.all([
     pool.query('SELECT title,description,spec_version FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]),
-    pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2',[projectId,note.target_stage]),
+    pool.query('SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2 UNION ALL SELECT agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 AND role=$2 LIMIT 1',[projectId,note.target_stage]),
     pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at DESC LIMIT 12',[projectId]),
     pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId])
    ]);
@@ -1061,14 +1147,20 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
      "UPDATE task_agent_notes n SET status='answered',answer=$2,answer_author=$3,answered_at=now(),processing_at=NULL,requires_customer=false WHERE n.id=$1 AND n.status='processing' AND EXISTS(SELECT 1 FROM tasks t WHERE t.id=n.task_id AND t.project_id=n.project_id AND t.spec_version=$4)",
      [note.id,text+'\n\nИсточник ('+answer.source+'): «'+quote.slice(0,650)+'»',name,task.rows[0]?.spec_version]);
     if(!saved.rowCount)throw Error('ТЗ изменилось во время поиска ответа');
+    await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_consultation_answered',$3)",
+     [randomUUID(),taskId,name+': '+text.slice(0,1200)]);
     resolved++;
    }else if(answer.status==='needs_tool'){
-    // A missing browser or code-reading tool is a capability gap, not an
-    // unanswered business question for the customer. Preserve its evidence
-    // and let independent QA report the affected cases as blocked.
-    await pool.query("UPDATE task_agent_notes SET status='answered',answer=$2,answer_author='Система инструментов',answered_at=now(),processing_at=NULL,requires_customer=false WHERE id=$1 AND status='processing'",
-     [note.id,'Средство недоступно: '+(text||'нужна инструментальная проверка')]);
-    resolved++;
+    // A tool gap is NOT an answer. Keep it unresolved and visible, with
+    // a concrete owner and evidence. No fabricated successful verification.
+    await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=false WHERE id=$1 AND status='processing'",[note.id]);
+    await pool.query(`INSERT INTO agent_blockers(id,project_id,task_id,process_id,role,kind,summary,evidence,resolution_hint)
+     SELECT $1,$2,$3,$4,$5,'tool',$6,$7,'Найти доступную альтернативу; при отсутствии возможностей запросить настройку через DevOps'
+     WHERE NOT EXISTS(SELECT 1 FROM agent_blockers WHERE project_id=$2 AND task_id=$3 AND process_id=$4 AND status='open')`,
+     [randomUUID(),projectId,taskId,note.id,note.target_stage,'Для ответа недоступен инструмент',text||'Для решения не удалось получить необходимые технические доказательства']);
+    await event(projectId,note.id,'analysis','tool_unavailable',text||'Нужна техническая возможность для разрешения вопроса','warning');
+    await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_consultation_blocked',$3)",
+     [randomUUID(),taskId,name+': '+(text||'для консультации недоступен инструмент').slice(0,1200)]);
    }else if(answer.status==='needs_customer'){
     await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=true WHERE id=$1 AND status='processing'",[note.id]);
    }else{
