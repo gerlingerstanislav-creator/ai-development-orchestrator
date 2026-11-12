@@ -20,7 +20,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
    type text DEFAULT 'task',stage text DEFAULT 'analysis',analysis_state text DEFAULT 'ready_for_development',
    spec_version int DEFAULT 1,spec_reviewed_version int DEFAULT 1,spec_review_status text DEFAULT 'current',
    clarification_questions jsonb DEFAULT '[]',priority int DEFAULT 2,depends_on_task_id uuid,git_branch text,pr_url text,
-   pr_base_branch text,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
+   pr_base_branch text,test_feedback text DEFAULT '',created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
   CREATE TABLE project_ai_settings(project_id uuid,enabled boolean,model text,reasoning text);
   CREATE TABLE project_agent_models(project_id uuid,role text,model text);
   CREATE TABLE project_role_capacity(project_id uuid,role text,capacity int);
@@ -28,7 +28,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
   CREATE TABLE connections(id uuid,provider text);
   CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text);
   CREATE TABLE agent_peer_queue(project_id uuid,role text,status text);
-  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,cycle_id uuid,cycle_attempt int);
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text);
   CREATE TABLE iteration_execution_queue(project_id uuid,iteration_id uuid NOT NULL,task_id uuid,requested_by uuid,
@@ -121,4 +121,30 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  assert.equal(starts.length,4,'the same task is dispatched once');
  assert.equal((await db.query('SELECT triggered_by FROM ai_task_runs WHERE task_id=$1',[automatic])).rows[0].triggered_by,actor);
 
+ // A completed run does not restart merely because the card is still visible
+ // in Development. Rework must be driven by concrete QA/PM feedback.
+ await db.query("UPDATE ai_task_runs SET status='completed' WHERE task_id=$1",[automatic]);
+ await releaseTaskOrchestration(db,project,automatic,(await status(automatic)).run_id);
+ await dispatch();
+ assert.equal(starts.length,4,'already completed work without new feedback must not rerun');
+ await db.query("UPDATE tasks SET test_feedback='QA: fix 360px responsive circles, keep existing PR',git_branch=$2,pr_url=$3 WHERE id=$1",
+  [first,first,'https://github.com/example/repo/pull/9']);
+ const oldRunId=(await status(first)).run_id;
+ await dispatch();
+ assert.equal(starts.length,5,'a returned QA task must be requeued exactly once');
+ assert.equal(starts[4].args[0].taskId,first);
+ const next=await status(first);
+ assert.equal(next.status,'dispatched');
+ assert.notEqual(next.run_id,oldRunId,'rework uses a fresh run preserving earlier history');
+ assert.equal((await db.query('SELECT count(*)::int n FROM ai_task_runs WHERE task_id=$1',[first])).rows[0].n,2);
+ const preserved=(await db.query('SELECT git_branch,pr_url,test_feedback FROM tasks WHERE id=$1',[first])).rows[0];
+ assert.equal(preserved.git_branch,first);
+ assert.match(preserved.pr_url,/pull\/9/);
+ assert.match(preserved.test_feedback,/360px/);
+ await dispatch();
+ assert.equal(starts.length,5,'active rework must not launch duplicate developers');
+ await db.query("UPDATE ai_task_runs SET status='failed' WHERE id=$1",[next.run_id]);
+ await releaseTaskOrchestration(db,project,first,next.run_id);
+ await dispatch();
+ assert.equal(starts.length,5,'failed rework must not requeue itself forever without new comments');
 });

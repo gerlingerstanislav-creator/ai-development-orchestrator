@@ -19,6 +19,7 @@ import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
 import {recordTaskAgentNote,taskNotesContext,taskConversationEvidence,pendingAgentQuestions,resolveAgentQuestionsForReview} from './task-agent-notes.js';
+import {readTaskWorkBrief} from './task-work-brief.js';
 import {managerSnapshot,syncManagerInbox} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
@@ -116,13 +117,11 @@ async function stageContext(projectId:string,taskId:string,stage:KnowledgeStage,
  return buildKnowledgeContext(pool,{projectId,taskId,stage,processId,budgetChars:1800,includeBodies:false});
 }
 async function taskHandoffContext(projectId:string,taskId:string,stage:string){
- const [notes,conversation]=await Promise.all([
-  taskNotesContext(pool,projectId,taskId,stage),taskConversationEvidence(pool,projectId,taskId)
- ]);
  const responsibility=workflowResponsibility(stage);
- const assignment=responsibility?'Этап '+stage+'. Условия старта: '+responsibility.trigger+' Ожидаемый результат: '+responsibility.result+'\n\n':'';
- return assignment+'Реплики пользователя в этой задаче:\n'+conversation.slice(-900)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-1200);
+ const assignment=responsibility?'Этап '+stage+'. Ожидаемый результат: '+responsibility.result+'\n':'';
+ return assignment+await readTaskWorkBrief(pool,projectId,taskId,3700);
 }
+
 async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string,processId?:string):Promise<string>{
  const setup=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
@@ -196,7 +195,7 @@ function parseTaskAnalysisResult(text:string){
 export async function runTaskStageAnalysis(runId:string):Promise<void>{
  const run=(await pool.query("SELECT id,project_id,task_id,spec_version,status FROM agent_analysis_runs WHERE id=$1",[runId])).rows[0];
  if(!run||['completed','waiting','failed','cancelled'].includes(run.status))return;
- const active=await pool.query("UPDATE agent_analysis_runs SET status='running',updated_at=now() WHERE id=$1 AND status IN ('queued','running') RETURNING id",[runId]);
+ const active=await pool.query("UPDATE agent_analysis_runs SET status='running',updated_at=now() WHERE id=$1 AND status IN ('queued','running') RETURNING id,updated_at",[runId]);
  if(!active.rowCount)return;
  const {project_id:projectId,task_id:taskId}=run;
  try{
@@ -225,7 +224,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
-   'Ключевые ответы и замечания: '+history.slice(-1500),
+   'Последние сообщения и выполненная работа (новые вводные приоритетнее старых): '+history.slice(0,3100),
    'ПОДТВЕРЖДЁННЫЕ ОТВЕТЫ ВЛАДЕЛЬЦА ИЗ КАРТОЧКИ (используй их в первую очередь; не спрашивай повторно): '+JSON.stringify(ownerEvidence.rows.reverse().map((r:{kind:string;body:string;answer:string|null;answer_author:string|null})=>({question:r.kind==='question'?r.body:null,answer:r.answer||r.body,source:r.answer_author||'Владелец'}))).slice(0,3200),
    'Если сохранённый ответ относится к ранее заданному вопросу, проверь, достаточно ли его для выполнения. При полноте ответов верни ready; при реальной неоднозначности задай только недостающий вопрос.'
   ].join('\n\n');
@@ -239,6 +238,20 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    const latest=(await client.query("SELECT * FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[projectId,taskId])).rows[0];
    if(stillActive.rows[0]?.status==='cancelled'||!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||(latest.title!==task.title||latest.description!==task.description)){
     await client.query("UPDATE agent_analysis_runs SET status='completed',message='Задача изменилась до сохранения результата',updated_at=now() WHERE id=$1 AND status<>'cancelled'",[runId]);
+    await client.query('COMMIT');return;
+   }
+   // Comments submitted while the analyst was reading the earlier snapshot
+   // must not be silently skipped. Requeue analysis and retain every message.
+   const fresh=await client.query(`SELECT 1 FROM task_agent_notes n WHERE n.project_id=$1 AND n.task_id=$2
+    AND n.source_kind='human' AND n.created_at>$3
+    UNION ALL SELECT 1 FROM manager_messages m WHERE m.project_id=$1 AND m.task_id=$2
+    AND m.role='user' AND m.created_at>$3
+    UNION ALL SELECT 1 FROM assistant_messages m WHERE m.project_id=$1 AND m.task_id=$2
+    AND m.role='user' AND m.created_at>$3 LIMIT 1`,[projectId,taskId,active.rows[0].updated_at]);
+   if(fresh.rowCount){
+    await client.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE project_id=$1 AND id=$2",[projectId,taskId]);
+    await client.query("UPDATE agent_analysis_runs SET status='completed',message='Получены новые комментарии. Пересмотр актуального ввода поставлен в очередь.',updated_at=now() WHERE id=$1",[runId]);
+    await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_inputs_changed',$3)",[randomUUID(),taskId,'Новый комментарий поступил во время анализа. Следующий запуск учтёт его до разработки.']);
     await client.query('COMMIT');return;
    }
    if(output.outcome==='ready'){
@@ -394,7 +407,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
     role:'QA-инженер — проектирование проверок',
     objective:prompt,
     tools:'Только составление тест-кейсов; выполнение тестов позже выполняет Codex в изолированном runner.',
-    context:taskContext.slice(0,1100)+'\n'+qaKnowledge.documents.slice(0,900),
+    context:taskContext.slice(0,2300)+'\n'+qaKnowledge.documents.slice(0,700),
     instructions:qaKnowledge.modules.slice(0,900)
    });
    await recordAgentPrompt(pool,{projectId,processId:runId,role:'testing',operation:'qa_plan',prompt:bounded}).catch(()=>{});
@@ -483,7 +496,8 @@ export async function startDevelopment(args:TaskRef){
  if(!pinned.rowCount)throw ApplicationFailure.nonRetryable('Попытка разработки изменилась или отменена');
  const baseBranch=task.pr_base_branch||repo.target_branch||repo.default_branch;
  const feedback=String(task.test_feedback||'').slice(0,3800);
- if(task.spec_review_status==='pending'||task.spec_review_status==='needs_approval')throw ApplicationFailure.nonRetryable('Требования ожидают проверки аналитиком или согласования');
+ // A stale project-document review is advisory. Only live owner questions and
+ // task analysis gates block the initial development; rework may proceed on PR.
  const beforeStart=!args.recovery&&!attempt&&record.rows[0].status==='queued'&&record.rows[0].approved_spec!=null?async()=>{
   if(!feedback&&await finishExistingTaskBranch(args,{repository:repo.repository,baseBranch,token,title:task.title},record.rows[0].triggered_by))return false;
   const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'};
@@ -506,8 +520,8 @@ export async function startDevelopment(args:TaskRef){
   tools:'Локальная рабочая копия GitHub, терминал и файловые операции. Сначала изучи код. За commit, push и PR отвечает оркестратор.',
   instructions:agentInstructions,
   scope:'Репозиторий '+repo.repository+', базовая ветка '+baseBranch+'; задача '+taskId,
-  context:'Правила: '+rules.slice(0,1200)+'\nДокументация по задаче: '+knowledge.documents.slice(0,1200)+'\nПередача от коллег: '+(await taskHandoffContext(projectId,taskId,'development')).slice(0,1200),
-  output:'Измени файлы в рабочей копии, проверь доступные тесты. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
+  context:'Продолжение задачи и новые комментарии:\n'+(await taskHandoffContext(projectId,taskId,'development')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
+  output:'При первом запуске реализуй задачу. При возврате используй существующую ветку, PR, результаты тестов и все новые комментарии; исправь только недоделанное или изменившиеся требования. Не создавай ту же функциональность с нуля. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
  });
  const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
@@ -643,8 +657,8 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   tools:'Изолированная копия репозитория, команды npm/pytest/API и локальный HTTP-сервер. Если браузера нет, визуальные проверки помечай blocked, не выдумывай результаты.',
   instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
   scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||''),
-  context:'Правила: '+rules.slice(0,900)+'\nДокументация: '+knowledge.documents.slice(0,900)+'\nПередача: '+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,1000),
-  output:'Проверяй каждый тест-кейс по фактам; если проверка невозможна, верни blocked/not_run, а не passed.'
+  context:'История, новая обратная связь, предыдущие QA:\n'+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
+  output:'Сначала изучи результаты предыдущего QA и новые комментарии. Повторно проверь только необходимые затронутые кейсы, но не признавай устаревшие результаты действительными для другого commit SHA. Невыполненные проверки всегда blocked/not_run, не passed.'
  });
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
@@ -875,12 +889,12 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
-    tools:'MCP orchestrator: tasks.read, approvals.list, approvals.answer_question, approvals.deliver_task_answer, workflow.release_task и остальные разрешённые инструменты ПМ. Если владелец уточнил требования, передай его текущее исходное сообщение аналитику через approvals.deliver_task_answer с task_id и source_message_id. Даже старую карточку без ID вопросов можно вернуть на повторный анализ. При просьбе слить PR используй workflow.release_task. Не утверждай, что доступно лишь чтение, пока не проверил реально доступные инструменты.',
+    tools:'MCP orchestrator: tasks.read (включая историю и комментарии), processes.list, workflow.move_task, qa.retry, tasks.delete, tasks.cancel, tasks.close, approvals.list, approvals.answer_question, approvals.deliver_task_answer, workflow.release_task и остальные разрешённые инструменты ПМ. Если владелец уточнил требования, передай его текущее исходное сообщение аналитику через approvals.deliver_task_answer с task_id и source_message_id. Даже старую карточку без ID вопросов можно вернуть на повторный анализ. При просьбе слить PR используй workflow.release_task. Не утверждай, что доступно лишь чтение, пока не проверил реально доступные инструменты.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
     scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,1000):'',
-    output:'Отвечай по-русски с Markdown-абзацами и списками. Если задача ожидает требований, не заставляй владельца повторять уже данный ответ: используй tools для передачи сохранённого сообщения. При просьбе продвинуть задачу вызывай инструмент, сообщай подтверждённый результат или точную причину блокировки. QA blocked не равно passed. Очередь выкладки ещё не означает успешный деплой.'
+    output:'Отвечай по-русски с Markdown-абзацами и списками. Новые комментарии и ответы владельца анализируй относительно уже сделанной работы: если они влияют на неё, используй workflow.move_task для адресной доработки без повторной реализации; при сбое QA — qa.retry. Если задача ожидает требований, не заставляй владельца повторять уже данный ответ: используй tools для передачи сохранённого сообщения. При просьбе продвинуть задачу вызывай инструмент, сообщай подтверждённый результат или точную причину блокировки. QA blocked не равно passed. Очередь выкладки ещё не означает успешный деплой.'
    });
    const mentionedAgent=await resolveAgentMention(pool,projectId,String(msg.rows[0].body));
    const directPrompt=mentionedAgent?composeAgentPrompt({

@@ -5,6 +5,7 @@ import {recordAgentActivity} from './task-agent-activity.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {pendingAgentQuestions} from './task-agent-notes.js';
+import {readTaskWorkBrief} from './task-work-brief.js';
 
 type Deps={pool:Pool;uid:(req:any)=>string;access:(req:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(req:any,reply:any)=>Promise<boolean>;codexUrl:string;runnerKey:string};
 const uuid=z.string().uuid();
@@ -78,12 +79,17 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
   const rules=await pool.query('SELECT body FROM project_rules WHERE project_id=$1 ORDER BY created_at LIMIT 60',[id]);
   // Only explicitly linked thematic pages are candidates; no blind rewriting of unrelated human documents.
   const candidate=await pool.query("SELECT DISTINCT d.id,d.title,d.body,d.updated_at FROM documents d JOIN knowledge_task_links l ON l.document_id=d.id AND l.project_id=d.project_id WHERE d.project_id=$1 AND l.task_id=ANY($2::uuid[]) AND d.system_key IS NULL AND d.title<>'Реализованные возможности' AND d.knowledge_status IN ('approved','draft') ORDER BY d.updated_at DESC LIMIT 8",[id,pending.rows.map(x=>x.id)]);
+  const brief=await Promise.all(pending.rows.map(async task=>({
+   title:task.title,task_id:task.id,
+   context:await readTaskWorkBrief(pool,id,task.id,1600)
+  })));
   const prompt=['Ты технический писатель. Обнови документацию только по уже слитым Pull Request.',
    'Ответь ТОЛЬКО JSON {"body":"полное Markdown-содержимое документа Реализованные возможности","updates":[{"document_id":"UUID связанного документа","body":"полное предлагаемое Markdown-содержимое","reason":"какая задача и PR доказывают изменение"}]}.',
    'Для связанных документов СОЗДАВАЙ ТОЛЬКО ПРЕДЛОЖЕНИЯ на согласование, не объявляй поведение реализованным без достоверных подтверждений. Если PR diff недоступен, не делай предположений об изменении разделов; updates может быть пустым.',
    'Не удаляй прежние реализованные возможности. Если полное чтение существующего документа недоступно, верни {error: "Не удалось прочитать текущий документ"}. Не выдумывай факты, не включай секреты.',
    'Рабочие комментарии и история обсуждений не являются утверждённой функциональностью. Не переписывай их в документацию как факт.',
    'Выполненные задачи:\n'+JSON.stringify(pending.rows.map(t=>({...t,description:String(t.description||'').slice(0,480)}))).slice(0,7200),
+   'Последние комментарии, решения владельца, история PR и результаты QA для КАЖДОЙ задачи пакета. Не обрезай хвост задач: анализируй все, но несогласованные идеи не выдавай за реализованный результат:\n'+JSON.stringify(brief).slice(0,30000),
    'Правила проекта (учитывай, не изменяй):\n'+rules.rows.map(x=>x.body).join('\n').slice(0,1800),
    'Связанные документы для возможного обновления:\n'+JSON.stringify(candidate.rows.map(d=>({id:d.id,title:d.title}))).slice(0,1600),
    doc?'Перед переписыванием прочитай весь текущий документ через documents.read (document_id='+doc.id+').':'Создай первоначальное содержимое «Реализованных возможностей».',

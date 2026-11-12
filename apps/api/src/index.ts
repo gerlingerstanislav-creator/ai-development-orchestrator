@@ -1,5 +1,6 @@
 import {initEpicStageSync} from './epic-stage-sync.js';
 import {initAnalysisFirstGate} from './analysis-first-gate.js';
+import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-stage-operations.js';
 import {formatQaReportMessage,qaEventDetail} from './qa-report-message.js';
 import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
@@ -1745,6 +1746,107 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    const body=response.json() as {error?:string;ok?:boolean;display_number?:number};
    if(response.statusCode>=400)throw Object.assign(Error(String(body.error||'Не удалось удалить задачу')),{statusCode:response.statusCode});
    return {...body,status:'deleted',task_id:taskId};
+  }
+  if(name==='tasks.cancel'||name==='tasks.close'||name==='workflow.move_task'){
+   const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
+   const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
+   const message=await pool.query(`
+    SELECT body,task_id FROM manager_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
+    UNION ALL
+    SELECT body,task_id FROM assistant_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
+   `,[sourceMessageId,projectId,session.actor_id]);
+   if(!owner.rowCount||message.rows.length!==1||message.rows[0].task_id&&message.rows[0].task_id!==taskId)
+    throw Object.assign(Error('Нужно подтверждённое поручение владельца из общего чата или этой задачи'),{statusCode:403});
+   const token=await accessToken(session.actor_id,user.email);
+   const headers={authorization:'Bearer '+token};
+   const taskPath='/api/projects/'+projectId+'/tasks/'+taskId;
+   const call=async(method:'GET'|'PATCH'|'POST',endpoint:string,payload?:Record<string,unknown>)=>{
+    const response=await app.inject({method,url:taskPath+endpoint,headers,...(payload?{payload}:{})});
+    const data=response.json() as Record<string,any>;
+    if(response.statusCode>=400)return {status:'blocked',stage:null,reason:String(data.error||'Сервер отклонил переход'),blockers:data.blockers||null};
+    return data;
+   };
+   if(name==='tasks.close'){
+    const body=String(message.rows[0].body||'');
+    if(!/(?:закр(?:ой|ыть|ойте)|заверш(?:и|ить|ите)|отметь[^\n]{0,70}(?:готов|выполн)|пометь[^\n]{0,70}(?:готов|выполн)|mark[^\n]{0,70}done|close[^\n]{0,70}task)/i.test(body))
+     return {status:'blocked',reason:'В исходном сообщении владельца нет поручения завершить задачу'};
+    const db=await pool.connect();
+    try{
+     await db.query('BEGIN');
+     const task=(await db.query("SELECT id,stage,documentation_updated_at,pr_url FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
+     if(!task){await db.query('ROLLBACK');return {status:'blocked',reason:'Задача отсутствует'};}
+     if(task.stage==='done'){await db.query('ROLLBACK');return {status:'already_closed',stage:'done'};}
+     const pending=await db.query("SELECT 1 FROM knowledge_document_updates u WHERE u.project_id=$1 AND u.status='pending' AND $2=ANY(u.task_ids) LIMIT 1",[projectId,taskId]);
+     if(!canManagerCloseTask(task.stage as WorkStage,!!task.documentation_updated_at,!!task.pr_url,!!pending.rowCount)){
+      await db.query('ROLLBACK');
+      return {status:'blocked',stage:task.stage,reason:pending.rowCount?'Документация ожидает согласования':'Нельзя пометить задачу готовой: слияние, выкладка или обновление документации ещё не подтверждены'};
+     }
+     const finished=await db.query("UPDATE tasks SET stage='done',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='documentation' RETURNING id",[projectId,taskId]);
+     if(!finished.rowCount)throw Object.assign(Error('Задача изменилась во время завершения'),{statusCode:409});
+     await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'closed_by_manager',$4)",[randomUUID(),taskId,session.actor_id,'ПМ завершил задачу после подтверждения всех обязательных этапов и документации']);
+     await db.query('COMMIT');
+     return {status:'completed',stage:'done',message:'Задача закрыта по явному поручению владельца, все обязательные этапы подтверждены'};
+    }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
+   }
+   if(name==='tasks.cancel'){
+    if(!/(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||''))||/(?:не|не надо|не нужно)\s+(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||'')))
+     throw Object.assign(Error('В исходном сообщении нет явного поручения закрыть/отменить задачу'),{statusCode:409});
+    const preview=await call('GET','/cancel-preview');
+    if(preview.status==='blocked')return preview;
+    if(Array.isArray(preview.blocked)&&preview.blocked.length)return {status:'blocked',reason:'Отмена не разрешена: есть связанные данные или активные процессы',blockers:preview.blocked};
+    const result=await call('POST','/cancel',{confirm:true});
+    return result.status==='blocked'?result:{...result,status:'cancelled',message:'Задача отменена через штатный процесс с аудитом и безопасной очисткой GitHub.'};
+   }
+   const target=z.enum(['backlog','analysis','development','testing','merge_queue','deployment','documentation','done']).parse(args.target_stage) as WorkStage;
+   const reason=z.string().trim().min(5).max(1200).parse(args.reason);
+   const row=(await pool.query('SELECT id,type,stage,analysis_state,pr_url,git_branch FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
+   if(!row)return {status:'blocked',reason:'Задача не найдена'};
+   if(['epic','question'].includes(row.type))return {status:'blocked',reason:'Эпик следует за дочерними задачами автоматически; вопросы не имеют собственного workflow'};
+   const move=planManagerStageMove(row.stage as WorkStage,target,!!(row.pr_url&&row.git_branch));
+   if(move.operation==='blocked')return {status:'blocked',stage:row.stage,reason:move.reason};
+   if(move.operation==='same')return {status:'already_on_stage',stage:row.stage,message:move.reason};
+   if(move.operation==='patch')return await call('PATCH','',{stage:target});
+   if(move.operation==='resume_development'){
+    const state=await recoverTask({projectId,taskId,auth:'Bearer '+token,cookie:''});
+    return state.ok?{status:'queued',stage:target,message:state.message}:{status:'blocked',stage:row.stage,reason:state.message};
+   }
+   if(move.operation==='retry_qa')return await call('POST','/start-testing',{});
+   if(move.operation==='apply_qa')return await call('POST','/apply-qa-result',{});
+   // Real rework transitions leave the PR, branch, previous QA, comments and
+   // task events intact. Never mark a result passed or completed in this path.
+   const client=await pool.connect();
+   try{
+    await client.query('BEGIN');
+    const current=(await client.query('SELECT stage,analysis_state,pr_url,git_branch FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[projectId,taskId])).rows[0];
+    if(!current||current.stage!==row.stage||current.analysis_state!==row.analysis_state)
+     throw Object.assign(Error('Стадия задачи изменилась. Прочитай карточку повторно.'),{statusCode:409});
+    const sourceKey='pm-stage:'+sourceMessageId+':'+target;
+    const previous=await client.query('SELECT 1 FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND source_key=$3',[projectId,taskId,sourceKey]);
+    if(previous.rowCount){
+     await client.query('ROLLBACK');
+     return {status:'already_applied',stage:row.stage,message:'Это решение ПМ уже было применено к задаче; повторно перезапускать работу не нужно'};
+    }
+    const running=await client.query(`SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'
+     UNION ALL SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')
+     UNION ALL SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')
+     UNION ALL SELECT 1 FROM agent_analysis_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')`,[projectId,taskId]);
+    if(running.rowCount)throw Object.assign(Error('В задаче уже работает агент. Сначала дождись окончания или останови активный процесс.'),{statusCode:409});
+    if(move.operation==='reanalyze'&&row.stage==='analysis'&&['waiting_questions','needs_clarification'].includes(row.analysis_state))
+     throw Object.assign(Error('Аналитик ожидает ответов владельца, а не повторного запуска без новых фактов'),{statusCode:409});
+    const updated=await client.query(`UPDATE tasks SET stage=$3,analysis_state=CASE WHEN $3='analysis' THEN 'new' ELSE analysis_state END,
+     test_feedback=CASE WHEN $3='analysis' OR $3='development' THEN $4 ELSE test_feedback END,updated_at=now()
+     WHERE project_id=$1 AND id=$2 AND stage=$5 RETURNING id`,
+     [projectId,taskId,target,'Доработка по поручению ПМ: '+reason,row.stage]);
+    if(!updated.rowCount)throw Object.assign(Error('Этап изменился во время перехода'),{statusCode:409});
+    await client.query(`INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,actor_id,status)
+      VALUES($1,$2,$3,'manager','Менеджер проекта','all','handoff',$4,'human',$5,$6,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING`,
+     [randomUUID(),projectId,taskId,'Изменившиеся вводные или требуемая доработка: '+reason,'pm-stage:'+sourceMessageId+':'+target,session.actor_id]);
+    await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed',$4)",
+     [randomUUID(),taskId,session.actor_id,row.stage+' → '+target+'. '+reason]);
+    await client.query('COMMIT');
+    return {status:'moved',previous_stage:row.stage,stage:target,continued:true,
+     message:'Задача возвращена на '+target+'. Артефакты и история сохранены; на следующем запуске агент получит комментарии и исправит только затронутое.'};
+   }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
   }
   const taskId=id.parse(args.task_id);
  const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
