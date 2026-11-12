@@ -22,9 +22,9 @@ const run={
 };
 test('QA sends one list with every planned case, honest pass/fail/blocked and summary',()=>{
  const message=formatQaReportMessage(run);
- assert.match(message,/✅.*1\\. Страница открывается/);
- assert.match(message,/❌.*2\\. Пять разноцветных фигур/);
- assert.match(message,/⚠️.*3\\. Цвета и стрелки видны в браузере/);
+ assert.match(message,/✅.*1[.] Страница открывается/);
+ assert.match(message,/❌.*2[.] Пять разноцветных фигур/);
+ assert.match(message,/⚠️.*3[.] Цвета и стрелки видны в браузере/);
  assert.match(message,/1 из 3 пройдено/);
  assert.match(message,/Подтверждённые дефекты:/);
  assert.match(message,/Непроверенные сценарии не считаются успешными/);
@@ -36,7 +36,7 @@ test('Unreturned planned cases are not silently omitted or marked passed',()=>{
  });
  assert.match(text,/1 из 3 пройдено/);
  assert.match(text,/2 не подтверждено/);
- assert.match(text,/3\\. Цвета и стрелки видны в браузере/);
+ assert.match(text,/3[.] Цвета и стрелки видны в браузере/);
 });
 test('QA report does not claim success for incomplete/failed run',()=>{
  const text=formatQaReportMessage({status:'failed',message:'Исполнитель недоступен',qa_plan_snapshot:plan});
