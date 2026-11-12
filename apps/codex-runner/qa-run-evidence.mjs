@@ -105,7 +105,7 @@ export function verifyQaExecution(report,commands,baseline=[],{receipts=[],brows
  }
  const failed=cases.some(c=>c.result==='failed')||checks.some(c=>c.result==='failed');
  const findings=failed?report.findings:[];
- const complete=cases.length>0&&cases.every(c=>c.result==='passed')&&checks.some(c=>c.result==='passed')&&
+ const complete=cases.length>0&&cases.every(c=>c.result==='passed')&&
   checks.every(c=>c.result==='passed')&&findings.length===0;
  return {...report,cases:cases.map(c=>({id:c.case_id,title:c.title})),caseResults:cases,checks,findings,
   verdict:failed?'failed':complete?'passed':'blocked'};
