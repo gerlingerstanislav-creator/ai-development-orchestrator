@@ -1747,7 +1747,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    if(response.statusCode>=400)throw Object.assign(Error(String(body.error||'Не удалось удалить задачу')),{statusCode:response.statusCode});
    return {...body,status:'deleted',task_id:taskId};
   }
-  if(name==='tasks.cancel'||name==='workflow.move_task'){
+  if(name==='tasks.cancel'||name==='tasks.close'||name==='workflow.move_task'){
    const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
    const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
    const message=await pool.query(`
@@ -1766,8 +1766,34 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
     if(response.statusCode>=400)return {status:'blocked',stage:null,reason:String(data.error||'Сервер отклонил переход'),blockers:data.blockers||null};
     return data;
    };
+   if(name==='tasks.close'){
+    const body=String(message.rows[0].body||'');
+    if(!/(?:закр|заверш|готов[а-я]*|complete|finish|done|close)/i.test(body))
+     return {status:'blocked',reason:'В исходном сообщении владельца нет поручения завершить задачу'};
+    const db=await pool.connect();
+    try{
+     await db.query('BEGIN');
+     const task=(await db.query("SELECT id,stage,documentation_updated_at,pr_url FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
+     if(!task){await db.query('ROLLBACK');return {status:'blocked',reason:'Задача отсутствует'};}
+     if(task.stage==='done'){await db.query('ROLLBACK');return {status:'already_closed',stage:'done'};}
+     if(task.stage!=='documentation'||!task.documentation_updated_at||!task.pr_url){
+      await db.query('ROLLBACK');
+      return {status:'blocked',stage:task.stage,reason:'Нельзя пометить задачу готовой: слияние, выкладка или обновление документации ещё не подтверждены'};
+     }
+     const pending=await db.query("SELECT 1 FROM knowledge_document_updates u WHERE u.project_id=$1 AND u.status='pending' AND $2=ANY(u.task_ids) LIMIT 1",[projectId,taskId]);
+     if(pending.rowCount){
+      await db.query('ROLLBACK');
+      return {status:'blocked',stage:task.stage,reason:'Связанные изменения документации ожидают согласования'};
+     }
+     const finished=await db.query("UPDATE tasks SET stage='done',updated_at=now() WHERE project_id=$1 AND id=$2 AND stage='documentation' RETURNING id",[projectId,taskId]);
+     if(!finished.rowCount)throw Object.assign(Error('Задача изменилась во время завершения'),{statusCode:409});
+     await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'closed_by_manager',$4)",[randomUUID(),taskId,session.actor_id,'ПМ завершил задачу после подтверждения всех обязательных этапов и документации']);
+     await db.query('COMMIT');
+     return {status:'completed',stage:'done',message:'Задача закрыта по явному поручению владельца, все обязательные этапы подтверждены'};
+    }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
+   }
    if(name==='tasks.cancel'){
-    if(!/(?:отмен|закр|удал|cancel|close)/i.test(String(message.rows[0].body||'')))
+    if(!/(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||'')))
      throw Object.assign(Error('В исходном сообщении нет явного поручения закрыть/отменить задачу'),{statusCode:409});
     const preview=await call('GET','/cancel-preview');
     if(preview.status==='blocked')return preview;
