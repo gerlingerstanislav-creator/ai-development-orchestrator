@@ -62,7 +62,7 @@ test('new owner comments, durable QA defects and existing PR survive bounded con
  assert.match(brief,/pull\/9/);
  assert.match(brief,/QA/);
  assert.match(brief,/360px/);
- assert.match(brief,/Не.*повторяй с нуля/);
+ assert.match(brief,/не повторяй с нуля/i);
  assert.ok(brief.length<=3500);
 });
 
