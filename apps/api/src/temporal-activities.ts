@@ -149,7 +149,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
   role:stage==='analysis'?'Системный аналитик':stage==='testing'?'QA-инженер':'Аналитик документации',
   objective:prompt,
   instructions:(await agentMemoryContext(pool,projectId,stage)).slice(0,1400),
-  tools:'Поиск и чтение проектных знаний; итог верни в запрошенном структурированном формате.',
+  tools:'Поиск и чтение проектных знаний, задачи и процесса; MCP agents.consult, blockers.list/report/resolve для доказанных технических блокеров. Итог в запрошенном структурированном формате.',
   scope:'Проект '+projectId+', задача '+taskId,
   context:knowledge.documents.slice(0,1300)+'\n'+knowledge.modules.slice(0,850)
  });
@@ -237,7 +237,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
    'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
    'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику. Сохраняй все действующие критерии приёмки из постановки; не повторяй одинаковые критерии.',
-   'Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
+   'Для технического вопроса сначала проверь доступные факты, используй MCP agents.consult с архитектором/разработчиком и blockers.report при настоящем ограничении. Не превращай технический блокер в продуктовый вопрос. Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
@@ -556,11 +556,11 @@ export async function startDevelopment(args:TaskRef){
  const agentPrompt=composeAgentPrompt({
   role:String(agentSettings.find((s:any)=>s.stage==='development')?.agent_name||'AI-разработчик'),
   objective:task.title+'\n'+description,
-  tools:'Локальная рабочая копия GitHub, терминал и файловые операции. Сначала изучи код. За commit, push и PR отвечает оркестратор.',
+  tools:'Локальная рабочая копия GitHub, терминал, редактирование и проверка файлов, а также адресные MCP: tasks.read, knowledge.search/read, processes.list, agents.consult, blockers.list/report/resolve. Git commit/push/PR выполняет только Runner.',
   instructions:agentInstructions,
   scope:'Репозиторий '+repo.repository+', базовая ветка '+baseBranch+'; задача '+taskId,
   context:'Продолжение задачи и новые комментарии:\n'+(await taskHandoffContext(projectId,taskId,'development')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
-  output:'При первом запуске реализуй задачу. При возврате используй существующую ветку, PR, результаты тестов и все новые комментарии; исправь только недоделанное или изменившиеся требования. Не создавай ту же функциональность с нуля. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
+  output:'Обеспечь соответствие критериям приёмки: реализуй недостающее, возобнови прежний PR или докажи, что функциональность уже есть в базовой ветке. Не создавай пустые коммиты. На возврате учитывай только новые дефекты, текущий SHA и решения владельца. Передай проверяемый HANDOFF_NOTE и при необходимости LEARNING_SUGGESTION.'
  });
  const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
