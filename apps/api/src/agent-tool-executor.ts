@@ -2,6 +2,7 @@ import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,type AgentSession} from './agent-tools.js';
+import {readTaskWorkBrief} from './task-work-brief.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
 import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
@@ -333,7 +334,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    pool.query("SELECT id AS note_id,body AS question,author_stage,requires_customer,status FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') ORDER BY created_at,id LIMIT 20",[projectId,task_id]),
    pool.query("SELECT body AS answer,source_key,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='resolution' AND source_key LIKE 'owner-answer:%' ORDER BY created_at DESC LIMIT 8",[projectId,task_id])
   ]);
-  return {task:r.rows[0],conversation,open_questions:open.rows,answered_questions:questions.rows,owner_answers:answers.rows};
+  const work_brief=await readTaskWorkBrief(pool,projectId,task_id,4800);
+  return {task:r.rows[0],conversation,work_brief,open_questions:open.rows,answered_questions:questions.rows,owner_answers:answers.rows};
  }
  case 'tasks.create':{
   const {title,description}=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(10).max(12000)}).parse(params);
