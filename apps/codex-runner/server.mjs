@@ -3,7 +3,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, writeFile, access } from 'node:fs/promises';
+import { mkdir, writeFile, access, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -624,6 +624,15 @@ async function runTestJob(job,state,context){
   state.summary=report.summary.slice(0,3500);
   state.handoffNote=String(report.handoffNote||'').slice(0,2500);
    state.learningSuggestion=String(report.learningSuggestion||'').slice(0,1600);
+  // Keep small screenshots as immutable QA evidence before deleting the workspace.
+  const screenshotDir=join(dir,'.ado-qa-evidence');
+  const shots=await readdir(screenshotDir).catch(()=>[]);
+  const screenshots=[];
+  for(const name of shots.filter(name=>/^[0-9a-f-]{36}\.jpg$/i.test(name)).slice(0,3)){
+   const bytes=await readFile(join(screenshotDir,name)).catch(()=>null);
+   if(bytes&&bytes.length>100&&bytes.length<=180000)screenshots.push({name,mime:'image/jpeg',data:bytes.toString('base64')});
+  }
+  state.screenshots=screenshots;
   state.findings=report.findings.slice(0,20);
   state.checks=report.checks.slice(0,30);
   state.caseResults=report.caseResults.slice(0,50);
