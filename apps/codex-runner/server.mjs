@@ -7,7 +7,7 @@ import { mkdir, writeFile, access, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
@@ -495,7 +495,10 @@ async function auditCodexPrompt(job,role,prompt){
 // A first-pass AI test agent runs within the disposable Codex container.
 // No persistent environment provisioning or Docker socket is exposed to it.
 async function runTestJob(job,state,context){
- const workdir=join(process.env.QA_BROWSER_WORKSPACES_DIR||'/var/lib/ado-qa-workspaces','ado-qa-'+job.id);
+ // Every attempt gets a fresh browser identity, even when the durable QA job ID
+ // is retried. The browser host may still hold an orphan from an earlier run.
+ const qaBrowserSessionId=randomUUID();
+ const workdir=join(process.env.QA_BROWSER_WORKSPACES_DIR||'/var/lib/ado-qa-workspaces','ado-qa-'+qaBrowserSessionId);
  await mkdir(workdir,{recursive:true,mode:0o700});
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
@@ -529,7 +532,7 @@ async function runTestJob(job,state,context){
   const browserAvailable=await browserHealth();
   const capabilities=(probe.stdout.trim()+'\nqa_browser: '+(browserAvailable?'playwright chromium available':'unavailable')).slice(0,2500);
   if(browserAvailable){
-   const browserSession=openQaBrowserSession(job.id,(job.testPlan?.cases||[]).map(test=>test.id),{adHoc});
+   const browserSession=openQaBrowserSession(qaBrowserSessionId,(job.testPlan?.cases||[]).map(test=>test.id),{adHoc});
    await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
   }
   state.capabilities=capabilities;
@@ -670,7 +673,7 @@ async function runTestJob(job,state,context){
   const executedCommands=[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout),...readQaCommands(correctionOutput)];
   const receiptText=await readFile(join(dir,'.ado-qa-executions.jsonl'),'utf8').catch(()=>'');
   const receipts=readQaReceipts(receiptText.slice(0,250000),executedCommands);
-  report=verifyQaExecution(report,executedCommands,baseline,{receipts,browserEvidence:getQaBrowserEvidence(job.id)});
+  report=verifyQaExecution(report,executedCommands,baseline,{receipts,browserEvidence:getQaBrowserEvidence(qaBrowserSessionId)});
   state.executionVerified=true;
   if(adHoc)state.cases=report.cases;
   state.verdict=report.verdict;
@@ -694,7 +697,12 @@ async function runTestJob(job,state,context){
    'Проверка завершена: '+(report.verdict==='passed'?'дефекты не найдены':report.verdict==='failed'?'обнаружены ошибки':'требуется ручная проверка');
  }catch(e){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token||'','[REDACTED]').slice(0,1800);}
- }finally{await rm(workdir,{recursive:true,force:true}).catch(()=>{});}
+ }finally{
+  // Always stop Chromium before deleting the shared QA workspace. This runs
+  // after passed, blocked, failed, cancelled and interrupted agent attempts.
+  await closeQaBrowserSession(qaBrowserSessionId);
+  await rm(workdir,{recursive:true,force:true}).catch(()=>{});
+ }
 }
 async function runArchitectureReviewJob(job,state,context){
  const workspace=await mkdtemp(join(tmpdir(),'ado-architect-'));
