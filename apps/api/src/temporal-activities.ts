@@ -877,8 +877,51 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
- const verified=await pool.query("SELECT 1 FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed' AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL AND r.qa_spec_version=t.spec_version",[testId,projectId,taskId]);
- if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного тестирования коммита PR');
+ const verified=await pool.query(`SELECT t.implementation_kind,t.implementation_commit,r.report
+  FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id
+  WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed'
+   AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL
+   AND r.qa_spec_version=t.spec_version`,[testId,projectId,taskId]);
+ if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного независимого QA для текущей версии требований');
+ const result=verified.rows[0];
+ if(result.implementation_kind==='already_implemented'){
+  const sha=String(result.implementation_commit||'');
+  const report=result.report||{};
+  if(!/^[a-f0-9]{40}$/i.test(sha)||report.commit!==sha||report.executionVerified!==true||
+   !Array.isArray(report.caseResults)||!report.caseResults.length||report.caseResults.some((c:any)=>c.result!=='passed'))
+   throw ApplicationFailure.nonRetryable('Нужен полностью подтверждённый QA существующей реализации на закреплённом SHA');
+  const {repo,token,task}=await jobSettings(projectId,taskId);
+  const base=task.pr_base_branch||repo.target_branch||repo.default_branch;
+  const response=await fetch('https://api.github.com/repos/'+repo.repository+'/branches/'+encodeURIComponent(base),{
+   headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
+   signal:AbortSignal.timeout(20000)
+  });
+  if(!response.ok)throw Error('Не удалось перепроверить SHA целевой ветки после QA: GitHub HTTP '+response.status);
+  const current=await response.json() as {commit?:{sha?:string}};
+  if(current.commit?.sha!==sha)throw ApplicationFailure.nonRetryable('Целевая ветка изменилась во время QA: требуется повторная проверка');
+  const client=await pool.connect();
+  let decision:{stage:'documentation'|'deployment';status:'skipped'|'pending';reason:string};
+  try{
+   await client.query('BEGIN');
+   const project=await client.query('SELECT owner_id FROM projects WHERE id=$1',[projectId]);
+   const mode=await client.query('SELECT mode FROM project_deployment_settings WHERE project_id=$1',[projectId]);
+   decision=deploymentDecision(mode.rows[0]?.mode||'skip');
+   const updated=await client.query("UPDATE tasks SET stage=$4,test_feedback='',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing' AND implementation_kind='already_implemented' AND implementation_commit=$3 RETURNING id",
+    [taskId,projectId,sha,decision.stage]);
+   if(!updated.rowCount)throw ApplicationFailure.nonRetryable('Задача изменилась после QA');
+   await client.query(`INSERT INTO task_deployment_records(task_id,project_id,status,reason,merge_sha,actor_id)
+    VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(task_id) DO UPDATE SET status=EXCLUDED.status,
+    reason=EXCLUDED.reason,merge_sha=EXCLUDED.merge_sha,actor_id=EXCLUDED.actor_id,updated_at=now()`,
+    [taskId,projectId,decision.status,decision.reason,sha,project.rows[0]?.owner_id||null]);
+   await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'existing_implementation_verified',$3)",
+    [randomUUID(),taskId,'QA подтвердил, что требуемый код уже есть в базовой ветке на SHA '+sha+'. Новый PR не нужен.']);
+   await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)",
+    [randomUUID(),taskId,decision.status==='skipped'?'deployment_skipped':'deployment_pending',decision.reason]);
+   await client.query('COMMIT');
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+  await event(projectId,testId,'testing','already_implemented_verified','QA подтвердил исходную реализацию на '+sha+'. Дальнейший этап: '+decision!.stage);
+  return;
+ }
  await pool.query("UPDATE tasks SET stage='merge_queue',test_feedback='',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",
   [taskId,projectId]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',
