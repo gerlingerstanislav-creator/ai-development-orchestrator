@@ -128,7 +128,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  await releaseTaskOrchestration(db,project,automatic,(await status(automatic)).run_id);
  await dispatch();
  assert.equal(starts.length,4,'already completed work without new feedback must not rerun');
- await db.query("UPDATE tasks SET test_feedback='QA: fix 360px responsive circles, keep existing PR',git_branch=$2,pr_url=$3 WHERE id=$1",
+ await db.query("UPDATE tasks SET test_feedback='QA: fix 360px responsive circles, keep existing PR',git_branch=$2,pr_url=$3,updated_at=now() WHERE id=$1",
   [first,first,'https://github.com/example/repo/pull/9']);
  const oldRunId=(await status(first)).run_id;
  await dispatch();
