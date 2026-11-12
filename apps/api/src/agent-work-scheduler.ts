@@ -200,13 +200,17 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    (project_id,iteration_id,task_id,requested_by,spec_version,run_id,automatic)
    SELECT t.project_id,t.iteration_id,t.id,p.owner_id,t.spec_version,gen_random_uuid(),true
    FROM tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
-   WHERE t.type='task' AND t.stage='development' AND t.analysis_state='approved'
-    AND NOT EXISTS(SELECT 1 FROM iteration_execution_queue q WHERE q.project_id=t.project_id AND q.task_id=t.id AND q.status<>'stale')
-    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id)
+   WHERE t.type IN ('task','bug','improvement') AND t.stage='development' AND t.analysis_state='approved'
+    -- Never restart finished work without a real rework reason. For returns
+    -- from QA or PM, test_feedback is the explicit outstanding delta.
+    AND (NULLIF(t.test_feedback,'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id))
+    AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners o WHERE o.task_id=t.id AND o.state='active')
+    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status IN ('queued','running'))
+    AND NOT EXISTS(SELECT 1 FROM iteration_execution_queue q WHERE q.project_id=t.project_id AND q.task_id=t.id AND q.status IN ('queued','dispatching'))
    ORDER BY t.priority,t.created_at LIMIT 25
    ON CONFLICT(project_id,task_id) DO UPDATE SET iteration_id=EXCLUDED.iteration_id,requested_by=EXCLUDED.requested_by,
     spec_version=EXCLUDED.spec_version,run_id=EXCLUDED.run_id,automatic=true,status='queued',detail='',updated_at=now()
-   WHERE iteration_execution_queue.status='stale'`);
+   WHERE iteration_execution_queue.status IN ('stale','dispatched')`);
 
   // Blocked tasks never consume candidate slots, even if many have higher priority.
   const candidate=(await db.query(`SELECT * FROM (${queueState} WHERE q.status='queued') work WHERE reason IS NULL
