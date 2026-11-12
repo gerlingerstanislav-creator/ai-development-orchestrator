@@ -149,7 +149,7 @@ test('current iteration and cards update in place while explicit preview remains
  assert.deepEqual((await request('POST',changeUrl+'/publish',{confirm:true,preview_revision:fresh.preview_revision,selected_changes:['form']})).json(),changedPublish.json());
  const rerun=await propose(),rerunUrl=url+'/plans/'+rerun.id;
  const rerunPreview=(await request('GET',rerunUrl)).json();
- assert.equal(rerunPreview.items.filter(item=>item.existing).length,3);
+ assert.equal(rerunPreview.items.filter(item=>item.existing).length,2,'clarification is a note, not a task');
  assert.deepEqual((await request('POST',rerunUrl+'/publish',{confirm:true,preview_revision:rerunPreview.preview_revision})).json().created,[]);
  assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[epic.id]})).statusCode,409);
  const start=await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id]});
