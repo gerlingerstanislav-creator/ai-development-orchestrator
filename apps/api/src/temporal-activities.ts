@@ -19,6 +19,7 @@ import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
 import {releaseTaskOrchestration} from './task-orchestration.js';
 import {recordTaskAgentNote,taskNotesContext,taskConversationEvidence,pendingAgentQuestions,resolveAgentQuestionsForReview} from './task-agent-notes.js';
+import {readTaskWorkBrief} from './task-work-brief.js';
 import {managerSnapshot,syncManagerInbox} from './project-manager.js';
 import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
@@ -116,13 +117,11 @@ async function stageContext(projectId:string,taskId:string,stage:KnowledgeStage,
  return buildKnowledgeContext(pool,{projectId,taskId,stage,processId,budgetChars:1800,includeBodies:false});
 }
 async function taskHandoffContext(projectId:string,taskId:string,stage:string){
- const [notes,conversation]=await Promise.all([
-  taskNotesContext(pool,projectId,taskId,stage),taskConversationEvidence(pool,projectId,taskId)
- ]);
  const responsibility=workflowResponsibility(stage);
- const assignment=responsibility?'Этап '+stage+'. Условия старта: '+responsibility.trigger+' Ожидаемый результат: '+responsibility.result+'\n\n':'';
- return assignment+'Реплики пользователя в этой задаче:\n'+conversation.slice(-900)+'\n\nРабочие комментарии и ответы коллег:\n'+notes.slice(-1200);
+ const assignment=responsibility?'Этап '+stage+'. Ожидаемый результат: '+responsibility.result+'\n':'';
+ return assignment+await readTaskWorkBrief(pool,projectId,taskId,3700);
 }
+
 async function assistantCompletion(prompt:string,projectId:string,taskId:string,operation:string,processId?:string):Promise<string>{
  const setup=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
  const ai=setup.rows[0];if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI выключен в настройках проекта');
@@ -225,7 +224,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
-   'Ключевые ответы и замечания: '+history.slice(-1500),
+   'Последние сообщения и выполненная работа (новые вводные приоритетнее старых): '+history.slice(0,3100),
    'ПОДТВЕРЖДЁННЫЕ ОТВЕТЫ ВЛАДЕЛЬЦА ИЗ КАРТОЧКИ (используй их в первую очередь; не спрашивай повторно): '+JSON.stringify(ownerEvidence.rows.reverse().map((r:{kind:string;body:string;answer:string|null;answer_author:string|null})=>({question:r.kind==='question'?r.body:null,answer:r.answer||r.body,source:r.answer_author||'Владелец'}))).slice(0,3200),
    'Если сохранённый ответ относится к ранее заданному вопросу, проверь, достаточно ли его для выполнения. При полноте ответов верни ready; при реальной неоднозначности задай только недостающий вопрос.'
   ].join('\n\n');
@@ -394,7 +393,7 @@ export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:s
     role:'QA-инженер — проектирование проверок',
     objective:prompt,
     tools:'Только составление тест-кейсов; выполнение тестов позже выполняет Codex в изолированном runner.',
-    context:taskContext.slice(0,1100)+'\n'+qaKnowledge.documents.slice(0,900),
+    context:taskContext.slice(0,2300)+'\n'+qaKnowledge.documents.slice(0,700),
     instructions:qaKnowledge.modules.slice(0,900)
    });
    await recordAgentPrompt(pool,{projectId,processId:runId,role:'testing',operation:'qa_plan',prompt:bounded}).catch(()=>{});
@@ -506,8 +505,8 @@ export async function startDevelopment(args:TaskRef){
   tools:'Локальная рабочая копия GitHub, терминал и файловые операции. Сначала изучи код. За commit, push и PR отвечает оркестратор.',
   instructions:agentInstructions,
   scope:'Репозиторий '+repo.repository+', базовая ветка '+baseBranch+'; задача '+taskId,
-  context:'Правила: '+rules.slice(0,1200)+'\nДокументация по задаче: '+knowledge.documents.slice(0,1200)+'\nПередача от коллег: '+(await taskHandoffContext(projectId,taskId,'development')).slice(0,1200),
-  output:'Измени файлы в рабочей копии, проверь доступные тесты. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
+  context:'Продолжение задачи и новые комментарии:\n'+(await taskHandoffContext(projectId,taskId,'development')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
+  output:'При первом запуске реализуй задачу. При возврате используй существующую ветку, PR, результаты тестов и все новые комментарии; исправь только недоделанное или изменившиеся требования. Не создавай ту же функциональность с нуля. Передай краткое HANDOFF_NOTE и LEARNING_SUGGESTION.'
  });
  const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
@@ -643,8 +642,8 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   tools:'Изолированная копия репозитория, команды npm/pytest/API и локальный HTTP-сервер. Если браузера нет, визуальные проверки помечай blocked, не выдумывай результаты.',
   instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
   scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||''),
-  context:'Правила: '+rules.slice(0,900)+'\nДокументация: '+knowledge.documents.slice(0,900)+'\nПередача: '+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,1000),
-  output:'Проверяй каждый тест-кейс по фактам; если проверка невозможна, верни blocked/not_run, а не passed.'
+  context:'История, новая обратная связь, предыдущие QA:\n'+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
+  output:'Сначала изучи результаты предыдущего QA и новые комментарии. Повторно проверь только необходимые затронутые кейсы, но не признавай устаревшие результаты действительными для другого commit SHA. Невыполненные проверки всегда blocked/not_run, не passed.'
  });
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
