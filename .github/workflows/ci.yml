@@ -33,6 +33,8 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: TypeScript checks
         run: npm run check
+      - name: Architecture boundaries and ESLint
+        run: npm run check:architecture && npm run lint
       - name: Build frontend and backend
         run: npm run build
       - name: Project-scoped scheduling and queue integration tests
