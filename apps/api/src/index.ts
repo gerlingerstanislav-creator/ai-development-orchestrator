@@ -39,7 +39,7 @@ import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestr
 import {enqueueDevelopment,readDevelopmentQueue,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {initAgentPeerQueue,reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {initTaskAnalysisQueue,reconcileTaskAnalysisQueue} from './task-analysis-queue.js';
-import {initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
+import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT, jwtVerify } from 'jose';
@@ -1703,6 +1703,27 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    await pool.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pm_dependency_decision',$4)",
     [randomUUID(),taskId,session.actor_id,reason]);
    return result;
+  }
+  if(name==='approvals.deliver_task_answer'){
+   const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
+   // The model must not invent, edit or substitute customer answers. Read the
+   // authentic chat message and verify that this actor owns the project.
+   const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
+   if(!owner.rowCount)throw Object.assign(Error('Только владелец проекта может передавать ответы аналитику'),{statusCode:403});
+   const source=await pool.query(`
+    SELECT body,task_id FROM manager_messages
+      WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user' AND status IN ('queued','processing','completed')
+    UNION ALL
+    SELECT body,task_id FROM assistant_messages
+      WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user' AND status IN ('queued','processing','completed')
+   `,[sourceMessageId,projectId,session.actor_id]);
+   if(source.rows.length!==1)throw Object.assign(Error('Исходное сообщение владельца не найдено в истории проекта'),{statusCode:403});
+   if(source.rows[0].task_id&&source.rows[0].task_id!==taskId)
+    throw Object.assign(Error('Нельзя передать ответ из чужой задачи. Укажи исходное сообщение из этого чата или чата проекта'),{statusCode:409});
+   const saved=await acceptAnalysisAnswer(pool,projectId,taskId,session.actor_id,String(source.rows[0].body||''),sourceMessageId);
+   if(!saved.accepted)throw Object.assign(Error(saved.reason),{statusCode:409});
+   return {status:'analyst_queued',task_id:taskId,source_message_id:sourceMessageId,answered_questions:saved.answered,
+    message:saved.reason};
   }
   const taskId=id.parse(args.task_id);
  const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
