@@ -76,6 +76,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    [id,projectId,task_id,session.process_id||null,session.role,kind,summary,evidence,resolution_hint]);
   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level,task_id) VALUES($1,$2,$3,'agent','blocker_open',$4,'warning',$5)",
    [randomUUID(),projectId,session.process_id||id,kind+': '+summary,task_id]);
+  await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_blocker_open',$3)",
+   [randomUUID(),task_id,session.role+' · '+kind+': '+summary]);
   return {id,status:'open',task_id,kind};
  }
  case 'blockers.resolve':{
@@ -86,8 +88,12 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(session.task_id&&session.task_id!==item.task_id)throw rejected('Блокер другой задачи',403);
   if(session.role!=='manager'&&session.role!==item.role)throw rejected('Снять блокер может его автор или менеджер',403);
   const result=await pool.query("UPDATE agent_blockers SET status='resolved',resolution_evidence=$3,updated_at=now() WHERE project_id=$1 AND id=$2 AND status='open' RETURNING id",[projectId,blocker_id,resolution_evidence]);
-  if(result.rowCount)await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,task_id) VALUES($1,$2,$3,'agent','blocker_resolved',$4,$5)",
+  if(result.rowCount){
+   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,task_id) VALUES($1,$2,$3,'agent','blocker_resolved',$4,$5)",
     [randomUUID(),projectId,session.process_id||blocker_id,resolution_evidence.slice(0,1600),item.task_id]);
+   await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_blocker_resolved',$3)",
+    [randomUUID(),item.task_id,session.role+': '+resolution_evidence.slice(0,1200)]);
+  }
   return {id:blocker_id,status:'resolved',already_resolved:!result.rowCount};
  }
  case 'agents.consult':{
@@ -104,7 +110,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    ON CONFLICT(task_id,source_key) DO UPDATE SET body=task_agent_notes.body
    RETURNING id,status`,
    [id,projectId,task_id,session.role,session.role,needsOwner?'all':target_role,question,key,session.process_id||null,needsOwner]);
-  return {note_id:note.rows[0].id,status:note.rows[0].status,recipient:target_role,waiting_for:needsOwner?'owner':'specialist'};
+  if(note.rows[0].id===id)
+   await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_consultation_requested',$3)",
+    [randomUUID(),task_id,session.role+' → '+target_role+': '+question.slice(0,1200)]);
+  return {note_id:note.rows[0].id,status:note.rows[0].status,recipient:target_role,waiting_for:needsOwner?'owner':'specialist',task_id,
+   message:'Вопрос сохранён в карточке задачи. Ответ появится там же после проверки источника.'};
  }
  case 'project.agents.start':{
   if(session.role!=='manager')throw rejected('Только ПМ может запускать агентов по поручению владельца',403);
