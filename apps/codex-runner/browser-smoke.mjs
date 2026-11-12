@@ -1,6 +1,8 @@
 // Runs inside Codex Runner against the real isolated Chromium service in CI.
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import {spawn} from 'node:child_process';
+import {createTaskPolicy,runnerEnvironment} from './execution-policy.mjs';
 import {mkdir,writeFile,stat,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {browserHealth,startQaBrowserGateway,openQaBrowserSession,closeQaBrowserSession} from './browser-gateway.mjs';
@@ -18,6 +20,15 @@ try{
  assert.equal(await browserHealth(),true,'Chromium must actually launch, not just exist in PATH');
  const session=openQaBrowserSession(id);
  assert.equal((await call(session,'start')).ok,true);
+ await writeFile(join(repo,'.ado-browser-session.json'),JSON.stringify(session));
+ const policy=await createTaskPolicy(root,{qa:true});
+ const command=spawn('codex',[...policy.sandboxArgs,'--','node','/opt/codex-runner/browser-client.mjs','assert','document.querySelectorAll(".circle").length === 10'],{
+  cwd:repo,env:{...runnerEnvironment(),HOME:'/home/node',CODEX_HOME:process.env.CODEX_HOME||'/home/node/.codex'},stdio:['ignore','pipe','pipe']
+ });
+ let output='',errors='';command.stdout.on('data',x=>output+=x.toString());command.stderr.on('data',x=>errors+=x.toString());
+ const code=await new Promise((ok,fail)=>{command.once('error',fail);command.once('close',ok);});
+ assert.equal(code,0,'Codex QA sandbox must reach the loopback browser client: '+output+' '+errors);
+ assert.match(output,/"assertion":"passed"/);
  const exact=await call(session,'assert',{expression:'document.querySelectorAll(".circle").length === 10'});
  assert.equal(exact.ok,true);
  const unique=await call(session,'assert',{expression:'new Set([...document.querySelectorAll(".circle")].map(e=>getComputedStyle(e).backgroundColor)).size === 10'});
