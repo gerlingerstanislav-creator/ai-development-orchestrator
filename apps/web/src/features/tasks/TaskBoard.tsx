@@ -34,7 +34,7 @@ export function TaskBoard<T extends BoardTask>({
 }:Props<T>){
  const [drag,setDrag]=useState<string|null>(null);
  const kanbanGroups=groupKanbanStages(stages);
- function renderKanbanCard(t:T,showStage=false){
+ function renderKanbanCard(t:T){
   if(t.type==='question')return renderDocQuestionCard(t);
   return <a className="task-card" href={projectUrl(projectId,'tasks')+'/'+t.id}
     draggable={!t.awaits_product_owner} onDragStart={t.awaits_product_owner?undefined:e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
@@ -85,7 +85,7 @@ export function TaskBoard<T extends BoardTask>({
    return ai-bi || kanbanOrder(a,b,tasks);
   });
   return <div className="kanban-group-combined">
-   {ordered.length?<div className="cards">{ordered.map(task=>renderKanbanCard(task,true))}</div>:
+   {ordered.length?<div className="cards">{ordered.map(task=>renderKanbanCard(task))}</div>:
      <div className="lane-empty">В группе пока нет задач</div>}
    {group.stages.some(stage=>stage.stage==='merge_queue')&&tasks.some(t=>t.stage==='merge_queue')&&
     <button className="secondary group-action" disabled={mergeBusy} onClick={()=>void onMerge()}>Слить готовые</button>}
