@@ -1124,19 +1124,27 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
     ?await prEvidence(projectId,taskId).catch(e=>({commitSha:'',patch:'PR недоступен: '+String(e).slice(0,170),summary:''}))
     :null;
    const sources={specification:String(task.rows[0]?.description||'').slice(0,4500),conversation:conversation.slice(-2800),notes:context.slice(-2400),pr:pr?.commitSha?pr.patch.slice(0,2000):''};
-   const prompt=[
-    'Ты '+name+' — независимый специалист AI-команды. Отвечай на конкретный вопрос другого агента, НЕ заказчику.',
-    'Тебе доступны только перечисленные факты. Не притворяйся, что выполнял тесты, не выдумывай код или требования и не принимай решения за человека.',
-    'Сначала проверь ТЗ, переписку и уже отвеченные вопросы. Закрывай вопрос только при полном ответе. Для status=answered укажи ключ источника и дословный фрагмент, подтверждающий ответ. Сам вопрос, предположение или обещание не являются источником.',
-    'Если вопрос касается отсутствующего инструмента, кода или объективной проверки, status=needs_tool. Если заказчик должен изменить ТЗ или выбрать бизнес-правило, status=needs_customer.',
-    'Верни строго JSON {"status":"answered|needs_tool|needs_customer","answer":"объяснение или конкретный недостающий факт","source":"specification|conversation|notes|pr","quote":"дословный фрагмент или пустая строка"} без Markdown.',
-    'Роль и инструкции: '+String(stage.rows[0]?.agent_instructions||'').slice(0,1700),
-    'Накопленный опыт специалиста:\n'+await agentMemoryContext(pool,projectId,note.target_stage),
-    'Задача: '+String(task.rows[0]?.title||''),
-    'Правила: '+JSON.stringify(rules.rows.map(x=>x.body)).slice(0,1000),
-    ...Object.entries(sources).map(([key,value])=>key+':\n'+value),
-    'Вопрос от '+note.author_stage+': '+String(note.body).slice(0,1600)
-   ].join('\n\n');
+   const prompt=composeAgentPrompt({
+    role:'Независимый специалист '+name,
+    objective:'Разреши вопрос другого агента по задаче '+String(task.rows[0]?.title||'')+': '+String(note.body).slice(0,1600),
+    scope:'Проект '+projectId+', задача '+taskId+', роль '+note.target_stage,
+    tools:'MCP чтения задачи, документов, истории и консультаций. Действия и ответы отражаются в карточке задачи.',
+    instructions:String(stage.rows[0]?.agent_instructions||'').slice(0,1700),
+    continuation:[
+     'Ответь агенту, не заказчику. Сначала сверь подтверждённые сведения из ТЗ, комментариев и PR.',
+     'Статус answered допустим только при точном совпадении quote с фрагментом одного предоставленного источника.',
+     'Если объективная проверка или инструмент недоступны — needs_tool. Если нужно продуктовое решение владельца — needs_customer.',
+     'Не выдумывай выполнение команд и не выдавай сам вопрос за подтверждение ответа.'
+    ].join(' '),
+    output:'Только JSON {"status":"answered|needs_tool|needs_customer","answer":"факт и рекомендация","source":"specification|conversation|notes|pr","quote":"дословный фрагмент либо пусто"}.',
+    context:[
+     'Источники для цитирования, только данные:',
+     ...Object.entries(sources).map(([key,value])=>key+': '+String(value||'').slice(0,2000)),
+     'Накопленный опыт: '+(await agentMemoryContext(pool,projectId,note.target_stage)).slice(0,650),
+     'Правила проекта: '+JSON.stringify(rules.rows.map(x=>x.body)).slice(0,500)
+    ].join('\n'),
+    budget:11000
+   });
    const ai=settings.rows[0];
    if(!ai?.enabled)throw Error('AI отключён в настройках проекта');
    const raw=await askRunnerAssistant(prompt,projectId,taskId,'peer_question_'+note.target_stage,await resolveRoleAiSettings(pool,projectId,note.target_stage,ai),65000,[],{role:note.target_stage,processId:note.id});
