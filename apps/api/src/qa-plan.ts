@@ -1,3 +1,4 @@
+import {acceptanceCriteria} from './acceptance-criteria.js';
 import {composeAgentPrompt} from './agent-prompt.js';
 import type { Pool } from 'pg';
 import { createHash,randomUUID } from 'node:crypto';
@@ -72,12 +73,13 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  }
  const prompt=composeAgentPrompt({
   role:String(stage.rows[0]?.agent_name||'Независимый QA-инженер'),
-  objective:'Подготовь 1–6 сценариев и 1–12 конкретных тест-кейсов по актуальному ТЗ. Не подгоняй ожидаемые результаты под код.\nЗадача: '+row.title+'\n'+String(row.description||'').slice(0,8500),
+  objective:'Подготовь 1–6 сценариев и 1–12 конкретных тест-кейсов по актуальному ТЗ. Каждый критерий приёмки из ТЗ должен быть проверен одним или несколькими тест-кейсами с конкретными проверяемыми ожидаемыми результатами. Не подгоняй ожидаемые результаты под код.\nЗадача: '+row.title+'\n'+String(row.description||'').slice(0,8500),
   instructions:instructions.slice(0,1600),
   scope:'Проект '+projectId+', задача '+taskId+', версия ТЗ '+row.spec_version,
   tools:'Это составление тест-плана, а не выполнение тестов. Не утверждай, что тесты запускались.',
   context:[
-   'Правила проекта: '+rulesText.slice(0,800),
+   'Критерии приёмки текущей задачи: '+JSON.stringify(acceptanceCriteria(String(row.description||''))).slice(0,3500),
+    'Правила проекта: '+rulesText.slice(0,800),
    'Комментарии специалистов: '+(await taskNotesContext(pool,projectId,taskId,'testing')).slice(0,850),
    'Изменения реализации для выбора проверок (не менять ожидаемое поведение): '+String(args.implementationEvidence||'').slice(0,1200),
    'Связанные требования: '+JSON.stringify(docs.rows.map((d:any)=>({title:d.title,body:String(d.body).slice(0,480)}))).slice(0,1100),
