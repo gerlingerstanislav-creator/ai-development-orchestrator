@@ -29,6 +29,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
   CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text);
   CREATE TABLE agent_peer_queue(project_id uuid,role text,status text);
   CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,message text NOT NULL DEFAULT '',cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
+  CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,task_id uuid,status text,verdict text,completed_at timestamptz DEFAULT now());
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text);
   CREATE TABLE iteration_execution_queue(project_id uuid,iteration_id uuid NOT NULL,task_id uuid,requested_by uuid,
@@ -166,4 +167,18 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  await dispatch();
  assert.equal(starts.length,6,'new distinct feedback permits another attempt without bypassing QA');
  assert.equal(starts.at(-1).args[0].taskId,broken);
+ await db.query("UPDATE ai_task_runs SET status='completed' WHERE task_id=$1 AND status IN ('queued','running')",[broken]);
+ await releaseTaskOrchestration(db,project,broken,(await status(broken)).run_id);
+ // A blocked QA must never be interpreted as a request for another developer
+ // cycle. Only an actual reproducible failed test is eligible for rework.
+ const qaBlocked=randomUUID(),qaRun=randomUUID();
+ await db.query("INSERT INTO tasks(id,project_id,iteration_id,stage,analysis_state,test_feedback) VALUES($1,$2,$3,'development','approved','QA: Chromium asserts were not executed')",
+  [qaBlocked,project,iteration]);
+ await db.query("INSERT INTO ai_test_runs(id,task_id,status,verdict) VALUES($1,$2,'completed','blocked')",[qaRun,qaBlocked]);
+ await dispatch();
+ assert.equal(starts.length,6,'blocked QA cannot auto-assign the developer');
+ await db.query("UPDATE ai_test_runs SET verdict='failed' WHERE id=$1",[qaRun]);
+ await dispatch();
+ assert.equal(starts.length,7,'a real QA failure can authorize developer rework');
+ assert.equal(starts.at(-1).args[0].taskId,qaBlocked);
 });
