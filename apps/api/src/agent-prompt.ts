@@ -37,7 +37,7 @@ export function agentPromptZones(input:AgentPromptParts){
    'Если пишешь человеку: 1–3 понятных предложения. Если задан строгий машинный формат, соблюдай его; подробные доказательства помещай в отчёт.'
   ].join('\n'),
   context:String(input.context||'').slice(0,3500),
-  budget:input.budget||16000
+  budget:input.budget||24000
  };
 }
 
