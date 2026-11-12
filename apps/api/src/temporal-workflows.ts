@@ -7,6 +7,9 @@ const steps=proxyActivities<typeof activities>({
 });
 /** Waiting Temporal workflows occupy no Codex/worker activity slot. */
 async function waitForProjectAgents(scope:{projectId?:string;runId?:string;kind?:'analysis'|'peer'|'planning'|'documentation'}){
+ // Workflows created before this deployment have a persisted history. Skip
+ // the new wait during their replay to preserve Temporal determinism.
+ if(!patched('per-project-agent-runtime-v1'))return;
  while(!await steps.projectAgentsRunning(scope))await sleep('20 seconds');
 }
 const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'>>({
