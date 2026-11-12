@@ -126,7 +126,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
  return result.rows.map(({open_notes,material_review,blocked_qa,...task})=>({
   ...task,
   awaits_product_owner:task.type==='question'&&['open','answered'].includes(task.question_status) || task.stage!=='done'&&(
-   task.stage==='analysis'&&Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0
+   task.stage==='analysis'&&(task.analysis_state==='waiting_questions'||task.analysis_state==='needs_clarification'||Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0)
    ||task.spec_review_status==='needs_approval'&&material_review
    ||(open_notes as string[]).some(isCustomerQuestion)
    ||!!task.owner_question_source_task_id
