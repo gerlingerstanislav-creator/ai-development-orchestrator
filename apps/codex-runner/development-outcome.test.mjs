@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parseExistingImplementation} from './development-outcome.mjs';
+import {parseExistingImplementation,parseNoChangesNeeded} from './development-outcome.mjs';
 
 const sha='a'.repeat(40);
 const summary='Реализация уже существует в основной ветке и соответствует поставленным требованиям.';
@@ -31,4 +31,20 @@ test('an unmerged task branch is never accepted as already integrated',()=>{
  assert.throws(()=>parseExistingImplementation(note(['../secret']),{
   headSha:sha,baseSha:sha,trackedFiles:['../secret']
  }),/не подтверждена/);
+});
+
+test('no-change rework returns the same PR for independent QA only with explicit checked evidence',()=>{
+ const msg='RESULT: no_changes_needed\nREWORK_REVIEW: '+JSON.stringify({
+  summary:'Замечание QA касалось браузерного инструмента: реализация восемь линий уже находится в рабочей ветке.',
+  files:['src/lines.html'],
+  reasons:['В src/lines.html содержатся восемь элементов с независимыми цветами; QA нужно исполнить Chromium assert --case qa-1.']
+ });
+ const result=parseNoChangesNeeded(msg,{headSha:sha,trackedFiles:['src/lines.html','README.md']});
+ assert.equal(result.commit,sha);
+ assert.deepEqual(result.files,['src/lines.html']);
+ assert.match(result.reasons[0],/Chromium assert/);
+ assert.equal(parseNoChangesNeeded('Ничего менять не нужно',{headSha:sha,trackedFiles:['src/lines.html']}),null);
+ assert.throws(()=>parseNoChangesNeeded('RESULT: no_changes_needed',{headSha:sha,trackedFiles:['src/lines.html']}),/REWORK_REVIEW/);
+ assert.throws(()=>parseNoChangesNeeded(msg,{headSha:sha,trackedFiles:['not-existing.html']}),/не подтверждён/);
+ assert.throws(()=>parseNoChangesNeeded(msg,{headSha:'not-a-sha',trackedFiles:['src/lines.html']}),/Нужны подробный/);
 });
