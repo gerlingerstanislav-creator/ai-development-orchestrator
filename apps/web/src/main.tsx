@@ -1,6 +1,6 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {ProjectTeam} from './ProjectTeam.js';
@@ -16,7 +16,7 @@ import {BrowserPmVoice} from './BrowserPmVoice.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -45,8 +45,7 @@ type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;cr
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanLane=Pick<Stage,'stage'|'label'>;
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
-const productOwnerLane:KanbanLane={stage:'product_owner_questions',label:'Вопросы к ПО'};
-const boardLaneFor=(task:Task)=>task.type==='question'?(task.question_status==='resolved'?null:productOwnerLane.stage):task.awaits_product_owner?productOwnerLane.stage:task.stage;
+const boardLaneFor=(task:Task)=>task.stage;
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
  {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
@@ -1761,7 +1760,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const kanbanGroups:KanbanGroup[]=stageGroupDefinitions.map(def=>({
   key:def.key,title:def.title,
-  stages:[...(def.key==='analytics'?[productOwnerLane]:[]),...stages.filter(stage=>def.ids.includes(stage.stage))]
+  stages:stages.filter(stage=>def.ids.includes(stage.stage))
  })).filter(group=>group.stages.length>0);
  const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
  if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
@@ -1801,12 +1800,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     draggable={!t.awaits_product_owner} onDragStart={t.awaits_product_owner?undefined:e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
     <span className="task-card-top"><span className="task-type">{t.type==='question'?'Вопрос к ПО':t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
-    <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
+    <span className="task-name-line"><strong>{t.title}</strong>{t.awaits_product_owner&&<span className="task-owner-question-icon" title={t.owner_question_source_task_id&&t.owner_question_source_task_id!==t.id?'Нужен ответ владельца в связанной задаче эпика':'Нужен ответ или решение владельца для продолжения'} aria-label="Необходим ответ владельца"><AlertTriangle size={16}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     {renderTaskPlanningLabels(t)}
     <small className="task-card-priority">{!dependencyReady(t)?'Ожидает зависимость · ':''}Приоритет {t.priority??3}</small>
     <p>{t.description||'Без описания'}</p>
     {t.awaits_product_owner&&<small className="task-warning">
-     Ждёт ответа · {stages.find(stage=>stage.stage===t.stage)?.label||t.stage}
+     {t.owner_question_source_task_id&&t.owner_question_source_task_id!==t.id?'Вопросы в связанной задаче':'Нужен ответ владельца'}
     </small>}
   </a>;
  }
@@ -1823,18 +1822,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>;
  }
  function renderKanbanLane(s:KanbanLane){
-  const isQuestions=s.stage===productOwnerLane.stage;
   const stageTasks=filtered.filter(t=>boardLaneFor(t)===s.stage).sort(kanbanOrder);
   return <div className="lane" key={s.stage}
-   onDragOver={isQuestions?undefined:e=>e.preventDefault()}
-   onDrop={isQuestions?undefined:e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
+   onDragOver={e=>e.preventDefault()}
+   onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
    <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
     {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
     {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
    </div>
    <div className="cards">
      {stageTasks.map(t=>renderKanbanCard(t))}
-      {stageTasks.length===0&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}
+      {stageTasks.length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}
     </div>
   </div>;
  }
@@ -2074,7 +2072,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    {expanded?<div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage))}</div>:renderCollapsedGroup(group)}
   </section>;
  })}
- </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
+ </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{t.awaits_product_owner&&<span className="task-owner-question-icon" title="Требуется решение владельца"><AlertTriangle size={15}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='processes'&&<div className="process-center">
   <div className="process-center-heading">
     <div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div>
