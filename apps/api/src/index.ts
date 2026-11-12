@@ -11,6 +11,7 @@ import {findActiveProjectOperation,projectDeletionConfirmation} from './project-
 import {createMergeService} from './merge-service.js';
 import {createMergeBatch,initMergeBatches,readMergeBatch,recoverMergeBatches} from './merge-batch.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes,validateHealthUrl} from './deployment-automation.js';
+import {initQualityGateSchema} from './quality-gates.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initChatImages,registerChatImageRoutes} from './chat-images.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
@@ -1950,6 +1951,21 @@ registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decr
  await client.workflow.start('automaticDeployment',{taskQueue:'agent-pipeline',workflowId:'deployment-'+runId,
   workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
 }});
+app.get('/api/projects/:id/tasks/:taskId/quality-gates',async(req:any,reply)=>{
+ const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
+ if(!await access(req,reply,id))return;
+ return {runs:(await pool.query("SELECT id,kind,head_sha,base_sha,status,verdict,report,message,started_at,completed_at FROM quality_gate_runs WHERE project_id=$1 AND task_id=$2 ORDER BY started_at DESC LIMIT 30",[id,taskId])).rows};
+});
+app.post('/api/projects/:id/tasks/:taskId/quality-gates',async(req:any,reply)=>{
+ const {id,taskId}=z.object({id:z.string().uuid(),taskId:z.string().uuid()}).parse(req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const task=await pool.query("SELECT id FROM tasks WHERE project_id=$1 AND id=$2 AND stage IN ('testing','merge_queue') AND pr_number IS NOT NULL",[id,taskId]);
+ if(!task.rowCount)return reply.code(409).send({error:'Требуется открытый PR на стадии тестирования или слияния'});
+ const client=await temporal();
+ const runId=randomUUID();
+ await client.workflow.start('manualQualityGates',{taskQueue:'agent-pipeline',workflowId:'quality-gates-'+runId,args:[{projectId:id,taskId,runId}]});
+ return reply.code(202).send({run_id:runId,status:'queued'});
+});
 registerBusinessAnalystHandoff(app,{pool,uid,access});
 registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
@@ -2061,7 +2077,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initQualityGateSchema(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
