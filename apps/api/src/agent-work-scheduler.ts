@@ -185,8 +185,12 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    FROM iteration_execution_queue q LEFT JOIN ai_task_runs r ON r.id=q.run_id
    WHERE q.status='dispatching' ORDER BY q.updated_at LIMIT 100`)).rows;
   for(const run of pending){
-   if(['queued','running'].includes(run.run_status))await dispatch(db,temporal,run);
-   else await db.query("UPDATE iteration_execution_queue SET status='dispatched',detail='Попытка завершена',updated_at=now() WHERE run_id=$1 AND status='dispatching'",[run.run_id]);
+   try{
+    if(['queued','running'].includes(run.run_status))await dispatch(db,temporal,run);
+    else await db.query("UPDATE iteration_execution_queue SET status='dispatched',detail='Попытка завершена',updated_at=now() WHERE run_id=$1 AND status='dispatching'",[run.run_id]);
+   }catch{
+    // The attempt is still durable and will retry; do not stop other projects.
+   }
   }
 
   await db.query(`WITH terminal AS (SELECT project_id,task_id,run_id,reason FROM (${queueState} WHERE q.status='queued') work
@@ -250,7 +254,11 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    await db.query("UPDATE iteration_execution_queue SET status='dispatching',detail='',updated_at=now() WHERE run_id=$1",[locked.run_id]);
    await db.query('COMMIT');
   }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}
-   await dispatch(db,temporal,candidate);
+   try{await dispatch(db,temporal,candidate);}
+   catch{
+    // A failed handoff is recorded on this run; independent project slots
+    // must still be allowed to start during the same reconciliation.
+   }
   }
  }finally{
   if(acquired)await db.query("SELECT pg_advisory_unlock(hashtext('ado-iteration-development-queue'))").catch(()=>{});
