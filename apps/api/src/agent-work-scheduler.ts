@@ -102,9 +102,9 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
   WHEN COALESCE(jsonb_array_length(t.clarification_questions),0)>0 OR EXISTS(
    SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id AND n.kind='question'
     AND n.status IN ('open','processing')) THEN 'questions'
-  WHEN NOT q.automatic AND (t.spec_review_status IN ('pending','needs_approval') OR t.spec_version IS DISTINCT FROM t.spec_reviewed_version)
-   THEN 'spec_review'
-  WHEN (t.stage='analysis' AND (t.analysis_state<>'ready_for_development' OR (NOT q.automatic AND t.spec_review_status<>'current')))
+  -- Pre-development is gated only by this task's completed analysis and
+  -- unanswered owner questions. Documentation drift is advisory, not a blocker.
+  WHEN (t.stage='analysis' AND t.analysis_state<>'ready_for_development')
    OR (t.stage='development' AND t.analysis_state<>'approved') THEN 'stage'
   WHEN t.depends_on_task_id IS NOT NULL AND NOT COALESCE(
    dep.stage IN ('deployment','documentation','done') OR
