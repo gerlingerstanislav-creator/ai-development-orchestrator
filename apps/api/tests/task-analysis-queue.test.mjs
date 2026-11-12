@@ -51,7 +51,7 @@ test('system analyst automatically owns analysis tasks, hands off completed work
  assert.equal((await db.query('SELECT count(*)::int n FROM task_agent_notes WHERE task_id=$1 AND kind=$2',[ready,'handoff'])).rows[0].n,1);
 });
 
-test('partial QA keeps its report and moves the same card to the merge queue',async t=>{
+test('partial QA stays in testing until verified or explicitly waived',async t=>{
  const originalUrl=process.env.DATABASE_URL;
  const db=new pg.Client({connectionString:originalUrl});
  await db.connect();
@@ -82,7 +82,7 @@ test('partial QA keeps its report and moves the same card to the merge queue',as
  await noteBlockedTests({projectId,taskId,testId,simplified:true});
  await noteBlockedTests({projectId,taskId,testId,simplified:true});
  const task=(await db.query('SELECT stage,test_feedback FROM tasks WHERE id=$1',[taskId])).rows[0];
- assert.equal(task.stage,'merge_queue');
+ assert.equal(task.stage,'testing');
  assert.match(task.test_feedback,/Проверено 1 из 2/);
  assert.match(task.test_feedback,/Внешний вид формы — нет нужного инструмента/);
  assert.deepEqual((await db.query('SELECT report FROM ai_test_runs WHERE id=$1',[testId])).rows[0].report,report);
