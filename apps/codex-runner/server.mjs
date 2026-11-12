@@ -1,6 +1,6 @@
 import http from 'node:http';
-import net from 'node:net';
-import tls from 'node:tls';
+import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
+import {createCommandExecutor} from './command-executor.mjs';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, writeFile, access, readFile, readdir } from 'node:fs/promises';
@@ -32,70 +32,15 @@ try { await access(config); } catch { await writeFile(config,'cli_auth_credentia
 // Loopback-only CONNECT tunnel: use IPv4 resolution to avoid the Rust CLI's
 // dual-stack DNS failures observed on some Docker/VPN networks.
 // No plaintext TLS content or credentials are read by this tunnel.
-let proxyAttempts=0,proxySuccess=0,proxyLastError='';
-const proxyServer=http.createServer((_req,res)=>{res.writeHead(405);res.end();});
-proxyServer.on('connect',(req,client,head)=>{
- proxyAttempts++;
- const target=req.url||'';
- const match=/^([a-z0-9.-]+):(443)$/.exec(target);
- const host=match?.[1]||'';
- const allowed=host==='auth.openai.com'||host==='api.openai.com'||host==='chatgpt.com'||host.endsWith('.openai.com')||host.endsWith('.chatgpt.com');
- if(!allowed){client.end('HTTP/1.1 403 Forbidden\r\n\r\n');return;}
- const remote=net.connect({host,port:443,family:4,timeout:12000});
- let established=false;
- remote.once('connect',()=>{proxySuccess++;established=true;client.write('HTTP/1.1 200 Connection Established\r\n\r\n');if(head?.length)remote.write(head);remote.pipe(client);client.pipe(remote);});
- remote.on('error',(e)=>{proxyLastError=e.code||e.message||'connection_error';if(!established)client.end('HTTP/1.1 502 Bad Gateway\r\n\r\n');else client.destroy();});
- remote.on('timeout',()=>{proxyLastError='timeout';remote.destroy();});
- client.on('error',()=>remote.destroy());
- client.on('close',()=>remote.destroy());
-});
-proxyServer.listen(4399,'127.0.0.1');
+const codexProxy=startCodexProxy();
 startQaBrowserGateway();
-const proxyUrl='http://127.0.0.1:4399';
+const proxyUrl=codexProxy.url;
 const baseEnv=runnerEnvironment();
 const cliEnv={...baseEnv,HOME:process.env.HOME||'/home/node',CODEX_HOME:home,SSL_CERT_FILE:'/etc/ssl/certs/ca-certificates.crt',HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
 const codexDotenv=join(home,'.env');
 // The Codex binary can load proxy settings from its own .env; provide
 // the same loopback proxy there in addition to the child environment.
 await writeFile(codexDotenv,`HTTP_PROXY=${proxyUrl}\nHTTPS_PROXY=${proxyUrl}\nhttp_proxy=${proxyUrl}\nhttps_proxy=${proxyUrl}\nNO_PROXY=localhost,127.0.0.1,::1\nno_proxy=localhost,127.0.0.1,::1\n`,{mode:0o600});
-async function probeProxyEndpoint(){
- // Replicate the HTTP CONNECT + verified TLS path used by Codex.
- // Never report response bodies or OAuth credentials.
- return await new Promise(resolve=>{
-  let done=false;
-  const finish=message=>{if(done)return;done=true;resolve(message);};
-  const req=http.request({host:'127.0.0.1',port:4399,method:'CONNECT',path:'auth.openai.com:443',timeout:12000});
-  req.on('connect',(response,socket)=>{
-   if(response.statusCode!==200){socket.destroy();finish('Прокси: CONNECT HTTP '+response.statusCode);return;}
-   const secure=tls.connect({socket,servername:'auth.openai.com',rejectUnauthorized:true});
-   secure.setTimeout(12000);
-   secure.once('secureConnect',()=>{
-    secure.write('POST /api/accounts/deviceauth/usercode HTTP/1.1\r\nHost: auth.openai.com\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}');
-   });
-   let responseText='';
-   secure.on('data',chunk=>{
-    responseText+=(chunk.toString('utf8')).slice(0,256);
-    const match=responseText.match(/^HTTP\/1\.[01] (\d{3})/);
-    if(match){secure.destroy();finish('Прокси + TLS: HTTP '+match[1]);}
-   });
-   secure.on('end',()=>{if(!done)finish('Прокси + TLS: нет HTTP-ответа');});
-   secure.on('error',e=>finish('Прокси + TLS: '+String(e.code||e.message).slice(0,90)));
-   secure.on('timeout',()=>{secure.destroy();finish('Прокси + TLS: таймаут');});
-  });
-  req.on('error',e=>finish('Прокси CONNECT: '+String(e.code||e.message).slice(0,90)));
-  req.on('timeout',()=>{req.destroy();finish('Прокси CONNECT: таймаут');});
-  req.end();
- });
-}
-
-async function probeAuthEndpoint(){
- try{
-  const response=await fetch('https://auth.openai.com/api/accounts/deviceauth/usercode',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',signal:AbortSignal.timeout(12000)});
-  return 'Node.js HTTPS: HTTP '+response.status;
- }catch(error){const cause=error?.cause;return 'Node.js HTTPS: '+String(cause?.code||cause?.message||error.message).slice(0,100);}
-}
-
-
 let login=null, log='',loginState='idle',started=0,diagnosis='';
 const safeText=()=>log.replace(/\x1b\[[0-9;]*m/g,'').slice(-3000);
 const reply=(res,status,payload)=>{
@@ -110,13 +55,13 @@ async function connected() {
 }
 function runLogin(){
  if(login && !login.killed && login.exitCode===null)return;
- log='';diagnosis='';proxyAttempts=0;proxySuccess=0;proxyLastError='';loginState='waiting';started=Date.now();
+ log='';diagnosis='';codexProxy.reset();loginState='waiting';started=Date.now();
  login=spawn('codex',['login','--device-auth'],{env:{...cliEnv,RUST_LOG:'warn,reqwest=debug,hyper_util=debug'},stdio:['ignore','pipe','pipe']});
  const child=login;
  const collect=(chunk)=>{log=(log+chunk.toString('utf8')).slice(-10000)};
  child.stdout.on('data',collect);child.stderr.on('data',collect);
  child.on('error',e=>{loginState='error';log+='\n'+e.message;});
- child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const connections=proxyAttempts,successes=proxySuccess,proxyError=proxyLastError;void Promise.all([probeAuthEndpoint(),probeProxyEndpoint()]).then(([probe,tunnel])=>{diagnosis=probe+'; '+tunnel+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
+ child.on('exit',(code,signal)=>{if(login===child){loginState=code===0?'completed':loginState==='expired'?'expired':'error';if(code!==0){log+='\nCodex login завершился: '+(signal||code);const {attempts:connections,successes,lastError:proxyError}=codexProxy.stats();void Promise.all([probeAuthEndpoint(),codexProxy.probe()]).then(([probe,tunnel])=>{diagnosis=probe+'; '+tunnel+'; Codex через прокси: '+connections+' попыток, '+successes+' соединений'+(proxyError?'; ошибка прокси: '+proxyError:'')+(connections===0?'. Codex не использовал настроенный прокси.':'');});}login=null;}});
  const deadline=setTimeout(()=>{if(login===child){child.kill('SIGTERM');loginState='expired';}},10*60*1000);
  deadline.unref();
 }
@@ -229,33 +174,7 @@ function authorized(req){
  const a=Buffer.from(supplied),b=Buffer.from(jobKey);
  return a.length===b.length && timingSafeEqual(a,b);
 }
-function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId,allowNonzero=false}={}){
- return new Promise((resolve,reject)=>{
-  if(jobId)assertJobActive(jobId);
-  const child=spawn(binary,args,{cwd,env:{...baseEnv,...env},stdio:['ignore','pipe','pipe'],detached:true});
-  if(jobId)jobChildren.set(jobId,child);
-  let output='',errors='',done=false,timedOut=false;
-  const timer=setTimeout(()=>{timedOut=true;stopCommand(child);},timeout);
-  child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
-  child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
-  const secret=env?.ADO_AGENT_SESSION_TOKEN;
-  const redact=value=>secret?value.replaceAll(secret,'[REDACTED]'):value;
-  const settle=(err,exitCode)=>{
-   if(done)return;done=true;clearTimeout(timer);
-   if(jobId&&jobChildren.get(jobId)===child)jobChildren.delete(jobId);
-   if(err)reject(err);else resolve({stdout:redact(output),stderr:redact(errors),exitCode});
-  };
-  child.on('error',settle);
-  child.on('close',(code)=>{
-   if(timedOut)return settle(new Error(binary+' превысил ограничение времени'));
-   if(code===null||code!==0&&!allowNonzero){
-    const detail=binary==='codex'?codexFailureDetail(redact(output),redact(errors)):errors.slice(-1200);
-    return settle(new Error(binary+' завершился с кодом '+code+': '+(detail||'Codex CLI не вернул причину ошибки. Проверь авторизацию Codex и подробный журнал Runner.')));
-   }
-   settle(undefined,code);
-  });
- });
-}
+const command=createCommandExecutor({baseEnv,assertJobActive,jobChildren,stopCommand,codexFailureDetail});
 async function isolatedTaskPolicy(workdir,dir,jobId,writable=true,qa=false){
  const policy=await createTaskPolicy(workdir,{writable,qa});
  try{await command('codex',[...policy.sandboxArgs,'--','/bin/true'],{cwd:dir,env:cliEnv,jobId,timeout:15000});}

@@ -14,7 +14,7 @@ import {initKnowledgeDocumentUpdates} from '../knowledge-document-updates.js';
 
 const {hash}=bcrypt;
 
-export async function initializeLegacyDatabase(pool:Pool,workflowStageDescriptions:Record<string,string>,adminEmail:string) {
+export async function applyLegacySchema(pool:Pool,workflowStageDescriptions:Record<string,string>) {
  await pool.query(`
  CREATE TABLE IF NOT EXISTS users (id uuid primary key, email text unique not null, password_hash text not null);
  CREATE TABLE IF NOT EXISTS auth_sessions (token_hash text primary key, user_id uuid not null references users(id) on delete cascade, expires_at timestamptz not null, created_at timestamptz not null default now());
@@ -24,7 +24,6 @@ export async function initializeLegacyDatabase(pool:Pool,workflowStageDescriptio
  -- Every backend rollout requires an explicit per-project resume. This flag is
  -- intentionally distinct from project_ai_settings.enabled (account setup).
  ALTER TABLE projects ADD COLUMN IF NOT EXISTS agents_running boolean NOT NULL DEFAULT false;
- UPDATE projects SET agents_running=false WHERE agents_running=true;
  CREATE INDEX IF NOT EXISTS idx_projects_owner_trash ON projects(owner_id,deleted_at,created_at DESC);
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
@@ -289,6 +288,15 @@ export async function initializeLegacyDatabase(pool:Pool,workflowStageDescriptio
  await initKnowledgeContext(pool);
  await initKnowledgeWorkflow(pool);
  await initKnowledgeDocumentUpdates(pool);
+}
+
+/** Apply runtime policy each restart: paused agents must explicitly resume after deployment. */
+export async function pauseAllProjectAgents(pool:Pool){
+ await pool.query('UPDATE projects SET agents_running=false WHERE agents_running=true');
+}
+
+/** Administrator provisioning is an installation/startup policy, never a one-off migration. */
+export async function ensureLegacyAdministrator(pool:Pool,adminEmail:string){
  const email=adminEmail;
  const password=process.env.ADMIN_PASSWORD;
  if (!email || !password || password.length < 12) throw Error('Set ADMIN_EMAIL and ADMIN_PASSWORD (12+ characters)');
@@ -298,4 +306,11 @@ export async function initializeLegacyDatabase(pool:Pool,workflowStageDescriptio
  }
  const existing=await pool.query('SELECT id FROM users WHERE email=$1',[email]);
  if (!existing.rowCount) await pool.query('INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)',[randomUUID(),email,await hash(password,12)]);
+}
+
+/** Compatibility wrapper for callers relying on the original bootstrap contract. */
+export async function initializeLegacyDatabase(pool:Pool,workflowStageDescriptions:Record<string,string>,adminEmail:string){
+ await applyLegacySchema(pool,workflowStageDescriptions);
+ await pauseAllProjectAgents(pool);
+ await ensureLegacyAdministrator(pool,adminEmail);
 }
