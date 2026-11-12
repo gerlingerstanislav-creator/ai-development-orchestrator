@@ -50,18 +50,29 @@ function isCustomerQuestion(body:string){
  * Do not ask the conversational PM model to guess how to alter task state.
  * The analyst will review the answer and either ask follow-ups or finalize the spec.
  */
-export async function acceptAnalysisAnswer(pool:Pool,projectId:string,taskId:string,actorId:string,answer:string){
+export async function acceptAnalysisAnswer(pool:Pool,projectId:string,taskId:string,actorId:string,answer:string,sourceMessageId?:string){
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
   const task=(await client.query("SELECT id,stage,analysis_state,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
   if(!task||task.stage!=='analysis'){await client.query('ROLLBACK');return {accepted:false,reason:'Задача сейчас не находится на этапе аналитики'};}
-  const pending=await client.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND requires_customer=true FOR UPDATE",[projectId,taskId]);
+  const pending=await client.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND (requires_customer=true OR target_stage='all') FOR UPDATE",[projectId,taskId]);
   const legacy=Array.isArray(task.clarification_questions)?task.clarification_questions.filter((q:unknown)=>typeof q==='string'&&q.trim()):[];
-  if(!pending.rowCount&&!legacy.length){await client.query('ROLLBACK');return {accepted:false,reason:'Нет открытых вопросов аналитика'};}
+  // Legacy tasks may have answered questions in a project chat without note IDs.
+  // Record the owner's authenticated source message and let the analyst review it.
+  if(!pending.rowCount&&!legacy.length&&(!sourceMessageId||!['waiting_questions','needs_clarification'].includes(task.analysis_state))){await client.query('ROLLBACK');return {accepted:false,reason:'Нет открытых вопросов аналитика'};}
+  if(sourceMessageId){
+   const previous=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND source_key=$2",[taskId,'owner-answer:'+sourceMessageId]);
+   if(previous.rowCount){await client.query('ROLLBACK');return {accepted:false,reason:'Это сообщение владельца уже передано аналитику'};}
+  }
   const trimmed=answer.trim().slice(0,3000);
   if(trimmed.length<3){await client.query('ROLLBACK');return {accepted:false,reason:'Ответ слишком короткий'};}
-  await client.query("UPDATE task_agent_notes SET status='answered',answer=$3,answered_at=now(),answered_by=$4,answer_author='Владелец через ПМ',processing_at=NULL WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND requires_customer=true",[projectId,taskId,trimmed,actorId]);
+  await client.query("UPDATE task_agent_notes SET status='answered',answer=$3,answered_at=now(),answered_by=$4,answer_author='Владелец через ПМ',processing_at=NULL WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND (requires_customer=true OR target_stage='all')",[projectId,taskId,trimmed,actorId]);
+  if(sourceMessageId)await client.query(`INSERT INTO task_agent_notes
+   (id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,actor_id,status,answer,answered_at,answered_by,answer_author)
+   VALUES($1,$2,$3,'human','Владелец','analysis','resolution',$4,'human',$5,$6,'resolved',$4,now(),$6,'Владелец через ПМ')
+   ON CONFLICT(task_id,source_key) DO NOTHING`,
+   [randomUUID(),projectId,taskId,trimmed,'owner-answer:'+sourceMessageId,actorId]);
   for(const [index,question] of legacy.entries()){
    await client.query(`INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,actor_id,status,requires_customer,answer,answered_at,answered_by,answer_author)
     VALUES($1,$2,$3,'analysis','Системный аналитик','all','question',$4,'human',$5,$6,'answered',true,$7,now(),$6,'Владелец через ПМ')
@@ -73,7 +84,7 @@ export async function acceptAnalysisAnswer(pool:Pool,projectId:string,taskId:str
   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
    [randomUUID(),taskId,actorId,'Получен ответ владельца на '+(pending.rows.length+legacy.length)+' вопросов аналитика. Повторный анализ обязателен.']);
   await client.query('COMMIT');
-  return {accepted:true,answered:pending.rows.length+legacy.length,reason:'Ответ сохранён. Аналитик повторно проверит требования, и только после этого задача сможет перейти в разработку.'};
+  return {accepted:true,answered:pending.rows.length+legacy.length,reason:'Ответ владельца сохранён в задаче. Аналитик получит его при повторном анализе; разработка начнётся только после подтверждения требований.'};
  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
 }
 
@@ -115,9 +126,9 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
  return result.rows.map(({open_notes,material_review,blocked_qa,...task})=>({
   ...task,
   awaits_product_owner:task.type==='question'&&['open','answered'].includes(task.question_status) || task.stage!=='done'&&(
-   task.stage==='analysis'&&Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0
+   task.stage==='analysis'&&(task.analysis_state==='waiting_questions'||task.analysis_state==='needs_clarification'||Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0)
    ||task.spec_review_status==='needs_approval'&&material_review
-   ||(open_notes as string[]).some(isCustomerQuestion)
+   ||(open_notes as string[]).some(note=>!isPrEvidenceRequest(note))
    ||!!task.owner_question_source_task_id
    ||!!blocked_qa&&qaWaiverAssessment(blocked_qa as QaRunRow).eligible)
  }));
@@ -169,7 +180,9 @@ export async function syncManagerInbox(pool:Pool,projectId:string,taskId:string)
   "SELECT id,body,author_name,target_stage FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='open' AND (target_stage='all' OR requires_customer) ORDER BY created_at DESC LIMIT 15",
   [projectId,taskId]);
  for(const note of questions.rows){
-  if(!isCustomerQuestion(note.body))continue;
+  // Structured owner-question metadata is authoritative; regex filtering
+  // dropped plain-language questions such as "Как разместить круги?".
+  if(note.target_stage!=='all'&&!note.requires_customer)continue;
   await add('question','note:'+note.id,note.id,{question:note.body,author:note.author_name,stage:task.stage});
  }
  // Old pending requests must not be shown after a task advances or a question is answered.
@@ -185,7 +198,7 @@ export async function managerSnapshot(pool:Pool,projectId:string,taskId:string){
   pool.query('SELECT id,title,description,stage,analysis_state,clarification_questions,spec_version,spec_review_status,pr_url,pr_number,test_feedback FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
   pool.query("SELECT workflow_id,kind,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[projectId,taskId]),
   pool.query("SELECT id,status,verdict,report,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1",[projectId,taskId]),
-  pool.query("SELECT id,author_name,author_stage,target_stage,body,kind,status,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 80",[projectId,taskId])
+  pool.query("SELECT id,author_name,author_stage,target_stage,body,kind,status,answer,answer_author,requires_customer,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 80",[projectId,taskId])
  ]);
  if(!task.rowCount)return null;
  return {messages:messages.rows,requests:requests.rows,task:task.rows[0],owner:owner.rows[0]||null,latestTest:tests.rows[0]||null,internalNotes:notes.rows};
@@ -239,7 +252,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    if(!await isTurnActive())return {message:'',handled:true};
    if(action==='reply')return {message:''};
    if(action==='clarify'){
-    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message);
+    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message,messageId);
     if(saved.accepted)return handled(saved.reason);
    }
    const startRequested=action==='start_development';
@@ -256,7 +269,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    const clarification=snapshot.requests.find(request=>['analysis_clarifications','question'].includes(request.kind)&&request.status==='open'&&isAnalysisStage);
    if(clarification){
     if(!await isTurnActive())return {message:'',handled:true};
-    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message);
+    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message,messageId);
     return handled(saved.reason);
    }
    if(!startRequested)return {message:''};

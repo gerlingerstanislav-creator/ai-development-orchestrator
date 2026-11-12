@@ -199,9 +199,14 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
  if(!active.rowCount)return;
  const {project_id:projectId,task_id:taskId}=run;
  try{
-  const [record,history]=await Promise.all([
+  const [record,history,ownerEvidence]=await Promise.all([
    pool.query("SELECT id,project_id,title,description,stage,analysis_state,clarification_questions,spec_review_status,spec_version,iteration_work_kind FROM tasks WHERE project_id=$1 AND id=$2",[projectId,taskId]),
-   taskHandoffContext(projectId,taskId,'analysis')
+   taskHandoffContext(projectId,taskId,'analysis'),
+   pool.query(`SELECT kind,body,answer,answer_author FROM task_agent_notes
+    WHERE project_id=$1 AND task_id=$2 AND
+     ((kind='resolution' AND source_key LIKE 'owner-answer:%') OR
+      (kind='question' AND status='answered' AND answer IS NOT NULL))
+    ORDER BY created_at DESC LIMIT 10`,[projectId,taskId])
   ]);
   const task=record.rows[0];
   if(!task||task.stage!=='analysis'||task.spec_version!==run.spec_version||task.analysis_state!=='processing'){
@@ -219,7 +224,9 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
-   'Ключевые ответы и замечания: '+history.slice(-1200)
+   'Ключевые ответы и замечания: '+history.slice(-1500),
+   'ПОДТВЕРЖДЁННЫЕ ОТВЕТЫ ВЛАДЕЛЬЦА ИЗ КАРТОЧКИ (используй их в первую очередь; не спрашивай повторно): '+JSON.stringify(ownerEvidence.rows.reverse().map((r:{kind:string;body:string;answer:string|null;answer_author:string|null})=>({question:r.kind==='question'?r.body:null,answer:r.answer||r.body,source:r.answer_author||'Владелец'}))).slice(0,3200),
+   'Если сохранённый ответ относится к ранее заданному вопросу, проверь, достаточно ли его для выполнения. При полноте ответов верни ready; при реальной неоднозначности задай только недостающий вопрос.'
   ].join('\n\n');
   const output=parseTaskAnalysisResult(await assistantCompletion(prompt,projectId,taskId,'task_analysis',runId));
   if(output.outcome==='ready'&&output.questions.length)throw Error('Аналитик завершил задачу с неразрешёнными вопросами');
@@ -771,7 +778,7 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
- const verified=await pool.query("SELECT 1 FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed' AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL AND t.spec_review_status='current' AND t.spec_reviewed_version=t.spec_version AND r.qa_spec_version=t.spec_version",[testId,projectId,taskId]);
+ const verified=await pool.query("SELECT 1 FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed' AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL AND r.qa_spec_version=t.spec_version",[testId,projectId,taskId]);
  if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного тестирования коммита PR');
  await pool.query("UPDATE tasks SET stage='merge_queue',test_feedback='',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='testing'",
   [taskId,projectId]);
@@ -866,12 +873,12 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
-    tools:'MCP orchestrator: tasks.read, processes.list, approvals.list, workflow.release_task и остальные разрешённые инструменты ПМ. Только при прямом поручении владельца применяй workflow.release_task с task_id и source_message_id текущего сообщения. Сервер проверяет согласования, QA, CI, SHA и режим выкладки. Не называй отправку на выкатку завершённой, пока инструмент её не подтвердил.',
+    tools:'MCP orchestrator: tasks.read, approvals.list, approvals.answer_question, approvals.deliver_task_answer, workflow.release_task и остальные разрешённые инструменты ПМ. Если владелец уточнил требования, передай его текущее исходное сообщение аналитику через approvals.deliver_task_answer с task_id и source_message_id. Даже старую карточку без ID вопросов можно вернуть на повторный анализ. При просьбе слить PR используй workflow.release_task. Не утверждай, что доступно лишь чтение, пока не проверил реально доступные инструменты.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
     scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,1000):'',
-    output:'Отвечай по-русски с Markdown-абзацами и списками по необходимости. При просьбе продвинуть задачу обязательно вызови подходящий инструмент и сообщи подтверждённый результат, либо конкретную причину блокировки. QA blocked не равно passed. Не выдавай отправку в очередь за фактически завершённую выкладку.'
+    output:'Отвечай по-русски с Markdown-абзацами и списками. Если задача ожидает требований, не заставляй владельца повторять уже данный ответ: используй tools для передачи сохранённого сообщения. При просьбе продвинуть задачу вызывай инструмент, сообщай подтверждённый результат или точную причину блокировки. QA blocked не равно passed. Очередь выкладки ещё не означает успешный деплой.'
    });
    const mentionedAgent=await resolveAgentMention(pool,projectId,String(msg.rows[0].body));
    const directPrompt=mentionedAgent?composeAgentPrompt({

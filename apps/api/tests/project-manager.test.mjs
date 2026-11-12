@@ -135,6 +135,43 @@ test('owner answers persist for analyst rerun; do not start development before r
  assert.equal((await acceptAnalysisAnswer(pool,projectId,taskId,actorId,answer)).accepted,false,'Repeated answer is idempotent');
 });
 
+test('legacy analysis card without question IDs accepts an authenticated historic owner answer once',async t=>{
+ const admin=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await admin.connect();
+ const schema='legacy_answer_'+randomUUID().replaceAll('-','');
+ await admin.query('CREATE SCHEMA '+schema);
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await pool.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
+ await pool.query(`
+ CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,stage text,analysis_state text,clarification_questions jsonb,updated_at timestamptz);
+ CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,author_stage text,author_name text,target_stage text,
+  kind text,body text,source_kind text,source_key text,actor_id uuid,status text,requires_customer boolean,
+  answer text,answered_at timestamptz,answered_by uuid,answer_author text,processing_at timestamptz,
+  created_at timestamptz DEFAULT now(),UNIQUE(task_id,source_key));
+ CREATE TABLE manager_requests(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text,decision text,decided_by uuid,
+  resolved_at timestamptz,kind text,source_id uuid);
+ CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,actor_id uuid,event text,detail text);
+ `);
+ const project=randomUUID(),task=randomUUID(),actor=randomUUID(),sourceMessage=randomUUID();
+ await pool.query("INSERT INTO tasks(id,project_id,stage,analysis_state,clarification_questions) VALUES($1,$2,'analysis','waiting_questions','[]'::jsonb)",[task,project]);
+ const answer='Круги находятся друг внутри друга, а при изменении окна все круги пропорционально масштабируются.';
+ const result=await acceptAnalysisAnswer(pool,project,task,actor,answer,sourceMessage);
+ assert.equal(result.accepted,true);
+ assert.equal(result.answered,0,'Legacy state has no saved question IDs');
+ assert.equal((await pool.query('SELECT analysis_state FROM tasks WHERE id=$1',[task])).rows[0].analysis_state,'new');
+ const rows=(await pool.query("SELECT body,kind,target_stage,source_key FROM task_agent_notes WHERE task_id=$1",[task])).rows;
+ assert.equal(rows.length,1);
+ assert.equal(rows[0].body,answer);
+ assert.equal(rows[0].kind,'resolution');
+ assert.equal(rows[0].target_stage,'analysis');
+ assert.equal(rows[0].source_key,'owner-answer:'+sourceMessage);
+ assert.equal((await acceptAnalysisAnswer(pool,project,task,actor,answer,sourceMessage)).accepted,false,'Delivery must be idempotent');
+ await pool.query("INSERT INTO tasks(id,project_id,stage,analysis_state,clarification_questions) VALUES($1,$2,'analysis','new','[]'::jsonb)",[randomUUID(),project]);
+ const unrelated=(await pool.query("SELECT id FROM tasks WHERE id<>$1",[task])).rows[0].id;
+ assert.equal((await acceptAnalysisAnswer(pool,project,unrelated,actor,answer,randomUUID())).accepted,false,
+  'Do not turn random PM instructions into analyst answers when nobody asked a question');
+});
+
 test('owner questions project onto the board without changing task stages',async()=>{
  const defaults={open_notes:[],material_review:false,blocked_qa:null};
  const rows=[

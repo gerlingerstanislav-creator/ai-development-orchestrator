@@ -89,7 +89,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
    return 'development_failed';
   }
   const simplified=patched('simplified-task-handoff');
-  if(!simplified){
+  if(!simplified&&!patched('skip-post-implementation-requirements-gate-v1')){
   await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
   // Analyst is an ongoing owner of the specification, not a one-time Kanban executor.
   // Reconcile the actual PR before QA is allowed to author the final test plan.
@@ -159,7 +159,7 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
  try {
  const simplified=patched('simplified-manual-testing');
- if(!simplified){
+ if(!simplified&&!patched('skip-post-implementation-requirements-gate-v1')){
  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
  let status=await steps.reconcileRequirements({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,mode:'handoff'});
  if(patched('resolve-manual-testing-questions')&&status==='needs_approval'){

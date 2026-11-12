@@ -71,8 +71,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    message:'Ответ сохранён в задаче. После получения всех ответов СА продолжит работу автоматически.'};
  }
  case 'approvals.list':{
-  const pending=await pool.query("SELECT r.id AS request_id,r.task_id,r.kind,r.status,r.payload,r.created_at,t.title,t.stage FROM manager_requests r JOIN tasks t ON t.id=r.task_id AND t.project_id=r.project_id WHERE r.project_id=$1 AND r.status IN ('open','waiting') ORDER BY r.created_at DESC LIMIT 80",[projectId]);
-  return {requests:pending.rows};
+  const [pending,questions]=await Promise.all([
+   pool.query("SELECT r.id AS request_id,r.task_id,r.kind,r.status,r.payload,r.created_at,t.title,t.stage FROM manager_requests r JOIN tasks t ON t.id=r.task_id AND t.project_id=r.project_id WHERE r.project_id=$1 AND r.status IN ('open','waiting') ORDER BY r.created_at DESC LIMIT 80",[projectId]),
+   pool.query("SELECT n.id AS note_id,n.task_id,t.display_number,t.title,n.body AS question,n.status,n.author_stage,n.created_at FROM task_agent_notes n JOIN tasks t ON t.id=n.task_id AND t.project_id=n.project_id WHERE n.project_id=$1 AND n.kind='question' AND n.status IN ('open','processing') AND (n.requires_customer OR n.target_stage='all') ORDER BY n.created_at DESC LIMIT 100",[projectId])
+  ]);
+  return {requests:pending.rows,open_questions:questions.rows};
  }
  case 'discussions.read':{
   const {topic_id,limit}=z.object({topic_id:uuid,limit:z.number().int().min(1).max(20).default(6)}).parse(params);
@@ -324,11 +327,13 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const {task_id}=z.object({task_id:uuid}).parse(params);
   const r=await pool.query('SELECT id,title,description,stage,analysis_state,clarification_questions,depends_on_task_id,pr_url,updated_at FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]);
   if(!r.rowCount)throw rejected('Задача не найдена',404);
-  const [conversation,questions]=await Promise.all([
+  const [conversation,questions,open,answers]=await Promise.all([
    taskConversationEvidence(pool,projectId,task_id),
-   pool.query("SELECT body AS question,answer,answer_author FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='answered' AND answer IS NOT NULL ORDER BY answered_at DESC NULLS LAST,id DESC LIMIT 12",[projectId,task_id])
+   pool.query("SELECT id AS note_id,body AS question,answer,answer_author FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status='answered' AND answer IS NOT NULL ORDER BY answered_at DESC NULLS LAST,id DESC LIMIT 12",[projectId,task_id]),
+   pool.query("SELECT id AS note_id,body AS question,author_stage,requires_customer,status FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') ORDER BY created_at,id LIMIT 20",[projectId,task_id]),
+   pool.query("SELECT body AS answer,source_key,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='resolution' AND source_key LIKE 'owner-answer:%' ORDER BY created_at DESC LIMIT 8",[projectId,task_id])
   ]);
-  return {task:r.rows[0],conversation,answered_questions:questions.rows};
+  return {task:r.rows[0],conversation,open_questions:open.rows,answered_questions:questions.rows,owner_answers:answers.rows};
  }
  case 'tasks.create':{
   const {title,description}=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(10).max(12000)}).parse(params);

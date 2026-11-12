@@ -58,7 +58,7 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   }
   const candidates=await db.query(`SELECT t.id,t.project_id,t.spec_version FROM tasks t
    JOIN project_ai_settings ai ON ai.project_id=t.project_id AND ai.enabled=true
-   WHERE t.stage='analysis' AND t.type='task' AND t.analysis_state='new'
+   WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='new'
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
    ORDER BY t.priority,t.created_at LIMIT 25`);
