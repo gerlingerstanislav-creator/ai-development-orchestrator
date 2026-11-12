@@ -195,7 +195,7 @@ function parseTaskAnalysisResult(text:string){
 export async function runTaskStageAnalysis(runId:string):Promise<void>{
  const run=(await pool.query("SELECT id,project_id,task_id,spec_version,status FROM agent_analysis_runs WHERE id=$1",[runId])).rows[0];
  if(!run||['completed','waiting','failed','cancelled'].includes(run.status))return;
- const active=await pool.query("UPDATE agent_analysis_runs SET status='running',updated_at=now() WHERE id=$1 AND status IN ('queued','running') RETURNING id",[runId]);
+ const active=await pool.query("UPDATE agent_analysis_runs SET status='running',updated_at=now() WHERE id=$1 AND status IN ('queued','running') RETURNING id,updated_at",[runId]);
  if(!active.rowCount)return;
  const {project_id:projectId,task_id:taskId}=run;
  try{
@@ -238,6 +238,20 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    const latest=(await client.query("SELECT * FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE",[projectId,taskId])).rows[0];
    if(stillActive.rows[0]?.status==='cancelled'||!latest||latest.stage!=='analysis'||latest.analysis_state!=='processing'||(latest.title!==task.title||latest.description!==task.description)){
     await client.query("UPDATE agent_analysis_runs SET status='completed',message='Задача изменилась до сохранения результата',updated_at=now() WHERE id=$1 AND status<>'cancelled'",[runId]);
+    await client.query('COMMIT');return;
+   }
+   // Comments submitted while the analyst was reading the earlier snapshot
+   // must not be silently skipped. Requeue analysis and retain every message.
+   const fresh=await client.query(`SELECT 1 FROM task_agent_notes n WHERE n.project_id=$1 AND n.task_id=$2
+    AND n.source_kind='human' AND n.created_at>$3
+    UNION ALL SELECT 1 FROM manager_messages m WHERE m.project_id=$1 AND m.task_id=$2
+    AND m.role='user' AND m.created_at>$3
+    UNION ALL SELECT 1 FROM assistant_messages m WHERE m.project_id=$1 AND m.task_id=$2
+    AND m.role='user' AND m.created_at>$3 LIMIT 1`,[projectId,taskId,active.rows[0].updated_at]);
+   if(fresh.rowCount){
+    await client.query("UPDATE tasks SET analysis_state='new',updated_at=now() WHERE project_id=$1 AND id=$2",[projectId,taskId]);
+    await client.query("UPDATE agent_analysis_runs SET status='completed',message='Получены новые комментарии. Пересмотр актуального ввода поставлен в очередь.',updated_at=now() WHERE id=$1",[runId]);
+    await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_inputs_changed',$3)",[randomUUID(),taskId,'Новый комментарий поступил во время анализа. Следующий запуск учтёт его до разработки.']);
     await client.query('COMMIT');return;
    }
    if(output.outcome==='ready'){
