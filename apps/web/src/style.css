@@ -1271,6 +1271,10 @@ body:has(.tasks-page){overflow:hidden}
 .pm-chat-markdown .docs-markdown li{margin-bottom:3px}
 .pm-chat-markdown .docs-heading{font-size:13px!important;margin:12px 0 6px}
 
+/* Pending product-owner decisions stay on the task's normal Kanban lane. */
+.task-owner-question-icon{display:inline-flex;flex-shrink:0;align-items:center;justify-content:center;color:#c37b08;margin-left:6px;vertical-align:middle}
+.task-card .task-warning{font-weight:600;display:inline-flex;align-items:center;color:#9a6700;margin-top:4px}
+.task-name-line .task-owner-question-icon{margin-left:5px}
 /* Compact, lazy prompt disclosure stays above each agent's start message. */
 .task-conversation .agent-prompt-disclosure{margin:0 0 7px;font-size:11px;color:#69788e}
 .task-conversation .agent-prompt-disclosure>summary{display:inline-flex;cursor:pointer;align-items:center;list-style:none;border:1px solid #e3e7ee;background:#f8fafc;padding:3px 8px;border-radius:6px;user-select:none}
