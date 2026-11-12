@@ -1,3 +1,4 @@
+import {runnerAssistantPrompt} from './runner-assistant-prompt.js';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import {recordAgentActivity} from './task-agent-activity.js';
@@ -9,13 +10,13 @@ type Deps={pool:Pool;uid:(req:any)=>string;access:(req:any,reply:any,id:string)=
 const uuid=z.string().uuid();
 export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
  const {pool,uid,access,requireAdmin,codexUrl,runnerKey}=d;
- async function ask(id:string,prompt:string){
+ async function ask(id:string,prompt:string,scope:{actorId:string;processId:string;taskId?:string}){
   const cfg=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[id]);
   if(!cfg.rows[0]?.enabled)throw new Error('Включи AI в настройках проекта');
   const writer=await pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='documentation'",[id]);
   const role=writer.rows[0];
-  if(role)prompt+='\n\nИнструкции этапа документации ('+String(role.agent_name||'AI-технический писатель')+'): '+String(role.agent_instructions||'').slice(0,7000);
-  const r=await fetch(codexUrl+'/assistant',{method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},body:JSON.stringify({prompt,model:cfg.rows[0].model,reasoning:cfg.rows[0].reasoning}),signal:AbortSignal.timeout(115000)});
+  const instructions=role?'Инструкции этапа документации ('+String(role.agent_name||'AI-технический писатель')+'): '+String(role.agent_instructions||'').slice(0,3400):'';
+  const r=await fetch(codexUrl+'/assistant',{method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},body:JSON.stringify({prompt:runnerAssistantPrompt(instructions,prompt),model:cfg.rows[0].model,reasoning:cfg.rows[0].reasoning,context:{...scope,projectId:id,role:'documentation'}}),signal:AbortSignal.timeout(115000)});
   const data=await r.json().catch(()=>({})) as any;
   if(!r.ok)throw new Error(String(data.error||'Ошибка Codex').slice(0,300));
   if(typeof data.message!=='string')throw new Error('Пустой ответ AI');
@@ -80,19 +81,20 @@ export function registerKnowledgeRoutes(app:FastifyInstance,d:Deps){
   const prompt=['Ты технический писатель. Обнови документацию только по уже слитым Pull Request.',
    'Ответь ТОЛЬКО JSON {"body":"полное Markdown-содержимое документа Реализованные возможности","updates":[{"document_id":"UUID связанного документа","body":"полное предлагаемое Markdown-содержимое","reason":"какая задача и PR доказывают изменение"}]}.',
    'Для связанных документов СОЗДАВАЙ ТОЛЬКО ПРЕДЛОЖЕНИЯ на согласование, не объявляй поведение реализованным без достоверных подтверждений. Если PR diff недоступен, не делай предположений об изменении разделов; updates может быть пустым.',
-   'Не удаляй прежние реализованные возможности. Не выдумывай факты, не включай секреты.',
+   'Не удаляй прежние реализованные возможности. Если полное чтение существующего документа недоступно, верни {error: "Не удалось прочитать текущий документ"}. Не выдумывай факты, не включай секреты.',
    'Рабочие комментарии и история обсуждений не являются утверждённой функциональностью. Не переписывай их в документацию как факт.',
-   'Предыдущий документ:\n'+String(doc?.body||'# Реализованные возможности\n').slice(0,40000),
-   'Правила проекта (учитывай, не изменяй):\n'+rules.rows.map(x=>x.body).join('\n').slice(0,7000),
-   'Связанные документы для возможного обновления:\n'+JSON.stringify(candidate.rows.map(d=>({id:d.id,title:d.title,body:String(d.body).slice(0,8500)}))).slice(0,30000),
-   'Выполненные задачи:\n'+JSON.stringify(pending.rows).slice(0,22000)].join('\n\n');
+   'Выполненные задачи:\n'+JSON.stringify(pending.rows.map(t=>({...t,description:String(t.description||'').slice(0,480)}))).slice(0,7200),
+   'Правила проекта (учитывай, не изменяй):\n'+rules.rows.map(x=>x.body).join('\n').slice(0,1800),
+   'Связанные документы для возможного обновления:\n'+JSON.stringify(candidate.rows.map(d=>({id:d.id,title:d.title}))).slice(0,1600),
+   doc?'Перед переписыванием прочитай весь текущий документ через documents.read (document_id='+doc.id+').':'Создай первоначальное содержимое «Реализованных возможностей».',
+   'Начало текущего документа:\n'+String(doc?.body||'').slice(0,2600)].join('\n\n');
   const ids=pending.rows.map(x=>x.id);
   const runId=randomUUID();
   await recordAgentActivity(pool,id,ids,runId,'documentation','running','Документатор обрабатывает слитые изменения');
   let body:string;
   let updates:Array<{document_id:string;body:string;reason:string}>=[];
   try{
-   const parsed=z.object({body:z.string().min(20).max(90000),updates:z.array(z.object({document_id:z.string().uuid(),body:z.string().min(20).max(100000),reason:z.string().min(5).max(2000)})).max(8).default([])}).parse(await ask(id,prompt));
+   const parsed=z.object({body:z.string().min(20).max(90000),updates:z.array(z.object({document_id:z.string().uuid(),body:z.string().min(20).max(100000),reason:z.string().min(5).max(2000)})).max(8).default([])}).parse(await ask(id,prompt,{actorId:uid(req),processId:runId,taskId:ids.length===1?ids[0]:undefined}));
    body=parsed.body;
    updates=parsed.updates.filter(p=>candidate.rows.some(d=>d.id===p.document_id&&d.body!==p.body));
   }

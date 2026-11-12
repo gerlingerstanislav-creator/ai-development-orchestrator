@@ -1,8 +1,8 @@
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
-import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,type AgentSession} from './agent-tools.js';
+import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,createAgentReaderSession,finishAgentSession,readerRoles,type AgentSession} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
 
 const uuid=z.string().uuid();
@@ -21,6 +21,7 @@ function redactArgs(args:Record<string,unknown>){
 export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
+ runnerSecret?:string;
  startDocumentationWorkflow:(jobId:string)=>Promise<void>;
  startIterationPlanning?:(runId:string)=>Promise<void>;
  delegateManagerAction?:(session:AgentSession,name:string,args:Record<string,unknown>)=>Promise<unknown>;
@@ -85,18 +86,39 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   if(!session){reply.code(403).send({error:'Сессия агента недоступна или истекла'});return null;}
   return session;
  };
+ const authorizeRunner=(req:any,reply:any)=>{
+  const supplied=Buffer.from(String(req.headers['x-runner-secret']||''));
+  const expected=Buffer.from(deps.runnerSecret||'');
+  if(expected.length>=32&&supplied.length===expected.length&&timingSafeEqual(supplied,expected))return true;
+  reply.code(403).send({error:'Доступно только исполнителю агента'});
+  return false;
+ };
+ app.post('/internal/agent-tools/reader-sessions',async(req,reply)=>{
+  if(!authorizeRunner(req,reply))return;
+  const scope=z.object({projectId:uuid,role:z.enum(readerRoles),taskId:uuid.optional(),processId:uuid.optional(),actorId:uuid.optional()}).strict().safeParse(req.body);
+  if(!scope.success)return reply.code(400).send({error:'Некорректная область чтения'});
+  const session=await createAgentReaderSession(pool,scope.data);
+  if(!session)return reply.code(404).send({error:'Проект или задача недоступны'});
+  return reply.code(201).send(session);
+ });
+ app.delete('/internal/agent-tools/reader-sessions',async(req,reply)=>{
+  if(!authorizeRunner(req,reply))return;
+  const session=await readAgentSession(pool,String(req.headers['x-agent-token']||''));
+  if(session?.read_only)await finishAgentSession(pool,session.id);
+  return reply.code(204).send();
+ });
  app.get('/internal/agent-tools/catalog',async(req:any,reply)=>{
   const session=await authenticate(req,reply);if(!session)return;
-  return {tools:toolsForRole(session.role)};
+  return {tools:toolsForRole(session.role,session.read_only)};
  });
  app.post('/internal/agent-tools/call',async(req:any,reply)=>{
   const session=await authenticate(req,reply);if(!session)return;
   const parsed=callSchema.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:'Неверные параметры вызова инструмента'});
   const {name,arguments:args}=parsed.data;
-  const tool=toolsForRole(session.role).find(tool=>tool.name===name);
+  const tool=toolsForRole(session.role,session.read_only).find(tool=>tool.name===name);
   if(!tool)return reply.code(403).send({error:'Инструмент недоступен для роли '+session.role});
-  const key=typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
+  const key=!session.read_only&&typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
   const digest=hashSecret(JSON.stringify({name,args}));
   const mutating=!tool.annotations.readOnlyHint;
   // All PostgreSQL changes and their success evidence use the SAME
@@ -138,7 +160,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
     :await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow);
    await db.query(
     'INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success,idempotency_key) VALUES($1,$2,$3,$4,$5,$6,true,$7)',
-    [randomUUID(),session.id,session.project_id,name,JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify(result),key]);
+    [randomUUID(),session.id,session.project_id,name,JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify(session.read_only?{read:true}:result),key]);
    if(connection){await connection.query('COMMIT');txOpen=false;}
    if(name.startsWith('documentation.')&&(result as any)?.import_job_id){
     const state=await startQueuedJob((result as any).import_job_id);

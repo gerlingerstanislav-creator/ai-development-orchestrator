@@ -12,7 +12,7 @@ import {pendingAgentQuestions,taskConversationEvidence,taskNotesContext} from '.
 import {updateCurrentSpecification} from './requirements.js';
 import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
-import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
+import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole,type AgentReaderScope} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 import type {ManagerDeps} from './project-manager.js';
@@ -88,14 +88,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   return r.rows.map(x=>'- '+x.body).join('\n').slice(0,12000);
  }
   async function completion(prompt:string,config:any,options?:{
-   maxAttempts?:number;timeoutMs?:number;onRetry?:(attempt:number,maxAttempts:number,reason:string)=>Promise<void>;images?:RunnerImage[]
+   maxAttempts?:number;timeoutMs?:number;onRetry?:(attempt:number,maxAttempts:number,reason:string)=>Promise<void>;images?:RunnerImage[];context?:AgentReaderScope
   }){
    const maxAttempts=options?.maxAttempts??1;
    for(let attempt=1;attempt<=maxAttempts;attempt++){
     try{
      const response=await fetch(codexUrl+'/assistant',{method:'POST',
       headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-      body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,images:options?.images??[]}),
+      body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,images:options?.images??[],context:options?.context}),
       signal:AbortSignal.timeout(options?.timeoutMs??(maxAttempts>1?255000:115000))});
      const data=await response.json().catch(()=>({})) as any;
      if(!response.ok){
@@ -221,7 +221,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     const instructionText=current.length?'\n\nНовые указания владельца во время работы (применить к текущему ответу):\n'+
      current.slice(-20).map(x=>'- '+x.body).join('\n').slice(-9500):'';
     await recordAgentPrompt(pool,{projectId:id,processId:jobId,role:'analyst',operation:'documentation',prompt:prompt+instructionText}).catch(()=>{});
-    const result=await completion(prompt+instructionText,config,options);
+    const result=await completion(prompt+instructionText,config,{...options,context:{projectId:id,role:'business_analyst',actorId,processId:jobId}});
     await running();
     const latest=await liveInstructions();
     if(latest.length===current.length&&latest.every((item,i)=>item.body===current[i].body))return result;
@@ -642,10 +642,11 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     continuation:[replyContext,topicContext,runnerImages.length?'Приложены изображения: '+runnerImages.map(image=>image.name).join(', '):''].filter(Boolean).join('\n\n'),
     output:'Отвечай по-русски на основе проверяемых фактов. Не выдумывай выполненные операции. В конце LEARNING_SUGGESTION: <урок> или none.'
    });
-   await recordAgentPrompt(pool,{projectId:id,processId:randomUUID(),role:mentionedAgent.stage,operation:'direct_mention',prompt}).catch(()=>{});
+   const processId=randomUUID();
+   await recordAgentPrompt(pool,{projectId:id,processId,role:mentionedAgent.stage,operation:'direct_mention',prompt}).catch(()=>{});
    try{
     const roleConfig=await resolveRoleAiSettings(pool,id,mentionedAgent.stage,config);
-    const response=await completion(prompt,roleConfig,{images:runnerImages});
+    const response=await completion(prompt,roleConfig,{images:runnerImages,context:{projectId:id,role:mentionedAgent.stage,actorId:uid(req),processId}});
     await storeTokenUsage(id,null,roleConfig.model,response.usage);
      const raw=response.text.trim();
      const lesson=raw.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim();
@@ -760,7 +761,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const prompt=composeAgentPrompt({
    role:refining?'Системный аналитик':'Инженерный помощник по задаче',
    objective:'Актуальное ТЗ задачи «'+task.title+'»:\n'+String(task.description||'').slice(0,12500)+'\n\nНовое сообщение пользователя:\n'+message,
-   tools:'В этом вызове нет инструментов; это анализ постановки или ответ в чате.',
+   tools:'Для анализа и ответа можно читать документацию и историю задачи.',
    instructions:instructions+'\n'+analystInstructions.slice(0,1100),
    scope:'Задача '+taskId+', текущий этап: '+task.stage,
    context:relatedContext,
@@ -769,12 +770,13 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   if(prompt.length>24000)return reply.code(409).send({error:'Аналитик не может обработать весь объём ТЗ и ответа за один запрос. Сократи уточнение.'});
   const runId=refining?randomUUID():null;
   if(runId)await recordAgentActivity(pool,id,[taskId],runId,'analysis','running','Аналитик уточняет требования');
-  await recordAgentPrompt(pool,{projectId:id,processId:runId||randomUUID(),role:refining?'analysis':'assistant',operation:'task_chat',prompt}).catch(()=>{});
+  const processId=runId||randomUUID();
+  await recordAgentPrompt(pool,{projectId:id,processId,role:refining?'analysis':'assistant',operation:'task_chat',prompt}).catch(()=>{});
   let outcome='Анализ прервался без результата.';
   let completed=false;
   try{
    let raw:string;
-   try{const response=await completion(prompt,config);raw=response.text;await storeTokenUsage(id,taskId,config.model,response.usage);}
+   try{const response=await completion(prompt,config,{context:{projectId:id,role:refining?'analysis':'manager',taskId,processId,actorId:uid(req)}});raw=response.text;await storeTokenUsage(id,taskId,config.model,response.usage);}
    catch(error){outcome='Ошибка Codex: '+String(error instanceof Error?error.message:error).slice(0,350);return reply.code(503).send({error:outcome});}
    let summary:string|null=null,answer=raw;
    let questions:string[]=[];

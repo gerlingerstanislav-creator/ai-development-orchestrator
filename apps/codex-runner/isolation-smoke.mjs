@@ -22,6 +22,8 @@ try{
   const assert=require('node:assert/strict');
   const fs=require('node:fs');
   const net=require('node:net');
+  assert.equal(process.env.ADO_AGENT_SESSION_TOKEN,undefined);
+  assert.equal(process.env.ADO_AGENT_API_URL,undefined);
   const [secret,other,gitConfig,agentSettings,scratch,port]=process.argv.slice(1);
   for(const path of [secret,other])assert.throws(()=>fs.readFileSync(path));
   for(const path of [gitConfig,agentSettings])assert.throws(()=>fs.writeFileSync(path,'changed'));
@@ -31,7 +33,7 @@ try{
   socket.on('connect',()=>{socket.destroy();process.exitCode=91;});
   socket.on('error',()=>{});
  `;
- const env={...runnerEnvironment(),HOME:homedir(),CODEX_HOME:auth};
+ const env={...runnerEnvironment(),HOME:homedir(),CODEX_HOME:auth,ADO_AGENT_SESSION_TOKEN:'a'.repeat(64),ADO_AGENT_API_URL:'http://api:3001/internal/agent-tools'};
  const child=spawn('codex',[...policy.sandboxArgs,'--','node','-e',probe,secret,otherFile,gitConfig,agentSettings,join(workdir,'scratch'),String(server.address().port)],{
   cwd:repo,env,stdio:['ignore','inherit','inherit'],timeout:15000
  });

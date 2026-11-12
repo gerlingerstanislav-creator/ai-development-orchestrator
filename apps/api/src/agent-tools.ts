@@ -78,23 +78,35 @@ export const agentToolCatalog=[
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
  tool('memory.record','Сохранить опыт либо предложить улучшение инструкции. Опыт не становится автоматически обязательным правилом.',{kind:field('string','observation или instruction_suggestion'),text:str,evidence:str,idempotency_key:idem},['kind','text'])
 ];
-export type AgentRole='manager'|'analyst'|'business_analyst';
+export const readerRoles=['manager','analyst','business_analyst','analysis','development','testing','documentation','devops'] as const;
+export type AgentRole=typeof readerRoles[number];
+export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;processId?:string;actorId?:string};
+
+const readerTools=new Set([
+ 'documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related',
+ 'tasks.read','processes.list'
+]);
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
-export function toolsForRole(role:AgentRole){
+export function toolsForRole(role:AgentRole,readOnly=false){
+ if(readOnly||!['manager','analyst','business_analyst'].includes(role))
+  return agentToolCatalog.filter(tool=>readerTools.has(tool.name));
  return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.')&&!t.name.startsWith('qa.'));
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);
 }
-export type AgentSession={id:string;project_id:string;actor_id:string;role:AgentRole;status:string;expires_at:Date};
+export type AgentSession={id:string;project_id:string;actor_id:string;role:AgentRole;status:string;expires_at:Date;read_only?:boolean;task_id?:string|null;process_id?:string|null};
 
 export async function initAgentToolsSchema(pool:Pick<Pool,'query'>){
  await pool.query([
  'CREATE TABLE IF NOT EXISTS agent_sessions(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,actor_id uuid NOT NULL REFERENCES users(id),role text NOT NULL,token_hash text NOT NULL UNIQUE,status text NOT NULL DEFAULT \'running\',expires_at timestamptz NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),finished_at timestamptz)',
+ 'ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS read_only boolean NOT NULL DEFAULT false',
+ 'ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS task_id uuid REFERENCES tasks(id) ON DELETE CASCADE',
+ 'ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS process_id uuid',
  'CREATE INDEX IF NOT EXISTS idx_agent_sessions_project ON agent_sessions(project_id,created_at DESC)',
  'CREATE TABLE IF NOT EXISTS agent_tool_events(id uuid PRIMARY KEY,session_id uuid NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,tool text NOT NULL,arguments jsonb NOT NULL DEFAULT \'{}\'::jsonb,result jsonb,success boolean NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),idempotency_key text)',
  'CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tool_idempotency ON agent_tool_events(project_id,tool,idempotency_key) WHERE idempotency_key IS NOT NULL AND success',
@@ -109,12 +121,26 @@ export async function createAgentSession(pool:Pick<Pool,'query'>,projectId:strin
   [id,projectId,actorId,role,hashSecret(secret)]);
  return {id,secret};
 }
+export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:AgentReaderScope){
+ const {projectId,role,taskId,processId,actorId}=scope;
+ const result=await pool.query(`SELECT COALESCE($2::uuid,p.owner_id) AS actor_id FROM projects p
+  WHERE p.id=$1 AND p.deleted_at IS NULL
+   AND ($2::uuid IS NULL OR p.owner_id=$2 OR EXISTS(SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=$2))
+   AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM tasks t WHERE t.project_id=p.id AND t.id=$3))`,
+ [projectId,actorId??null,taskId??null]);
+ if(!result.rowCount)return null;
+ const secret=randomBytes(32).toString('hex'),id=randomUUID();
+ await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
+  VALUES($1,$2,$3,$4,$5,now()+interval '40 minutes',true,$6,$7)`,
+ [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null]);
+ return {id,secret};
+}
 export async function finishAgentSession(pool:Pick<Pool,'query'>,id:string){
  await pool.query("UPDATE agent_sessions SET status='completed',finished_at=now() WHERE id=$1 AND status='running'",[id]);
 }
 export async function readAgentSession(pool:Pick<Pool,'query'>,secret:string):Promise<AgentSession|null>{
  if(!/^[0-9a-f]{64}$/.test(secret))return null;
- const r=await pool.query("SELECT id,project_id,actor_id,role,status,expires_at FROM agent_sessions WHERE token_hash=$1 AND status='running' AND expires_at>now()",[hashSecret(secret)]);
+ const r=await pool.query("SELECT id,project_id,actor_id,role,status,expires_at,read_only,task_id,process_id FROM agent_sessions WHERE token_hash=$1 AND status='running' AND expires_at>now()",[hashSecret(secret)]);
  return r.rows[0]||null;
 }
 export async function agentSessionEffects(pool:Pick<Pool,'query'>,id:string){
