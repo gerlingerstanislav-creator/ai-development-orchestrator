@@ -19,7 +19,7 @@ export function buildQaPrompt(job,{singlePass=false,adHoc=false,browserAvailable
   scope:job.repository+'; task '+job.taskId
  };
  const tools=[
-  'Репозиторий доступен для чтения, локального запуска тестов и работы с файлами без записи в GitHub.',
+  'Репозиторий доступен для чтения и запуска тестов без записи в GitHub. MCP orchestrator: tasks.read, knowledge.search/section, agents.consult, blockers.list/report/resolve.',
   'Справочник команд и ограничений: .ado-qa-tools.md — читай только нужные разделы.',
   'Запись подтверждений: node /opt/codex-runner/qa-exec.mjs case CASE_ID -- КОМАНДА.',
   browserAvailable
