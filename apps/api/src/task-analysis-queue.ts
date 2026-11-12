@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
 import {roleCapacity} from './project-team.js';
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 
 export async function initTaskAnalysisQueue(pool:Pool){
  await pool.query(`CREATE TABLE IF NOT EXISTS agent_analysis_runs (
@@ -34,12 +35,24 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
    }catch{/* Retry this run next tick, without blocking other projects. */ continue;}
   }
 
+  // Older code marked an otherwise ready analysis as waiting_questions when
+  // any technical consultation remained open. Those non-owner consultations
+  // still live in the task history; they no longer deadlock analysis.
+  await db.query(`UPDATE tasks t SET analysis_state='new',updated_at=now()
+   WHERE t.stage='analysis' AND t.analysis_state='waiting_questions'
+    AND t.type IN ('task','bug','improvement')
+    AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
+    AND COALESCE(jsonb_array_length(t.clarification_questions),0)=0
+    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id
+      AND n.project_id=t.project_id AND ${PENDING_OWNER_QUESTION_SQL})
+    AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))`);
+
   // Ready means the analyst finalized this task's requirements, independent of epic siblings.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'
     AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
-    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
+    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND ${PENDING_OWNER_QUESTION_SQL})
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
 
    ORDER BY t.priority,t.created_at LIMIT 10`);
@@ -47,7 +60,7 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
    const updated=await db.query(`UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now()
     WHERE id=$1 AND project_id=$2 AND stage='analysis' AND analysis_state='ready_for_development'
     AND coalesce(jsonb_array_length(clarification_questions),0)=0
-    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$1 AND n.kind='question' AND n.status IN ('open','processing'))
+    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$1 AND ${PENDING_OWNER_QUESTION_SQL})
     RETURNING id`,[t.id,t.project_id]);
    if(updated.rowCount){
     await db.query(`INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'stage_changed',$3)`,
@@ -66,7 +79,7 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='new'
     AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
-    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
+    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND ${PENDING_OWNER_QUESTION_SQL})
   ) ready ORDER BY project_position,priority,created_at,id LIMIT 100`);
   for(const t of candidates.rows){
    const capacity=await roleCapacity(pool,t.project_id,'analysis');
