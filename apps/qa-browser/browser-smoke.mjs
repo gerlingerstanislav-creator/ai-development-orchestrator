@@ -50,6 +50,10 @@ try{
  assert.equal(started.ok,true);
  assert.equal(started.path,'/lines.html','standalone HTML must be the actual opening page');
  assert.equal(started.browser,'Chromium / Playwright');
+ const inspected=await request('inspect',{selector:'.line'});
+ assert.equal(inspected.count,8,'QA can discover actual elements before proving them');
+ assert.equal(inspected.elements.length,8);
+ assert.ok(inspected.elements.every(el=>el.rect.width>0&&el.background),'inspection includes rendered geometry and computed colors');
  const count=await request('assert',{expression:'document.querySelectorAll(".line").length === 8'});
  assert.equal(count.assertion,'passed','real Chromium must evaluate the DOM');
  const colors=await request('assert',{expression:'new Set(Array.from(document.querySelectorAll(".line"),el=>getComputedStyle(el).backgroundColor)).size === 8'});
