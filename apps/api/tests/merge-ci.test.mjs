@@ -78,8 +78,8 @@ test('protected branches still fail closed when required CI rules cannot be read
  t.after(()=>{globalThis.fetch=original;});
  globalThis.fetch=async(url,opts)=>{
   const path=new URL(url).pathname;
-  if(path.endsWith('/branches/main'))return Response.json({name:'main',protected:true});
   if(path.includes('/rules/branches/main'))return new Response(null,{status:403});
+  if(path.endsWith('/branches/main'))return Response.json({name:'main',protected:true});
   assert.fail('Unexpected GitHub API call '+path);
  };
  await assert.rejects(requireMergeCi({...input,branch:'main'}),/Недостаточно прав GitHub для чтения обязательных проверок/);
