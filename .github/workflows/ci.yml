@@ -21,8 +21,9 @@ jobs:
       - run: npm run build
       - run: node --check apps/codex-runner/server.mjs && node --check apps/codex-runner/browser-gateway.mjs && node --check apps/codex-runner/browser-client.mjs && node --check apps/qa-browser/server.mjs && node --check apps/codex-runner/browser-smoke.mjs
       - run: node --test apps/codex-runner/agent-context.test.mjs apps/codex-runner/qa-preflight.test.mjs apps/codex-runner/qa-run-evidence.test.mjs apps/codex-runner/rate-limits.test.mjs
-      - run: node --test apps/api/tests/qa-report-message.test.mjs apps/api/tests/agent-prompt.test.mjs apps/api/tests/agent-mentions.test.mjs apps/api/tests/diagnostics.test.mjs apps/api/tests/cloud-diagnostics.test.mjs apps/api/tests/qa-regression-scope.test.mjs apps/api/tests/qa-waiver-runtime.test.mjs apps/api/tests/acceptance-criteria.test.mjs
+      - run: node --test apps/api/tests/qa-report-message.test.mjs apps/api/tests/agent-prompt.test.mjs apps/api/tests/agent-mentions.test.mjs apps/api/tests/diagnostics.test.mjs apps/api/tests/cloud-diagnostics.test.mjs apps/api/tests/qa-regression-scope.test.mjs apps/api/tests/qa-waiver-runtime.test.mjs apps/api/tests/acceptance-criteria.test.mjs apps/api/tests/quality-gates.test.mjs
   runner-isolation:
+    if: false # Retired in favor of sandboxed internal CI/QA; no Playwright image download.
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: local-ci-postgres
