@@ -959,6 +959,24 @@ export async function rejectTestedTask(args:{projectId:string;taskId:string;cycl
  const test=await pool.query('SELECT report FROM ai_test_runs WHERE id=$1',[testId]);
  const report=test.rows[0]?.report||{};
  const feedback=JSON.stringify(report).slice(0,10000);
+ const lastDeveloper=await pool.query(
+  "SELECT result_kind,result_commit FROM ai_task_runs WHERE cycle_id=$1 AND cycle_attempt=$2 AND project_id=$3 AND task_id=$4 ORDER BY created_at DESC LIMIT 1",
+  [cycleId,attempt,projectId,taskId]);
+ const unchanged=lastDeveloper.rows[0];
+ if(unchanged?.result_kind==='no_changes_needed'&&unchanged.result_commit&&unchanged.result_commit===report.commit){
+  // The developer has explicitly disputed the prior QA feedback without
+  // changing this SHA. Another identical automatic developer cycle will not
+  // resolve the contradiction: keep QA's failed verdict and ask PM to decide
+  // whether tests, requirements or implementation need attention.
+  const detail=('QA нашёл дефекты после подтверждения разработчиком отсутствия необходимых правок на SHA '+
+   report.commit+'. Повторная автоматическая разработка остановлена; ПМ должен разобрать расхождение с QA. '+feedback).slice(0,2400);
+  await pool.query("UPDATE tasks SET stage='testing',test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2",
+   [taskId,projectId,detail]);
+  await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'qa_dev_disagreement',$3)",
+   [randomUUID(),taskId,detail]);
+  await event(projectId,testId,'testing','needs_attention',detail,'warning');
+  return null;
+ }
  await pool.query("UPDATE tasks SET stage='development',test_feedback=$3,test_attempts=$4,updated_at=now() WHERE id=$1 AND project_id=$2",
   [taskId,projectId,feedback,attempt+1]);
  await pool.query('INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)',
