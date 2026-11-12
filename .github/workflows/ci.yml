@@ -59,6 +59,7 @@ jobs:
           node --test apps/api/tests/auth-routes.test.mjs
           node --test apps/api/tests/auth-service.test.mjs
           node --test apps/api/tests/codex-admin-api.test.mjs
+          node --test apps/api/tests/project-git-binding.test.mjs
           node --test apps/api/tests/project-agent-availability.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
           node --import tsx --test apps/web/tests/feature-boundaries.test.mjs
