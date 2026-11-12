@@ -612,6 +612,14 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
    await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,msg]);
    return {status:'failed',message:msg};
   }
+  const noChangeReview=status==='completed'&&!reusedBase?remote.reworkReview:null;
+  if(noChangeReview){
+   const sha=String(noChangeReview.commit||'');
+   if(!/^[a-f0-9]{40}$/i.test(sha)||String(noChangeReview.summary||'').trim().length<40||
+    !Array.isArray(noChangeReview.files)||!noChangeReview.files.length||
+    !Array.isArray(noChangeReview.reasons)||!noChangeReview.reasons.length||!remote.prUrl)
+    return failRunnerRun('development',projectId,runId,'Разработчик не объяснил, почему по замечаниям QA нет необходимости менять код');
+  }
   if(status==='completed'&&reusedBase){
    const proof=remote.implementationEvidence,sha=String(remote.verifiedCommit||'');
    if(!/^[a-f0-9]{40}$/i.test(sha)||proof?.commit!==sha||!Array.isArray(proof?.files)||!proof.files.length||!Array.isArray(proof?.criteria)||!proof.criteria.length){
@@ -635,14 +643,21 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   }
   if(status==='completed'){
     await recordAgentLearning(pool,{projectId,role:'development',runId,body:remote.learningSuggestion,evidence:'Запуск разработки '+runId+'; '+String(remote.prUrl||'')});
-   if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'development',authorName:'AI-разработчик',targetStage:'all',kind:'handoff',body:String(remote.handoffNote),sourceKey:'developer:'+runId,sourceRunId:runId});
+   if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{
+    projectId,taskId,authorStage:'development',authorName:'AI-разработчик',
+    targetStage:noChangeReview?'testing':'all',kind:noChangeReview?'resolution':'handoff',
+    body:String(remote.handoffNote),sourceKey:'developer:'+runId,sourceRunId:runId
+   });
   }
   const db=await pool.connect();
   try{
    await db.query('BEGIN');
-   const saved=await db.query(`UPDATE ai_task_runs SET status=$2,message=$3,branch=$4,pr_url=$5,completed_at=now()
+   const saved=await db.query(`UPDATE ai_task_runs SET status=$2,message=$3,branch=$4,pr_url=$5,completed_at=now(),
+     result_kind=$6,result_commit=$7
     WHERE id=$1 AND status IN ('queued','running') RETURNING id`,
-   [runId,status,message,remote.branch||null,remote.prUrl||null]);
+   [runId,status,message,remote.branch||null,remote.prUrl||null,
+    noChangeReview?'no_changes_needed':reusedBase?'already_implemented':status==='completed'?'code_changed':null,
+    noChangeReview?.commit||remote.verifiedCommit||null]);
    if(!saved.rowCount){
     await db.query('ROLLBACK');
     return {status:'failed',message:'Попытка уже завершена или отменена'};
@@ -660,6 +675,11 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
      [taskId,remote.branch||taskId,remote.prUrl,match?Number(match[1]):null,remote.baseBranch||null,projectId]);
     await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,NULL,'pr_created',$3)",
      [randomUUID(),taskId,'Рабочая ветка '+(remote.branch||taskId)+' · PR: '+String(remote.prUrl||'')]);
+    if(noChangeReview)await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,NULL,'developer_no_changes',$3)",
+     [randomUUID(),taskId,('Разработчик не менял код и вернул задачу на QA для повторной проверки на SHA '+noChangeReview.commit+
+      '. Комментарий: '+noChangeReview.summary+'; обоснование: '+noChangeReview.reasons.join('; ')+
+      '; файлы: '+noChangeReview.files.join(', ')+'; PR: '+String(remote.prUrl)).slice(0,2800)]);
+
    }
    await db.query('COMMIT');
   }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
