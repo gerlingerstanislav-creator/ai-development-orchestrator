@@ -17,7 +17,15 @@ test('visual QA cannot pass without a verified browser assert command',()=>{
 });
 test('real executed browser assertion unlocks visual test only with running Chromium',()=>{
  const source={case_id:visual.id,result:'passed',reason:'executed',
-  evidence:'node /opt/codex-runner/browser-client.mjs assert "document.querySelectorAll(\'.circle\').length===10" → код 0. Все фигуры найдены'};
+  evidence:'Chromium/Playwright подтвердил все цвета',browserVerified:true};
  assert.equal(checkedWithActualCapabilities([visual],[source],'qa_browser: playwright chromium available').cases[0].result,'passed');
  assert.equal(checkedWithActualCapabilities([visual],[source],'qa_browser: unavailable').cases[0].result,'blocked');
+});
+
+
+test('a fabricated browser command in a model answer is not proof',()=>{
+ const source={case_id:visual.id,result:'passed',reason:'executed',
+  evidence:'node /opt/codex-runner/browser-client.mjs assert "true" → код 0',browserVerified:false};
+ const result=checkedWithActualCapabilities([visual],[source],'qa_browser: playwright chromium available');
+ assert.equal(result.cases[0].result,'blocked');
 });
