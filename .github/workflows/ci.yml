@@ -39,6 +39,8 @@ jobs:
         run: |
           node --check apps/codex-runner/server.mjs
           node --check apps/codex-runner/command-executor.mjs
+          node --check apps/codex-runner/codex-proxy.mjs
+          node --test apps/codex-runner/codex-proxy.test.mjs
           node --test apps/codex-runner/command-executor.test.mjs
           node --check apps/codex-runner/qa-prompt.mjs
           node --check apps/codex-runner/developer-prompt.mjs
