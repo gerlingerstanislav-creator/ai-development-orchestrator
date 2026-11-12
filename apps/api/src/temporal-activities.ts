@@ -199,9 +199,14 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
  if(!active.rowCount)return;
  const {project_id:projectId,task_id:taskId}=run;
  try{
-  const [record,history]=await Promise.all([
+  const [record,history,ownerEvidence]=await Promise.all([
    pool.query("SELECT id,project_id,title,description,stage,analysis_state,clarification_questions,spec_review_status,spec_version,iteration_work_kind FROM tasks WHERE project_id=$1 AND id=$2",[projectId,taskId]),
-   taskHandoffContext(projectId,taskId,'analysis')
+   taskHandoffContext(projectId,taskId,'analysis'),
+   pool.query(`SELECT kind,body,answer,answer_author FROM task_agent_notes
+    WHERE project_id=$1 AND task_id=$2 AND
+     ((kind='resolution' AND source_key LIKE 'owner-answer:%') OR
+      (kind='question' AND status='answered' AND answer IS NOT NULL))
+    ORDER BY created_at DESC LIMIT 10`,[projectId,taskId])
   ]);
   const task=record.rows[0];
   if(!task||task.stage!=='analysis'||task.spec_version!==run.spec_version||task.analysis_state!=='processing'){
@@ -219,7 +224,9 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
-   'Ключевые ответы и замечания: '+history.slice(-1200)
+   'Ключевые ответы и замечания: '+history.slice(-1500),
+   'ПОДТВЕРЖДЁННЫЕ ОТВЕТЫ ВЛАДЕЛЬЦА ИЗ КАРТОЧКИ (используй их в первую очередь; не спрашивай повторно): '+JSON.stringify(ownerEvidence.rows.reverse().map((r:{kind:string;body:string;answer:string|null;answer_author:string|null})=>({question:r.kind==='question'?r.body:null,answer:r.answer||r.body,source:r.answer_author||'Владелец'}))).slice(0,3200),
+   'Если сохранённый ответ относится к ранее заданному вопросу, проверь, достаточно ли его для выполнения. При полноте ответов верни ready; при реальной неоднозначности задай только недостающий вопрос.'
   ].join('\n\n');
   const output=parseTaskAnalysisResult(await assistantCompletion(prompt,projectId,taskId,'task_analysis',runId));
   if(output.outcome==='ready'&&output.questions.length)throw Error('Аналитик завершил задачу с неразрешёнными вопросами');
