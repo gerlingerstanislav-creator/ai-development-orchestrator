@@ -16,3 +16,12 @@ test('does not add invented criteria when none were specified',()=>{
  const description='Сделай страницу с десятью кругами';
  assert.equal(preserveAcceptanceCriteria(description,description),description);
 });
+
+test('adds omitted acceptance criterion inside the existing section instead of duplicating the heading',()=>{
+ const original='### Критерии приёмки\n- На странице должно быть 10 кругов\n- Все круги разного цвета';
+ const refined='### Критерии приёмки\n- На странице должно быть 10 кругов\n\n### Реализация\nСоздать HTML';
+ const restored=preserveAcceptanceCriteria(original,refined);
+ assert.equal((restored.match(/### Критерии приёмки/g)||[]).length,1);
+ assert.deepEqual(acceptanceCriteria(restored),['На странице должно быть 10 кругов','Все круги разного цвета']);
+ assert.match(restored,/### Реализация/);
+});
