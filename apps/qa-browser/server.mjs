@@ -129,8 +129,8 @@ async function run(s,body){
   const expression=String(body.expression||'').trim();
   if(!expression||expression.length>3000)throw Error('Invalid browser assertion');
   const value=await page.evaluate(expression);
-  if(value!==true)return {ok:false,assertion:'failed',actual:value===undefined?'undefined':JSON.stringify(value).slice(0,1000)};
-  return {ok:true,assertion:'passed',expression:expression.slice(0,300)};
+  if(value!==true)return {ok:false,assertion:'failed',actual:value===undefined?'undefined':JSON.stringify(value).slice(0,1000),viewport:page.viewportSize()};
+  return {ok:true,assertion:'passed',expression:expression.slice(0,300),viewport:page.viewportSize()};
  }
  throw Error('Unsupported QA browser action');
 }

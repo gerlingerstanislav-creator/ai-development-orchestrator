@@ -5,6 +5,7 @@ import { createHash,randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import {taskNotesContext} from './task-agent-notes.js';
 
+const QA_PLAN_REVISION=2; // Regenerate stale AI plans with unsupported visual constraints.
 const generated=z.object({
  summary:z.string().trim().min(10).max(3000),
  flows:z.array(z.object({
@@ -22,7 +23,8 @@ const generated=z.object({
   steps:z.array(z.object({action:z.string().trim().min(3).max(1200),expected:z.string().trim().min(3).max(1200)})).min(1).max(20),
   priority:z.enum(['critical','high','normal','low']),
   category:z.enum(['smoke','regression','functional']),
-  execution_mode:z.enum(['automated','manual','hybrid'])
+  execution_mode:z.enum(['automated','manual','hybrid']),
+  requirement_quote:z.string().trim().max(500).optional()
  })).min(1).max(12),
  regression_case_ids:z.array(z.string().uuid()).max(20).default([])
 });
@@ -65,7 +67,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  const row=task.rows[0];
  const rulesText=rules.rows.map((r:any)=>r.body).join('\n').slice(0,9000);
  const instructions=String(stage.rows[0]?.agent_instructions||'').slice(0,7000);
- const hash=createHash('sha256').update(JSON.stringify({title:row.title,description:row.description,spec_version:row.spec_version,rulesText,instructions})).digest('hex');
+ const hash=createHash('sha256').update(JSON.stringify({title:row.title,description:row.description,spec_version:row.spec_version,rulesText,instructions,qaPlanRevision:QA_PLAN_REVISION})).digest('hex');
  const plan=await pool.query('SELECT id,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
  if(plan.rowCount&&plan.rows[0].spec_hash===hash){
   const count=await pool.query("SELECT count(*)::int AS count FROM qa_plan_cases p JOIN qa_test_cases c ON c.id=p.case_id WHERE p.plan_id=$1 AND c.project_id=$2 AND c.status='active' AND (p.purpose='targeted' OR "+qaRegressionScope('c',2,3)+")",[plan.rows[0].id,projectId,taskId]);
@@ -73,7 +75,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  }
  const prompt=composeAgentPrompt({
   role:String(stage.rows[0]?.agent_name||'Независимый QA-инженер'),
-  objective:'Подготовь 1–6 сценариев и 1–12 конкретных тест-кейсов по актуальному ТЗ. Каждый критерий приёмки из ТЗ должен быть проверен одним или несколькими тест-кейсами с конкретными проверяемыми ожидаемыми результатами. Не подгоняй ожидаемые результаты под код.\nЗадача: '+row.title+'\n'+String(row.description||'').slice(0,8500),
+  objective:'Подготовь 1–6 сценариев и 1–12 конкретных тест-кейсов по актуальному ТЗ. Каждый критерий приёмки из ТЗ должен быть проверен конкретным ожидаемым результатом. Для каждого кейса укажи requirement_quote — ДОСЛОВНЫЙ фрагмент описания задачи, на котором основан кейс. Не придумывай обязательные макеты, координаты, разрешения или брейкпоинты, если их нет в источниках. Для общей адаптивности проверяй отсутствие переполнения, видимость и композицию на разумных типовых viewport; это тестовые данные, а не новые требования. Если точное расположение не утверждено, не делай сравнение с несуществующим макетом обязательным критерием. Не подгоняй ожидаемые результаты под код.\nЗадача: '+row.title+'\n'+String(row.description||'').slice(0,8500),
   instructions:instructions.slice(0,1600),
   scope:'Проект '+projectId+', задача '+taskId+', версия ТЗ '+row.spec_version,
   tools:'Это составление тест-плана, а не выполнение тестов. Не утверждай, что тесты запускались.',
@@ -85,9 +87,15 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
    'Связанные требования: '+JSON.stringify(docs.rows.map((d:any)=>({title:d.title,body:String(d.body).slice(0,480)}))).slice(0,1100),
    'Существующие регрессионные кейсы для выбора: '+JSON.stringify(existing.rows.map((x:any)=>({id:x.id,title:x.title,category:x.category}))).slice(0,1800)
   ].join('\n'),
-  output:'Верни строго JSON: {"summary":"...","flows":[{"title":"...","description":"...","preconditions":"...","steps":["..."]}],"cases":[{"title":"...","area":"...","flow_title":"...","description":"...","preconditions":"...","steps":[{"action":"...","expected":"..."}],"priority":"critical|high|normal|low","category":"smoke|regression|functional","execution_mode":"automated|manual|hybrid"}],"regression_case_ids":["uuid"]}. Включи позитивные, негативные и крайние случаи.'
+  output:'Верни строго JSON: {"summary":"...","flows":[{"title":"...","description":"...","preconditions":"...","steps":["..."]}],"cases":[{"title":"...","area":"...","flow_title":"...","description":"...","preconditions":"...","steps":[{"action":"...","expected":"..."}],"priority":"critical|high|normal|low","category":"smoke|regression|functional","execution_mode":"automated|manual|hybrid","requirement_quote":"дословная цитата из текста задачи"}],"regression_case_ids":["uuid"]}. Включи позитивные, негативные и крайние случаи.'
  });
- const produced=parseResponse(await ask(prompt));
+ let produced=parseResponse(await ask(prompt));
+ const unsupported=(cases:typeof produced.cases)=>cases.filter(item=>!item.requirement_quote||!row.description.includes(item.requirement_quote));
+ if(unsupported(produced.cases).length){
+  const correction='Исправь тест-план: requirement_quote должен быть ДОСЛОВНОЙ цитатой из задачи. Убери выдуманные макеты, точные координаты и обязательные размеры. Верни ту же JSON-схему. Описание: '+row.description.slice(0,8500)+'\nПлан: '+JSON.stringify(produced).slice(0,12500);
+  produced=parseResponse(await ask(correction));
+  if(unsupported(produced.cases).length)throw Error('QA-план содержит неподтверждённые требования');
+ }
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
@@ -123,8 +131,12 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
    const stableId=stored.rows[0].id;
    // Existing manually maintained cases are not silently rewritten to match newly generated expectations.
    if(stableId!==caseId&&JSON.stringify(stored.rows[0].steps)!==JSON.stringify(candidate.steps)){
-    await client.query("UPDATE qa_test_cases SET status='needs_review' WHERE id=$1",[stableId]);
-    // Preserve previous expectations; the needs_review case blocks development until a human reconciles it.
+    // Automatically generated cases can be refreshed, human edits cannot.
+    const managed=await client.query("SELECT 1 FROM qa_test_cases c WHERE c.id=$1 AND c.source_task_id=$2 AND NOT EXISTS (SELECT 1 FROM qa_case_versions v WHERE v.case_id=c.id)",[stableId,taskId]);
+    if(managed.rowCount){
+     await client.query("UPDATE qa_test_cases SET flow_id=$2,area=$3,description=$4,preconditions=$5,steps=$6,priority=$7,category=$8,execution_mode=$9,status='active',updated_at=now() WHERE id=$1",
+      [stableId,flowId,candidate.area,candidate.description,candidate.preconditions,JSON.stringify(candidate.steps),candidate.priority,candidate.category,candidate.execution_mode]);
+    }else await client.query("UPDATE qa_test_cases SET status='needs_review' WHERE id=$1",[stableId]);
    }
    selected.add(stableId);
    await client.query("INSERT INTO qa_plan_cases(plan_id,case_id,purpose) VALUES($1,$2,'targeted') ON CONFLICT DO NOTHING",[planId,stableId]);

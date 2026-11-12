@@ -8,11 +8,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
-import {startQaBrowserGateway,openQaBrowserSession,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
+import {startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
-import {qaBaselineCommands,readQaCommands,verifyQaExecution} from './qa-run-evidence.mjs';
+import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from './qa-run-evidence.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext} from './agent-context.mjs';
@@ -480,7 +480,7 @@ async function runTestJob(job,state,context){
   const browserAvailable=await browserHealth();
   const capabilities=(probe.stdout.trim()+'\nqa_browser: '+(browserAvailable?'playwright chromium available':'unavailable')).slice(0,2500);
   if(browserAvailable){
-   const browserSession=openQaBrowserSession(job.id);
+   const browserSession=openQaBrowserSession(job.id,(job.testPlan?.cases||[]).map(test=>test.id),{adHoc});
    await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
   }
   state.capabilities=capabilities;
@@ -514,8 +514,8 @@ async function runTestJob(job,state,context){
    'Если проект не требует зависимостей, не объявляй его непроверяемым только из-за отсутствия node_modules.',
    baseline.length?'Runner уже запустил стандартные проверки в изоляции. Используй их результаты, если они проверяют нужное поведение. Если команда не прошла из-за зависимостей, подготовь среду и повтори. Сам определи, указывает ли её вывод на дефект или ограничение среды. Фактический результат: '+JSON.stringify(baseline):'',
    singlePass?'Сначала запусти доступную проверку проекта. Для Python используй python3 -m pytest, если в проекте есть тесты. Для Node запусти имеющийся скрипт тестов, установив зависимости при необходимости. Если готовых тестов для требования нет, выполни конкретную проверку с утверждением об ожидаемом результате, например вызови функцию или локальный API с тестовыми данными.': '',
-   'В каждом выполненном checks и caseResults укажи в поле command точный текст одной команды, которую ты действительно запускал и которая проверяет это утверждение. Укажи пустую строку для недоступной проверки. Успеху соответствует код 0, провалу — ненулевой код. Чтение файлов, просмотр diff и установка зависимостей не считаются тестами.',
-   'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run.',
+   'Для каждой проверки используй подтверждаемую команду с ID теста: node /opt/codex-runner/qa-exec.mjs case CASE_ID -- node --test ... (или другую конкретную команду). Для дополнительных проверок: node /opt/codex-runner/qa-exec.mjs check CHECK_ID -- npm test, а тот же CHECK_ID верни в поле checks[].evidenceId. Программа сама записывает код выхода и результат; не выдумывай результаты. Для blocked/not_run команду не запускай и оставь command и evidenceId пустыми. В поле command можешь вернуть запускаемую команду, но Runner сверяет ID с реальным протоколом исполнения.',
+   'По каждому case_id дай отдельный verdict только по реальным доказательствам проверки; отсутствие возможности исполнения = blocked/not_run. Не требуй дополнительных макетов, точных брейкпоинтов или геометрии, если их нет в утверждённых требованиях. Если задача прямо требует следования конкретному макету, а ссылка/правила действительно отсутствуют, назови это пробелом в требованиях, но не объявляй имеющийся браузер недоступным. Приоритет — проверить все однозначные критерии.',
    'Не утверждай, что пользовательский путь, браузерное действие или ручная проверка выполнены без реального инструмента и воспроизведения.',
    (adHoc?'Для каждого выбранного сценария':'Для КАЖДОГО case_id из плана')+' верни result, evidence и reason. reason для passed/failed = executed; для недоступных сценариев = tool_unavailable|environment_unavailable|manual_only. Если настоящая причина не установлена, reason = unknown (слияние без проверки нельзя рекомендовать).',
    'Для недоступного сценария evidence должно назвать отсутствующий инструмент или среду, конкретную проверку, которая не запускалась, и почему. Не заменяй это общими фразами.',
@@ -527,7 +527,7 @@ async function runTestJob(job,state,context){
    'Проверяй текущий PR и ранее слитую регрессию. Не требуй уже готового бота, прогноза или пользовательского пути от отдельного Python-модуля, если они реализуются другими незавершёнными задачами.',
    'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
    'ВАЖНО: сетевой proxy Codex сбрасывает NO_PROXY для каждой sandbox-команды. Если Node.js fetch, Playwright или тесты обращаются к локальному HTTP-серверу, запускай клиентскую команду с явными NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 (например: env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test). Это исключает только localhost из прокси; произвольные внешние хосты по-прежнему запрещены.',
-   browserAvailable?'Playwright Chromium ДОСТУПЕН через отдельный защищённый контейнер. Для браузерных проверок запускай node /opt/codex-runner/browser-client.mjs start, затем goto /, count CSS_SELECTOR, assert "JS boolean expression", viewport 390 844, screenshot. Можно выполнять клики через click CSS_SELECTOR, ввод через fill CSS_SELECTOR VALUE. Каждая команда выводит JSON и завершается кодом 1 при ошибке; используй реальные результаты как доказательство, указав точную команду в caseResults. После установки зависимостей или сборки повтори start. Браузер не имеет доступа к интернету или Docker. Не считай скриншот доказательством конкретного критерия без проверяемого утверждения.':'Браузерный сервис недоступен — браузерные кейсы должны получить blocked/tool_unavailable; не устанавливай Chromium в sandbox.',
+   browserAvailable?'Playwright Chromium ДОСТУПЕН через отдельный защищённый контейнер. Запусти node /opt/codex-runner/browser-client.mjs start, затем для КАЖДОГО проверяемого визуального тест-кейса выполни node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "выражение JS, возвращающее true при выполнении ожидаемого результата". CASE_ID должен ТОЧНО совпадать с case_id из .ado-qa-plan.json. Допустимы дополнительные assert для одного кейса, viewport WIDTH HEIGHT, goto /, click CSS_SELECTOR, fill CSS_SELECTOR VALUE, screenshot. Для дополнительных проверок применяй assert --check CHECK_ID и указывай evidenceId=CHECK_ID в checks. Браузерное подтверждение автоматически сохраняется на стороне Runner и не зависит от текста command. Для отзывчивой вёрстки используй типовые мобильные и десктопные viewport; если в ТЗ нет конкретных размеров, НЕ объявляй их отсутствие нехваткой инструмента или блокером, проверяй отсутствие выхода элементов за границы экрана на репрезентативных ширинах. Отсутствие утверждённого макета само по себе не делает функциональные критерии непроверяемыми: не выдумывай требования о точном расположении. После установки зависимостей или сборки повтори start. Браузер не имеет доступа к интернету или Docker. Не засчитывай скриншот без проверяемого утверждения.':'Браузерный сервис недоступен — браузерные кейсы должны получить blocked/tool_unavailable; не устанавливай Chromium в sandbox.',
    'Тестовая среда не имеет доступа к Docker-сокету, секретам приложения, внутренним сервисам платформы или произвольному интернету. Все команды выполняются в изоляции.',
    'Сбой Codex CLI — не доказательство отсутствия инструментов и не основание автоматически разрешать пропуск проверок.',
    'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
@@ -556,7 +556,7 @@ async function runTestJob(job,state,context){
      learningSuggestion:{type:'string'},
     findings:{type:'array',items:{type:'object',additionalProperties:false,required:['severity','description','steps','expected','actual'],properties:{
      severity:{type:'string',enum:['critical','major','minor']},description:{type:'string'},steps:{type:'string'},expected:{type:'string'},actual:{type:'string'}}}},
-    checks:{type:'array',items:{type:'object',additionalProperties:false,required:['name','result','details',...Object.keys(commandField)],properties:{...commandField,
+    checks:{type:'array',items:{type:'object',additionalProperties:false,required:['name','result','details','evidenceId',...Object.keys(commandField)],properties:{evidenceId:{type:'string'},...commandField,
      name:{type:'string'},result:{type:'string',enum:['passed','failed','not_run']},details:{type:'string'}}}},
     caseResults:{type:'array',items:{type:'object',additionalProperties:false,required:['case_id','result','reason','evidence',...Object.keys(commandField),...Object.keys(titleField)],properties:{...commandField,...titleField,
      case_id:{type:'string'},result:{type:'string',enum:['passed','failed','blocked','not_run']},
@@ -594,7 +594,7 @@ async function runTestJob(job,state,context){
   });
   let parsed=codexJsonResult(firstRun.stdout);
   state.usage=parsed.usage;
-  let report;
+  let report,correctionOutput='';
   try{report=verifyReport(parsed.message||'');}
   catch(error){
    state.message='AI-тестировщик завершил проверки, но отчёт некорректен. Повторное форматирование отчёта';
@@ -612,12 +612,16 @@ async function runTestJob(job,state,context){
    const second=await command('codex',[...args,correction],{
     cwd:dir,env:cliEnv,timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000,jobId:job.id
    });
+   correctionOutput=second.stdout;
    const corrected=codexJsonResult(second.stdout);
    state.usage=addUsage(state.usage,corrected.usage);
    report=verifyReport(corrected.message||'');
   }
   assertJobActive(job.id);
-  report=verifyQaExecution(report,[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout)],baseline);
+  const executedCommands=[...baseline.filter(c=>Number.isInteger(c.exitCode)),...readQaCommands(firstRun.stdout),...readQaCommands(correctionOutput)];
+  const receiptText=await readFile(join(dir,'.ado-qa-executions.jsonl'),'utf8').catch(()=>'');
+  const receipts=readQaReceipts(receiptText.slice(0,250000),executedCommands);
+  report=verifyQaExecution(report,executedCommands,baseline,{receipts,browserEvidence:getQaBrowserEvidence(job.id)});
   state.executionVerified=true;
   if(adHoc)state.cases=report.cases;
   state.verdict=report.verdict;

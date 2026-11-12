@@ -609,7 +609,9 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  if(!existing.rowCount){
   const storedPlan=await readQaPlan(pool,projectId,taskId);
-  const testPlan=storedPlan?.cases.length&&storedPlan.spec_version===task.spec_version?storedPlan:null;
+  // Single-pass QA designs and verifies cases directly from the current approved task.
+  // Do not reuse previously generated plans that may contain invented visual constraints.
+  const testPlan=!args.singlePass&&storedPlan?.cases.length&&storedPlan.spec_version===task.spec_version?storedPlan:null;
   if(!args.singlePass&&!testPlan)throw ApplicationFailure.nonRetryable('QA-план устарел относительно актуальной версии ТЗ');
   if(!args.simplified){
    const stale=await pool.query("SELECT count(*)::int AS total FROM qa_plan_cases pc JOIN qa_test_cases c ON c.id=pc.case_id JOIN qa_test_plans p ON p.id=pc.plan_id WHERE p.project_id=$1 AND p.task_id=$2 AND c.status<>'active'",[projectId,taskId]);
@@ -707,26 +709,26 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
    ? [...new Map((expected?.success?expected.data:[]).map(item=>[item.id,item])).values()]
    : Array.isArray(snapshot?.cases)?snapshot.cases:[];
   const provided=Array.isArray(remote.caseResults)?remote.caseResults:[];
-  const providedMap=new Map<string,{result:string;evidence:string;reason:string}>();
+  const providedMap=new Map<string,{result:string;evidence:string;reason:string;browserVerified:boolean}>();
   for(const item of provided){
    if(typeof item?.case_id==='string'&&typeof item?.result==='string'&&['passed','failed','blocked','not_run'].includes(item.result)){
     const evidence=String(item.evidence||'').slice(0,3000).trim();
     const reason=String(item.reason||'unknown').slice(0,60);
-    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason});
+    providedMap.set(item.case_id,{result:item.result==='passed'&&evidence.length<10?'blocked':item.result,evidence,reason,browserVerified:item.browserVerified===true});
    }
   }
   const supplied=cases.map(c=>{
    const candidate=providedMap.get(c.id);
-   return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата'};
+   return {case_id:c.id,result:candidate?.result||'not_run',reason:candidate?.reason||'unknown',evidence:candidate?.evidence||'Нет подтверждённого результата',browserVerified:candidate?.browserVerified===true};
   });
   const {cases:checked,visualToolGap}=checkedWithActualCapabilities(cases,supplied,String(remote.capabilities||''));
   let verdict=status==='failed'?'blocked':String(remote.verdict||'blocked');
   const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
   const staleSpecification=!currentSpec.rowCount||currentSpec.rows[0].spec_version!==row.rows[0].qa_spec_version||currentSpec.rows[0].spec_review_status!=='current'||currentSpec.rows[0].spec_reviewed_version!==currentSpec.rows[0].spec_version||
    (row.rows[0].qa_plan_snapshot?.simplified===true&&remote.testedCommit!==currentSpec.rows[0].spec_reviewed_commit);
-  if(!cases.length||!remote.testedCommit||!Array.isArray(remote.checks)||!remote.checks.length)verdict='blocked';
+  if(!cases.length||!remote.testedCommit||!Array.isArray(remote.checks))verdict='blocked';
   if(checked.some(c=>c.result==='failed')||(Array.isArray(remote.checks)&&remote.checks.some((c:any)=>c.result==='failed'))||(Array.isArray(remote.findings)&&remote.findings.length>0))verdict='failed';
-  else if((checked.some(c=>c.result!=='passed')||visualToolGap||snapshot?.singlePass===true&&!remote.checks?.some((c:any)=>c.result==='passed'))&&verdict==='passed')verdict='blocked';
+  else if((checked.some(c=>c.result!=='passed')||visualToolGap||snapshot?.singlePass===true&&!remote.executionVerified)&&verdict==='passed')verdict='blocked';
   // A changed specification invalidates the entire run even if old cases failed.
   if(staleSpecification)verdict='blocked';
   const ran=checked.filter(c=>c.result==='passed'||c.result==='failed').length;
