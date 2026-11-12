@@ -51,6 +51,7 @@ export function completedQaSummary(report,{retriedIds=[]}={}){
  const missing=(report.caseResults||[]).filter(item=>['blocked','not_run'].includes(item.result));
  return 'Проверено '+verified+' из '+total+' тест-кейсов.'+
   (retriedIds.length?' Дополнительная адресная проверка: '+retriedIds.join(', ')+'.':'')+
-  (missing.length?' Не подтверждено: '+missing.map(item=>item.case_id).join(', ')+'.':' Все критерии подтверждены.')+
-  ' '+String(report.summary||'').slice(0,1600);
+  (missing.length?' Не подтверждено: '+missing.map(item=>item.case_id).join(', ')+
+   '. Первичный отчёт: '+String(report.summary||'').slice(0,1300)
+   :' Все критерии подтверждены фактическими проверками.');
 }
