@@ -69,7 +69,7 @@ export function assembleAgentPrompt(input){
   throw Error('Prompt requires identity and objective');
  const max=Math.min(32000,Math.max(2500,Number(input.budget)||16000));
  const raw={...input,policy:platformPolicy+(normalize(input.policy)?' '+normalize(input.policy):'')};
- const protectedNames=new Set(['identity','objective','policy','output']);
+ const protectedNames=new Set(['identity','objective','policy','tools','protocol','output']);
  const prepared=new Map();
  const seen=new Set();
  for(const zone of PROMPT_ZONE_ORDER){
@@ -115,7 +115,7 @@ export function assembleAgentPrompt(input){
  }
  // Fixed ownership-based priority: data/context is reduced first; the model
  // never loses the current objective, machine output format or guardrails.
- const shrinking=['context','runtime','identity','scope','tools','protocol'];
+ const shrinking=['context','runtime','scope'];
  for(const zone of shrinking){
   if(render().length<=max)break;
   const value=prepared.get(zone);
