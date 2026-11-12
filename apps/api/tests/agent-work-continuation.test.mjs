@@ -12,10 +12,10 @@ test('only PM can mutate workflow, cancel work or rerun QA; specialists have sco
   assert.ok(!reader.includes('workflow.move_task'));
   assert.ok(!reader.includes('tasks.cancel'));
  }
- for(const op of ['workflow.move_task','tasks.cancel','tasks.delete','qa.retry','workflow.release_task'])
+ for(const op of ['workflow.move_task','tasks.cancel','tasks.close','tasks.delete','qa.retry','workflow.release_task'])
   assert.equal(toolAllowedForRole('manager',op),true,op);
  for(const role of ['analyst','business_analyst','analysis','development','testing','documentation','devops']){
-  for(const op of ['workflow.move_task','tasks.cancel','tasks.delete','qa.retry','workflow.release_task'])
+  for(const op of ['workflow.move_task','tasks.cancel','tasks.close','tasks.delete','qa.retry','workflow.release_task'])
    assert.equal(toolAllowedForRole(role,op),false,role+' must not own '+op);
  }
  for(const role of ['analysis','development','testing','documentation','devops'])
