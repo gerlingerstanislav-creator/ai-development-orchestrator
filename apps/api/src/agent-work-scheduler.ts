@@ -206,6 +206,10 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
     AND (NULLIF(t.test_feedback,'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id))
     AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners o WHERE o.task_id=t.id AND o.state='active')
     AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status IN ('queued','running'))
+    -- A failed rework attempt needs fresh task feedback or an explicit
+    -- user retry. Do not flood Temporal with the same failing job forever.
+    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status='failed'
+      AND r.created_at >= t.updated_at)
     AND NOT EXISTS(SELECT 1 FROM iteration_execution_queue q WHERE q.project_id=t.project_id AND q.task_id=t.id AND q.status IN ('queued','dispatching'))
    ORDER BY t.priority,t.created_at LIMIT 25
    ON CONFLICT(project_id,task_id) DO UPDATE SET iteration_id=EXCLUDED.iteration_id,requested_by=EXCLUDED.requested_by,
