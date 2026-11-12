@@ -1,3 +1,4 @@
+import {registerCodexAdminRoutes} from './modules/codex/api.js';
 import {registerAuthRoutes} from './modules/auth/api.js';
 import {issueAccessToken} from './modules/auth/application/tokens.js';
 import {applyLegacySchema,pauseAllProjectAgents,ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
@@ -121,68 +122,8 @@ async function access(req:any,reply:any,projectId:string) {
 app.get('/api/health',async()=>({ok:true}));
 registerChatImageRoutes(app,{pool,access});
 registerDiagnosticRoutes(app,{pool,access});
-// Codex uses a personal ChatGPT entitlement. Keep access restricted to the bootstrap administrator.
-app.addHook('preHandler',async(req,reply)=>{
- if(!req.url.startsWith('/api/codex/'))return;
- const email=(await pool.query('SELECT email FROM users WHERE id=$1',[(req as any).userId])).rows[0]?.email;
- if(!email || email!==configuredAdminEmail())return reply.code(403).send({error:'Только администратор может подключать Codex'});
-});
-// Local-only Codex runner. The service is not exposed on a host port.
-// Requests reach it only after the ordinary application session check.
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
-async function codexCall(path:string,method:'GET'|'POST'='GET') {
- const response=await fetch(codexUrl+path,{method,headers:{'X-Runner-Secret':runnerKey},signal:AbortSignal.timeout(path==='/test'?125000:15000)});
- const body=await response.json().catch(()=>({error:'Некорректный ответ Codex'}));
- if(!response.ok)throw Error(body.error||'Codex недоступен');
- return body;
-}
-app.get('/api/codex/rate-limits',async(req:any,reply)=>{
- if(!await requireAdmin(req,reply))return;
- const started=Date.now();
- const force=req.query?.refresh==='1';
- try{
-  const response=await fetch(codexUrl+'/usage-limits'+(force?'?refresh=1':''),{
-   headers:{'X-Runner-Secret':runnerKey},signal:AbortSignal.timeout(25000)
-  });
-  const body=await response.json().catch(()=>({error:'Codex Runner вернул некорректный JSON'})) as any;
-  if(!response.ok){
-   const message=String(body.error||'Codex Runner не предоставил лимиты').slice(0,260);
-   req.log.warn({status:response.status,duration_ms:Date.now()-started},'Codex rate limits upstream unavailable');
-   return reply.code(response.status===409?409:503).send({error:message});
-  }
-  if(!Array.isArray(body.windows)){
-   req.log.warn({duration_ms:Date.now()-started},'Codex rate limits response has no windows array');
-   return reply.code(503).send({error:'Codex Runner вернул неожиданный формат лимитов'});
-  }
-  return body;
- }catch(e){
-  const cause=(e as {cause?:{code?:string}})?.cause;
-  const reason=e instanceof Error?e.message:'Не удалось получить лимиты Codex';
-  const suffix=cause?.code?' ('+cause.code+')':'';
-  req.log.warn({error:reason,causeCode:cause?.code||null,duration_ms:Date.now()-started},'Codex rate limits request failed');
-  return reply.code(503).send({error:'Нет соединения с Codex Runner: '+reason.slice(0,160)+suffix});
- }
-});
-app.get('/api/codex/status',async(_req,reply)=>{
- try{return await codexCall('/status');}
- catch(e){return reply.code(503).send({connected:false,error:e instanceof Error?e.message:'Контейнер Codex не отвечает'});}
-});
-app.post('/api/codex/login',async(_req,reply)=>{
- try{return await codexCall('/login','POST');}
- catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Ошибка входа в Codex'});}
-});
-app.get('/api/codex/device',async(_req,reply)=>{
- try{return await codexCall('/device');}
- catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Codex недоступен'});}
-});
-app.post('/api/codex/logout',async(_req,reply)=>{
- try{return await codexCall('/logout','POST');}
- catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Ошибка отключения Codex'});}
-});
-app.post('/api/codex/test',async(_req,reply)=>{
- try{return await codexCall('/test','POST');}
- catch(e){return reply.code(503).send({error:e instanceof Error?e.message:'Тест Codex не прошёл'});}
-});
+registerCodexAdminRoutes({app,pool,runnerUrl:codexUrl,runnerSecret:()=>runnerKey,adminEmail:configuredAdminEmail,requireAdmin});
 
 // Project GitHub binding: tokens are reused from the encrypted connections store,
 // never copied to project tables or returned to the browser.
