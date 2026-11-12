@@ -83,7 +83,7 @@ export const agentToolCatalog=[
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
  tool('memory.record','Сохранить опыт либо предложить улучшение инструкции. Опыт не становится автоматически обязательным правилом.',{kind:field('string','observation или instruction_suggestion'),text:str,evidence:str,idempotency_key:idem},['kind','text'])
 ];
-export const readerRoles=['manager','analyst','business_analyst','analysis','development','testing','documentation','devops'] as const;
+export const readerRoles=['manager','analyst','business_analyst','analysis','development','testing','documentation','devops','architect'] as const;
 export type AgentRole=typeof readerRoles[number];
 export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;processId?:string;actorId?:string};
 
@@ -94,7 +94,7 @@ const readerTools=new Set([
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.create','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
+const BA_DENIED=new Set(['tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole,readOnly=false){
  if(readOnly||!['manager','analyst','business_analyst'].includes(role))
