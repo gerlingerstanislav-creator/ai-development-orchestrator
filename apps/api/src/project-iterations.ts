@@ -594,7 +594,11 @@ export function registerProjectIterationRoutes(app:FastifyInstance,{pool,uid,acc
   const {id,iterationId}=scope.parse(req.params);
   if(!await canWrite(req,reply,id))return;
   const {task_ids,expected_revision}=z.object({confirm:z.literal(true),task_ids:taskSelection,expected_revision:revision}).parse(req.body);
-  const result=await transaction(pool,db=>enqueueDevelopment(db,id,uid(req),{iterationId,revision:expected_revision,taskIds:task_ids}));
+  const result=await transaction(pool,async db=>{
+   const queued=await enqueueDevelopment(db,id,uid(req),{iterationId,revision:expected_revision,taskIds:task_ids});
+   await db.query('UPDATE projects SET agents_running=true WHERE id=$1',[id]);
+   return queued;
+  });
   return {results:result.tasks.map(task=>({
    id:task.id,run_id:task.run_id,status:task.status,
    message:task.status==='queued'?'Принято в очередь разработки':'Запуск уже обработан'
