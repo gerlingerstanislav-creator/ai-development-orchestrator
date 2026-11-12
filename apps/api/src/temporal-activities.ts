@@ -768,7 +768,7 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
   await client.query('COMMIT');
   if(!updated.rowCount)return;
  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
- await syncManagerInbox(pool,projectId,taskId);
+ if(!args.simplified)await syncManagerInbox(pool,projectId,taskId);
 }
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
