@@ -11,7 +11,7 @@
     "build": "npm run build -w apps/web && npm run build -w apps/api",
     "check": "npm run check -w apps/api && npm run check -w apps/web",
     "check:architecture": "node --test tools/check-architecture.test.mjs && node tools/check-architecture.mjs",
-    "lint": "eslint --ext .ts,.tsx,.mjs apps/api/src/modules apps/api/src/database apps/web/src/features apps/web/src/api apps/codex-runner/command-executor.mjs apps/codex-runner/codex-proxy.mjs"
+    "lint": "eslint --ext .ts,.tsx,.mjs apps/api/src/modules apps/api/src/database apps/web/src/features apps/web/src/api apps/codex-runner/command-executor.mjs apps/codex-runner/codex-proxy.mjs apps/codex-runner/device-auth.mjs"
   },
   "devDependencies": {
     "eslint": "^9.20.0",
