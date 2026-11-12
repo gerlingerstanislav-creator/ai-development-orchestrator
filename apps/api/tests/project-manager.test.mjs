@@ -3,7 +3,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {checkedWithActualCapabilities,isVisualAcceptanceCase} from '../dist/qa-evidence.js';
-import {isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes,tasksWithCustomerQuestions} from '../dist/project-manager.js';
+import {acceptAnalysisAnswer,isPrEvidenceRequest,managerRequestText,registerProjectManagerRoutes,tasksWithCustomerQuestions} from '../dist/project-manager.js';
+import {randomUUID} from 'node:crypto';
+import pg from 'pg';
 
 test('browserless QA cannot certify a visual circle layout by reading CSS',()=>{
  const planned=[{id:'circle',title:'Фигуры расположены по окружности и стрелки видны',
@@ -87,87 +89,51 @@ test('a durable manager turn continues idle development and respects open decisi
  assert.equal(calls,1);
 });
 
-test('answers in task chat update analysis and an explicit start can recover an earlier answer',async t=>{
- const app=Fastify();
- t.after(()=>app.close());
- const projectId='00000000-0000-4000-8000-000000000001';
- const taskId='00000000-0000-4000-8000-000000000002';
- const messageId='00000000-0000-4000-8000-000000000003';
- const actorId='00000000-0000-4000-8000-000000000004';
- const answer='Внутренний круг внутри всей группы фигур.';
- const statusQuestion='Какой статус задачи?';
- const startCommand='Пусть разработчик возьмёт эту карточку прямо сейчас';
- let text=answer,action='clarify',questions=['Где должен быть внутренний круг?'],starts=0,analysisCalls=0,reviewed=false,allowLaunch=true;
- let remaining=[];
- const pool={query:async(sql,params)=>{
-  if(sql.startsWith('SELECT m.actor_id'))return {rows:[{actor_id:actorId,email:'admin@example.org',body:text,created_at:new Date('2026-11-09T20:00:00Z')}]};
-  if(sql.startsWith('SELECT id,stage,spec_review_status'))return {rows:[{stage:'analysis',clarification_questions:questions}]};
-  if(sql.startsWith('SELECT id,title,description,stage'))return {rowCount:1,rows:[{stage:'analysis'}]};
-  if(sql.startsWith('SELECT id,kind,source_id'))return {rows:questions.length?[{kind:'analysis_clarifications',status:'open',created_at:new Date('2026-11-09T19:00:00Z')}]:[]};
-  if(sql.startsWith('SELECT body,status FROM manager_messages')){
-   assert.equal(params[2],actorId);
-   return {rows:[{body:statusQuestion,status:'completed'},{body:'@QA Какие есть сценарии?',status:'completed'},{body:answer,status:'completed'}]};
-  }
-  return {rows:[]};
- }};
- app.post('/api/projects/:projectId/tasks/:taskId/assistant',async req=>{
-  analysisCalls++;
-  assert.equal(req.headers.authorization,'Bearer scoped-test');
-  assert.equal(req.body.mode,'clarification');
-  assert.equal(req.body.message,action==='start_development'?answer+'\n\n'+statusQuestion+'\n\n'+text:answer);
-  reviewed=true;
-  questions=remaining;
-  return {message:'ТЗ уточнено.',questions};
- });
- app.post('/api/projects/:projectId/tasks/:taskId/approve-development',async(req,reply)=>{
-  starts++;
-  assert.equal(reviewed,true);
-  return allowLaunch?reply.code(202).send({status:'queued'}):reply.code(409).send({error:'Нет подключения GitHub'});
- });
- registerProjectManagerRoutes(app,{pool,workerSecret:'worker-test-secret',uid:req=>req.userId,
-  decideAction:async input=>{
-   assert.equal(input.message,text);
-   assert.equal(input.snapshot.task.stage,'analysis');
-   return {action};
-  },
-  workerAuthorization:async()=>'Bearer scoped-test',access:async()=>true,requireAdmin:async()=>true,
-  startManagerWorkflow:async()=>{},recoverTask:async()=>{throw Error('Analysis must use its own guarded transition');}
- });
- const turn=()=>app.inject({method:'POST',url:'/internal/manager/continue',
-  headers:{'x-runner-secret':'worker-test-secret'},payload:{projectId,taskId,messageId,analysisActions:true}});
- text=statusQuestion;
- action='reply';
- assert.deepEqual((await turn()).json(),{message:''});
- assert.equal(analysisCalls,0);
- text='Отправь задачу в разработку';
- action='unknown';
- assert.match((await turn()).json().message,/Не удалось обработать/);
- assert.equal(starts,0);
- assert.equal(analysisCalls,0);
- text=answer;
- action='clarify';
- remaining=['Какого цвета должен быть круг?'];
- assert.deepEqual((await turn()).json(),{message:'ТЗ уточнено.',handled:true});
- assert.equal(starts,0,'A partial answer leaves the task waiting');
-
- remaining=[];
- const result=(await turn()).json();
- assert.match(result.message,/ТЗ уточнено.*запуск принят/si);
- assert.equal(result.handled,true);
- assert.equal(analysisCalls,2);
- assert.equal(starts,1);
-
- allowLaunch=false;
- text=startCommand;
- action='start_development';
- assert.deepEqual((await turn()).json(),{message:'Нет подключения GitHub',handled:true});
- assert.equal(analysisCalls,2,'Launch on a ready task does not call the analyst again');
-
- questions=['Где должен быть внутренний круг?'];reviewed=false;allowLaunch=true;
- assert.match((await turn()).json().message,/ТЗ уточнено.*запуск принят/si);
- assert.equal(analysisCalls,3,'An explicit launch can still recover an earlier answer');
+test('owner answers persist for analyst rerun; do not start development before reinterpretation',async t=>{
+ const admin=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await admin.connect();
+ const schema='pm_answers_'+randomUUID().replaceAll('-','');
+ await admin.query('CREATE SCHEMA '+schema);
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await pool.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
+ await pool.query(`
+ CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,stage text,analysis_state text,clarification_questions jsonb,updated_at timestamptz);
+ CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,author_stage text,author_name text,target_stage text,
+  kind text,body text,source_kind text,source_key text,actor_id uuid,status text,requires_customer boolean,
+  answer text,answered_at timestamptz,answered_by uuid,answer_author text,processing_at timestamptz,
+  UNIQUE(task_id,source_key));
+ CREATE TABLE manager_requests(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text,decision text,decided_by uuid,
+  resolved_at timestamptz,kind text,source_id uuid);
+ CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,actor_id uuid,event text,detail text);
+ `);
+ const projectId=randomUUID(),taskId=randomUUID(),actorId=randomUUID();
+ const notes=[{id:randomUUID(),text:'Где должны быть расположены круги?'},{id:randomUUID(),text:'Как меняется размер при изменении окна?'}];
+ await pool.query("INSERT INTO tasks(id,project_id,stage,analysis_state,clarification_questions) VALUES($1,$2,'analysis','waiting_questions','[]'::jsonb)",[taskId,projectId]);
+ for(const [i,n] of notes.entries()){
+  await pool.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,actor_id,status,requires_customer,source_key) VALUES($1,$2,$3,'analysis','Системный аналитик','all','question',$4,'agent',$5,'open',true,$6)",
+   [n.id,projectId,taskId,n.text,actorId,'question:'+i]);
+ }
+ await pool.query("INSERT INTO manager_requests(id,project_id,task_id,status,kind,source_id) VALUES($1,$2,$3,'open','question',$4)",[randomUUID(),projectId,taskId,notes[0].id]);
+ const answer='Круги расположены один внутри другого. При изменении размеров окна они пропорционально уменьшаются и увеличиваются.';
+ const result=await acceptAnalysisAnswer(pool,projectId,taskId,actorId,answer);
+ assert.equal(result.accepted,true);
+ assert.equal(result.answered,2);
+ const task=(await pool.query('SELECT stage,analysis_state,clarification_questions FROM tasks WHERE id=$1',[taskId])).rows[0];
+ assert.equal(task.stage,'analysis','Receiving an answer must not start development');
+ assert.equal(task.analysis_state,'new','Analyst has to reinterpret the newly received answer');
+ assert.deepEqual(task.clarification_questions,[]);
+ const saved=(await pool.query("SELECT status,answer,answered_by,answered_at FROM task_agent_notes WHERE task_id=$1 ORDER BY source_key",[taskId])).rows;
+ assert.equal(saved.length,2);
+ for(const note of saved){
+  assert.equal(note.status,'answered');
+  assert.equal(note.answer,answer);
+  assert.equal(note.answered_by,actorId);
+  assert.ok(note.answered_at);
+ }
+ assert.equal((await pool.query("SELECT count(*)::int total FROM manager_requests WHERE status='open'")).rows[0].total,0);
+ assert.equal((await pool.query("SELECT count(*)::int total FROM task_events WHERE event='agent_question_answered'")).rows[0].total,1);
+ assert.equal((await acceptAnalysisAnswer(pool,projectId,taskId,actorId,answer)).accepted,false,'Repeated answer is idempotent');
 });
-
 
 test('owner questions project onto the board without changing task stages',async()=>{
  const defaults={open_notes:[],material_review:false,blocked_qa:null};
