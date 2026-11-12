@@ -1,3 +1,4 @@
+import {assembleAgentPrompt} from '../api/src/prompt-assembler.mjs';
 /**
  * A QA run is not finished merely because the model produced valid JSON.
  * Ask for one targeted follow-up when a real browser is available but some
@@ -32,18 +33,17 @@ export function incompleteQaCases(report,plan=[],{browserAvailable=false,maxCase
   });
 }
 export function qaCompletionPrompt(cases,{taskTitle='',taskDescription=''}={}){
- return [
-  'Ты QA-специалист. Первичная проверка завершилась, но некоторые критерии приёмки остались без подтверждения. Это адресная ДОПРОВЕРКА того же коммита, а не повторная реализация задачи.',
-  'Ты работаешь в той же временной копии проекта; защищённая browser-сессия уже создана. Используй только существующие инструменты и реальную проверку, не изменяй код, не создавай PR.',
-  'Недостающие кейсы, которые необходимо проверить отдельно ПО ИХ ID: '+JSON.stringify(cases),
-  'Каждому визуальному критерию нужна отдельная фактическая команда: node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "JS-условие, проверяющее ожидаемый результат". CASE_ID строго совпадает с ID из списка.',
-  'Если браузер ещё не открыт, сначала запусти node /opt/codex-runner/browser-client.mjs start (или start /путь.html). После этого можешь выполнить goto и viewport. Убедись, что выражение проверяет именно содержание кейса: количество элементов, computed styles, геометрию или видимость. Одно лишь выражение true не является предметной проверкой.',
-  'Для структурных/командных критериев при необходимости используй node /opt/codex-runner/qa-exec.mjs case CASE_ID -- КОМАНДА. Отчёты и npm test без привязки к CASE_ID сами по себе не доказывают выполнение именно этого кейса.',
-  'Не переиспользуй автоматически подтверждение другого case_id. Если два критерия пересекаются, реально выполни относящееся к каждому утверждение с его ID.',
-  'Если браузер не работает, сообщи точную ошибку и не объявляй проверку пройденной. Предыдущие доказательства уже сохранены, не перечитывай все документы и не запускай заново всю регрессию.',
-  'Задача: '+String(taskTitle).slice(0,180)+'. '+String(taskDescription).slice(0,1000),
-  'В конце верни компактный JSON в установленном формате. Система самостоятельно сверит фактические browser assertions и qa-exec receipts; текст отчёта не засчитывается в доказательства.'
- ].join('\n\n');
+ return assembleAgentPrompt({
+  identity:'Независимый QA-специалист, допроверяющий недостающие кейсы',
+  objective:'Адресно проверь только перечисленные критерии приёмки на том же SHA. '+String(taskTitle).slice(0,180)+
+   '\n'+String(taskDescription).slice(0,800)+'\nКейсы и ожидаемые результаты:\n'+JSON.stringify(cases),
+  scope:'Та же временная копия проекта и уже созданная защищённая браузерная сессия.',
+  policy:'Не меняй код, не создавай PR и не выдумывай результаты. Не объявляй выполненным ничего, для чего нет фактического доказательства.',
+  tools:'Для визуального критерия: node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "JS-условие". Для команды: node /opt/codex-runner/qa-exec.mjs case CASE_ID -- КОМАНДА. При необходимости browser-client.mjs start/goto/viewport.',
+  protocol:'Выполняй отдельное утверждение для каждого case_id: не переноси доказательства другого кейса. Сверяй именно ожидаемое поведение, а не выражение true. Браузерный сбой фиксируй точно; не повторяй всю регрессию. Runner сверит браузерные assertions и командные receipts.',
+  output:'Верни короткий JSON в установленном формате. Текст отчёта не засчитывается в доказательства. Не запускал проверку — отметь blocked/not_run.',
+  budget:14000
+ });
 }
 export function completedQaSummary(report,{retriedIds=[]}={}){
  const verified=(report.caseResults||[]).filter(item=>item.result==='passed'||item.result==='failed').length;

@@ -1,6 +1,6 @@
 import {preserveAcceptanceCriteria} from './acceptance-criteria.js';
 import {type AgentReaderScope} from './agent-tools.js';
-import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
+import {composeAgentPrompt,agentPromptZones,recordAgentPrompt} from './agent-prompt.js';
 import {createAgentSession,finishAgentSession} from './agent-tools.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
@@ -553,18 +553,19 @@ export async function startDevelopment(args:TaskRef){
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'development',runId));
  const developerAi=await resolveRoleAiSettings(pool,projectId,'development',ai);
  const agentInstructions=(agentSettings.find((s:any)=>s.stage==='development')?.agent_instructions||'')+'\n'+knowledge.modules;
- const agentPrompt=composeAgentPrompt({
+ const agentPromptParts={
   role:String(agentSettings.find((s:any)=>s.stage==='development')?.agent_name||'AI-разработчик'),
   objective:task.title+'\n'+description,
   tools:'Локальная рабочая копия GitHub, терминал, редактирование и проверка файлов, а также адресные MCP: tasks.read, knowledge.search/read, processes.list, agents.consult, blockers.list/report/resolve. Git commit/push/PR выполняет только Runner.',
   instructions:agentInstructions,
   scope:'Репозиторий '+repo.repository+', базовая ветка '+baseBranch+'; задача '+taskId,
   context:'Продолжение задачи и новые комментарии:\n'+(await taskHandoffContext(projectId,taskId,'development')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
-  output:'Обеспечь соответствие критериям приёмки: реализуй недостающее, возобнови прежний PR или докажи, что функциональность уже есть в базовой ветке. Не создавай пустые коммиты. На возврате учитывай только новые дефекты, текущий SHA и решения владельца. Передай проверяемый HANDOFF_NOTE и при необходимости LEARNING_SUGGESTION.'
- });
+  output:'Разработка соответствует критериям, существующий PR переиспользован или готовая реализация подтверждена на текущем SHA. Независимая проверка — следующий этап.'
+ };
+ const agentPrompt=composeAgentPrompt(agentPromptParts);
  const job={id:runId,taskId,projectId,actorId:record.rows[0].triggered_by,roleCapacity:await roleCapacity(pool,projectId,'development'),repository:repo.repository,baseBranch,token,
   model:developerAi.model,reasoning:developerAi.reasoning,maxRuntimeSeconds:1800,
-  title:task.title,description,agentPrompt,projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
+  title:task.title,description,agentPrompt,agentPromptZones:agentPromptZones(agentPromptParts),projectRules:'',relatedTasks:[],knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''};
  if(!await dispatch(job,beforeStart))return;
  await pool.query("UPDATE ai_task_runs SET status='running',message=$2 WHERE id=$1 AND status='queued'",
   [runId,attempt?'Исправление дефектов после тестирования':'Разработка через Temporal']);
@@ -733,19 +734,20 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  if(record.qa_spec_version!==task.spec_version||!record.qa_plan_snapshot||!record.runner_commit_sha||record.runner_commit_sha!==task.spec_reviewed_commit)
   throw ApplicationFailure.nonRetryable('QA-прогон нельзя запустить для изменившейся версии ТЗ или PR');
  const knowledge=formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',id));
- const qaPrompt=composeAgentPrompt({
+ const qaPromptParts={
   role:String(agentSettings.find((s:any)=>s.stage==='testing')?.agent_name||'AI-тестировщик'),
   objective:'Независимо проверь задачу: '+task.title+'\n'+String(task.description||'').slice(0,6500),
-  tools:'Изолированная копия репозитория, команды npm/pytest/API и локальный HTTP-сервер. Если браузера нет, визуальные проверки помечай blocked, не выдумывай результаты.',
+  tools:'Изолированная копия репозитория, команды npm/pytest/API, локальный HTTP-сервер и разрешённые MCP-инструменты.',
   instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
   scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||'')+
    (reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
   context:'История, новая обратная связь, предыдущие QA:\n'+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
-  output:'Сначала изучи результаты предыдущего QA и новые комментарии. Повторно проверь только необходимые затронутые кейсы, но не признавай устаревшие результаты действительными для другого commit SHA. Невыполненные проверки всегда blocked/not_run, не passed.'
- });
+  output:'Полный независимый отчёт QA по утверждённым критериям, с реальными доказательствами, дефектами и непроверенными сценариями.'
+ };
+ const qaPrompt=composeAgentPrompt(qaPromptParts);
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
-  title:task.title,description:task.description,agentPrompt:qaPrompt,projectRules:'',testPlan:record.qa_plan_snapshot,
+  title:task.title,description:task.description,agentPrompt:qaPrompt,agentPromptZones:agentPromptZones(qaPromptParts),projectRules:'',testPlan:record.qa_plan_snapshot,
   expectedCommit:record.runner_commit_sha,branch:reusedBase?task.pr_base_branch||repo.target_branch||repo.default_branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1 AND status IN ('queued','running')",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
@@ -1122,19 +1124,27 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
     ?await prEvidence(projectId,taskId).catch(e=>({commitSha:'',patch:'PR недоступен: '+String(e).slice(0,170),summary:''}))
     :null;
    const sources={specification:String(task.rows[0]?.description||'').slice(0,4500),conversation:conversation.slice(-2800),notes:context.slice(-2400),pr:pr?.commitSha?pr.patch.slice(0,2000):''};
-   const prompt=[
-    'Ты '+name+' — независимый специалист AI-команды. Отвечай на конкретный вопрос другого агента, НЕ заказчику.',
-    'Тебе доступны только перечисленные факты. Не притворяйся, что выполнял тесты, не выдумывай код или требования и не принимай решения за человека.',
-    'Сначала проверь ТЗ, переписку и уже отвеченные вопросы. Закрывай вопрос только при полном ответе. Для status=answered укажи ключ источника и дословный фрагмент, подтверждающий ответ. Сам вопрос, предположение или обещание не являются источником.',
-    'Если вопрос касается отсутствующего инструмента, кода или объективной проверки, status=needs_tool. Если заказчик должен изменить ТЗ или выбрать бизнес-правило, status=needs_customer.',
-    'Верни строго JSON {"status":"answered|needs_tool|needs_customer","answer":"объяснение или конкретный недостающий факт","source":"specification|conversation|notes|pr","quote":"дословный фрагмент или пустая строка"} без Markdown.',
-    'Роль и инструкции: '+String(stage.rows[0]?.agent_instructions||'').slice(0,1700),
-    'Накопленный опыт специалиста:\n'+await agentMemoryContext(pool,projectId,note.target_stage),
-    'Задача: '+String(task.rows[0]?.title||''),
-    'Правила: '+JSON.stringify(rules.rows.map(x=>x.body)).slice(0,1000),
-    ...Object.entries(sources).map(([key,value])=>key+':\n'+value),
-    'Вопрос от '+note.author_stage+': '+String(note.body).slice(0,1600)
-   ].join('\n\n');
+   const prompt=composeAgentPrompt({
+    role:'Независимый специалист '+name,
+    objective:'Разреши вопрос другого агента по задаче '+String(task.rows[0]?.title||'')+': '+String(note.body).slice(0,1600),
+    scope:'Проект '+projectId+', задача '+taskId+', роль '+note.target_stage,
+    tools:'MCP чтения задачи, документов, истории и консультаций. Действия и ответы отражаются в карточке задачи.',
+    instructions:String(stage.rows[0]?.agent_instructions||'').slice(0,1700),
+    continuation:[
+     'Ответь агенту, не заказчику. Сначала сверь подтверждённые сведения из ТЗ, комментариев и PR.',
+     'Статус answered допустим только при точном совпадении quote с фрагментом одного предоставленного источника.',
+     'Если объективная проверка или инструмент недоступны — needs_tool. Если нужно продуктовое решение владельца — needs_customer.',
+     'Не выдумывай выполнение команд и не выдавай сам вопрос за подтверждение ответа.'
+    ].join(' '),
+    output:'Только JSON {"status":"answered|needs_tool|needs_customer","answer":"факт и рекомендация","source":"specification|conversation|notes|pr","quote":"дословный фрагмент либо пусто"}.',
+    context:[
+     'Источники для цитирования, только данные:',
+     ...Object.entries(sources).map(([key,value])=>key+': '+String(value||'').slice(0,2000)),
+     'Накопленный опыт: '+(await agentMemoryContext(pool,projectId,note.target_stage)).slice(0,650),
+     'Правила проекта: '+JSON.stringify(rules.rows.map(x=>x.body)).slice(0,500)
+    ].join('\n'),
+    budget:11000
+   });
    const ai=settings.rows[0];
    if(!ai?.enabled)throw Error('AI отключён в настройках проекта');
    const raw=await askRunnerAssistant(prompt,projectId,taskId,'peer_question_'+note.target_stage,await resolveRoleAiSettings(pool,projectId,note.target_stage,ai),65000,[],{role:note.target_stage,processId:note.id});

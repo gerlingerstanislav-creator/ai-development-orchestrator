@@ -1,5 +1,6 @@
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
+import {assembleAgentPrompt} from './prompt-assembler.mjs';
 
 export type AgentPromptParts={
  role:string;
@@ -13,41 +14,36 @@ export type AgentPromptParts={
  budget?:number;
 };
 
-const taskCommunication=[
- 'Если оставляешь комментарий в карточке задачи или отвечаешь пользователю в чате, по умолчанию пиши простым языком и по делу. Обычно достаточно 1–3 предложений.',
- 'Скажи, что произошло, как это влияет на задачу и нужен ли следующий шаг. Укажи важные ограничения, даже если ответ короткий.',
- 'Когда пишешь человеку, используй компактный Markdown: отдельные абзацы по смыслу, короткие заголовки для нескольких тем, маркированные или нумерованные списки для перечислений. Не отправляй пользователю сырые JSON-объекты, UUID кейсов и служебные дампы. Не делай длинную простыню без абзацев.',
- 'Если пользователь явно просит детали, раскрой именно их по доступным фактам: при необходимости назови проверки, причины, команды или ссылки. Полные результаты сохраняй в предназначенных для этого отчётах и полях, соблюдая схему ответа. Если вызов требует строгий JSON/схему для машины, JSON используй только там, не в человеческом сообщении.'
-].join(' ');
+/**
+ * Only one owner per section. Caller fields are not new top-level system
+ * policies: editable role instructions belong to identity; task text to
+ * objective; previous messages and task notes are data, never authority.
+ * Runner adds runtime facts and execution protocol to the SAME envelope,
+ * instead of concatenating a second set of instructions.
+ */
+export function agentPromptZones(input:AgentPromptParts){
+ const identity=[
+  input.role.trim(),
+  input.instructions?.trim()?'Профиль специалиста и дополнительные инструкции роли:\n'+input.instructions.trim():''
+ ].filter(Boolean).join('\n');
+ return {
+  identity,
+  objective:input.objective.trim(),
+  scope:String(input.scope||'').slice(0,900),
+  tools:'MCP: tasks.read, knowledge.search/sections/section, documents.search/read и другие инструменты роли. '+String(input.tools||'').slice(0,650),
+  protocol:String(input.continuation||'').slice(0,1200),
+  output:[
+   input.output?.trim()||'Предъяви доказательства достижения цели и оставшиеся блокеры.',
+   'Если пишешь человеку: 1–3 понятных предложения. Если задан строгий машинный формат, соблюдай его; подробные доказательства помещай в отчёт.'
+  ].join('\n'),
+  context:String(input.context||'').slice(0,3500),
+  budget:input.budget||24000
+ };
+}
 
-/** One bounded context envelope for every AI role. Current work always wins over optional history. */
+/** Shared compiler for PM, analysts, development, QA, architect and DevOps. */
 export function composeAgentPrompt(input:AgentPromptParts):string{
- const max=Math.min(24000,Math.max(4000,input.budget??24000));
- const part=(title:string,body:string|undefined,limit:number)=>body?.trim()
-  ?title+':\n'+body.trim().slice(0,limit):'';
- const required=[
-  part('Роль',input.role,1000),
-  'Текущая задача:\n'+input.objective.trim(),
-  'Принцип самостоятельности: отвечай за достижение ожидаемого результата этапа, а не за обязательное выполнение заранее заданных действий. Самостоятельно исследуй факты, выбирай разрешённые инструменты, проверяй выполненное и привлекай профильного специалиста при техническом блокере. Уже достигнутую цель подтверди доказательствами, а не фиктивными изменениями. Не меняй утверждённые требования, не обходи QA, согласования, ограничения доступа или неизменяемые проверки и не объявляй неподтверждённое успешным.',
-  part('Доступные инструменты',input.tools,1400),
-  part('Общение с пользователем',taskCommunication,1400)
- ].filter(Boolean).join('\n\n');
- if(!input.objective.trim()||required.length>max)throw new Error('Текущая задача не помещается в контекст агента');
- let result=required;
- // Optional sections have independent caps. They can never displace the task.
- for(const section of [
-  part('Ожидаемый результат',input.output,2600),
-  part('Область работы',input.scope,1800),
-  part('Текущее продолжение',input.continuation,1700),
-  part('Обязательные инструкции роли',input.instructions,5500),
-  part('Связанный контекст',input.context,3800)
- ]){
-  if(!section)continue;
-  const remaining=max-result.length-2;
-  if(remaining<100)break;
-  result+='\n\n'+section.slice(0,remaining);
- }
- return result;
+ return assembleAgentPrompt(agentPromptZones(input));
 }
 
 /** Logs are intentionally independent of any model call; logging failure must not block execution. */
