@@ -4,7 +4,7 @@ export type MentionedAgent={alias:'Analyst'|'QA'|'DevOps'|'Architect';stage:'ana
 const ALIASES={analyst:'analysis',qa:'testing',devops:'devops',architect:'architect'} as const;
 
 /** Only an explicit leading @address selects a specialist. */
-export function parseAgentMention(message:string):{alias:'Analyst'|'QA'|'DevOps';stage:'analysis'|'testing'|'devops';message:string}|null{
+export function parseAgentMention(message:string):{alias:'Analyst'|'QA'|'DevOps'|'Architect';stage:'analysis'|'testing'|'devops'|'architect';message:string}|null{
  const match=/^\s*@(Analyst|QA|DevOps|Architect)(?=\s|[:,.!?]|$)[\s,:.!?]*/i.exec(message);
  if(!match)return null;
  const key=match[1].toLowerCase() as keyof typeof ALIASES;
