@@ -13,7 +13,7 @@ import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './jo
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
 import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from './qa-run-evidence.mjs';
-import {incompleteQaCases,qaCompletionPrompt,completedQaSummary} from './qa-completion.mjs';
+import {incompleteQaCases,qaCompletionPrompt,completedQaSummary,applyVisualEvidenceGate} from './qa-completion.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext,scopedAgentPrompt} from './agent-context.mjs';
@@ -704,19 +704,24 @@ async function runTestJob(job,state,context){
    });
   };
   let verified=await verifyActualExecution();
+  // A command may prove a structural test, but not its visual/geometry case.
+  // Enforce the exact same browser evidence requirement as the API, BEFORE
+  // calculating missing cases or final counts. Never report "2/2" if API
+  // will reject both cases as unverified.
+  const plannedCases=(job.testPlan?.cases||[]).length?job.testPlan.cases:verified.cases;
+  verified=applyVisualEvidenceGate(verified,plannedCases,{browserAvailable});
   // A successfully formatted JSON report is not the end of QA. The model can
   // overlook one case ID even when it verified overlapping cases in Chromium.
   // Give it one small, focused opportunity to collect the MISSING evidence.
   // The second model response is never trusted; only new gateway/receipt
   // events may change results.
-  const plannedCases=(job.testPlan?.cases||[]).length?job.testPlan.cases:verified.cases;
   const gaps=incompleteQaCases(verified,plannedCases,{browserAvailable,maxCases:8});
   if(gaps.length){
    state.message='Допроверяет '+gaps.length+' сценариев без подтверждённых доказательств';
    const focus=qaCompletionPrompt(gaps,{taskTitle:job.title,taskDescription:job.description});
    await auditCodexPrompt(job,'testing',focus);
    try{
-    const extra=await command('codex',[...args,...context.args,context.prefix+focus],{
+    const extra=await command('codex',[...args,...context.args,scopedAgentPrompt(context,focus)],{
      cwd:dir,env:{...cliEnv,...context.env},
      timeout:Math.min(180000,job.maxRuntimeSeconds*1000),
      maxOutputChars:170000,jobId:job.id
@@ -726,7 +731,7 @@ async function runTestJob(job,state,context){
      const parsedExtra=codexJsonResult(extra.stdout);
      state.usage=addUsage(state.usage,parsedExtra.usage);
     }catch{ /* We audit executed evidence, never rely on the follow-up prose. */ }
-    verified=await verifyActualExecution();
+    verified=applyVisualEvidenceGate(await verifyActualExecution(),plannedCases,{browserAvailable});
    }catch(error){
     // A failed follow-up never invalidates previous genuine checks nor
     // silently waives the missing ones.
@@ -735,7 +740,7 @@ async function runTestJob(job,state,context){
     // Browser assertions may have been executed before a Codex CLI failure.
     // Preserve their real results, including confirmed failures, rather than
     // converting them back into generic blocked status.
-    verified=await verifyActualExecution();
+    verified=applyVisualEvidenceGate(await verifyActualExecution(),plannedCases,{browserAvailable});
    }
    verified.summary=completedQaSummary(verified,{retriedIds:gaps.map(item=>item.id)});
    if(verified.verdict==='passed')
