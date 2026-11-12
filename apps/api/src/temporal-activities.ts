@@ -1,3 +1,4 @@
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 import {createRunnerRecovery,runnerUnavailable} from './modules/execution/application/runner-recovery.js';
 import {readProjectAgentAvailability,ProjectAgentAvailabilityError,type ProjectAgentScope} from './modules/execution/project-agent-availability.js';
 import {createRunnerHttpClient} from './infrastructure/runner-http-client.js';
@@ -211,7 +212,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
    'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
    'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику. Сохраняй все действующие критерии приёмки из постановки; не повторяй одинаковые критерии.',
-   'Для технического вопроса сначала проверь доступные факты, используй MCP agents.consult с архитектором/разработчиком и blockers.report при настоящем ограничении. Не превращай технический блокер в продуктовый вопрос. Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
+   'Для технического вопроса сначала проверь доступные факты, используй MCP agents.consult с архитектором/разработчиком и blockers.report при настоящем ограничении. Неполадки Git, CI, Chromium, discovery supported tests и отсутствие доступа к внутренней конфигурации Runner — технические вопросы, а не продуктовые требования. Если ТЗ достаточно для реализации, outcome="ready" даже при открытой технической консультации; передай ограничение через историю задачи. Только если выбор пользовательского поведения реально неоднозначен, верни needs_input с коротким вопросом владельцу. Полное уточнение сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
@@ -248,7 +249,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    }
    if(output.outcome==='ready'){
     await updateCurrentSpecification(client,projectId,taskId,latest.title,preserveAcceptanceCriteria(latest.description,output.refined_description));
-    const questions=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND kind='question' AND status IN ('open','processing') LIMIT 1",[taskId]);
+    const questions=await client.query(`SELECT 1 FROM task_agent_notes n WHERE n.task_id=$1 AND ${PENDING_OWNER_QUESTION_SQL} LIMIT 1`,[taskId]);
     if(questions.rowCount||latest.clarification_questions?.length){
      await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
     }else{

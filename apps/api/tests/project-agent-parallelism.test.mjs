@@ -30,7 +30,7 @@ test('the development dispatcher fills each project capacity in the same reconci
   CREATE TABLE project_role_capacity(project_id uuid,role text,capacity int);
   CREATE TABLE project_git_repositories(project_id uuid,connection_id uuid);
   CREATE TABLE connections(id uuid,provider text);
-  CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text);
+  CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text,target_stage text NOT NULL DEFAULT 'all',requires_customer boolean NOT NULL DEFAULT false);
   CREATE TABLE agent_peer_queue(project_id uuid,role text,status text);
   CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,message text DEFAULT '',cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
   CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,task_id uuid,status text,verdict text,completed_at timestamptz DEFAULT now());

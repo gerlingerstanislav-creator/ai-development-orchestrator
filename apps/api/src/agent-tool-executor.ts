@@ -1,3 +1,4 @@
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
@@ -130,7 +131,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   // Reconcile the analyst assignment when the last owner question is answered.
   const resumed=await pool.query(`UPDATE tasks SET analysis_state='new',updated_at=now()
    WHERE project_id=$1 AND id=$2 AND stage='analysis' AND analysis_state='waiting_questions'
-    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$2 AND n.kind='question' AND n.status IN ('open','processing'))
+    AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$2 AND ${PENDING_OWNER_QUESTION_SQL})
    RETURNING id`,[projectId,task_id]);
   return {answered:true,task_id,note_id,analyst_resumed:!!resumed.rowCount,requires_requirements_recheck:false,
    message:'Ответ сохранён в задаче. После получения всех ответов СА продолжит работу автоматически.'};
