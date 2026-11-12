@@ -4,7 +4,7 @@ import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {withReaderContext} from './agent-context.mjs';
+import {withReaderContext,scopedAgentPrompt} from './agent-context.mjs';
 
 test('runner opens a scoped reader and uses the real MCP adapter to read a section',async t=>{
  const secret='a'.repeat(64),runnerSecret='runner-test-secret';
@@ -75,4 +75,11 @@ test('task-bound jobs fail before Codex when the task API is unavailable',async 
   {projectId:'project',taskId:'task',role:'development'},async()=>{invoked=true;}),
   /Нельзя безопасно выполнять задачу.*tasks.read HTTP 503/);
  assert.equal(invoked,false,'Codex cannot start without live task facts');
+});
+
+test('MCP prefix is not appended to an already-zoned agent prompt',()=>{
+ const context={prefix:'Legacy tools instructions to avoid duplicating'};
+ const prompt='[[ADO:IDENTITY]]\nRole\n\n[[ADO:TOOLS]]\nMCP';
+ assert.equal(scopedAgentPrompt(context,prompt),prompt);
+ assert.equal(scopedAgentPrompt(context,'Legacy request'),context.prefix+'Legacy request');
 });
