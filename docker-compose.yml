@@ -70,11 +70,32 @@ services:
       RUNNER_STATE_DIR: /var/lib/ado-runner
       RUNNER_SHARED_SECRET: ${RUNNER_SHARED_SECRET:?set RUNNER_SHARED_SECRET}
       ADO_AGENT_API_URL: http://api:3001/internal/agent-tools
+      QA_BROWSER_URL: http://qa-browser:4301
+      QA_BROWSER_WORKSPACES_DIR: /var/lib/ado-qa-workspaces
     volumes:
       - codex_auth:/home/node/.codex
       - codex_jobs:/var/lib/ado-runner
+      - qa_workspaces:/var/lib/ado-qa-workspaces
     restart: unless-stopped
+    networks: [default, qa-internal]
     # Internal only: no host port. Never mount the Docker socket here.
+  qa-browser:
+    build:
+      context: .
+      dockerfile: apps/qa-browser/Dockerfile
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    mem_limit: 1g
+    shm_size: 512mb
+    environment:
+      QA_WORKSPACES_DIR: /var/lib/ado-qa-workspaces
+    volumes:
+      - qa_workspaces:/var/lib/ado-qa-workspaces
+    networks: [qa-internal]
+    restart: unless-stopped
+    # Chromium is isolated from API, DB, Temporal, internet and Docker socket.
   web:
     build:
       context: .
@@ -85,4 +106,8 @@ volumes:
   db_data:
   codex_auth:
   codex_jobs:
+  qa_workspaces:
   temporal_data:
+networks:
+  qa-internal:
+    internal: true
