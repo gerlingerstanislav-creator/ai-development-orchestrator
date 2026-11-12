@@ -33,6 +33,8 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: TypeScript checks
         run: npm run check
+      - name: Architecture boundaries and ESLint
+        run: npm run check:architecture && npm run lint
       - name: Build frontend and backend
         run: npm run build
       - name: Project-scoped scheduling and queue integration tests
@@ -55,6 +57,7 @@ jobs:
           node --test apps/api/tests/schema-migrations.test.mjs
           node --test apps/api/tests/legacy-schema-upgrade.test.mjs
           node --test apps/api/tests/auth-routes.test.mjs
+          node --test apps/api/tests/auth-service.test.mjs
           node --test apps/api/tests/project-agent-availability.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
           node --import tsx --test apps/web/tests/feature-boundaries.test.mjs
