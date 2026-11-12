@@ -103,7 +103,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
      source.id=t.id OR source.parent_id=t.id OR
      (t.parent_id IS NOT NULL AND source.parent_id=t.parent_id)
     )
-   ORDER BY n.created_at,n.id LIMIT 1
+   ORDER BY n.created_at LIMIT 1
   ) question_source ON true
   LEFT JOIN LATERAL (
    SELECT id,task_id,status,verdict,qa_spec_version,qa_plan_snapshot,report FROM ai_test_runs
