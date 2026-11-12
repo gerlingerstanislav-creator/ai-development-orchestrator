@@ -90,7 +90,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   output:'Верни строго JSON: {"summary":"...","flows":[{"title":"...","description":"...","preconditions":"...","steps":["..."]}],"cases":[{"title":"...","area":"...","flow_title":"...","description":"...","preconditions":"...","steps":[{"action":"...","expected":"..."}],"priority":"critical|high|normal|low","category":"smoke|regression|functional","execution_mode":"automated|manual|hybrid","requirement_quote":"дословная цитата из текста задачи"}],"regression_case_ids":["uuid"]}. Включи позитивные, негативные и крайние случаи.'
  });
  let produced=parseResponse(await ask(prompt));
- const unsupported=(cases:typeof produced.cases)=>cases.filter(item=>item.requirement_quote&&!row.description.includes(item.requirement_quote));
+ const unsupported=(cases:typeof produced.cases)=>cases.filter(item=>!item.requirement_quote||!row.description.includes(item.requirement_quote));
  if(unsupported(produced.cases).length){
   const correction='Исправь тест-план: requirement_quote должен быть ДОСЛОВНОЙ цитатой из задачи. Убери выдуманные макеты, точные координаты и обязательные размеры. Верни ту же JSON-схему. Описание: '+row.description.slice(0,8500)+'\nПлан: '+JSON.stringify(produced).slice(0,12500);
   produced=parseResponse(await ask(correction));
