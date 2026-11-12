@@ -28,7 +28,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
   CREATE TABLE connections(id uuid,provider text);
   CREATE TABLE task_agent_notes(task_id uuid,project_id uuid,kind text,status text);
   CREATE TABLE agent_peer_queue(project_id uuid,role text,status text);
-  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,cycle_id uuid,cycle_attempt int);
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,triggered_by uuid,model text,status text,cycle_id uuid,cycle_attempt int,created_at timestamptz DEFAULT now());
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text);
   CREATE TABLE iteration_execution_queue(project_id uuid,iteration_id uuid NOT NULL,task_id uuid,requested_by uuid,
@@ -143,4 +143,8 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  assert.match(preserved.test_feedback,/360px/);
  await dispatch();
  assert.equal(starts.length,5,'active rework must not launch duplicate developers');
+ await db.query("UPDATE ai_task_runs SET status='failed' WHERE id=$1",[next.run_id]);
+ await releaseTaskOrchestration(db,project,first,next.run_id);
+ await dispatch();
+ assert.equal(starts.length,5,'failed rework must not requeue itself forever without new comments');
 });
