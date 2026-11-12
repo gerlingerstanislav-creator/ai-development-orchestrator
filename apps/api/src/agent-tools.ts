@@ -53,7 +53,8 @@ export const agentToolCatalog=[
  tool('tasks.read','Прочитать задачу, её открытые вопросы с ID, уже сохранённые ответы и историю. Прежде чем заявлять об отсутствии вопроса, проверь open_questions и clarification_questions.',{task_id:id},['task_id']),
  tool('tasks.request_owner_question_cleanup','По явному запросу пользователя открыть предпросмотр удаления из колонки «Вопросы к ПО». Учти задачи типа question, созданные аналитиком. Удаление — только после явного подтверждения владельца.',{}),
  tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
- tool('tasks.delete','Удалить конкретную ошибочно созданную карточку по явному поручению владельца, подтверждённому ID его настоящего сообщения. Только если карточка находится в аналитике или бэклоге, не имеет PR, ветки, других связанных задач или результатов исполнения. Если задача уже выполнялась, объясни блокировку и предложи отмену.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
+ tool('tasks.delete','Удалить ошибочную ещё не выполнявшуюся задачу, если владелец явно поручил это. Выполненная работа не удаляется, для неё есть tasks.cancel с предпросмотром.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
+ tool('tasks.cancel','Закрыть или отменить ненужную задачу с работой/PR по явному поручению владельца: сперва предпросмотр и проверка безопасной отмены/очистки GitHub. Если процесс ещё активен или PR слит, не обходи блокировки.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
  tool('questions.list','Посмотреть вопросы по документации (задачи типа question), включая их статус и привязку к документу.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
  tool('documentation.prepare_spec','Передать аналитику вводные владельца для подготовки или изменения текущего ТЗ и документации. Вызывай по просьбе владельца, для обсуждения отвечай в чате.',{instructions:str,document_id:id,idempotency_key:idem},['instructions']),
@@ -66,6 +67,7 @@ export const agentToolCatalog=[
  tool('approvals.deliver_task_answer','Передать сохранённое сообщение владельца в конкретную задачу для повторной проверки аналитиком. Работает и для старых карточек без ID открытых вопросов. Сначала определи task_id через tasks.list/read и source_message_id из текущего сообщения или history.search. Никогда не выдумывай ответ: сервер прочитает подлинный текст из истории. Только по явному ответу или просьбе владельца передать ранее данный ответ.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
  tool('approvals.decide','Применить явное решение владельца по открытому запросу менеджера задачи через стандартные серверные проверки и текущие ограничения workflow.',{task_id:id,request_id:id,choice:field('string','answer, approve_requirements, reject_requirements, wait_for_tools; исключения QA только по явному согласию владельца'),answer:field('string','Текст ответа владельца')},['task_id','request_id','choice']),
  tool('workflow.approve_development','Запустить разработку по явно подтверждённому поручению владельца через стандартный API; проверяет требования и блокировки.',{task_id:id},['task_id']),
+ tool('workflow.move_task','По прямому поручению владельца переместить или вернуть задачу на указанный этап; ранее выполненные работа, PR и отчёты остаются. Для QA/слияния/выкладки применяются настоящие проверки, статус done вручную не выставляется.',{task_id:id,target_stage:{type:'string',enum:['backlog','analysis','development','testing','merge_queue','deployment','documentation','done']},source_message_id:id,reason:field('string','Кратко зачем нужен переход или что именно доделать')},['task_id','target_stage','source_message_id','reason']),
  tool('workflow.release_task','По явному сообщению владельца в чате конкретной задачи довести готовый PR до слияния и следующего этапа. Стандартные проверки QA/CI и согласования сохраняются; если этап заблокирован, сообщи точную причину. При automatic можно отправить готовую слитую задачу на выкатку.',{task_id:id,source_message_id:field('string','UUID текущего сообщения владельца в чате задачи')},['task_id','source_message_id']),
  tool('qa.retry','Повторно запустить независимое тестирование уже существующего PR. Используй для конкретной задачи по прямому запросу владельца или после исправления инфраструктурного сбоя. API проверяет статус Temporal, текущий PR, блокировки и запрещает параллельный QA. Не считать перезапуск подтверждением качества.',{task_id:id,idempotency_key:idem},['task_id']),
  tool('approvals.list','Прочитать запросы к владельцу и все открытые вопросы с task_id и note_id независимо от того, открыта ли карточка задачи.',{}),
@@ -85,13 +87,13 @@ export type AgentRole=typeof readerRoles[number];
 export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;processId?:string;actorId?:string};
 
 const readerTools=new Set([
- 'documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related',
- 'tasks.read','processes.list'
+ 'project.context','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
+ 'tasks.list','tasks.read','processes.list'
 ]);
 
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['tasks.create','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency']);
+const BA_DENIED=new Set(['tasks.create','tasks.delete','tasks.cancel','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole,readOnly=false){
  if(readOnly||!['manager','analyst','business_analyst'].includes(role))
