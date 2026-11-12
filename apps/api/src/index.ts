@@ -1737,7 +1737,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    if(source.rows[0].task_id&&source.rows[0].task_id!==taskId)
     throw Object.assign(Error('Нельзя удалять другую задачу по сообщению из этой карточки'),{statusCode:403});
    const text=String(source.rows[0].body||'').trim();
-   if(!/(?:удал(?:и|ить|ите|яй)|delete|remove)/i.test(text)||/(?:не|нельзя|запрещено)\\s+удал/i.test(text))
+   if(!/(?:удал(?:и|ить|ите|яй)|delete|remove)/i.test(text)||/(?:не|нельзя|запрещено)\s+удал/i.test(text))
     throw Object.assign(Error('В сообщении владельца нет явного поручения удалить задачу'),{statusCode:409});
    const token=await accessToken(session.actor_id,user.email);
    const response=await app.inject({method:'DELETE',url:'/api/projects/'+projectId+'/tasks/'+taskId,
