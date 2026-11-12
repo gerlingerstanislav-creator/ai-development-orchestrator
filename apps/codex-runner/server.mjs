@@ -23,6 +23,7 @@ import {buildDeveloperPrompt} from './developer-prompt.mjs';
 import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
 import {parseExistingImplementation,parseNoChangesNeeded} from './development-outcome.mjs';
 import {taskBranchName,ensureTaskBranchHistory} from './task-branch-history.mjs';
+import {discoverProjectCi,classifyProjectCi} from './ci-test-discovery.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -821,10 +822,24 @@ async function runDeterministicCiJob(job,state){
    const syntax=files.filter(x=>/^apps\/(codex-runner|qa-browser)\/.*\.mjs$/.test(x)).slice(0,80);
    for(const filename of syntax){executed++;await run('syntax '+filename,['node','--check',filename],30000);}
   }
-  if(files.some(x=>/^(pyproject.toml|pytest.ini|setup.py)$/.test(x))){executed++;await run('python tests',['python3','-m','pytest','-q'],360000);}
-  if(!executed){checks.push({name:'supported tests',exitCode:1,output:'Нет известных технических проверок для этого проекта'});}
-  state.ciChecks=checks;state.ciVerdict=checks.every(x=>x.exitCode===0)?'passed':'failed';
-  state.status='completed';state.message=state.ciVerdict==='passed'?'Собственный CI: все проверки пройдены':'Собственный CI: обнаружены ошибки';
+  // pytest does not need a pytest.ini or pyproject.toml: tests/test_*.py
+  // is a complete, discoverable suite. Explicit Makefile targets are also
+  // valid. Prefer the project-owned make target when both exist.
+  const makefileName=files.find(file=>['Makefile','GNUmakefile','makefile'].includes(file));
+  const makefile=makefileName?await readFile(join(dir,makefileName),'utf8').catch(()=> ''):'';
+  const discovery=discoverProjectCi(files,makefile);
+  if(discovery.makeTest){executed++;await run('make test',['make','test'],360000);}
+  else if(discovery.pytest){executed++;await run('python tests',['python3','-m','pytest','-q'],360000);}
+  if(!executed){
+   // Absence of a test runner is a capability/configuration gap, NOT an
+   // application defect. Never send the same PR back to the developer
+   // repeatedly for this reason.
+   checks.push({name:'supported tests',exitCode:null,
+    output:'CI_UNSUPPORTED_TESTS: не обнаружены исполняемые проверки проекта. Добавь тестовый скрипт, Makefile target test или pytest suite (tests/test_*.py). До этого CI заблокирован, но реализация не признана дефектной.'});
+  }
+  state.ciChecks=checks;state.ciVerdict=classifyProjectCi(checks,executed);
+  state.status='completed';state.message=state.ciVerdict==='passed'?'Собственный CI: все проверки пройдены':
+   state.ciVerdict==='blocked'?'Собственный CI: требуются исполняемые проверки проекта':'Собственный CI: обнаружены ошибки';
  }finally{
   if(postgresStarted)await command('/usr/lib/postgresql/15/bin/pg_ctl',['-D',postgresData,'stop','-m','immediate','-w'],{
    cwd:workspace,timeout:20000,allowNonzero:true
