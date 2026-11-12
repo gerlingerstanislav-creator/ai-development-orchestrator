@@ -126,7 +126,10 @@ const staleSessionTimer=setInterval(()=>{
 staleSessionTimer.unref();
 async function run(s,body){
  const action=body.action;
- if(action==='close'){await stop(s);return {ok:true};}
+ if(action==='close'||action==='restart'){
+  await stop(s);
+  return {ok:true,restartable:action==='restart'};
+ }
  if(action==='start'){
   if(s.page)return {ok:true,message:'Browser already started',path:s.path};
   try{
