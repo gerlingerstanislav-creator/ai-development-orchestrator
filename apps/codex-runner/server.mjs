@@ -17,6 +17,7 @@ import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext} from './agent-context.mjs';
 import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
+import {parseExistingImplementation} from './development-outcome.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -348,11 +349,7 @@ async function resumePublishedCommit(job,state,git){
  if(!state.checkpoint)return false;
  const remote=(await git('ls-remote','origin','refs/heads/'+job.taskId)).stdout.trim().split(/\s+/)[0];
  const action=recoveryAction(state.checkpoint,remote);
- if(action==='changed')throw Error('Ветка GitHub изменилась после прерывания. Требуется проверка перед повтором.');
- return action==='published';
-}
-
-async function runJob(job,state,context){
+ if(action==='changed')throw Error('Ветка GitHub изменилась после прерывания. async function runJob(job,state,context){
  const deadline=Date.now()+job.maxRuntimeSeconds*1000;
  const timeLeft=()=>Math.max(0,deadline-Date.now());
  let cumulativeUsage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
@@ -396,7 +393,7 @@ async function runJob(job,state,context){
   const prompt=[
    'Ты AI-разработчик, работаешь в настоящей локальной копии GitHub-репозитория.',
    'Рабочая директория является корнем репозитория. У тебя ЕСТЬ доступ на чтение и запись файлов в этой директории.',
-   'ОБЯЗАТЕЛЬНО внеси реальные изменения в файлы, используя доступные инструменты. Одного текстового ответа недостаточно.',
+   'Цель — довести ЭТАП разработки до подтверждаемого соответствия критериям приёмки. Сам реши, нужны ли изменения кода, переиспользование прежнего PR или проверка уже существующей реализации.',
    'Сначала осмотри файлы проекта. Если в репозитории только README или нет исходников, СОЗДАЙ необходимые исходные файлы с нуля.',
    'Для задачи про простую HTML-страницу достаточно index.html со встроенными CSS и JavaScript; не требуется публикация GitHub Pages.',
    'Когда задача требует сайт или страницу, создай работающий HTML/JS/CSS, не ограничивайся рекомендациями.',
@@ -404,7 +401,9 @@ async function runJob(job,state,context){
    'Не трогай секреты, .env, credentials или настройки доступа. Не запускай git push, git commit, git checkout.',
    'Не используй GitHub MCP, GitHub API или другие удалённые инструменты для записи файлов: все изменения выполняй ТОЛЬКО в локальной рабочей папке. За commit, push и PR отвечает оркестратор.',
    'Не изменяй файлы вне рабочей директории. Не устанавливай пакеты из сети.',
-   'Постарайся выполнить задачу полностью. Если требования противоречивы, объясни препятствие.',
+   'Используй инструменты чтения задачи, проектных знаний и истории адресно. Для технических неопределённостей можешь консультироваться с другими специалистами и регистрировать доказанные блокеры. Не считай их закрытыми без подтверждения.',
+   'Если задача полностью реализована в текущей БАЗОВОЙ ветке и правки не нужны, не создавай фиктивные изменения. Заверши строкой RESULT: already_implemented и отдельной строкой IMPLEMENTATION_EVIDENCE: {"summary":"не менее 40 символов, что реализовано","files":["существующий/путь.ext"],"criteria":["критерий и объяснение с привязкой к файлу"]}. Перечисли только реальные отслеживаемые файлы. QA независимо проверит утверждение; отсутствие PR не означает автоматического успеха.',
+   'Если нужны правки, внеси их в доступную рабочую копию. Если задача заблокирована, назови конкретную причину и передай вопрос/блокер подходящему агенту через доступные MCP-инструменты.',
    'Поручение и контекст из общего конструктора: '+String(job.agentPrompt||['Задача: '+job.title+'\n'+job.description,'Инструкции: '+String(job.agentInstructions||'').slice(0,2000),'Правила: '+String(job.projectRules||'').slice(0,1300),'Документация: '+String(job.knowledgeContext||'').slice(0,1700),'Передача: '+String(job.handoffContext||'').slice(0,1100)].join('\n\n')),
    'В конце ответа отдельной строкой укажи HANDOFF_NOTE: <1–3 предложения простым языком для карточки: что изменилось, как это влияет на задачу и что требует внимания>. Если отдельного комментария нет, напиши HANDOFF_NOTE: none. Детали реализации оставь в основном отчёте. Не включай секреты.',
     'Если выявлен один повторно применимый урок для твоей роли, в последней строке укажи LEARNING_SUGGESTION: <конкретное правило с основанием на фактах запуска>; иначе LEARNING_SUGGESTION: none. Это предложение на согласование, не обязательное правило. Не включай секреты или персональные данные.'
@@ -425,23 +424,42 @@ async function runJob(job,state,context){
    state.usage=cumulativeUsage;
    return {result,answer:parsed.message,files:await git('status','--porcelain')};
   };
+  const completeWithoutEdits=async attempt=>{
+   if(attempt.files.stdout.trim())return false;
+   const head=(await git('rev-parse','HEAD')).stdout.trim();
+   const base=(await git('rev-parse','refs/remotes/origin/'+job.baseBranch)).stdout.trim();
+   if(head!==base){
+    // The task branch already contains work by a previous developer. Reuse
+    // its PR rather than fabricating another file modification.
+    const diff=(await git('diff','--name-only','refs/remotes/origin/'+job.baseBranch+'...HEAD')).stdout.trim();
+    if(!diff)throw Error('Ветка отличается от базовой, но изменений для PR не обнаружено');
+    state.prUrl=await ensureTaskPullRequest(job,branch,head,(attempt.answer||'').slice(0,6000));
+    state.branch=branch;state.completionKind='pr';state.status='completed';
+    state.message='Существующие изменения в ветке переданы в PR без нового коммита';
+    return true;
+   }
+   const tracked=(await git('ls-files')).stdout.split(/\r?\n/).filter(Boolean);
+   const evidence=parseExistingImplementation(attempt.answer||'',{baseSha:base,headSha:head,trackedFiles:tracked});
+   if(!evidence)return false;
+   state.completionKind='already_implemented';
+   state.verifiedCommit=head;
+   state.implementationEvidence=evidence;
+   state.branch=job.baseBranch;
+   state.prUrl=null;
+   state.handoffNote=evidence.summary;
+   state.status='completed';
+   state.message='Разработчик подтвердил существующую реализацию в базовой ветке. Требуется независимый QA.';
+   return true;
+  };
   let attempt=await runCodex(prompt);
   if(!attempt.files.stdout.trim()){
-   if(timeLeft()<45000)throw new Error('Codex завершил первую попытку без изменений. Недостаточно времени для повторного запуска.');
-   const assistantText=(attempt.answer||'').slice(-1500);
-   const diagnostics=(attempt.result.stderr||'').slice(-1200);
-   state.message='Файлы не изменились. Повторная попытка с явным требованием изменить репозиторий.';
-   // One focused retry handles cases where Codex interpreted the task as a request
-   // for advice rather than a request to create real source files.
-   attempt=await runCodex(prompt+'\n\nПОВТОРНЫЙ ЗАПУСК: предыдущий ответ не изменил ни одного файла. '+ 
-    'Создай или отредактируй исходные файлы прямо сейчас. Не отвечай без фактических изменений. '+ 
-    'Предыдущий ответ: '+assistantText.slice(-800));
+   if(await completeWithoutEdits(attempt))return;
+   if(timeLeft()<45000)throw Error('Не представлены ни изменения, ни подтверждение готовой реализации; времени на повторную попытку недостаточно');
+   state.message='Уточняет результат разработки: изменения, повторное использование PR или доказательство готового кода';
+   attempt=await runCodex(prompt+'\n\nПовторная попытка: докажи существующую реализацию с RESULT и IMPLEMENTATION_EVIDENCE, либо сделай действительно необходимые изменения. Не меняй файлы только ради коммита. Предыдущий ответ: '+String(attempt.answer||'').slice(-1100));
    if(!attempt.files.stdout.trim()){
-    const finalText=(attempt.answer||'').slice(-1600).replaceAll(job.token,'[REDACTED]');
-    const finalErrors=(attempt.result.stderr||diagnostics).slice(-900).replaceAll(job.token,'[REDACTED]');
-    throw new Error('Codex не изменил файлы после двух попыток. '+
-     'Ответ модели: '+(finalText||assistantText||'нет текста')+
-     (finalErrors?' | Диагностика: '+finalErrors:''));
+    if(await completeWithoutEdits(attempt))return;
+    throw Error('Агент не представил изменений или проверяемого доказательства уже реализованной задачи: '+String(attempt.answer||'').slice(-1300));
    }
   }
   assertJobActive(job.id);
@@ -468,7 +486,7 @@ async function runJob(job,state,context){
   const prBody=String(attempt.answer||'').replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();
   const prUrl=await ensureTaskPullRequest(job,branch,commit,prBody||'Изменения подготовлены.');
   assertJobActive(job.id);
-  state.prUrl=prUrl;state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
+  state.prUrl=prUrl;state.completionKind='pr';state.status='completed';state.message='Pull Request создан. Проверь изменения перед слиянием.';
  }catch(e){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);}
  }finally{
@@ -494,6 +512,7 @@ async function auditCodexPrompt(job,role,prompt){
 
 // A first-pass AI test agent runs within the disposable Codex container.
 // No persistent environment provisioning or Docker socket is exposed to it.
+persistent environment provisioning or Docker socket is exposed to it.
 async function runTestJob(job,state,context){
  // Every attempt gets a fresh browser identity, even when the durable QA job ID
  // is retried. The browser host may still hold an orphan from an earlier run.
