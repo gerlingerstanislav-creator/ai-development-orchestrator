@@ -19,7 +19,8 @@ try{
  await writeFile(join(repo,'index.html'),'<!doctype html><title>QA browser smoke</title>'+fixture);
  assert.equal(await browserHealth(),true,'Chromium must actually launch, not just exist in PATH');
  const session=openQaBrowserSession(id);
- assert.equal((await call(session,'start')).ok,true);
+ const started=await call(session,'start');
+ assert.equal(started.ok,true,'Browser start failed: '+JSON.stringify(started));
  await writeFile(join(repo,'.ado-browser-session.json'),JSON.stringify(session));
  const policy=await createTaskPolicy(root,{qa:true});
  const command=spawn('codex',[...policy.sandboxArgs,'--','node','/opt/codex-runner/browser-client.mjs','assert','document.querySelectorAll(".circle").length === 10'],{
