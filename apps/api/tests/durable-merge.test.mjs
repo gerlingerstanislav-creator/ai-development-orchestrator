@@ -74,8 +74,9 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
  };
  const service=createMergeService(db,()=> 'fake-token');
  const attempt=()=>service.mergeTaskPr(project,parent,actor);
- await assert.rejects(attempt,/Аналитик не сверил/);
- await db.query('UPDATE tasks SET spec_reviewed_commit=$2 WHERE id=$1',[parent,headSha]);
+ // The analyst approved the task before development. A new model review of
+ // the exact PR SHA is NOT a merge precondition. QA and CI still are.
+ await db.query("UPDATE tasks SET spec_review_status='pending',spec_reviewed_version=0,spec_reviewed_commit='' WHERE id=$1",[parent]);
  await assert.rejects(attempt,/Нет QA-плана/);
  const planHash='qa-plan-hash';
  await db.query('INSERT INTO qa_test_plans VALUES($1,$2,$3,1,$4)',[randomUUID(),project,parent,planHash]);
