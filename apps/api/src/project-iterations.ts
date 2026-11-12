@@ -397,7 +397,7 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
   const taskId=ids.get(item.key)!;
   await db.query(`INSERT INTO tasks(id,project_id,title,description,type,stage,analysis_state,parent_id,position,iteration_id,iteration_item_key,iteration_work_kind,tags)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-   [taskId,projectId,item.title,item.description,item.parent?'task':'epic',item.parent?'analysis':'backlog',item.kind==='development'?'ready_for_development':'new',item.parent?ids.get(item.parent):null,position++,id,item.key,item.kind??null,item.tags??[]]);
+   [taskId,projectId,item.title,item.description,item.parent?'task':'epic',item.parent?'analysis':'backlog','new',item.parent?ids.get(item.parent):null,position++,id,item.key,item.kind??null,item.tags??[]]);
   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'created',$4)",
    [randomUUID(),taskId,actorId,'Создана карточка из плана разработки']);
  }
@@ -425,7 +425,7 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
  // Questions are notes of real work items; never create analysis-only cards.
  for(const clarification of clarifications){
   const target=items.find(item=>item.parent===clarification.epicKey);
-  if(!target)continue;
+  if(!target)throw problem(409,'Эпик содержит вопросы без задачи реализации; создай основную задачу, которая сначала пройдёт анализ');
   const taskId=ids.get(target.key)!;
   await db.query(`INSERT INTO task_agent_notes
    (id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status,requires_customer)
