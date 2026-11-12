@@ -4,7 +4,7 @@
  * case if there is no browser/visual test tool in the actual runner.
  */
 export type VisualCase={id:string;title?:string;description?:string;area?:string;execution_mode?:string;steps?:Array<{action?:string;expected?:string}>};
-export type ReportedCase={case_id:string;result:string;reason:string;evidence:string};
+export type ReportedCase={case_id:string;result:string;reason:string;evidence:string;browserVerified?:boolean};
 export function isVisualAcceptanceCase(test:VisualCase):boolean{
  const content=[test.title,test.description,test.area,...(test.steps||[]).flatMap(x=>[x.action,x.expected])].join(' ');
  return /(визуальн|отображен|выгляд|интерфейс|кнопк|расположен|окружност|стрелк|фигур|цвет|адаптив|скриншот|браузер|отрисов|верстк|перекрыв|размер(?:а|ов)? экрана|ui\b|css\b|canvas|svg|pixel|layout|render|click|responsive|screenshot|viewport|scroll)/i.test(content);
@@ -20,7 +20,7 @@ export function checkedWithActualCapabilities(
  const cases=expected.map(test=>{
   const current=byId.get(test.id)||{case_id:test.id,result:'not_run',reason:'unknown',evidence:'Нет подтверждённого результата'};
   if(current.result==='passed'&&isVisualAcceptanceCase(test)&&browserPresent(capabilities)
-    &&!(current.reason==='executed'&&/\/opt\/codex-runner\/browser-client\.mjs\s+assert\b/.test(current.evidence))){
+    &&!(current.reason==='executed'&&current.browserVerified===true)){
    visualToolGap=true;
    return {case_id:test.id,result:'blocked',reason:'unverified',
     evidence:'Chromium доступен, но для визуального критерия «'+String(test.title||test.id).slice(0,130)+'» нет подтверждённой выполненной browser-client assert-команды. Нужна повторная браузерная проверка.'};
