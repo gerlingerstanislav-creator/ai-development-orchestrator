@@ -873,12 +873,12 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
-    tools:'MCP orchestrator: tasks.read, processes.list, approvals.list, workflow.release_task и остальные разрешённые инструменты ПМ. Только при прямом поручении владельца применяй workflow.release_task с task_id и source_message_id текущего сообщения. Сервер проверяет согласования, QA, CI, SHA и режим выкладки. Не называй отправку на выкатку завершённой, пока инструмент её не подтвердил.',
+    tools:'MCP orchestrator: tasks.read, approvals.list, approvals.answer_question, approvals.deliver_task_answer, workflow.release_task и остальные разрешённые инструменты ПМ. Если владелец уточнил требования, передай его текущее исходное сообщение аналитику через approvals.deliver_task_answer с task_id и source_message_id. Даже старую карточку без ID вопросов можно вернуть на повторный анализ. При просьбе слить PR используй workflow.release_task. Не утверждай, что доступно лишь чтение, пока не проверил реально доступные инструменты.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
     scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,1000):'',
-    output:'Отвечай по-русски с Markdown-абзацами и списками по необходимости. При просьбе продвинуть задачу обязательно вызови подходящий инструмент и сообщи подтверждённый результат, либо конкретную причину блокировки. QA blocked не равно passed. Не выдавай отправку в очередь за фактически завершённую выкладку.'
+    output:'Отвечай по-русски с Markdown-абзацами и списками. Если задача ожидает требований, не заставляй владельца повторять уже данный ответ: используй tools для передачи сохранённого сообщения. При просьбе продвинуть задачу вызывай инструмент, сообщай подтверждённый результат или точную причину блокировки. QA blocked не равно passed. Очередь выкладки ещё не означает успешный деплой.'
    });
    const mentionedAgent=await resolveAgentMention(pool,projectId,String(msg.rows[0].body));
    const directPrompt=mentionedAgent?composeAgentPrompt({
