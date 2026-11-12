@@ -4,9 +4,22 @@
 //        node .../browser-client.mjs viewport 390 844
 //        node .../browser-client.mjs screenshot
 import {readFile} from 'node:fs/promises';
-const [action,...args]=process.argv.slice(2);
+// Optional --case UUID / --check slug attaches a verified Chromium assertion
+// to a single QA scenario. Positional placement is accepted before or after assert.
+const input=process.argv.slice(2);
+let qaKind='',qaId='';
+for(const flag of ['--case','--check']){
+ const index=input.indexOf(flag);
+ if(index>=0){
+  if(qaKind||!input[index+1])throw Error('Invalid QA evidence identity');
+  qaKind=flag.slice(2);qaId=input[index+1];
+  input.splice(index,2);
+ }
+}
+const [action,...args]=input;
+if(qaKind&&action!=='assert')throw Error('Evidence ID requires an assert action');
 const session=JSON.parse(await readFile('.ado-browser-session.json','utf8'));
-const body={...session,action};
+const body={...session,action,...(qaKind?{qaKind,qaId}:{})};
 if(action==='goto')body.path=args[0]||'/';
 else if(action==='viewport'){body.width=Number(args[0]);body.height=Number(args[1]);}
 else if(action==='click'||action==='count'||action==='text')body.selector=args[0];
