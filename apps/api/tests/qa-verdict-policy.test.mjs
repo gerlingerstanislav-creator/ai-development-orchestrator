@@ -34,7 +34,7 @@ test('verified nonvisual QA checks pass with preserved report shape and commit',
  assert.equal(result.report.staleSpecification,false);
 });
 test('missing execution evidence never counts as a passed QA test',()=>{
- const short=run({caseResults:[{case_id:'qa-1',result:'passed',reason:'executed',evidence:'looks fine'}]});
+ const short=run({caseResults:[{case_id:'qa-1',result:'passed',reason:'executed',evidence:'ok'}]});
  assert.equal(short.verdict,'blocked');
  assert.equal(short.checked[0].result,'blocked');
  const missing=run({caseResults:[]});
