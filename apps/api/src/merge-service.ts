@@ -21,11 +21,13 @@ async function requireQaForMerge(db:Pick<Pool,'query'>,projectId:string,taskId:s
  if(snapshot.singlePass===true&&run.report.executionVerified!==true)
   throw Object.assign(Error('Runner не подтвердил результаты QA. Повторите проверку.'),{statusCode:409});
  if(run.verdict==='blocked'){
-  if(run.qa_plan_snapshot?.simplified===true&&qaWaiverAssessment(run).eligible)return;
+  const assessment=qaWaiverAssessment(run);
+  const missingQa=()=>Object.assign(Error('Сценарии QA не подтверждены. Проверьте доступность среды или согласуйте допустимое исключение в карточке задачи.'),{statusCode:409});
+  if(!assessment.eligible)throw missingQa();
+  if(snapshot.simplified===true)return;
   const waiver=(await db.query('SELECT commit_sha,spec_version FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 AND test_run_id=$3',
    [projectId,taskId,run.id])).rows[0];
-  if(!waiver||!qaWaiverAssessment(run).eligible||waiver.commit_sha!==headSha||waiver.spec_version!==spec.spec_version)
-   throw Object.assign(Error('Сценарии QA не подтверждены. Проверьте доступность среды или согласуйте допустимое исключение в карточке задачи.'),{statusCode:409});
+  if(!waiver||waiver.commit_sha!==headSha||waiver.spec_version!==spec.spec_version)throw missingQa();
  }else if(run.verdict!=='passed'){
   throw Object.assign(Error('Тестировщик выявил дефекты или проверка не завершена. Слияние запрещено.'),{statusCode:409});
  }
