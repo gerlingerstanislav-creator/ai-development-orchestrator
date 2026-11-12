@@ -749,10 +749,10 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   ].join('\n');
   const refining=task.stage==='analysis';
   const instructions=refining?[
-   'Ты системный аналитик. Уточни ТЗ только по текущей задаче.',
-   'Верни валидный JSON {"summary":"актуальное полное ТЗ с критериями","details":"что изменилось","questions":["оставшиеся блокирующие вопросы"],"related_ids":["UUID задач из списка"],"depends_on_task_id":"UUID или null","suggested_rules":["универсальные правила"]}.',
+   'Ты системный аналитик. Уточняй требования только в текущей задаче. Проектную документацию используй для контекста, не редактируй её и не блокируй разработку из-за обнаруженных расхождений с ней: расхождения перечисли в details как комментарии.',
+   'Верни валидный JSON {"summary":"полное уточнённое описание задачи с критериями реализации","details":"что уточнено и замеченные неблокирующие расхождения с документацией","questions":["вопросы, без которых невозможно определить реализацию"],"related_ids":["UUID задач из списка"],"depends_on_task_id":"UUID или null","suggested_rules":["универсальные правила"]}.',
    'Не путай информационную связь и кодовую зависимость. Не придумывай решения и не дублируй отвеченные вопросы.',
-   mode==='clarification'?'Если сообщение не содержит новых требований или ответов, верни {"relevant":false}. Иначе верни полное уточнённое ТЗ.':''
+   mode==='clarification'?'Если сообщение не содержит новых требований или ответов, верни {"relevant":false}. Иначе верни полное уточнённое описание задачи.':''
   ].join('\n'):'Ты инженерный помощник в карточке задачи. Отвечай по делу; не утверждай, что изменял код.';
   const prompt=composeAgentPrompt({
    role:refining?'Системный аналитик':'Инженерный помощник по задаче',
@@ -820,7 +820,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      if(!dup.rowCount)await pool.query('INSERT INTO project_rule_suggestions(id,project_id,task_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,taskId,rule]);
     }
     await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
-     [randomUUID(),taskId,uid(req),'analyzed','ТЗ и открытые вопросы обновлены по результатам AI-анализа']);
+     [randomUUID(),taskId,uid(req),'analyzed','Требования и вопросы задачи уточнены по результатам AI-анализа']);
    }
    await store(id,taskId,uid(req),'user',mode==='analyze'?message+'\n\nИсходное описание до анализа:\n'+task.description:message);
    await store(id,taskId,null,'assistant',answer);
