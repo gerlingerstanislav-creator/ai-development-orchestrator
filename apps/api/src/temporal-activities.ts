@@ -1,3 +1,4 @@
+import {createRunnerHttpClient} from './infrastructure/runner-http-client.js';
 import {preserveAcceptanceCriteria} from './acceptance-criteria.js';
 import {type AgentReaderScope} from './agent-tools.js';
 import {composeAgentPrompt,agentPromptZones,recordAgentPrompt} from './agent-prompt.js';
@@ -60,15 +61,10 @@ function decrypt(packed:string):string{
  d.setAuthTag(bytes.subarray(12,28));
  return Buffer.concat([d.update(bytes.subarray(28)),d.final()]).toString('utf8');
 }
-async function runner(path:string,method:'GET'|'POST'='GET',body?:unknown):Promise<any>{
- const response=await fetch(codexUrl+path,{method,headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-  body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(25000)});
- const data=await response.json().catch(()=>({})) as any;
- if(!response.ok){
-  const error=Object.assign(new Error(String(data.error||'Codex runner error')),{statusCode:response.status});
-  throw error;
- }
- return data;
+// Keep the existing caller-facing shape until activities adopt typed job DTOs.
+const runnerRequest=createRunnerHttpClient({baseUrl:codexUrl,secret:runnerKey});
+function runner(path:string,method:'GET'|'POST'='GET',body?:unknown):Promise<any>{
+ return runnerRequest(path,method,body);
 }
 function runnerUnavailable(error:unknown){
  const status=(error as {statusCode?:number})?.statusCode;

@@ -45,6 +45,7 @@ jobs:
           node --check apps/qa-browser/browser-smoke.mjs
           node --test apps/codex-runner/job-scheduler.test.mjs apps/codex-runner/agent-context.test.mjs apps/codex-runner/browser-gateway.test.mjs apps/codex-runner/development-outcome.test.mjs apps/codex-runner/qa-run-evidence.test.mjs apps/codex-runner/qa-completion.test.mjs apps/codex-runner/prompt-assembler.test.mjs
           node --test apps/api/tests/agent-task-reader.test.mjs
+          node --test apps/api/tests/runner-http-client.test.mjs
           node --test --test-concurrency=1 apps/api/tests/development-queue.test.mjs apps/api/tests/project-agent-parallelism.test.mjs apps/api/tests/autonomous-agent-tools.test.mjs
 
   codex-runner-image:
