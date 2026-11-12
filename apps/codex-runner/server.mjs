@@ -1,4 +1,5 @@
 import http from 'node:http';
+import {createCommandExecutor} from './command-executor.mjs';
 import net from 'node:net';
 import tls from 'node:tls';
 import { spawn, execFile } from 'node:child_process';
@@ -228,33 +229,7 @@ function authorized(req){
  const a=Buffer.from(supplied),b=Buffer.from(jobKey);
  return a.length===b.length && timingSafeEqual(a,b);
 }
-function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId,allowNonzero=false}={}){
- return new Promise((resolve,reject)=>{
-  if(jobId)assertJobActive(jobId);
-  const child=spawn(binary,args,{cwd,env:{...baseEnv,...env},stdio:['ignore','pipe','pipe'],detached:true});
-  if(jobId)jobChildren.set(jobId,child);
-  let output='',errors='',done=false,timedOut=false;
-  const timer=setTimeout(()=>{timedOut=true;stopCommand(child);},timeout);
-  child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
-  child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
-  const secret=env?.ADO_AGENT_SESSION_TOKEN;
-  const redact=value=>secret?value.replaceAll(secret,'[REDACTED]'):value;
-  const settle=(err,exitCode)=>{
-   if(done)return;done=true;clearTimeout(timer);
-   if(jobId&&jobChildren.get(jobId)===child)jobChildren.delete(jobId);
-   if(err)reject(err);else resolve({stdout:redact(output),stderr:redact(errors),exitCode});
-  };
-  child.on('error',settle);
-  child.on('close',(code)=>{
-   if(timedOut)return settle(new Error(binary+' превысил ограничение времени'));
-   if(code===null||code!==0&&!allowNonzero){
-    const detail=binary==='codex'?codexFailureDetail(redact(output),redact(errors)):errors.slice(-1200);
-    return settle(new Error(binary+' завершился с кодом '+code+': '+(detail||'Codex CLI не вернул причину ошибки. Проверь авторизацию Codex и подробный журнал Runner.')));
-   }
-   settle(undefined,code);
-  });
- });
-}
+const command=createCommandExecutor({baseEnv,assertJobActive,jobChildren,stopCommand,codexFailureDetail});
 async function isolatedTaskPolicy(workdir,dir,jobId,writable=true,qa=false){
  const policy=await createTaskPolicy(workdir,{writable,qa});
  try{await command('codex',[...policy.sandboxArgs,'--','/bin/true'],{cwd:dir,env:cliEnv,jobId,timeout:15000});}
