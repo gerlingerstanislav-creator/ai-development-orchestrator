@@ -1,3 +1,4 @@
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
@@ -101,8 +102,7 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
    WHERE g.project_id=q.project_id AND c.provider='github_token') THEN 'github'
   WHEN t.type IN ('epic','question') OR t.stage NOT IN ('analysis','development') THEN 'stage'
   WHEN COALESCE(jsonb_array_length(t.clarification_questions),0)>0 OR EXISTS(
-   SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id AND n.kind='question'
-    AND n.status IN ('open','processing')) THEN 'questions'
+   SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id AND ${PENDING_OWNER_QUESTION_SQL}) THEN 'questions'
   -- Pre-development is gated only by this task's completed analysis and
   -- unanswered owner questions. Documentation drift is advisory, not a blocker.
   WHEN (t.stage='analysis' AND t.analysis_state<>'ready_for_development')
