@@ -729,7 +729,7 @@ async function runDeterministicCiJob(job,state){
   const pkg=has('package.json')?JSON.parse(await readFile(join(dir,'package.json'),'utf8')):null;
   // A fresh PostgreSQL cluster is local to THIS CI job, socket-only, and erased on exit.
   // Never point arbitrary project tests at the application's real DATABASE_URL.
-  const packages=await Promise.all(files.filter(file=>/(^|\\/)package\\.json$/.test(file)).slice(0,30)
+  const packages=await Promise.all(files.filter(file=>file==='package.json'||file.endsWith('/package.json')).slice(0,30)
    .map(async file=>readFile(join(dir,file),'utf8').then(JSON.parse).catch(()=>null)));
   const needsPg=packages.some(x=>x&&(x.dependencies?.pg||x.devDependencies?.pg));
   if(needsPg){
