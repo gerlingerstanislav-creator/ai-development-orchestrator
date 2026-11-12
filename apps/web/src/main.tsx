@@ -1,3 +1,6 @@
+import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.js';
+import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/AgentPromptDisclosure.js';
+import {parseAppRoute,projectUrl,uuidPattern,type ProjectSection,type AppRoute} from './features/navigation/routes.js';
 import {api,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
@@ -72,7 +75,6 @@ type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'devel
 type DocumentationQuestion={id:string;topic_key:string;question:string;status:'open'|'answered';answer:string|null;document_id:string;document_title:string;created_at:string};
 type DocumentationProposal={id:string;job_id:string;topic_key:string;document_id:string;title:string;proposed_body:string;status:string;document_title:string};
 type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
-type AgentPromptAudit={id:string;role:string;operation:string;prompt:string;original_chars:number;truncated:boolean;created_at:string};
 function compactProcessDescription(detail:string):string{
  const normalized=detail.replace(/\s+/g,' ').trim();
  if(!normalized)return 'Подробности доступны справа.';
@@ -103,141 +105,7 @@ type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:s
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const defaultStages=['backlog','analysis','development','testing','merge_queue','deployment','documentation','done'];
 
-function markdownInline(source:string):React.ReactNode[]{
- const pattern=/(\[([^\]]+)\]\((https?:\/\/[^ )]+)\)|\*\*([^*]+)\*\*|\x60([^\x60]+)\x60)/g;
- const nodes:React.ReactNode[]=[];
- let last=0,match:RegExpExecArray|null;
- while((match=pattern.exec(source))!==null){
-  if(match.index>last)nodes.push(source.slice(last,match.index));
-  if(match[2]&&match[3])nodes.push(<a key={match.index} href={match[3]} target="_blank" rel="noopener noreferrer">{match[2]}</a>);
-  else if(match[4])nodes.push(<strong key={match.index}>{match[4]}</strong>);
-  else if(match[5])nodes.push(<code key={match.index}>{match[5]}</code>);
-  last=pattern.lastIndex;
- }
- if(last<source.length)nodes.push(source.slice(last));
- return nodes;
-}
-function AgentPromptDisclosure({projectId,processId}:{projectId:string;processId:string}){
- const [entries,setEntries]=useState<AgentPromptAudit[]|null>(null);
- const [loading,setLoading]=useState(false);
- const [error,setError]=useState('');
- const load=async()=>{
-  setLoading(true);setError('');
-  try{const result=await api<{prompts:AgentPromptAudit[]}>('/projects/'+projectId+'/processes/'+processId+'/prompts');setEntries(result.prompts);}
-  catch(e){setError(e instanceof Error?e.message:'Не удалось получить инструкции');}
-  finally{setLoading(false);}
- };
- const initial=entries?.length?[...entries].sort((a,b)=>a.created_at.localeCompare(b.created_at))[0]:null;
- return <details className="agent-prompt-disclosure" onToggle={event=>{if(event.currentTarget.open)void load();}}>
-  <summary>Посмотреть инструкции агента</summary>
-  {loading&&<small className="muted">Загрузка инструкций…</small>}
-  {!loading&&error&&<small className="muted">{error}</small>}
-  {!loading&&!error&&entries?.length===0&&<small className="muted">Промпт этого запуска не сохранён.</small>}
-  {initial&&!loading&&<div className="agent-prompt-detail">
-   <small className="muted">Первоначальный запрос · {new Date(initial.created_at).toLocaleString('ru-RU')} · {initial.original_chars} символов</small>
-   <pre>{initial.prompt}</pre>
-   {entries&&entries.length>1&&<details className="agent-prompt-retries"><summary>Последующие запросы ({entries.length-1})</summary>
-    {[...entries].sort((a,b)=>a.created_at.localeCompare(b.created_at)).slice(1).map(entry=><div key={entry.id}><small>{entry.operation} · {new Date(entry.created_at).toLocaleString('ru-RU')}</small><pre>{entry.prompt}</pre></div>)}
-   </details>}
-  </div>}
- </details>;
-}
-function pmDisplayText(source:string){
- // Historic PM responses may contain obsolete, unsupported pseudo-links.
- // Keep their labels, not misleading paths that have no application route.
- return source.replace(/\[([^\]]+)\]\(orchestrator:\/\/[^)]+\)/gi,'$1');
-}
-function DocumentMarkdown({source}:{source:string}){
- const rows=source.replace(/\r\n/g,'\n').split('\n');
- const result:React.ReactNode[]=[];
- let index=0;
- while(index<rows.length){
-  const line=rows[index];
-  if(!line.trim()){index++;continue;}
-  if(/^\s*\x60{3}/.test(line)){
-   const language=line.trim().slice(3);
-   const code:string[]=[];
-   index++;
-   while(index<rows.length&&!/^\s*\x60{3}/.test(rows[index]))code.push(rows[index++]);
-   if(index<rows.length)index++;
-   result.push(<pre key={'block-'+index} className="docs-code"><code data-language={language}>{code.join('\n')}</code></pre>);
-   continue;
-  }
-  const heading=/^(#{1,6})\s+(.+)$/.exec(line);
-  if(heading){
-   const level=heading[1].length;
-   const contents=markdownInline(heading[2]);
-   const props={key:'heading-'+index,className:'docs-heading docs-h'+level};
-   result.push(level===1?<h1 {...props}>{contents}</h1>:level===2?<h2 {...props}>{contents}</h2>:level===3?<h3 {...props}>{contents}</h3>:<h4 {...props}>{contents}</h4>);
-   index++;continue;
-  }
-  if(line.trim().startsWith('|')&&index+1<rows.length&&
-     /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(rows[index+1])){
-   const cells=(value:string)=>value.trim().replace(/^\|/,'').replace(/\|$/,'').split('|').map(x=>x.trim());
-   const headings=cells(line);
-   index+=2;
-   const content:React.ReactNode[]=[];
-   while(index<rows.length&&rows[index].trim().startsWith('|')){
-    const values=cells(rows[index]);
-    content.push(<tr key={'row-'+index}>{headings.map((_,col)=><td key={col}>{markdownInline(values[col]||'')}</td>)}</tr>);
-    index++;
-   }
-   result.push(<div key={'table-'+index} className="docs-table-wrap"><table><thead><tr>{headings.map((h,col)=><th key={col}>{markdownInline(h)}</th>)}</tr></thead><tbody>{content}</tbody></table></div>);
-   continue;
-  }
-  if(/^\s*([-*+] |\d+\. )/.test(line)){
-   const ordered=/^\s*\d+\. /.test(line);
-   const items:React.ReactNode[]=[];
-   while(index<rows.length&&/^\s*([-*+] |\d+\. )/.test(rows[index])){
-    items.push(<li key={'li-'+index}>{markdownInline(rows[index].replace(/^\s*(?:[-*+] |\d+\. )/,''))}</li>);
-    index++;
-   }
-   result.push(ordered?<ol key={'list-'+index}>{items}</ol>:<ul key={'list-'+index}>{items}</ul>);
-   continue;
-  }
-  if(/^\s*>\s?/.test(line)){
-   const text:string[]=[];
-   while(index<rows.length&&/^\s*>\s?/.test(rows[index]))text.push(rows[index++].replace(/^\s*>\s?/,''));
-   result.push(<blockquote key={'quote-'+index}>{text.map((x,i)=><React.Fragment key={i}>{i>0&&' '}{markdownInline(x)}</React.Fragment>)}</blockquote>);
-   continue;
-  }
-  if(/^\s*(?:-{3,}|\*{3,})\s*$/.test(line)){result.push(<hr key={'hr-'+index}/>);index++;continue;}
-  const paragraphs:string[]=[];
-  while(index<rows.length&&rows[index].trim()&&!/^(#{1,6})\s+/.test(rows[index])&&!/^\s*\x60{3}/.test(rows[index])&&!/^\s*([-*+] |\d+\. )/.test(rows[index])&&!/^\s*>\s?/.test(rows[index])){
-   paragraphs.push(rows[index++]);
-  }
-  if(paragraphs.length)result.push(<p key={'p-'+index}>{paragraphs.map((text,i)=><React.Fragment key={i}>{i>0&&' '}{markdownInline(text)}</React.Fragment>)}</p>);
- }
- return <article className="docs-markdown">{result}</article>;
-}
-
 const workflowRoleLabels:Record<string,string>={manager:'ПМ',analyst:'Аналитик BA/SA',platform:'Система',analysis:'Аналитик BA/SA',development:'Разработчик',testing:'QA',documentation:'Технический писатель',devops:'DevOps',architect:'Архитектор'};
-type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'workflow'|'settings';
-type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string;planning?:boolean;iterationId?:string};
-const uuidPattern=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-function parseAppRoute(pathname:string):AppRoute{
- const parts=pathname.split('/').filter(Boolean);
- if(parts.length===0||parts.length===1&&parts[0]==='projects')return {kind:'projects'};
- if(parts.length===2&&parts[0]==='account'&&parts[1]==='settings')return {kind:'account'};
- if(parts[0]==='projects'&&parts.length>=2&&uuidPattern.test(parts[1])){
-  const projectId=parts[1];
-  if(parts.length===2)return {kind:'project',projectId,section:'tasks'};
-  if(parts.length===3&&['overview','tasks','plan','docs','qa','processes','team','workflow','settings'].includes(parts[2]))
-   return {kind:'project',projectId,section:parts[2] as ProjectSection};
-  if(parts.length===4&&parts[2]==='tasks'&&uuidPattern.test(parts[3]))
-   return {kind:'project',projectId,section:'tasks',taskId:parts[3]};
-  if(parts[2]==='plan'&&parts.length===4&&uuidPattern.test(parts[3]))
-   return {kind:'project',projectId,section:'plan',planning:true,iterationId:parts[3]};
-  if(parts[2]==='docs'&&parts[3]==='plan'&&(parts.length===4||parts.length===5&&uuidPattern.test(parts[4])))
-   return {kind:'project',projectId,section:'plan',planning:true,iterationId:parts[4]};
-  if(parts.length===4&&parts[2]==='docs'&&uuidPattern.test(parts[3]))
-   return {kind:'project',projectId,section:'docs',docId:parts[3]};
- }
- return {kind:'not-found'};
-}
-function projectUrl(projectId:string,section:ProjectSection='tasks'){
- return '/projects/'+encodeURIComponent(projectId)+'/'+section;
-}
 function App(){
  const [token,setToken]=useState(sessionStorage.getItem(key)||'');
  useEffect(()=>{
