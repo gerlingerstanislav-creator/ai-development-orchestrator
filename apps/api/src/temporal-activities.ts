@@ -737,7 +737,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const qaPromptParts={
   role:String(agentSettings.find((s:any)=>s.stage==='testing')?.agent_name||'AI-тестировщик'),
   objective:'Независимо проверь задачу: '+task.title+'\n'+String(task.description||'').slice(0,6500),
-  tools:'Изолированная копия репозитория, команды npm/pytest/API и локальный HTTP-сервер. Если браузера нет, визуальные проверки помечай blocked, не выдумывай результаты.',
+  tools:'Изолированная копия репозитория, команды npm/pytest/API, локальный HTTP-сервер и разрешённые MCP-инструменты.',
   instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
   scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||'')+
    (reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
