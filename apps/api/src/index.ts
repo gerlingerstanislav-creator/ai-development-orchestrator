@@ -1,3 +1,6 @@
+import {initEpicStageSync} from './epic-stage-sync.js';
+import {initAnalysisFirstGate} from './analysis-first-gate.js';
+import {formatQaReportMessage,qaEventDetail} from './qa-report-message.js';
 import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
@@ -1398,11 +1401,11 @@ app.get('/api/projects/:id/tasks/:taskId/activity',async(req:any,reply)=>{
   pool.query('SELECT id,event,detail,created_at FROM task_events WHERE task_id=$1 ORDER BY created_at DESC LIMIT 200',[taskId]),
   pool.query("SELECT p.id,p.process_kind,p.stage,p.detail,p.level,p.created_at FROM process_events p WHERE p.project_id=$1 AND p.process_id IN (SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 UNION SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2) ORDER BY p.created_at DESC,p.id DESC LIMIT 250",[id,taskId]),
   pool.query('SELECT owner_id,kind,workflow_id,state,started_at FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2',[id,taskId]),
-  pool.query('SELECT id,task_id,cycle_id,attempt,status,message,verdict,report,created_at,completed_at,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 30',[id,taskId]),
+  pool.query('SELECT id,task_id,cycle_id,attempt,status,message,verdict,report,qa_plan_snapshot,created_at,completed_at,qa_spec_version FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 30',[id,taskId]),
   pool.query('SELECT id,author_stage,author_name,target_stage,kind,body,source_kind,status,answer,answered_at,created_at FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 200',[id,taskId]),
   readAgentActivity(pool,id,taskId)
  ]);
- return {events:events.rows,processEvents:processes.rows,agentRuns,owner:ownership.rows[0]?.state==='active'?ownership.rows[0]:null,tests:tests.rows,notes:notes.rows};
+ return {events:events.rows,processEvents:processes.rows.map(row=>({...row,detail:row.process_kind==='testing'?qaEventDetail(row.detail):row.detail})),agentRuns,owner:ownership.rows[0]?.state==='active'?ownership.rows[0]:null,tests:tests.rows.map(run=>({...run,human_report:['completed','failed'].includes(run.status)?formatQaReportMessage(run):null})),notes:notes.rows};
 });
 const docParent = z.string().uuid().nullable().optional();
 async function validDocParent(projectId:string, docId:string|null, parentId:string|null) {
@@ -1704,6 +1707,45 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
   const taskId=id.parse(args.task_id);
  const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
  if(!task)throw Object.assign(Error('Задача не найдена'),{statusCode:404});
+ if(name==='workflow.release_task'){
+  // Only the owner who is currently speaking in this task can authorize a release.
+  const sourceMessageId=id.parse(args.source_message_id);
+  const isOwner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
+  const message=await pool.query("SELECT 1 FROM manager_messages WHERE id=$1 AND project_id=$2 AND task_id=$3 AND actor_id=$4 AND role='user' AND status='processing'",
+   [sourceMessageId,projectId,taskId,session.actor_id]);
+  if(!isOwner.rowCount||!message.rowCount)throw Object.assign(Error('Для перехода требуется явное текущее поручение владельца в этой задаче'),{statusCode:403});
+  if(task.stage==='testing'){
+   const last=(await pool.query('SELECT status,verdict,report FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[projectId,taskId])).rows[0];
+   return {status:'blocked',stage:'testing',reason:last?.verdict==='blocked'
+    ?'QA не подтвердил все тест-кейсы. В карточке задачи нужно явно согласовать исключения или настроить браузер и повторить QA. Запрос на выкладку не разрешает автоматически пропускать проверки.'
+    :last?.verdict==='failed'?'QA нашёл дефекты. Требуется исправление и повторное тестирование.':'Задача пока на тестировании. Дождись подтверждённого результата QA.',
+    verdict:last?.verdict||null};
+  }
+  let mergeResult:null|{status:string;url?:string}=null;
+  if(task.stage==='merge_queue'){
+   mergeResult=await mergeTaskPr(projectId,taskId,session.actor_id);
+  }else if(!['deployment','documentation','done'].includes(task.stage)){
+   return {status:'blocked',stage:task.stage,reason:'Задача не готова к слиянию или выкладке. Дождись завершения текущего этапа.'};
+  }
+  const deployment=(await pool.query(
+   'SELECT t.stage,d.status,d.merge_sha,s.mode,s.health_url FROM tasks t LEFT JOIN task_deployment_records d ON d.task_id=t.id AND d.project_id=t.project_id LEFT JOIN project_deployment_settings s ON s.project_id=t.project_id WHERE t.project_id=$1 AND t.id=$2',
+   [projectId,taskId])).rows[0];
+  if(!deployment)return {status:'blocked',reason:'Задача не найдена после проверки слияния'};
+  if(deployment.stage==='documentation'||deployment.stage==='done')return {status:'completed',stage:deployment.stage,merged:!!mergeResult,
+   reason:deployment.status==='skipped'?'PR слит; выкладка пропущена по настройкам проекта. Факт работы сайта не проверен.':'Этап слияния и/или выкладки уже завершён',pr_url:mergeResult?.url};
+  if(deployment.stage!=='deployment'||deployment.status!=='pending')return {status:'blocked',stage:deployment.stage,reason:'Нет ожидающей выкладки по задаче'};
+  if(deployment.mode!=='automatic')return {status:'waiting_user',stage:'deployment',reason:'PR слит; по настройкам проекта требуется ручная выкладка либо её явный пропуск. Автоматическая выкладка не настроена.',pr_url:mergeResult?.url};
+  if(!deployment.merge_sha)return {status:'blocked',stage:'deployment',reason:'Не сохранён SHA слитого PR. Автоматическая выкладка не может быть подтверждена.'};
+  if(!deployment.health_url)return {status:'blocked',stage:'deployment',reason:'Для автоматической выкладки требуется публичный HTTPS URL проверки приложения.'};
+  const active=(await pool.query("SELECT id,status FROM deployment_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",[projectId,taskId])).rows[0];
+  if(active)return {status:'already_running',stage:'deployment',run_id:active.id,reason:'Выкладка уже выполняется. Дублировать запуск не нужно.'};
+  const token=await accessToken(session.actor_id,user.email);
+  const response=await app.inject({method:'POST',url:'/api/projects/'+projectId+'/tasks/'+taskId+'/deployment/start',
+   headers:{authorization:'Bearer '+token},payload:{confirm:true,commit_sha:deployment.merge_sha}});
+  const result=response.json() as {error?:string;run_id?:string;status?:string};
+  if(response.statusCode>=400)throw Object.assign(Error(String(result.error||'Запуск выкладки отклонён')),{statusCode:response.statusCode});
+  return {status:'queued',stage:'deployment',run_id:result.run_id,pr_url:mergeResult?.url,reason:'Автоматическая выкладка поставлена в Temporal. Проверка GitHub Actions и доступности сайта ещё не завершена.'};
+ }
  const token=await accessToken(session.actor_id,user.email);
  let url='/api/projects/'+projectId+'/tasks/'+taskId,payload:Record<string,unknown>={};
  if(name==='approvals.answer_question'){
@@ -1875,7 +1917,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
   await client.workflow.start('projectManagerReply',{taskQueue:'agent-pipeline',workflowId:'manager-msg-'+messageId,args:[{projectId,taskId,messageId}]});
  }
 });
-async function main(){await dbInit();await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+async function main(){await dbInit();await initEpicStageSync(pool);await initAgentPromptAudit(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initTaskAgentNotesSchema(pool);await initAgentPeerQueue(pool);await initTaskAnalysisQueue(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcile=()=>void (async()=>{
   try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}

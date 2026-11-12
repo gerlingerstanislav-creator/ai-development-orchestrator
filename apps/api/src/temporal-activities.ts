@@ -1,5 +1,6 @@
 import {type AgentReaderScope} from './agent-tools.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
+import {createAgentSession,finishAgentSession} from './agent-tools.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {runnerAssistantPrompt} from './runner-assistant-prompt.js';
@@ -137,6 +138,29 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
  await recordAgentPrompt(pool,{projectId,processId:processId||taskId,role:stage,operation,prompt:composed}).catch(()=>{});
  return askRunnerAssistant(composed,projectId,taskId,operation,await resolveRoleAiSettings(pool,projectId,stage,ai),110000,[],{role:stage,processId});
 }
+async function askTaskManagerAgent(prompt:string,projectId:string,taskId:string,messageId:string,actorId:string,
+ ai:{model:string;reasoning:string},images:RunnerImage[]):Promise<string>{
+ const session=await createAgentSession(pool,projectId,actorId,'manager');
+ try{
+  await recordAgentPrompt(pool,{projectId,processId:messageId,role:'manager',operation:'task_manager',prompt}).catch(()=>{});
+  const response=await fetch(codexUrl+'/agent',{
+   method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
+   body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning,session_token:session.secret,
+    agent_role:'manager',project_id:projectId,role_capacity:1,images}),
+   signal:AbortSignal.timeout(255000)
+  });
+  const data=await response.json().catch(()=>({})) as any;
+  if(!response.ok||typeof data.message!=='string'||!data.message.trim())
+   throw Error(String(data.error||'Менеджер не вернул результат инструмента').slice(0,700));
+  if(data.usage){
+   const usage=data.usage;
+   await pool.query('INSERT INTO ai_token_usage(id,project_id,task_id,source_id,operation,model,input_tokens,cached_input_tokens,output_tokens) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+    [randomUUID(),projectId,taskId,messageId,'task_manager',ai.model,
+     Number(usage.input_tokens)||0,Number(usage.cached_input_tokens)||0,Number(usage.output_tokens)||0]).catch(()=>{});
+  }
+  return data.message;
+ }finally{await finishAgentSession(pool,session.id).catch(()=>{});}
+}
 async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|null,operation:string,ai:{model:string;reasoning:string},timeoutMs=110000,images:RunnerImage[]=[],reader?:Omit<AgentReaderScope,'projectId'|'taskId'>):Promise<string>{
  const response=await fetch(codexUrl+'/assistant',{method:'POST',
   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
@@ -156,7 +180,8 @@ const taskAnalysisResult=z.object({
  outcome:z.enum(['ready','needs_input']),
  summary:z.string().trim().min(8).max(1500),
  refined_description:z.string().trim().min(20).max(16000),
- questions:z.array(z.string().trim().min(5).max(650)).max(8).default([])
+ questions:z.array(z.string().trim().min(5).max(650)).max(8).default([]),
+ documentation_notes:z.array(z.string().trim().min(5).max(1000)).max(5).default([])
 }).strict();
 function parseTaskAnalysisResult(text:string){
  const cleaned=text.trim().replace(/^\x60{3}(?:json)?\s*/i,'').replace(/\s*\x60{3}$/,'');
@@ -186,11 +211,12 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
   const instructions=(await pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='analysis'",[projectId])).rows[0];
   const prompt=[
    'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
-   'Используй актуальное ТЗ и приложенные относящиеся к задаче сведения. Не придумывай продуктовые решения вместо владельца.',
-   'Если техническое описание достаточно для разработки, верни outcome="ready", уточнённое исполнимое ТЗ и конкретное краткое резюме.',
-   'Если без решения пользователя реализация неоднозначна, верни outcome="needs_input" и вопросы, которые действительно нельзя разрешить по документации. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
+   'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
+   'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
+   'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику.',
+   'Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
-   'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."]}.',
+   'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
    'Ключевые ответы и замечания: '+history.slice(-1200)
@@ -225,6 +251,10 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
       [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',output.questions[index],'task-analysis:'+runId+':question:'+index]);
     }
     await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_blocked',$3)",[randomUUID(),taskId,'Аналитик запросил решения: '+output.questions.join('; ').slice(0,1200)]);
+   }
+   for(const [index,note] of output.documentation_notes.entries()){
+    await client.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status) VALUES($1,$2,$3,'analysis',$4,'documentation','observation',$5,'agent',$6,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING",
+     [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',note,'task-analysis:'+runId+':doc-note:'+index]);
    }
    await client.query("UPDATE agent_analysis_runs SET status=$2,message=$3,updated_at=now() WHERE id=$1",[runId,output.outcome==='ready'?'completed':'waiting',output.summary]);
    await client.query('COMMIT');
@@ -697,7 +727,7 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   if(String(remote.handoffNote||'').trim())await recordTaskAgentNote(pool,{projectId,taskId:row.rows[0].task_id,authorStage:'testing',authorName:'AI-тестировщик',targetStage:verdict==='failed'?'development':'all',kind:verdict==='failed'?'risk':'handoff',body:String(remote.handoffNote),sourceKey:'tester:'+testId,sourceRunId:testId});
-  await event(projectId,testId,'testing',verdict,JSON.stringify(report).slice(0,2200),verdict==='passed'?'info':verdict==='failed'?'error':'warning');
+  await event(projectId,testId,'testing',verdict,String(report.summary||'Тестирование завершено').slice(0,1400)+' · Результаты всех тест-кейсов доступны в отчёте QA в чате задачи.',verdict==='passed'?'info':verdict==='failed'?'error':'warning');
   return {status,message:outcome,verdict};
  }
  if(message!==row.rows[0].message){
@@ -836,12 +866,12 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
-    tools:'Доступны инструменты чтения проекта. Не утверждай о выполненных действиях или запуске процессов без подтверждённых фактов сервера.',
+    tools:'MCP orchestrator: tasks.read, processes.list, approvals.list, workflow.release_task и остальные разрешённые инструменты ПМ. Только при прямом поручении владельца применяй workflow.release_task с task_id и source_message_id текущего сообщения. Сервер проверяет согласования, QA, CI, SHA и режим выкладки. Не называй отправку на выкатку завершённой, пока инструмент её не подтвердил.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
-    scope:JSON.stringify({task_id:taskId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
+    scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,1000):'',
-    output:'Отвечай по фактам и по-русски. Если инструментальная проверка недоступна, назови именно непроверенные сценарии, не объявляй их пройденными.'
+    output:'Отвечай по-русски с Markdown-абзацами и списками по необходимости. При просьбе продвинуть задачу обязательно вызови подходящий инструмент и сообщи подтверждённый результат, либо конкретную причину блокировки. QA blocked не равно passed. Не выдавай отправку в очередь за фактически завершённую выкладку.'
    });
    const mentionedAgent=await resolveAgentMention(pool,projectId,String(msg.rows[0].body));
    const directPrompt=mentionedAgent?composeAgentPrompt({
@@ -854,7 +884,10 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,800):'',
     output:'После ответа отдельной строкой добавь LEARNING_SUGGESTION: <подтверждённый урок> либо none.'
    }):prompt;
-    const rawReply=String(await askRunnerAssistant(directPrompt,projectId,taskId,mentionedAgent?'direct_'+mentionedAgent.stage:'project_manager',await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]),110000,images,{role:mentionedAgent?.stage||'manager',processId:messageId,actorId:msg.rows[0].actor_id??undefined})).trim();
+    const roleConfig=await resolveRoleAiSettings(pool,projectId,mentionedAgent?.stage||'manager',settings.rows[0]);
+    const rawReply=String(mentionedAgent
+     ?await askRunnerAssistant(directPrompt,projectId,taskId,'direct_'+mentionedAgent.stage,roleConfig,110000,images,{role:mentionedAgent.stage,processId:messageId,actorId:msg.rows[0].actor_id??undefined})
+     :await askTaskManagerAgent(directPrompt,projectId,taskId,messageId,String(msg.rows[0].actor_id),roleConfig,images)).trim();
     const suggestion=mentionedAgent?rawReply.match(/LEARNING_SUGGESTION:\s*([^\n\r]{1,1600})/i)?.[1]?.trim():undefined;
     if(mentionedAgent)await recordAgentLearning(pool,{projectId,role:mentionedAgent.stage,runId:messageId,body:suggestion,evidence:'Прямой диалог в задаче '+taskId});
     const generated=rawReply.replace(/^LEARNING_SUGGESTION:.*$/gmi,'').trim();

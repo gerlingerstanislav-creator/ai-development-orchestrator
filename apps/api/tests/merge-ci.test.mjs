@@ -59,3 +59,32 @@ test('branch and ruleset CI diagnostics use current commit evidence and expected
  await requireMergeCi(input);
  assert.ok(readPages.some(([isHead,page])=>isHead&&page===2));
 });
+
+test('unprotected main avoids inaccessible branch rules but still checks reported CI failures',async t=>{
+ const original=globalThis.fetch;
+ t.after(()=>{globalThis.fetch=original;});
+ let reads=[],conclusion='success';
+ globalThis.fetch=async url=>{
+  const path=new URL(url).pathname;
+  reads.push(path);
+  if(path.endsWith('/branches/main'))return Response.json({name:'main',protected:false});
+  if(path.endsWith('/check-runs'))return Response.json({total_count:1,check_runs:[check('build',conclusion)]});
+  if(path.endsWith('/statuses'))return Response.json([]);
+  assert.fail('Rules API must not be called on an unprotected branch: '+path);
+ };
+ await requireMergeCi({...input,branch:'main'});
+ assert.equal(reads.filter(path=>path.includes('/rules/')).length,0);
+ conclusion='failure';
+ await assert.rejects(requireMergeCi({...input,branch:'main'}),/build — failure/);
+});
+test('protected branches still fail closed when required CI rules cannot be read',async t=>{
+ const original=globalThis.fetch;
+ t.after(()=>{globalThis.fetch=original;});
+ globalThis.fetch=async(url,opts)=>{
+  const path=new URL(url).pathname;
+  if(path.includes('/rules/branches/main'))return new Response(null,{status:403});
+  if(path.endsWith('/branches/main'))return Response.json({name:'main',protected:true});
+  assert.fail('Unexpected GitHub API call '+path);
+ };
+ await assert.rejects(requireMergeCi({...input,branch:'main'}),/Недостаточно прав GitHub для чтения обязательных проверок/);
+});

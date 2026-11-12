@@ -34,9 +34,9 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
    }catch{/* The next reconciliation retries. */ return;}
   }
 
-  // Ready means the analyst already finalized the specification (e.g. published SA plan).
+  // Ready means the analyst finalized this task's requirements, independent of epic siblings.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
-   WHERE t.stage='analysis' AND t.type='task' AND t.analysis_state='ready_for_development'
+   WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))

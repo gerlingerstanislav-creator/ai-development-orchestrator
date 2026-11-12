@@ -45,6 +45,38 @@ function isCustomerQuestion(body:string){
  return !isPrEvidenceRequest(body)&&!(/(?:скриншот|браузер)/i.test(body)&&/(?:предостав|пришл|не вижу|нужен|отсутств)/i.test(body));
 }
 
+/**
+ * A user's one chat answer is a durable decision on the current ANALYSIS task.
+ * Do not ask the conversational PM model to guess how to alter task state.
+ * The analyst will review the answer and either ask follow-ups or finalize the spec.
+ */
+export async function acceptAnalysisAnswer(pool:Pool,projectId:string,taskId:string,actorId:string,answer:string){
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const task=(await client.query("SELECT id,stage,analysis_state,clarification_questions FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
+  if(!task||task.stage!=='analysis'){await client.query('ROLLBACK');return {accepted:false,reason:'Задача сейчас не находится на этапе аналитики'};}
+  const pending=await client.query("SELECT id,body FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND requires_customer=true FOR UPDATE",[projectId,taskId]);
+  const legacy=Array.isArray(task.clarification_questions)?task.clarification_questions.filter((q:unknown)=>typeof q==='string'&&q.trim()):[];
+  if(!pending.rowCount&&!legacy.length){await client.query('ROLLBACK');return {accepted:false,reason:'Нет открытых вопросов аналитика'};}
+  const trimmed=answer.trim().slice(0,3000);
+  if(trimmed.length<3){await client.query('ROLLBACK');return {accepted:false,reason:'Ответ слишком короткий'};}
+  await client.query("UPDATE task_agent_notes SET status='answered',answer=$3,answered_at=now(),answered_by=$4,answer_author='Владелец через ПМ',processing_at=NULL WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing') AND author_stage='analysis' AND requires_customer=true",[projectId,taskId,trimmed,actorId]);
+  for(const [index,question] of legacy.entries()){
+   await client.query(`INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,actor_id,status,requires_customer,answer,answered_at,answered_by,answer_author)
+    VALUES($1,$2,$3,'analysis','Системный аналитик','all','question',$4,'human',$5,$6,'answered',true,$7,now(),$6,'Владелец через ПМ')
+    ON CONFLICT(task_id,source_key) DO UPDATE SET answer=EXCLUDED.answer,status='answered',answered_at=now(),answered_by=EXCLUDED.answered_by`,
+    [randomUUID(),projectId,taskId,String(question).slice(0,650),'legacy-clarification:'+taskId+':'+index,actorId,trimmed]);
+  }
+  await client.query("UPDATE tasks SET clarification_questions='[]'::jsonb,analysis_state='new',updated_at=now() WHERE project_id=$1 AND id=$2",[projectId,taskId]);
+  await client.query("UPDATE manager_requests SET status='resolved',decision='answer',decided_by=$3,resolved_at=now() WHERE project_id=$1 AND task_id=$2 AND status IN ('open','waiting') AND kind IN ('analysis_clarifications','question') AND (kind='analysis_clarifications' OR source_id=ANY($4::uuid[]))",[projectId,taskId,actorId,pending.rows.map(r=>r.id)]);
+  await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'agent_question_answered',$4)",
+   [randomUUID(),taskId,actorId,'Получен ответ владельца на '+(pending.rows.length+legacy.length)+' вопросов аналитика. Повторный анализ обязателен.']);
+  await client.query('COMMIT');
+  return {accepted:true,answered:pending.rows.length+legacy.length,reason:'Ответ сохранён. Аналитик повторно проверит требования, и только после этого задача сможет перейти в разработку.'};
+ }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
+}
+
 /** Read the live sources, even if nobody has opened the task chat yet. */
 export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,projectId:string){
  const result=await pool.query(`
@@ -56,6 +88,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
    EXISTS(SELECT 1 FROM task_requirement_reviews r
     WHERE r.project_id=t.project_id AND r.task_id=t.id AND r.spec_version=t.spec_version
       AND r.status='needs_approval' AND r.classification='material_change') AS material_review,
+   question_source.task_id AS owner_question_source_task_id,
    CASE WHEN qa.status='completed' AND qa.verdict='blocked'
     AND NOT EXISTS(SELECT 1 FROM qa_merge_waivers w WHERE w.project_id=t.project_id AND w.task_id=t.id)
     AND NOT EXISTS(SELECT 1 FROM manager_requests r WHERE r.project_id=t.project_id AND r.task_id=t.id
@@ -63,6 +96,15 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
     THEN to_jsonb(qa) END AS blocked_qa
   FROM tasks t
   LEFT JOIN documents doc ON doc.id=t.document_id AND doc.project_id=t.project_id
+  LEFT JOIN LATERAL (
+   SELECT n.task_id FROM task_agent_notes n JOIN tasks source ON source.id=n.task_id
+   WHERE source.project_id=t.project_id AND n.kind='question' AND n.requires_customer=true
+    AND n.status IN ('open','processing') AND (
+     source.id=t.id OR source.parent_id=t.id OR
+     (t.parent_id IS NOT NULL AND source.parent_id=t.parent_id)
+    )
+   ORDER BY n.created_at LIMIT 1
+  ) question_source ON true
   LEFT JOIN LATERAL (
    SELECT id,task_id,status,verdict,qa_spec_version,qa_plan_snapshot,report FROM ai_test_runs
    WHERE t.stage='testing' AND project_id=t.project_id AND task_id=t.id
@@ -76,6 +118,7 @@ export async function tasksWithCustomerQuestions(pool:Pick<Pool,'query'>,project
    task.stage==='analysis'&&Array.isArray(task.clarification_questions)&&task.clarification_questions.length>0
    ||task.spec_review_status==='needs_approval'&&material_review
    ||(open_notes as string[]).some(isCustomerQuestion)
+   ||!!task.owner_question_source_task_id
    ||!!blocked_qa&&qaWaiverAssessment(blocked_qa as QaRunRow).eligible)
  }));
 }
@@ -195,6 +238,10 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    }
    if(!await isTurnActive())return {message:'',handled:true};
    if(action==='reply')return {message:''};
+   if(action==='clarify'){
+    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message);
+    if(saved.accepted)return handled(saved.reason);
+   }
    const startRequested=action==='start_development';
    const previousTask=snapshot.task;
    snapshot=await managerSnapshot(pool,projectId,taskId);
@@ -205,36 +252,19 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    const call=async(path:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url:taskPath+path,
     headers:{authorization:await deps.workerAuthorization(actor.actor_id,actor.email)},payload});
    if(startRequested&&snapshot.owner)return handled('Работа по задаче уже запущена. Статус виден в Центре процессов.');
-   const clarification=snapshot.requests.find(request=>request.kind==='analysis_clarifications'&&request.status==='open');
-   let analysisResult='';
+   const isAnalysisStage=snapshot.task.stage==='analysis';
+   const clarification=snapshot.requests.find(request=>['analysis_clarifications','question'].includes(request.kind)&&request.status==='open'&&isAnalysisStage);
    if(clarification){
-    let answer=message;
-    if(startRequested){
-     // Older clients sent answers to the manager as ordinary chat messages.
-     // Recover the latest answer from the same person and question round.
-     const previous=await pool.query("SELECT body,status FROM manager_messages WHERE project_id=$1 AND task_id=$2 AND actor_id=$3 AND role='user' AND status IN ('completed','queued','processing') AND created_at>=$4 AND created_at<$5 ORDER BY created_at DESC,id DESC LIMIT 8",
-      [projectId,taskId,actor.actor_id,clarification.created_at,actor.created_at]);
-     const earlier=previous.rows.filter(row=>!parseAgentMention(String(row.body||'')));
-     if(earlier.some(row=>row.status!=='completed'))return handled('Предыдущее сообщение ещё обрабатывается. Дождись ответа в чате задачи.');
-     // Preserve the latest message, which can include both answers and a launch request.
-     const context=earlier.reverse().map(row=>String(row.body)).join('\n\n');
-     if(context&&message.length<3998)answer=context.slice(-(3998-message.length))+'\n\n'+message;
-    }
     if(!await isTurnActive())return {message:'',handled:true};
-    const refined=await call('/assistant',{message:answer,mode:'clarification'});
-    const result=refined.json();
-    if(refined.statusCode>=400)return handled(String(result.error||'Аналитик не смог обработать уточнение.'));
-    if(result.relevant===false)
-     return startRequested?handled('Аналитик ждёт ответа на открытые вопросы. Ответь прямо в чате задачи.'):{message:''};
-    analysisResult=String(result.message||'Аналитик обработал уточнение.');
-    await syncManagerInbox(pool,projectId,taskId);
-    if(result.questions?.length)return handled(analysisResult);
-   }else if(!startRequested)return {message:''};
+    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message);
+    return handled(saved.reason);
+   }
+   if(!startRequested)return {message:''};
    if(!await isTurnActive())return {message:'',handled:true};
    const started=await call('/approve-development',{});
    const result=started.json();
-   if(started.statusCode>=400)return handled([analysisResult,String(result.error||'Не удалось запустить разработку.')].filter(Boolean).join('\n\n'));
-   return handled([analysisResult,result.recovered?result.message:'Задача передана в разработку. Запуск принят в очередь Temporal.'].filter(Boolean).join('\n\n'));
+   if(started.statusCode>=400)return handled(String(result.error||'Не удалось запустить разработку.'));
+   return handled([result.recovered?result.message:'Задача передана в разработку. Запуск принят в очередь Temporal.'].join('\n\n'));
   }
   if(analysisActions||!['development','testing'].includes(snapshot.task.stage))return {message:''};
   if(snapshot.requests.length)return {message:''};
@@ -331,6 +361,11 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    await pool.query("INSERT INTO manager_messages(id,project_id,task_id,role,body) VALUES($1,$2,$3,'manager',$4)",
     [randomUUID(),id,taskId,'Решение принято: ждём инструменты для полноценного тестирования. Непроверенные сценарии остаются непроверенными, слияние PR не разрешено.']);
    return {ok:true,stage:'testing',status:'waiting'};
+  }
+  if(choice==='answer'&&request.kind==='analysis_clarifications'){
+   const saved=await acceptAnalysisAnswer(pool,id,taskId,uid(req),answer);
+   if(!saved.accepted)return reply.code(409).send({error:saved.reason});
+   return {ok:true,message:saved.reason,analyst_recheck:true};
   }
   const route=request.kind==='analysis_clarifications'?'/api/projects/'+id+'/tasks/'+taskId+'/assistant'
    :choice==='approve_without_visual'?'/api/projects/'+id+'/tasks/'+taskId+'/qa-waiver'

@@ -1271,6 +1271,23 @@ body:has(.tasks-page){overflow:hidden}
 .pm-chat-markdown .docs-markdown li{margin-bottom:3px}
 .pm-chat-markdown .docs-heading{font-size:13px!important;margin:12px 0 6px}
 
+/* Pending product-owner decisions stay on the task's normal Kanban lane. */
+.task-owner-question-icon{display:inline-flex;flex-shrink:0;align-items:center;justify-content:center;color:#c37b08;margin-left:6px;vertical-align:middle}
+.task-card .task-warning{font-weight:600;display:inline-flex;align-items:center;color:#9a6700;margin-top:4px}
+.task-name-line .task-owner-question-icon{margin-left:5px}
+/* Compact, lazy prompt disclosure stays above each agent's start message. */
+.task-conversation .agent-prompt-disclosure{margin:0 0 7px;font-size:11px;color:#69788e}
+.task-conversation .agent-prompt-disclosure>summary{display:inline-flex;cursor:pointer;align-items:center;list-style:none;border:1px solid #e3e7ee;background:#f8fafc;padding:3px 8px;border-radius:6px;user-select:none}
+.task-conversation .agent-prompt-disclosure>summary::-webkit-details-marker{display:none}
+.task-conversation .agent-prompt-disclosure>summary::before{content:'▸';margin-right:5px;font-size:10px}
+.task-conversation .agent-prompt-disclosure[open]>summary::before{content:'▾'}
+.task-conversation .agent-prompt-detail{margin:6px 0 4px;padding:7px;border:1px solid #e4e8ef;border-radius:6px;min-width:0;max-width:100%;background:#fafbfe}
+.task-conversation .agent-prompt-detail pre{font-size:11px;line-height:1.5;white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;margin:5px 0 0;padding:7px;background:#fff;border:1px solid #edf0f5;border-radius:5px}
+.task-conversation .agent-prompt-retries{margin-top:8px}
+.task-conversation .agent-prompt-retries summary{cursor:pointer}
+.task-conversation .agent-milestone{background:#fff}
+.task-conversation .qa-report-message .docs-markdown{font-size:12px;line-height:1.5}
+.task-conversation .qa-report-message .docs-markdown li{margin-bottom:5px}
 /* Owner-only decision: keep unavailable QA checks distinct from runner failures. */
 .task-details .qa-waiver-panel{margin:12px 0;padding:10px 12px}
 .qa-waiver-reason{display:grid;gap:5px;font-size:12px;font-weight:600}

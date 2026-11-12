@@ -34,6 +34,7 @@ test('current iteration and cards update in place while explicit preview remains
   CREATE TABLE process_events(id uuid PRIMARY KEY,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_spec_versions(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),version int,title text,description text,origin text,actor_id uuid,reason text,UNIQUE(task_id,version));
   CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid REFERENCES tasks(id),actor_id uuid,event text,detail text);
+  CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid REFERENCES tasks(id),author_stage text,author_name text,target_stage text,kind text,body text,source_kind text,source_key text,status text,requires_customer boolean DEFAULT false,created_at timestamptz DEFAULT now(),UNIQUE(task_id,source_key));
   CREATE TABLE knowledge_task_links(id uuid PRIMARY KEY,project_id uuid,document_id uuid,task_id uuid,relation text,UNIQUE(project_id,document_id,task_id,relation));
  `);
  await initProjectIterations(db);
@@ -96,7 +97,7 @@ test('current iteration and cards update in place while explicit preview remains
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks')).rows[0].n,0);
  const planUrl=url+'/plans/'+plan.id;
  const preview=(await request('GET',planUrl)).json();
- assert.equal(preview.items.length,4);
+ assert.equal(preview.items.length,3,'Clarifications are notes, not separate task cards');
  const publish=(value=preview.preview_revision)=>request('POST',planUrl+'/publish',{confirm:true,preview_revision:value});
  await db.query("UPDATE documents SET updated_at=updated_at+interval '1 second' WHERE id=$1",[source]);
  assert.equal((await publish()).statusCode,409,'Changed source invalidates publication');
@@ -108,18 +109,21 @@ test('current iteration and cards update in place while explicit preview remains
  const firstPublish=await request('POST',nextUrl+'/publish',{confirm:true,preview_revision:nextPreview.preview_revision,selected_changes:nextPreview.items.map(item=>item.key)});
  assert.equal(firstPublish.statusCode,200,firstPublish.body);
  const result=firstPublish.json();
- assert.equal(result.created.length,4);
+ assert.equal(result.created.length,3);
  assert.deepEqual((await request('POST',nextUrl+'/publish',{confirm:true,preview_revision:nextPreview.preview_revision})).json(),result);
  const {tasks}=await readIteration(db,project,id);
  const epic=tasks.find(task=>task.type==='epic'),form=tasks.find(task=>task.title==='Форма'),order=tasks.find(task=>task.title==='Заказ');
  assert.equal(form.parent_id,epic.id);
  assert.deepEqual(form.tags,['ui']);
- assert.equal(order.depends_on_task_id,form.id);
- assert.equal(order.stage,'analysis');
- assert.equal(order.analysis_state,'new');
- assert.equal(form.analysis_state,'ready_for_development');
+ assert.equal(order,undefined,'A clarification must not become a separate task');
+ assert.equal(form.stage,'analysis');
+ assert.equal(form.analysis_state,'waiting_questions','Answer is needed before developer may start');
+ const notes=(await db.query("SELECT body,status,requires_customer FROM task_agent_notes WHERE task_id=$1 AND kind='question'",[form.id])).rows;
+ assert.equal(notes.length,1);
+ assert.equal(notes[0].status,'open');
+ assert.equal(notes[0].requires_customer,true);
  assert.equal((await db.query('SELECT count(*)::int n FROM task_spec_versions')).rows[0].n,0);
- assert.equal((await db.query('SELECT count(*)::int n FROM knowledge_task_links')).rows[0].n,3);
+ assert.equal((await db.query('SELECT count(*)::int n FROM knowledge_task_links')).rows[0].n,2);
  const changedProposal=structuredClone(proposal);
  changedProposal.epics[0].tasks[0].title='Форма заказа';
  changedProposal.epics[0].tasks[0].description='Ввод и проверка данных';
@@ -145,14 +149,14 @@ test('current iteration and cards update in place while explicit preview remains
  assert.deepEqual((await request('POST',changeUrl+'/publish',{confirm:true,preview_revision:fresh.preview_revision,selected_changes:['form']})).json(),changedPublish.json());
  const rerun=await propose(),rerunUrl=url+'/plans/'+rerun.id;
  const rerunPreview=(await request('GET',rerunUrl)).json();
- assert.equal(rerunPreview.items.filter(item=>item.existing).length,3);
+ assert.equal(rerunPreview.items.filter(item=>item.existing).length,2,'clarification is a note, not a task');
  assert.deepEqual((await request('POST',rerunUrl+'/publish',{confirm:true,preview_revision:rerunPreview.preview_revision})).json().created,[]);
  assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[epic.id]})).statusCode,409);
- const start=await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id,order.id]});
+ const start=await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id]});
  assert.equal(start.statusCode,200,start.body);
- assert.deepEqual(start.json().results.map(item=>[item.id,item.status]),[[form.id,'queued'],[order.id,'queued']]);
+ assert.deepEqual(start.json().results.map(item=>[item.id,item.status]),[[form.id,'queued']]);
  const pending=(await db.query('SELECT task_id,approved_revision,run_id FROM iteration_execution_queue WHERE iteration_id=$1',[id])).rows;
- assert.equal(pending.length,2);
+ assert.equal(pending.length,1);
  for(const item of start.json().results)
   assert.deepEqual(pending.find(row=>row.task_id===item.id),{task_id:item.id,approved_revision:1,run_id:item.run_id});
  const tagUpdate=await request('PUT','/api/projects/'+project+'/tasks/'+form.id+'/planning',{iteration_id:id,tags:['Миграция','миграция']});
@@ -208,19 +212,19 @@ test('current iteration and cards update in place while explicit preview remains
  const autoPlanId=prepared.planning_runs[0].plan_id;
  const autoPreview=(await request('GET',scope2+'/plans/'+autoPlanId)).json();
  assert.ok(autoPreview.published_at,'task plan must be published automatically');
- assert.equal(autoPreview.result.created.length,3);
+ assert.equal(autoPreview.result.created.length,2);
  const newTasks=(await db.query('SELECT id,type,stage,title,depends_on_task_id FROM tasks WHERE iteration_id=$1 ORDER BY position',[iteration2Id])).rows;
- assert.equal(newTasks.length,3,'new epic and task cards are on the board');
- assert.deepEqual(newTasks.map(task=>task.stage),['backlog','analysis','analysis']);
- assert.equal(newTasks[2].depends_on_task_id,newTasks[1].id);
+ assert.equal(newTasks.length,2,'Only epic and implementable task are created');
+ assert.deepEqual(newTasks.map(task=>task.stage),['backlog','analysis']);
+ assert.equal(newTasks[1].depends_on_task_id,null,'Old clarification dependency is absorbed by its own analysis');
  assert.equal((await db.query('SELECT count(*)::int n FROM iteration_execution_queue WHERE iteration_id=$1',[iteration2Id])).rows[0].n,0,
   'automatic publication must not start development');
  await autoRun();
  assert.equal(autoCalls,1,'completed planning must be idempotent');
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE iteration_id=$1',[iteration2Id])).rows[0].n,3);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE iteration_id=$1',[iteration2Id])).rows[0].n,2);
  // A later clarification updates the same card and the same plan.
  const changedDraft=structuredClone(draft);
- changedDraft.epics[0].tasks[0].description='Изменение требований после публикации';
+ changedDraft.epics[0].tasks[1].description='Изменение требований после публикации';
  changedDraft.epics[0].tasks.push({key:'site-extra',title:'Страница контактов',description:'Новая страница контактов',kind:'development',tags:[]});
  const followup=await request('POST',scope2+'/prepare',{request:'Учти уточнение владельца'});
  await runIterationPlanning(pool,followup.json().planning_run_id,async()=>JSON.stringify(changedDraft));
@@ -228,5 +232,5 @@ test('current iteration and cards update in place while explicit preview remains
  assert.equal(refreshed.planning_runs[0].plan_id,autoPlanId);
  const updated=(await db.query('SELECT description,spec_version FROM tasks WHERE id=$1',[newTasks[1].id])).rows[0];
  assert.deepEqual(updated,{description:'Изменение требований после публикации',spec_version:1});
- assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE iteration_id=$1',[iteration2Id])).rows[0].n,4);
+ assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE iteration_id=$1',[iteration2Id])).rows[0].n,3);
 });

@@ -1,6 +1,6 @@
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {ProjectTeam} from './ProjectTeam.js';
@@ -16,7 +16,7 @@ import {BrowserPmVoice} from './BrowserPmVoice.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -45,8 +45,7 @@ type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;cr
 type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
 type KanbanLane=Pick<Stage,'stage'|'label'>;
 type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
-const productOwnerLane:KanbanLane={stage:'product_owner_questions',label:'Вопросы к ПО'};
-const boardLaneFor=(task:Task)=>task.type==='question'?(task.question_status==='resolved'?null:productOwnerLane.stage):task.awaits_product_owner?productOwnerLane.stage:task.stage;
+const boardLaneFor=(task:Task)=>task.stage;
 const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
  {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
  {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
@@ -64,7 +63,7 @@ type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:s
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
 type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:string[];passed:number;total:number;summary:string;capabilities:string;commit:string;spec_version:number|null;checks:Array<{name?:string;result?:string;details?:string}>;unverified:Array<{id:string;title:string;priority:string;reason:string;evidence:string}>};approval:null|{id:string;test_run_id:string;justification:string;created_at:string}};
-type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
+type TestRun={id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;human_report?:string|null;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;evidence:string}>;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis';role:'development'|'testing'|'analysis'|'analyst'|'platform';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
 type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};topicProgress?:{completed:number;total:number};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
@@ -116,6 +115,31 @@ function markdownInline(source:string):React.ReactNode[]{
  }
  if(last<source.length)nodes.push(source.slice(last));
  return nodes;
+}
+function AgentPromptDisclosure({projectId,processId}:{projectId:string;processId:string}){
+ const [entries,setEntries]=useState<AgentPromptAudit[]|null>(null);
+ const [loading,setLoading]=useState(false);
+ const [error,setError]=useState('');
+ const load=async()=>{
+  setLoading(true);setError('');
+  try{const result=await api<{prompts:AgentPromptAudit[]}>('/projects/'+projectId+'/processes/'+processId+'/prompts');setEntries(result.prompts);}
+  catch(e){setError(e instanceof Error?e.message:'Не удалось получить инструкции');}
+  finally{setLoading(false);}
+ };
+ const initial=entries?.length?[...entries].sort((a,b)=>a.created_at.localeCompare(b.created_at))[0]:null;
+ return <details className="agent-prompt-disclosure" onToggle={event=>{if(event.currentTarget.open)void load();}}>
+  <summary>Посмотреть инструкции агента</summary>
+  {loading&&<small className="muted">Загрузка инструкций…</small>}
+  {!loading&&error&&<small className="muted">{error}</small>}
+  {!loading&&!error&&entries?.length===0&&<small className="muted">Промпт этого запуска не сохранён.</small>}
+  {initial&&!loading&&<div className="agent-prompt-detail">
+   <small className="muted">Первоначальный запрос · {new Date(initial.created_at).toLocaleString('ru-RU')} · {initial.original_chars} символов</small>
+   <pre>{initial.prompt}</pre>
+   {entries&&entries.length>1&&<details className="agent-prompt-retries"><summary>Последующие запросы ({entries.length-1})</summary>
+    {[...entries].sort((a,b)=>a.created_at.localeCompare(b.created_at)).slice(1).map(entry=><div key={entry.id}><small>{entry.operation} · {new Date(entry.created_at).toLocaleString('ru-RU')}</small><pre>{entry.prompt}</pre></div>)}
+   </details>}
+  </div>}
+ </details>;
 }
 function pmDisplayText(source:string){
  // Historic PM responses may contain obsolete, unsupported pseudo-links.
@@ -558,11 +582,24 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const deferredQa=managerState?.requests.filter(request=>request.status==='waiting'&&request.kind==='qa_visual')||[];
  const activeAgentRuns=taskAgentRuns.filter(run=>run.status==='running'||run.status==='queued');
  const managerWorking=managerSending||managerMessages?.some(message=>message.role==='user'&&(message.status==='queued'||message.status==='processing'));
- const chatEntries=[...(managerMessages||[]),...taskAgentRuns.filter(run=>run.status==='completed'||run.status==='failed')]
-  .sort((left,right)=>{
-   const time=(entry:ManagerMessage|AgentRun)=>Date.parse(('completed_at' in entry?entry.completed_at:null)||entry.created_at);
-   return time(left)-time(right);
-  });
+ // Show milestones in the user-facing task chat; fine-grained steps remain in the technical journal.
+ const visibleAgentRuns=taskAgentRuns.filter((run,index,list)=>run.kind!=='qa_design'&&
+  list.findIndex(other=>other.id===run.id&&other.kind===run.kind)===index);
+ const chatEntries=[
+  ...(managerMessages||[]),
+  ...visibleAgentRuns.map(run=>({...run,kind:'agent_start' as const,agentKind:run.kind,completed_at:null})),
+  ...visibleAgentRuns.filter(run=>['completed','failed'].includes(run.status)&&
+   !(run.kind==='testing'&&taskTestRuns.some(test=>test.id===run.id&&test.human_report))).map(run=>({
+    ...run,kind:'agent_finish' as const,agentKind:run.kind
+   })),
+  ...taskTestRuns.filter(test=>['completed','failed'].includes(test.status)&&test.human_report).map(test=>({
+   id:test.id,kind:'qa_report' as const,status:test.status,summary:test.human_report||'',
+   created_at:test.created_at,completed_at:test.completed_at
+  }))
+ ].sort((left,right)=>{
+  const time=(entry:{created_at:string;completed_at?:string|null})=>Date.parse(entry.completed_at||entry.created_at);
+  return time(left)-time(right);
+ });
 
  function timeline(taskId:string):ActivityItem[]{
   return [
@@ -1723,7 +1760,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  const kanbanGroups:KanbanGroup[]=stageGroupDefinitions.map(def=>({
   key:def.key,title:def.title,
-  stages:[...(def.key==='analytics'?[productOwnerLane]:[]),...stages.filter(stage=>def.ids.includes(stage.stage))]
+  stages:stages.filter(stage=>def.ids.includes(stage.stage))
  })).filter(group=>group.stages.length>0);
  const ungroupedStages=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
  if(ungroupedStages.length)kanbanGroups.push({key:'other',title:'Другие этапы',stages:ungroupedStages});
@@ -1763,12 +1800,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     draggable={!t.awaits_product_owner} onDragStart={t.awaits_product_owner?undefined:e=>{setDrag(t.id);e.dataTransfer.effectAllowed='move';}} onDragEnd={()=>setDrag(null)}
     onClick={e=>followLink(e,projectUrl(selected!.id,'tasks')+'/'+t.id)} key={t.id}>
     <span className="task-card-top"><span className="task-type">{t.type==='question'?'Вопрос к ПО':t.type==='bug'?'Ошибка':t.type==='epic'?'Эпик':t.type==='improvement'?'Улучшение':'Задача'}</span><span className="task-id-label" title={"Полный ID задачи: "+t.id}>#{t.display_number}</span></span>
-    <span className="task-name-line"><strong>{t.title}</strong>{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
+    <span className="task-name-line"><strong>{t.title}</strong>{t.awaits_product_owner&&<span className="task-owner-question-icon" title={t.owner_question_source_task_id&&t.owner_question_source_task_id!==t.id?'Нужен ответ владельца в связанной задаче эпика':'Нужен ответ или решение владельца для продолжения'} aria-label="Необходим ответ владельца"><AlertTriangle size={16}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span>
     {renderTaskPlanningLabels(t)}
     <small className="task-card-priority">{!dependencyReady(t)?'Ожидает зависимость · ':''}Приоритет {t.priority??3}</small>
     <p>{t.description||'Без описания'}</p>
     {t.awaits_product_owner&&<small className="task-warning">
-     Ждёт ответа · {stages.find(stage=>stage.stage===t.stage)?.label||t.stage}
+     {t.owner_question_source_task_id&&t.owner_question_source_task_id!==t.id?'Вопросы в связанной задаче':'Нужен ответ владельца'}
     </small>}
   </a>;
  }
@@ -1785,18 +1822,17 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>;
  }
  function renderKanbanLane(s:KanbanLane){
-  const isQuestions=s.stage===productOwnerLane.stage;
   const stageTasks=filtered.filter(t=>boardLaneFor(t)===s.stage).sort(kanbanOrder);
   return <div className="lane" key={s.stage}
-   onDragOver={isQuestions?undefined:e=>e.preventDefault()}
-   onDrop={isQuestions?undefined:e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
+   onDragOver={e=>e.preventDefault()}
+   onDrop={e=>{e.preventDefault();if(drag){const task=tasks.find(t=>t.id===drag);if(task&&!task.awaits_product_owner)void moveTask(task,s.stage);}setDrag(null);}}>
    <div className="lane-heading"><span className={'stage-dot '+s.stage}></span><b>{s.label}</b><span className="count">{stageTasks.length}</span>
     {s.stage==='merge_queue'&&<button className="secondary" disabled={mergeBusy||!tasks.some(t=>t.stage==='merge_queue')} onClick={e=>{e.stopPropagation();void mergeReady();}} title="Последовательно слить проверенные PR">Слить готовые</button>}
     {s.stage==='documentation'&&<button className="secondary" disabled={knowledgeBusy||!tasks.some(t=>t.stage==='documentation')} onClick={e=>{e.stopPropagation();void updateDocumentation();}} title="Обновить документацию по всем слитым задачам">Обновить документацию</button>}
    </div>
    <div className="cards">
      {stageTasks.map(t=>renderKanbanCard(t))}
-      {stageTasks.length===0&&<div className="lane-empty">{isQuestions?'Нет открытых вопросов':'Перетащите задачу сюда'}</div>}
+      {stageTasks.length===0&&<div className="lane-empty">Перетащите задачу сюда</div>}
     </div>
   </div>;
  }
@@ -2030,13 +2066,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return <section key={group.key} className={'kanban-group '+(expanded?'is-expanded':'is-collapsed')} style={{['--kanban-stage-count' as string]:group.stages.length} as React.CSSProperties}>
    <button className="kanban-group-heading" type="button" aria-expanded={expanded} onClick={()=>toggleKanbanGroup(group.key)}
     title={expanded?'Свернуть этапы':'Развернуть этапы'}><span className="group-mark"/>
-    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.filter(stage=>stage.stage!==productOwnerLane.stage).length} эт.</span><span className="group-task-count">{count}</span>
+    <strong>{group.title}</strong><span className="group-stage-count">{group.stages.length} эт.</span><span className="group-task-count">{count}</span>
     <ChevronDown size={16} className={'group-chevron '+(expanded?'expanded':'')}/>
    </button>
    {expanded?<div className="kanban-group-stages">{group.stages.map(stage=>renderKanbanLane(stage))}</div>:renderCollapsedGroup(group)}
   </section>;
  })}
- </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
+ </div>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{t.awaits_product_owner&&<span className="task-owner-question-icon" title="Требуется решение владельца"><AlertTriangle size={15}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='processes'&&<div className="process-center">
   <div className="process-center-heading">
     <div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div>
@@ -2595,19 +2631,38 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <div>{item.text}</div>
        </div>)}
       </details>
-      {chatEntries.map(m=>'kind' in m?<div className="manager-message from-manager" key={m.kind+'-'+m.id}>
+      {chatEntries.map(m=>'kind' in m&&m.kind==='agent_start'?<div className="manager-message from-manager agent-milestone" key={'start-'+m.agentKind+'-'+m.id}>
+       <AgentPromptDisclosure projectId={selectedProjectId} processId={m.id}/>
+       <div className="manager-message-heading"><strong>{agentRunLabels[m.agentKind].name}</strong><small>{new Date(m.created_at).toLocaleString('ru-RU')}</small></div>
+       <div className="manager-message-body">{m.status==='queued'?'Задача поставлена в очередь.':agentRunLabels[m.agentKind].name+' взял задачу в работу.'}</div>
+      </div>:'kind' in m&&m.kind==='qa_report'?<div className="manager-message from-manager qa-report-message" key={'qa-'+m.id}>
        <div className="manager-message-heading">
-        <strong>{agentRunLabels[m.kind].name} · {m.status==='failed'?'Ошибка':'Итог'}</strong>
+        <strong>Тестировщик · Отчёт по тест-кейсам</strong>
         <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
        </div>
-       <div className="manager-message-body">{m.summary||(m.status==='failed'?'Работа завершилась с ошибкой.':'Работа завершена.')}</div>
+       <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={m.summary}/></div>
+      </div>:'kind' in m?<div className="manager-message from-manager" key={m.kind+'-'+m.id}>
+       <div className="manager-message-heading">
+        <strong>{agentRunLabels[m.agentKind].name} · {m.status==='failed'?'Ошибка':'Завершено'}</strong>
+        <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
+       </div>
+       <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={
+        m.status==='failed'?(m.summary||'Работа завершилась с ошибкой.'):
+        m.agentKind==='development'?'Работа завершена. Изменения переданы тестировщику.':
+        m.agentKind==='analysis'?'Анализ завершён. '+(m.summary||'Результат сохранён в задаче.'):
+        m.agentKind==='documentation'?'Документация обновлена.':
+        m.summary||'Этап завершён.'
+       }/></div>
        {m.link&&<a href={m.link} target="_blank" rel="noreferrer">Открыть PR</a>}
       </div>:<div className={'manager-message '+(m.role==='user'?'from-user':'from-manager')} key={m.id}>
        <div className="manager-message-heading">
         <strong>{m.role==='user'?'Вы → Менеджеру проекта':'Менеджер проекта → Вам'}</strong>
         <small>{new Date(m.created_at).toLocaleString('ru-RU')}</small>
        </div>
-       <div className="manager-message-body">{m.body}</div>
+       {m.role==='manager'&&m.reply_to&&<AgentPromptDisclosure projectId={selectedProjectId} processId={m.reply_to}/>}
+       <div className={'manager-message-body '+(m.role==='manager'?'pm-chat-markdown':'')}>
+        {m.role==='manager'?<DocumentMarkdown source={pmDisplayText(m.body)}/>:m.body}
+       </div>
         <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
        {m.role==='user'&&['queued','processing'].includes(m.status)&&!m.id.startsWith('pending-')&&
         <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void stopManagerMessage(m.id)}>Прервать ответ ПМ</button>}
