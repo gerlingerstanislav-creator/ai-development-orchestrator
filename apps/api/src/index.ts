@@ -4,6 +4,7 @@ import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-st
 import {formatQaReportMessage,qaEventDetail} from './qa-report-message.js';
 import {initAgentPromptAudit,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
+import {workflowProfiles,profileCanChange} from './workflow-profiles.js';
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
 import Fastify from 'fastify';
@@ -65,6 +66,7 @@ const encryptionKey = Buffer.from(keyText, 'hex');
 if (!process.env.JWT_SECRET || jwtKey.length < 32 || encryptionKey.length !== 32) throw Error('Set secure JWT_SECRET and 64-char hex CREDENTIALS_KEY');
 const validStages = z.enum(['backlog','analysis','development','testing','merge_queue','deployment','documentation','done']);
 const validMode = z.enum(['automatic','approval','manual']);
+const validWorkflowProfile = z.enum(['fast','standard','extended']);
 const workflowDefaults = [
   ['backlog','Бэклог','manual'],
   ['analysis','Анализ','approval'],
@@ -106,6 +108,7 @@ async function dbInit() {
  CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
  CREATE TABLE IF NOT EXISTS projects (id uuid primary key, name text not null, description text not null default '', owner_id uuid not null references users(id), created_at timestamptz not null default now());
  ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ ALTER TABLE projects ADD COLUMN IF NOT EXISTS workflow_default_profile text NOT NULL DEFAULT 'standard' CHECK(workflow_default_profile IN ('fast','standard','extended'));
  CREATE INDEX IF NOT EXISTS idx_projects_owner_trash ON projects(owner_id,deleted_at,created_at DESC);
  CREATE TABLE IF NOT EXISTS memberships (project_id uuid references projects(id) on delete cascade, user_id uuid references users(id) on delete cascade, role text not null default 'member', primary key(project_id,user_id));
  CREATE TABLE IF NOT EXISTS workflow_stages (project_id uuid references projects(id) on delete cascade, stage text not null, label text not null, mode text not null, position int not null, primary key(project_id,stage));
@@ -114,6 +117,19 @@ async function dbInit() {
  ALTER TABLE workflow_stages ADD COLUMN IF NOT EXISTS description text NOT NULL DEFAULT '';
 
  CREATE TABLE IF NOT EXISTS tasks (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, description text not null default '', type text not null default 'task', stage text not null default 'backlog', parent_id uuid references tasks(id) on delete set null, position int not null default 0, created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS workflow_profile text CHECK(workflow_profile IN ('fast','standard','extended'));
+ UPDATE tasks SET workflow_profile='standard' WHERE workflow_profile IS NULL;
+ CREATE OR REPLACE FUNCTION ado_assign_workflow_profile() RETURNS trigger AS $
+ BEGIN
+  IF NEW.workflow_profile IS NULL THEN
+   SELECT COALESCE(p.workflow_default_profile,'standard') INTO NEW.workflow_profile FROM projects p WHERE p.id=NEW.project_id;
+  END IF;
+  RETURN NEW;
+ END;
+ $ LANGUAGE plpgsql;
+ DROP TRIGGER IF EXISTS trg_ado_assign_workflow_profile ON tasks;
+ CREATE TRIGGER trg_ado_assign_workflow_profile BEFORE INSERT ON tasks
+ FOR EACH ROW EXECUTE FUNCTION ado_assign_workflow_profile();
  -- Keep UUID as the internal stable identifier; expose a monotonic human task number.
  CREATE SEQUENCE IF NOT EXISTS task_display_number_seq;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS display_number bigint;
@@ -1192,6 +1208,22 @@ app.post('/api/projects/:id/tasks/:taskId/deployment/resolve',async(req:any,repl
   return {stage:'documentation',deployment_status:outcome};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 });
+app.get('/api/projects/:id/workflow/profiles',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const result=await pool.query('SELECT workflow_default_profile FROM projects WHERE id=$1',[id]);
+ if(!result.rowCount)return reply.code(404).send({error:'Проект не найден'});
+ return {default_profile:result.rows[0].workflow_default_profile,profiles:workflowProfiles};
+});
+app.patch('/api/projects/:id/workflow/profile',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ if(!await requireAdmin(req,reply))return;
+ const {profile}=parse(z.object({profile:validWorkflowProfile}),req.body);
+ const updated=await pool.query('UPDATE projects SET workflow_default_profile=$2 WHERE id=$1 RETURNING workflow_default_profile',[id,profile]);
+ if(!updated.rowCount)return reply.code(404).send({error:'Проект не найден'});
+ return {default_profile:updated.rows[0].workflow_default_profile,profiles:workflowProfiles};
+});
 app.get('/api/projects/:id/workflow',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT stage,label,mode,position,agent_name,agent_instructions,description FROM workflow_stages WHERE project_id=$1 ORDER BY position',[id])).rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)}));});
 app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
  const {id,stage}=parse(z.object({id:z.string().uuid(),stage:validStages}),req.params);
@@ -1222,9 +1254,10 @@ app.patch('/api/projects/:id/workflow/:stage',async(req:any,reply)=>{
 app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return tasksWithCustomerQuestions(pool,id);});
 app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
- const data=parse(z.object({title:z.string().trim().min(1).max(300),description:z.string().max(20000).default(''),type:z.enum(['task','bug','improvement','epic','question']).default('task'),parent_id:z.string().uuid().nullable().optional(),document_id:z.string().uuid().nullable().optional()}),req.body);
+ const data=parse(z.object({title:z.string().trim().min(1).max(300),description:z.string().max(20000).default(''),type:z.enum(['task','bug','improvement','epic','question']).default('task'),parent_id:z.string().uuid().nullable().optional(),document_id:z.string().uuid().nullable().optional(),workflow_profile:validWorkflowProfile.optional()}),req.body);
  if(data.parent_id){const p=await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[data.parent_id,id]);if(!p.rowCount)return reply.code(400).send({error:'Родительская задача не найдена'});}
  if(data.type==='question'){
+  if(data.workflow_profile!==undefined)return reply.code(400).send({error:'Для вопросов к ПО профиль разработки не используется'});
   if(!data.document_id||data.parent_id)return reply.code(400).send({error:'Вопрос к ПО должен быть связан с документом и не иметь родительской задачи'});
   const doc=await pool.query('SELECT 1 FROM documents WHERE project_id=$1 AND id=$2',[id,data.document_id]);
   if(!doc.rowCount)return reply.code(404).send({error:'Документ для вопроса не найден'});
@@ -1234,7 +1267,7 @@ app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
   await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage,position,document_id,question_key,question_topic,question_status) VALUES($1,$2,$3,$4,'question','backlog',(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2),$5,$6,'manual','open')",
    [taskId,id,data.title,data.description||data.title,data.document_id,taskId]);
  }else{
-  await pool.query('INSERT INTO tasks(id,project_id,title,description,type,parent_id,position) VALUES($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2))',[taskId,id,data.title,data.description,data.type,data.parent_id||null]);
+  await pool.query('INSERT INTO tasks(id,project_id,title,description,type,parent_id,position,workflow_profile) VALUES($1,$2,$3,$4,$5,$6,(SELECT COALESCE(MAX(position)+1,0) FROM tasks WHERE project_id=$2),$7)',[taskId,id,data.title,data.description,data.type,data.parent_id||null,data.workflow_profile??null]);
  }
  await pool.query('INSERT INTO task_events(id,task_id,actor_id,event) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,uid(req),'created']);
  return reply.code(201).send({id:taskId});
@@ -1349,7 +1382,7 @@ app.post('/api/projects/:id/tasks/:taskId/requirements/:reviewId/decision',async
 app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id))return;
- const data=parse(z.object({title:z.string().trim().min(1).max(300).optional(),description:z.string().max(20000).optional(),stage:validStages.optional(),priority:z.number().int().min(1).max(5).optional()}),req.body);
+ const data=parse(z.object({title:z.string().trim().min(1).max(300).optional(),description:z.string().max(20000).optional(),stage:validStages.optional(),priority:z.number().int().min(1).max(5).optional(),workflow_profile:validWorkflowProfile.optional()}),req.body);
  const client=await pool.connect();
  let version=0,changed=false;
  try{
@@ -1358,6 +1391,7 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
   if(!old.rowCount){await client.query('ROLLBACK');return reply.code(404).send({error:'Задача не найдена'});}
   const t=old.rows[0];
   if(t.type==='question'){
+   if(data.workflow_profile!==undefined){await client.query('ROLLBACK');return reply.code(409).send({error:'Для вопросов к ПО нельзя менять профиль workflow'});}
    if(data.stage&&data.stage!==t.stage){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Вопрос не участвует в этапах разработки'});
    }
@@ -1377,6 +1411,11 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
   }
   if(data.stage&&data.stage!==t.stage&&(!['backlog','analysis'].includes(t.stage)||!['backlog','analysis'].includes(data.stage))){
    await client.query('ROLLBACK');return reply.code(409).send({error:'Перемещение между разработкой, PR и завершением выполняется только через действия workflow'});
+  }
+  if(data.workflow_profile!==undefined&&data.workflow_profile!==t.workflow_profile){
+   if(!profileCanChange(t.stage,t.analysis_state,Boolean(t.pr_url||t.git_branch))){await client.query('ROLLBACK');return reply.code(409).send({error:'Профиль можно изменить только до активного анализа и создания PR'});}
+   await client.query("UPDATE tasks SET workflow_profile=$2,analysis_state=CASE WHEN stage='analysis' THEN 'new' ELSE analysis_state END,updated_at=now() WHERE id=$1",[taskId,data.workflow_profile]);
+   await client.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'workflow_profile_changed',$4)",[randomUUID(),taskId,uid(req),'Профиль workflow: '+data.workflow_profile]);
   }
   const title=data.title??t.title,description=data.description??t.description;
   if(data.priority!==undefined&&data.priority!==t.priority){
