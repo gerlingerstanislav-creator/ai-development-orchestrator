@@ -6,7 +6,7 @@ export const hashSecret=(text:string)=>createHash('sha256').update(text).digest(
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
  'pm.decisions.list','pm.orders.list','iterations.preview_plan','approvals.list','discussions.list',
- 'tasks.list','tasks.read','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','memory.list','documentation.request_reset',
+ 'tasks.list','tasks.read','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','blockers.list','memory.list','documentation.request_reset',
  'history.search','discussions.read','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
@@ -80,6 +80,10 @@ export const agentToolCatalog=[
  tool('discussions.open','Создать тему обсуждения с владельцем и сразу отправить первый вопрос или сообщение. Повторно используй открытую тему с тем же смыслом.',{title:str,opening_message:str,awaiting_reply:field('boolean','Нужен ответ владельца. По умолчанию да.')},['title','opening_message']),
  tool('discussions.close','Закрыть обсуждение после ответа владельца и передачи решения. Можно открыть повторно через discussions.reopen.',{topic_id:id},['topic_id']),
  tool('discussions.reopen','Открыть закрытую тему для дополнительных уточнений.',{topic_id:id},['topic_id']),
+ tool('agents.consult','Попросить другого специалиста разрешить конкретный технический вопрос текущей задачи. Ответ отслеживается в очереди и требует фактического источника.',{task_id:id,target_role:{type:'string',enum:['analysis','development','testing','architect','devops','documentation','manager']},question:str,idempotency_key:idem},['task_id','target_role','question']),
+ tool('blockers.list','Прочитать активные блокеры задачи и ранее принятые решения.',{task_id:id}),
+ tool('blockers.report','Зафиксировать реальное препятствие, доказательства и возможное устранение.',{task_id:id,kind:{type:'string',enum:['requirements','tool','ci','qa','github','dependency','environment','code','other']},summary:str,evidence:str,resolution_hint:str,idempotency_key:idem},['task_id','kind','summary','evidence']),
+ tool('blockers.resolve','Подтвердить устранение блокера после фактической проверки.',{blocker_id:id,resolution_evidence:str,idempotency_key:idem},['blocker_id','resolution_evidence']),
  tool('processes.list','Получить процессы. По конкретному process_id можно прочитать отчёт QA по запросу пользователя.',{task_id:id,process_id:id}),
  tool('processes.report','Зафиксировать прогресс автономного агента в журнале.',{stage:str,message:str},['stage','message']),
  tool('memory.list','Прочитать накопленный опыт и предлагаемые инструкции.',{}),
@@ -99,16 +103,19 @@ export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;pro
 
 const readerTools=new Set([
  'project.context','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
- 'tasks.list','tasks.read','processes.list'
+ 'tasks.list','tasks.read','processes.list','blockers.list'
 ]);
 
+const autonomousSpecialistRoles=new Set<AgentRole>(['analysis','development','testing','documentation','devops','architect']);
+const specialistTools=new Set([...readerTools,'agents.consult','blockers.report','blockers.resolve','processes.report']);
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole,readOnly=false){
- if(readOnly||!['manager','analyst','business_analyst'].includes(role))
-  return agentToolCatalog.filter(tool=>readerTools.has(tool.name));
+ if(readOnly)return agentToolCatalog.filter(tool=>readerTools.has(tool.name));
+ if(autonomousSpecialistRoles.has(role))
+  return agentToolCatalog.filter(tool=>specialistTools.has(tool.name));
  return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.')&&!t.name.startsWith('qa.'));
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
@@ -127,7 +134,9 @@ export async function initAgentToolsSchema(pool:Pick<Pool,'query'>){
  'CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tool_idempotency ON agent_tool_events(project_id,tool,idempotency_key) WHERE idempotency_key IS NOT NULL AND success',
  'CREATE INDEX IF NOT EXISTS idx_agent_tool_events_session ON agent_tool_events(session_id,created_at)',
  'CREATE TABLE IF NOT EXISTS agent_memory(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,session_id uuid REFERENCES agent_sessions(id) ON DELETE SET NULL,role text NOT NULL,kind text NOT NULL,body text NOT NULL,evidence text NOT NULL DEFAULT \'\',status text NOT NULL DEFAULT \'recorded\',created_at timestamptz NOT NULL DEFAULT now(),reviewed_at timestamptz)',
- 'CREATE INDEX IF NOT EXISTS idx_agent_memory_project ON agent_memory(project_id,created_at DESC)'
+ 'CREATE INDEX IF NOT EXISTS idx_agent_memory_project ON agent_memory(project_id,created_at DESC)',
+ 'CREATE TABLE IF NOT EXISTS agent_blockers(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,process_id uuid,role text NOT NULL,kind text NOT NULL CHECK(kind IN (\'requirements\',\'tool\',\'ci\',\'qa\',\'github\',\'dependency\',\'environment\',\'code\',\'other\')),summary text NOT NULL,evidence text NOT NULL,resolution_hint text NOT NULL DEFAULT \'\',status text NOT NULL DEFAULT \'open\' CHECK(status IN (\'open\',\'resolved\')),resolution_evidence text NOT NULL DEFAULT \'\',created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now())',
+ 'CREATE INDEX IF NOT EXISTS idx_agent_blockers_task ON agent_blockers(project_id,task_id,status,created_at DESC)'
  ].join(';\n')+';');
 }
 export async function createAgentSession(pool:Pick<Pool,'query'>,projectId:string,actorId:string,role:AgentRole){
@@ -146,8 +155,8 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  if(!result.rowCount)return null;
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
  await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
-  VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',true,$6,$7)`,
- [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null]);
+  VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',$8,$6,$7)`,
+ [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,!autonomousSpecialistRoles.has(role)||!taskId]);
  return {id,secret};
 }
 export async function finishAgentSession(pool:Pick<Pool,'query'>,id:string){

@@ -104,7 +104,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  app.delete('/internal/agent-tools/reader-sessions',async(req,reply)=>{
   if(!authorizeRunner(req,reply))return;
   const session=await readAgentSession(pool,String(req.headers['x-agent-token']||''));
-  if(session?.read_only)await finishAgentSession(pool,session.id);
+  if(session)await finishAgentSession(pool,session.id); // Every transient reader/specialist session is closed.
   return reply.code(204).send();
  });
  app.get('/internal/agent-tools/catalog',async(req:any,reply)=>{
