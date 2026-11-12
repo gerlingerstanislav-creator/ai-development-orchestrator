@@ -25,17 +25,8 @@ export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>
    END IF;
    IF COALESCE(jsonb_array_length(NEW.clarification_questions),0)>0
     OR EXISTS (
-     SELECT 1 FROM tasks sibling WHERE sibling.project_id=NEW.project_id
-      AND NEW.parent_id IS NOT NULL AND sibling.parent_id=NEW.parent_id
-      AND sibling.id<>NEW.id AND sibling.type IN ('task','bug','improvement')
-      AND sibling.stage IN ('backlog','analysis')
-      AND sibling.analysis_state NOT IN ('ready_for_development','approved')
-    )
-    OR EXISTS (
      SELECT 1 FROM task_agent_notes n
-     JOIN tasks other ON other.id=n.task_id
-     WHERE other.project_id=NEW.project_id
-      AND (other.id=NEW.id OR (NEW.parent_id IS NOT NULL AND other.parent_id=NEW.parent_id))
+     WHERE n.project_id=NEW.project_id AND n.task_id=NEW.id
       AND n.kind='question' AND n.status IN ('open','processing')
     ) THEN
     RAISE EXCEPTION 'Нельзя начать разработку: есть неотвеченные вопросы к владельцу' USING ERRCODE='23514';
