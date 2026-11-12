@@ -1,3 +1,4 @@
+import {preserveAcceptanceCriteria} from './acceptance-criteria.js';
 import {type AgentReaderScope} from './agent-tools.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {createAgentSession,finishAgentSession} from './agent-tools.js';
@@ -213,7 +214,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
    'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
    'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
-   'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику.',
+   'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику. Сохраняй все действующие критерии приёмки из постановки; не повторяй одинаковые критерии.',
    'Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
    'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
@@ -234,7 +235,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
     await client.query('COMMIT');return;
    }
    if(output.outcome==='ready'){
-    await updateCurrentSpecification(client,projectId,taskId,latest.title,output.refined_description);
+    await updateCurrentSpecification(client,projectId,taskId,latest.title,preserveAcceptanceCriteria(latest.description,output.refined_description));
     const questions=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND kind='question' AND status IN ('open','processing') LIMIT 1",[taskId]);
     if(questions.rowCount||latest.clarification_questions?.length){
      await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
