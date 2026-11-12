@@ -209,7 +209,7 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    (project_id,iteration_id,task_id,requested_by,spec_version,run_id,automatic)
    SELECT t.project_id,t.iteration_id,t.id,p.owner_id,t.spec_version,gen_random_uuid(),true
    FROM tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
-   WHERE p.agents_running AND t.type IN ('task','bug','improvement') AND t.stage='development' AND t.analysis_state='approved'
+   WHERE t.type IN ('task','bug','improvement') AND t.stage='development' AND t.analysis_state='approved'
     -- Never restart finished work without a real rework reason. For returns
     -- from QA or PM, test_feedback is the explicit outstanding delta.
     AND (NULLIF(t.test_feedback,'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id))
