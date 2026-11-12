@@ -1705,6 +1705,45 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,startIterationPlanning,sta
   const taskId=id.parse(args.task_id);
  const task=(await pool.query('SELECT id,iteration_id,stage FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId])).rows[0];
  if(!task)throw Object.assign(Error('Задача не найдена'),{statusCode:404});
+ if(name==='workflow.release_task'){
+  // Only the owner who is currently speaking in this task can authorize a release.
+  const sourceMessageId=id.parse(args.source_message_id);
+  const isOwner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
+  const message=await pool.query("SELECT 1 FROM manager_messages WHERE id=$1 AND project_id=$2 AND task_id=$3 AND actor_id=$4 AND role='user' AND status='processing'",
+   [sourceMessageId,projectId,taskId,session.actor_id]);
+  if(!isOwner.rowCount||!message.rowCount)throw Object.assign(Error('Для перехода требуется явное текущее поручение владельца в этой задаче'),{statusCode:403});
+  if(task.stage==='testing'){
+   const last=(await pool.query('SELECT status,verdict,report FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[projectId,taskId])).rows[0];
+   return {status:'blocked',stage:'testing',reason:last?.verdict==='blocked'
+    ?'QA не подтвердил все тест-кейсы. В карточке задачи нужно явно согласовать исключения или настроить браузер и повторить QA. Запрос на выкладку не разрешает автоматически пропускать проверки.'
+    :last?.verdict==='failed'?'QA нашёл дефекты. Требуется исправление и повторное тестирование.':'Задача пока на тестировании. Дождись подтверждённого результата QA.',
+    verdict:last?.verdict||null};
+  }
+  let mergeResult:null|{status:string;url?:string}=null;
+  if(task.stage==='merge_queue'){
+   mergeResult=await mergeTaskPr(projectId,taskId,session.actor_id);
+  }else if(!['deployment','documentation','done'].includes(task.stage)){
+   return {status:'blocked',stage:task.stage,reason:'Задача не готова к слиянию или выкладке. Дождись завершения текущего этапа.'};
+  }
+  const deployment=(await pool.query(
+   'SELECT t.stage,d.status,d.merge_sha,s.mode,s.health_url FROM tasks t LEFT JOIN task_deployment_records d ON d.task_id=t.id AND d.project_id=t.project_id LEFT JOIN project_deployment_settings s ON s.project_id=t.project_id WHERE t.project_id=$1 AND t.id=$2',
+   [projectId,taskId])).rows[0];
+  if(!deployment)return {status:'blocked',reason:'Задача не найдена после проверки слияния'};
+  if(deployment.stage==='documentation'||deployment.stage==='done')return {status:'completed',stage:deployment.stage,merged:!!mergeResult,
+   reason:deployment.status==='skipped'?'PR слит; выкладка пропущена по настройкам проекта. Факт работы сайта не проверен.':'Этап слияния и/или выкладки уже завершён',pr_url:mergeResult?.url};
+  if(deployment.stage!=='deployment'||deployment.status!=='pending')return {status:'blocked',stage:deployment.stage,reason:'Нет ожидающей выкладки по задаче'};
+  if(deployment.mode!=='automatic')return {status:'waiting_user',stage:'deployment',reason:'PR слит; по настройкам проекта требуется ручная выкладка либо её явный пропуск. Автоматическая выкладка не настроена.',pr_url:mergeResult?.url};
+  if(!deployment.merge_sha)return {status:'blocked',stage:'deployment',reason:'Не сохранён SHA слитого PR. Автоматическая выкладка не может быть подтверждена.'};
+  if(!deployment.health_url)return {status:'blocked',stage:'deployment',reason:'Для автоматической выкладки требуется публичный HTTPS URL проверки приложения.'};
+  const active=(await pool.query("SELECT id,status FROM deployment_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",[projectId,taskId])).rows[0];
+  if(active)return {status:'already_running',stage:'deployment',run_id:active.id,reason:'Выкладка уже выполняется. Дублировать запуск не нужно.'};
+  const token=await accessToken(session.actor_id,user.email);
+  const response=await app.inject({method:'POST',url:'/api/projects/'+projectId+'/tasks/'+taskId+'/deployment/start',
+   headers:{authorization:'Bearer '+token},payload:{confirm:true,commit_sha:deployment.merge_sha}});
+  const result=response.json() as {error?:string;run_id?:string;status?:string};
+  if(response.statusCode>=400)throw Object.assign(Error(String(result.error||'Запуск выкладки отклонён')),{statusCode:response.statusCode});
+  return {status:'queued',stage:'deployment',run_id:result.run_id,pr_url:mergeResult?.url,reason:'Автоматическая выкладка поставлена в Temporal. Проверка GitHub Actions и доступности сайта ещё не завершена.'};
+ }
  const token=await accessToken(session.actor_id,user.email);
  let url='/api/projects/'+projectId+'/tasks/'+taskId,payload:Record<string,unknown>={};
  if(name==='approvals.answer_question'){
