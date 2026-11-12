@@ -224,7 +224,7 @@ test('current iteration and cards update in place while explicit preview remains
  assert.equal((await db.query('SELECT count(*)::int n FROM tasks WHERE iteration_id=$1',[iteration2Id])).rows[0].n,2);
  // A later clarification updates the same card and the same plan.
  const changedDraft=structuredClone(draft);
- changedDraft.epics[0].tasks[0].description='Изменение требований после публикации';
+ changedDraft.epics[0].tasks[1].description='Изменение требований после публикации';
  changedDraft.epics[0].tasks.push({key:'site-extra',title:'Страница контактов',description:'Новая страница контактов',kind:'development',tags:[]});
  const followup=await request('POST',scope2+'/prepare',{request:'Учти уточнение владельца'});
  await runIterationPlanning(pool,followup.json().planning_run_id,async()=>JSON.stringify(changedDraft));
