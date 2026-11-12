@@ -12,6 +12,7 @@ import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './jo
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
 import {withRunnerImages} from './chat-images.mjs';
+import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 
 const execFileAsync=promisify(execFile);
 const home=process.env.CODEX_HOME||'/home/node/.codex';
@@ -663,76 +664,42 @@ async function readJson(req,maxLength=50000){
  return JSON.parse(text);
 }
 
-// Codex app-server exposes the same account rate windows as the Codex clients.
-// A short-lived stdio process does not consume model tokens or reveal OAuth data.
-async function readCodexRateLimits(){
- return new Promise((resolve,reject)=>{
-  const child=spawn('codex',['app-server'],{cwd:'/opt/codex-runner',env:cliEnv,stdio:['pipe','pipe','pipe']});
-  let output='',stderr='',settled=false;
-  const finish=(error,data)=>{
-   if(settled)return;settled=true;clearTimeout(timer);
-   child.kill('SIGTERM');
-   if(error)reject(error);else resolve(data);
-  };
-  const timer=setTimeout(()=>finish(new Error('Истекло время ожидания ответа Codex app-server')),20000);
-  const send=message=>child.stdin.write(JSON.stringify(message)+'\n');
-  child.on('error',e=>finish(new Error('Не удалось запустить Codex app-server: '+e.message)));
-  child.on('exit',code=>{if(!settled)finish(new Error('Codex app-server завершился (код '+code+')'));});
-  child.stderr.on('data',chunk=>{stderr=(stderr+chunk.toString()).slice(-800);});
-  child.stdout.on('data',chunk=>{
-   output+=chunk.toString();
-   if(output.length>1000000)return finish(new Error('Слишком большой ответ Codex app-server'));
-   let end;
-   while((end=output.indexOf('\n'))>=0){
-    const line=output.slice(0,end).trim();output=output.slice(end+1);
-    if(!line)continue;
-    let msg;try{msg=JSON.parse(line);}catch{continue;}
-    if(msg.id===1){
-     if(msg.error)return finish(new Error('Ошибка инициализации Codex app-server'));
-     send({method:'initialized',params:{}});
-     send({id:2,method:'account/rateLimits/read',params:{}});
-    }else if(msg.id===2){
-     if(msg.error)return finish(new Error(String(msg.error.message||'Codex не предоставил лимиты').slice(0,250)));
-     const response=msg.result||{};
-     const raw=response.rateLimitsByLimitId||{};
-     if(!Object.keys(raw).length && response.rateLimits)raw[response.rateLimits.limitId||'codex']=response.rateLimits;
-     const windows=Object.entries(raw).map(([id,bucket])=>({
-      id:String(id),name:typeof bucket.limitName==='string'?bucket.limitName:null,
-      primary:safeRateWindow(bucket.primary),secondary:safeRateWindow(bucket.secondary),
-      planType:typeof bucket.planType==='string'?bucket.planType:null,
-      reachedType:typeof bucket.rateLimitReachedType==='string'?bucket.rateLimitReachedType:null
-     }));
-     finish(null,{windows,resetCredits:typeof response.rateLimitResetCredits?.availableCount==='number'?response.rateLimitResetCredits.availableCount:null,checkedAt:new Date().toISOString()});
-    }
-   }
-  });
-  send({id:1,method:'initialize',params:{clientInfo:{name:'ai_development_orchestrator',title:'AI Development Orchestrator',version:'0.1.0'}}});
- });
-}
-function safeRateWindow(w){
- if(!w||typeof w!=='object'||typeof w.usedPercent!=='number')return null;
- return {usedPercent:Math.min(100,Math.max(0,w.usedPercent)),
-  windowDurationMins:typeof w.windowDurationMins==='number'?w.windowDurationMins:null,
-  resetsAt:typeof w.resetsAt==='number'?w.resetsAt:null};
+// Cache account limits for 75 seconds. Failed requests may use a clearly
+// marked last-good snapshot for at most ten minutes.
+const rateLimitCache=createRateLimitCache(()=>readCodexRateLimits(spawn,{
+ cwd:'/opt/codex-runner',env:cliEnv,timeoutMs:16000
+}));
+function safeQuotaFailure(error){
+ const message=String(error?.message||error||'Неизвестная ошибка');
+ return message
+  .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/gi,'Bearer [REDACTED]')
+  .replace(/\b(?:github_pat_|gh[pousr]_|sk-)[A-Za-z0-9_-]{12,}\b/g,'[REDACTED]')
+  .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/g,'$1[REDACTED]@')
+  .slice(0,250);
 }
 
 http.createServer(async(req,res)=>{
  try {
   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
-  if(req.method==='GET'&&req.url==='/usage-limits'){
-   if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи ChatGPT в Codex CLI'});
-   try{return reply(res,200,await readCodexRateLimits());}
-   catch(error){return reply(res,503,{error:String(error?.message||error).slice(0,250)});}
+  if(req.method==='GET'&&(req.url==='/usage-limits'||req.url.startsWith('/usage-limits?'))){
+   const refresh=new URL(req.url,'http://localhost').searchParams.get('refresh')==='1';
+   try{return reply(res,200,await rateLimitCache.read({force:refresh}));}
+   catch(error){
+    const reason=safeQuotaFailure(error);
+    process.stderr.write('[rate-limits] Codex app-server: '+reason+'\n');
+    return reply(res,503,{error:reason});
+   }
   }
   if(req.method==='GET'&&req.url==='/status'){
    const state=await connected();return reply(res,200,{...state,login:loginState!=='idle'?deviceInfo():null});
   }
   if(req.method==='POST'&&req.url==='/login'){
    if((await connected()).connected)return reply(res,200,{connected:true});
-   runLogin();return reply(res,202,{connected:false,login:deviceInfo()});
+   rateLimitCache.invalidate();runLogin();return reply(res,202,{connected:false,login:deviceInfo()});
   }
   if(req.method==='GET'&&req.url==='/device')return reply(res,200,{login:deviceInfo()});
   if(req.method==='POST'&&req.url==='/logout'){
+   rateLimitCache.invalidate();
    if(login){login.kill('SIGTERM');login=null;}loginState='idle';log='';
    try{await execFileAsync('codex',['logout'],{timeout:10000,env:cliEnv});}catch{}
    return reply(res,200,{connected:false});
