@@ -609,7 +609,9 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  if(!existing.rowCount){
   const storedPlan=await readQaPlan(pool,projectId,taskId);
-  const testPlan=storedPlan?.cases.length&&storedPlan.spec_version===task.spec_version?storedPlan:null;
+  // Single-pass QA designs and verifies cases directly from the current approved task.
+  // Do not reuse previously generated plans that may contain invented visual constraints.
+  const testPlan=!args.singlePass&&storedPlan?.cases.length&&storedPlan.spec_version===task.spec_version?storedPlan:null;
   if(!args.singlePass&&!testPlan)throw ApplicationFailure.nonRetryable('QA-план устарел относительно актуальной версии ТЗ');
   if(!args.simplified){
    const stale=await pool.query("SELECT count(*)::int AS total FROM qa_plan_cases pc JOIN qa_test_cases c ON c.id=pc.case_id JOIN qa_test_plans p ON p.id=pc.plan_id WHERE p.project_id=$1 AND p.task_id=$2 AND c.status<>'active'",[projectId,taskId]);
