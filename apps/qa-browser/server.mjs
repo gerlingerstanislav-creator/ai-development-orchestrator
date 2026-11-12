@@ -9,6 +9,9 @@ import {chromium} from 'playwright';
 
 const workspaceRoot=process.env.QA_WORKSPACES_DIR||'/var/lib/ado-qa-workspaces';
 const sessions=new Map();
+// A Runner crash can skip its finally block; release orphaned Chromium and
+// dev-server processes without ever accepting a mismatched session token.
+const SESSION_IDLE_MS=45*60*1000;
 const idPattern=/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i;
 const mime={'.html':'text/html; charset=utf-8','.js':'application/javascript; charset=utf-8','.mjs':'application/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.webp':'image/webp','.ico':'image/x-icon','.woff2':'font/woff2'};
 const send=(res,status,obj)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(obj));};
@@ -71,20 +74,39 @@ async function application(session){
 async function prepare(id,token){
  if(!idPattern.test(id))throw Error('Invalid QA session');
  const prev=sessions.get(id);
- if(prev){if(!sameToken(prev.token,token))throw Error('Invalid QA session token');return prev;}
+ if(prev){
+  if(!sameToken(prev.token,token))throw Error('Invalid QA session token');
+  prev.lastActivity=Date.now();
+  return prev;
+ }
  const root=join(workspaceRoot,'ado-qa-'+id,'repo');
  const canonical=await realpath(root);
  if(canonical!==root||!(await stat(root)).isDirectory())throw Error('QA workspace is unavailable');
- const session={id,token,root,createdAt:Date.now(),page:null,browser:null,server:null,proc:null};
+ const session={id,token,root,createdAt:Date.now(),lastActivity:Date.now(),page:null,browser:null,server:null,proc:null};
  sessions.set(id,session);
  return session;
 }
 async function stop(s){
- await s.browser?.close().catch(()=>{});
- if(s.proc){s.proc.kill('SIGTERM');s.proc=null;}
- if(s.server)await new Promise(r=>s.server.close(r));
- sessions.delete(s.id);
+ if(s.stopping)return s.stopping;
+ s.stopping=(async()=>{
+  try{
+   await s.browser?.close().catch(()=>{});
+   if(s.proc){s.proc.kill('SIGTERM');s.proc=null;}
+   if(s.server)await new Promise(r=>s.server.close(r));
+  }finally{sessions.delete(s.id);}
+ })();
+ return s.stopping;
 }
+// Keep the browser host self-healing even when its Runner is restarted while
+// a session is active. Active sessions refresh their lease on each request.
+const staleSessionTimer=setInterval(()=>{
+ const now=Date.now();
+ for(const s of sessions.values()){
+  if(now-s.lastActivity>SESSION_IDLE_MS)
+   void stop(s).catch(error=>process.stderr.write('QA session cleanup failed: '+String(error)+'\n'));
+ }
+},60_000);
+staleSessionTimer.unref();
 async function run(s,body){
  const action=body.action;
  if(action==='close'){await stop(s);return {ok:true};}
@@ -149,4 +171,4 @@ const server=http.createServer(async(req,res)=>{
  }catch(error){return send(res,400,{ok:false,error:String(error.message||error).slice(0,1000)});}
 });
 server.listen(4301,'0.0.0.0');
-process.on('SIGTERM',()=>{for(const s of sessions.values())void stop(s);server.close();});
+process.on('SIGTERM',()=>{clearInterval(staleSessionTimer);for(const s of sessions.values())void stop(s);server.close();});

@@ -7,6 +7,9 @@ const equal=(a,b)=>{const x=Buffer.from(String(a||'')),y=Buffer.from(String(b||'
 const reply=(res,code,payload)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(payload));};
 const upstream=process.env.QA_BROWSER_URL||'http://qa-browser:4301';
 export function openQaBrowserSession(id,caseIds=[],{adHoc=false}={}){
+ // Never silently replace credentials for a live browser session. A retry
+ // must use a fresh per-attempt UUID rather than invalidating the old token.
+ if(sessions.has(id))throw Error('QA browser session already active');
  const token=randomBytes(32).toString('hex');
  sessions.set(id,{token,caseIds:new Set(caseIds),adHoc,assertions:[]});
  return {session:id,token};
