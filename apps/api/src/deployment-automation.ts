@@ -1,13 +1,18 @@
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import {isIP} from 'node:net';
 import {z} from 'zod';
 
 const uuid=z.string().uuid();
 const sha=z.string().regex(/^[a-f0-9]{40}$/);
 type Db=Pick<Pool,'query'>;
-type Deps={pool:Pool;uid:(r:any)=>string;access:(r:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(r:any,reply:any)=>Promise<boolean>;decrypt:(secret:string)=>string;start:(runId:string)=>Promise<void>};
+type Deps={pool:Pool;uid:(r:any)=>string;access:(r:any,reply:any,id:string)=>Promise<boolean>;requireAdmin:(r:any,reply:any)=>Promise<boolean>;decrypt:(secret:string)=>string;encrypt:(secret:string)=>string;start:(runId:string)=>Promise<void>};
 function problem(statusCode:number,message:string){return Object.assign(new Error(message),{statusCode});}
 export function validateHealthUrl(value:string){
  let u:URL;
@@ -31,6 +36,12 @@ export async function initAutomaticDeployment(db:Db){
    sha text NOT NULL,status text NOT NULL DEFAULT 'queued',github_run_id bigint,github_url text,
    message text NOT NULL DEFAULT '',created_at timestamptz NOT NULL DEFAULT now(),
    updated_at timestamptz NOT NULL DEFAULT now(),completed_at timestamptz
+  );
+  CREATE TABLE IF NOT EXISTS project_deployment_ssh(
+   project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+   host text NOT NULL,username text NOT NULL,remote_path text NOT NULL,
+   private_key_encrypted text NOT NULL,known_hosts text NOT NULL,
+   updated_at timestamptz NOT NULL DEFAULT now()
   );
   CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_active_project ON deployment_runs(project_id) WHERE status IN ('queued','running');
   CREATE INDEX IF NOT EXISTS idx_deployment_runs_task ON deployment_runs(task_id,created_at DESC);
@@ -136,7 +147,7 @@ async function event(db:Db,projectId:string,runId:string,stage:string,detail:str
   [randomUUID(),projectId,runId,stage,detail.slice(0,1300)]);
 }
 export function registerAutomaticDeploymentRoutes(app:FastifyInstance,deps:Deps){
- const {pool,uid,access,requireAdmin,decrypt,start}=deps;
+ const {pool,uid,access,requireAdmin,decrypt,encrypt,start}=deps;
  const base='/api/projects/:id';
  const permission=async(req:any,reply:any,id:string)=>await access(req,reply,id)&&await requireAdmin(req,reply);
  app.get(base+'/deployment/runs',async(req:any,reply)=>{
@@ -144,10 +155,37 @@ export function registerAutomaticDeploymentRoutes(app:FastifyInstance,deps:Deps)
   if(!await access(req,reply,id))return;
   return (await pool.query('SELECT id,task_id,sha,status,github_url,message,created_at,updated_at,completed_at FROM deployment_runs WHERE project_id=$1 ORDER BY created_at DESC LIMIT 50',[id])).rows;
  });
+ app.get(base+'/deployment/ssh',async(req:any,reply)=>{
+  const {id}=z.object({id:uuid}).parse(req.params);
+  if(!await permission(req,reply,id))return;
+  const item=(await pool.query("SELECT host,username,remote_path,updated_at FROM project_deployment_ssh WHERE project_id=$1",[id])).rows[0];
+  return {configured:!!item,...item};
+ });
+ app.put(base+'/deployment/ssh',async(req:any,reply)=>{
+  const {id}=z.object({id:uuid}).parse(req.params);
+  if(!await permission(req,reply,id))return;
+  const fields=z.object({
+   host:z.string().trim().min(3).max(240).regex(/^[a-zA-Z0-9.-]+$/),
+   username:z.string().trim().min(1).max(70).regex(/^[a-z_][a-zA-Z0-9_-]*$/),
+   path:z.string().trim().min(2).max(350).regex(/^\/[a-zA-Z0-9_.\/-]+$/),
+   private_key:z.string().min(70).max(16000),
+   known_hosts:z.string().min(40).max(8000)
+  }).parse(req.body);
+  if(fields.path.split('/').includes('..')||fields.host==='localhost'||fields.host.startsWith('127.'))
+   throw problem(400,'Небезопасный адрес или путь');
+  if(!fields.known_hosts.split('\n').some(line=>line.startsWith(fields.host+' ')&&/\bssh-(rsa|ed25519)\b|\becdsa-sha2-/.test(line)))
+   throw problem(400,'Укажи закреплённый SSH host key для целевого hostname');
+  await pool.query(`INSERT INTO project_deployment_ssh(project_id,host,username,remote_path,private_key_encrypted,known_hosts)
+   VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(project_id) DO UPDATE SET host=EXCLUDED.host,username=EXCLUDED.username,
+    remote_path=EXCLUDED.remote_path,private_key_encrypted=EXCLUDED.private_key_encrypted,
+    known_hosts=EXCLUDED.known_hosts,updated_at=now()`,
+   [id,fields.host,fields.username,fields.path,encrypt(fields.private_key),fields.known_hosts]);
+  return {configured:true,host:fields.host,username:fields.username,path:fields.path};
+ });
  app.post(base+'/deployment/prepare-workflow',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
   if(!await permission(req,reply,id))return;
-  return prepareWorkflowPr(pool,id,uid(req),decrypt);
+  return reply.code(410).send({error:'GitHub Actions больше не используется. Настрой SSH во вкладке выкладки приложения.'});
  });
  app.post(base+'/tasks/:taskId/deployment/start',async(req:any,reply)=>{
   const {id,taskId}=z.object({id:uuid,taskId:uuid}).parse(req.params);
@@ -175,61 +213,60 @@ export function registerAutomaticDeploymentRoutes(app:FastifyInstance,deps:Deps)
  });
 }
 export async function performAutomaticDeployment(pool:Pool,runId:string,decrypt:(v:string)=>string){
- const row=(await pool.query(`SELECT r.*,s.health_url,s.environment,g.repository,g.default_branch,c.secret_encrypted
+ const row=(await pool.query(`SELECT r.*,s.health_url,s.environment,g.repository,g.default_branch,c.secret_encrypted,
+  ssh.host,ssh.username,ssh.remote_path,ssh.private_key_encrypted,ssh.known_hosts
   FROM deployment_runs r JOIN project_deployment_settings s ON s.project_id=r.project_id
-  JOIN project_git_repositories g ON g.project_id=r.project_id JOIN connections c ON c.id=g.connection_id AND c.provider='github_token'
-  WHERE r.id=$1`,[runId])).rows[0];
+  JOIN project_git_repositories g ON g.project_id=r.project_id
+  JOIN connections c ON c.id=g.connection_id AND c.provider='github_token'
+  LEFT JOIN project_deployment_ssh ssh ON ssh.project_id=r.project_id WHERE r.id=$1`,[runId])).rows[0];
  if(!row||['completed','failed'].includes(row.status))return;
  validateHealthUrl(row.health_url);
+ if(!row.host||!row.username||!row.private_key_encrypted||!row.known_hosts)
+  throw problem(409,'Не настроен защищённый SSH-доступ для самостоятельной выкладки');
  const commit=sha.parse(row.sha),token=decrypt(row.secret_encrypted),repo=row.repository;
- await pool.query("UPDATE deployment_runs SET status='running',message='Проверка GitHub SHA',updated_at=now() WHERE id=$1",[runId]);
- await event(pool,row.project_id,runId,'running','GitHub SHA '+commit);
+ await pool.query("UPDATE deployment_runs SET status='running',message='Проверка SHA и SSH-окружения',updated_at=now() WHERE id=$1",[runId]);
+ await event(pool,row.project_id,runId,'running','Проверка SHA '+commit);
  const branch=await git<{commit:{sha:string}}>(repo,token,'/branches/'+encodeURIComponent(row.default_branch));
  const comparison=await git<{status:string}>(repo,token,'/compare/'+commit+'...'+branch.commit.sha);
  if(!['ahead','identical'].includes(comparison.status))throw problem(409,'SHA не является предком текущей основной ветки');
- let githubRunId=row.github_run_id as number|null;
- const path='/actions/workflows/'+workflowFile;
- if(!githubRunId){
-  await git(repo,token,path+'/dispatches','POST',{ref:row.default_branch,inputs:{sha:commit,request_id:runId,environment:row.environment}});
-  await event(pool,row.project_id,runId,'dispatched','Отправлен запрос GitHub workflow_dispatch');
-  for(let attempt=0;attempt<40&&!githubRunId;attempt++){
-   const list=await git<{workflow_runs:Array<{id:number;display_title:string;html_url:string}>}>(repo,token,path+'/runs?event=workflow_dispatch&per_page=50');
-   const match=list.workflow_runs.find(item=>item.display_title==='ado-deploy-'+runId+'-'+commit);
-   if(match){
-    githubRunId=match.id;
-    await pool.query("UPDATE deployment_runs SET github_run_id=$2,github_url=$3,message='GitHub Actions выполняется',updated_at=now() WHERE id=$1",
-     [runId,match.id,match.html_url]);
-   }else await new Promise(resolve=>setTimeout(resolve,8000));
-  }
- }
- if(!githubRunId)throw problem(502,'GitHub не вернул запуск с нужным request_id');
- let success=false;
- for(let attempt=0;attempt<120;attempt++){
-  const run=await git<{status:string;conclusion:string|null}>(repo,token,'/actions/runs/'+githubRunId);
-  if(run.status==='completed'){success=run.conclusion==='success';break;}
-  await new Promise(resolve=>setTimeout(resolve,10000));
- }
- if(!success)throw problem(502,'GitHub Actions завершился неуспешно или превысил лимит ожидания');
- await event(pool,row.project_id,runId,'health','Проверка HTTPS после успешного GitHub Actions');
+ const dir=await mkdtemp(join(tmpdir(),'ado-deploy-'));
+ try{
+  const keyPath=join(dir,'id_ed25519'),knownPath=join(dir,'known_hosts');
+  await writeFile(keyPath,decrypt(row.private_key_encrypted),{mode:0o600});
+  await writeFile(knownPath,row.known_hosts,{mode:0o600});
+  const remotePath=String(row.remote_path);
+  if(!/^\/[a-zA-Z0-9_.\/-]+$/.test(remotePath)||remotePath.split('/').includes('..'))
+   throw problem(400,'Некорректная директория для SSH-деплоя');
+  const remote='set -e; cd '+remotePath+'; git fetch origin '+commit+'; git checkout --detach '+commit+'; docker compose up -d --build; docker compose ps';
+  await event(pool,row.project_id,runId,'ssh','Запуск собственного SSH-деплоя закреплённого SHA');
+  const result=await promisify(execFile)('ssh',[
+   '-i',keyPath,'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes',
+   '-o','UserKnownHostsFile='+knownPath,'-o','ConnectTimeout=15',
+   row.username+'@'+row.host,remote
+  ],{timeout:25*60*1000,maxBuffer:1024*1024,env:{PATH:process.env.PATH||'/usr/bin:/bin',HOME:dir}});
+  await event(pool,row.project_id,runId,'deployed',String(result.stdout||'').slice(-1200));
+ }finally{await rm(dir,{recursive:true,force:true}).catch(()=>{});}
+ await pool.query("UPDATE deployment_runs SET message='SSH-деплой завершён, проверка HTTPS',updated_at=now() WHERE id=$1",[runId]);
  for(let attempt=0;attempt<3;attempt++){
   const response=await fetch(row.health_url,{redirect:'error',cache:'no-store',signal:AbortSignal.timeout(12000)});
-  if(!response.ok)throw problem(502,'Приложение недоступно: HTTP '+response.status);
+  if(!response.ok)throw problem(502,'Приложение недоступно после SSH-деплоя: HTTP '+response.status);
   if(attempt<2)await new Promise(resolve=>setTimeout(resolve,1500));
  }
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
   const updated=await client.query("UPDATE task_deployment_records SET status='automatic_verified',reason=$3,updated_at=now() WHERE task_id=$1 AND project_id=$2 AND status='pending' RETURNING task_id",
-   [row.task_id,row.project_id,'SHA '+commit+' / GitHub Actions #'+githubRunId+' / '+row.health_url]);
+   [row.task_id,row.project_id,'SSH / SHA '+commit+' / '+row.health_url]);
   if(!updated.rowCount)throw problem(409,'Задача больше не ожидает выкладку');
   const task=await client.query("UPDATE tasks SET stage='documentation',updated_at=now() WHERE id=$1 AND project_id=$2 AND stage='deployment' RETURNING id",
    [row.task_id,row.project_id]);
   if(!task.rowCount)throw problem(409,'Этап задачи изменился');
-  await client.query("UPDATE deployment_runs SET status='completed',message='Выкладка SHA и доступность проверены',updated_at=now(),completed_at=now() WHERE id=$1",[runId]);
-  await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'deployment_verified',$3)",[randomUUID(),row.task_id,'SHA '+commit+' / run '+githubRunId]);
-  await event(client,row.project_id,runId,'completed','GitHub Actions и HTTPS проверены для '+commit);
+  await client.query("UPDATE deployment_runs SET status='completed',message='SHA выложен по SSH и доступность подтверждена',updated_at=now(),completed_at=now() WHERE id=$1",[runId]);
+  await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'deployment_verified',$3)",
+   [randomUUID(),row.task_id,'SSH SHA '+commit]);
+  await event(client,row.project_id,runId,'completed','Собственный SSH-деплой и HTTPS проверены для '+commit);
   await client.query('COMMIT');
- }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+ }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
 }
 export async function failAutomaticDeployment(db:Db,runId:string,message:string){
  const row=await db.query("UPDATE deployment_runs SET status='failed',message=$2,updated_at=now(),completed_at=now() WHERE id=$1 AND status IN ('queued','running') RETURNING project_id",
