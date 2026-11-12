@@ -1812,11 +1812,15 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
     const db=await pool.connect();
     try{
      await db.query('BEGIN');
-     const task=(await db.query("SELECT id,stage,documentation_updated_at,pr_url FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE",[taskId,projectId])).rows[0];
+     const task=(await db.query(`SELECT t.id,t.stage,t.documentation_updated_at,t.pr_url,t.implementation_kind,t.implementation_commit,
+      d.merge_sha,d.status AS deployment_status FROM tasks t LEFT JOIN task_deployment_records d
+      ON d.task_id=t.id AND d.project_id=t.project_id WHERE t.id=$1 AND t.project_id=$2 FOR UPDATE OF t`,[taskId,projectId])).rows[0];
      if(!task){await db.query('ROLLBACK');return {status:'blocked',reason:'Задача отсутствует'};}
      if(task.stage==='done'){await db.query('ROLLBACK');return {status:'already_closed',stage:'done'};}
      const pending=await db.query("SELECT 1 FROM knowledge_document_updates u WHERE u.project_id=$1 AND u.status='pending' AND $2=ANY(u.task_ids) LIMIT 1",[projectId,taskId]);
-     if(!canManagerCloseTask(task.stage as WorkStage,!!task.documentation_updated_at,!!task.pr_url,!!pending.rowCount)){
+     const verifiedExisting=task.implementation_kind==='already_implemented'&&task.implementation_commit===task.merge_sha&&
+      ['skipped','manual_confirmed','automatic_verified'].includes(task.deployment_status);
+     if(!canManagerCloseTask(task.stage as WorkStage,!!task.documentation_updated_at,!!task.pr_url||verifiedExisting,!!pending.rowCount)){
       await db.query('ROLLBACK');
       return {status:'blocked',stage:task.stage,reason:pending.rowCount?'Документация ожидает согласования':'Нельзя пометить задачу готовой: слияние, выкладка или обновление документации ещё не подтверждены'};
      }
