@@ -1,10 +1,9 @@
+import {developmentProcessDetail} from '../domain/development-process-detail.js';
 /** User-scoped, read-only process-center projection.
  * Database reads remain membership-filtered and never advance tasks.
  */
 type Db={query:(sql:string,args?:any[])=>Promise<{rows:any[]}>};
-export function developmentProcessDetail(message:string){
- return message.replace('Codex изменяет код','Изменяет код').replace('Codex не создал файлы.','Файлы не изменились.');
-}
+
 
 export type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 
