@@ -179,13 +179,14 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
  try{
   acquired=(await db.query("SELECT pg_try_advisory_lock(hashtext('ado-iteration-development-queue')) AS locked")).rows[0].locked===true;
   if(!acquired)return;
+  // Recover multiple interrupted dispatches in one reconciliation. A dispatch in
+  // one project must not hold up ready work in every other project for a tick.
   const pending=(await db.query(`SELECT q.project_id,q.task_id,q.run_id,r.status AS run_status
    FROM iteration_execution_queue q LEFT JOIN ai_task_runs r ON r.id=q.run_id
-   WHERE q.status='dispatching' ORDER BY q.updated_at LIMIT 1`)).rows[0];
-  if(pending){
-   if(['queued','running'].includes(pending.run_status))await dispatch(db,temporal,pending);
-   else await db.query("UPDATE iteration_execution_queue SET status='dispatched',detail='Попытка завершена',updated_at=now() WHERE run_id=$1 AND status='dispatching'",[pending.run_id]);
-   return;
+   WHERE q.status='dispatching' ORDER BY q.updated_at LIMIT 100`)).rows;
+  for(const run of pending){
+   if(['queued','running'].includes(run.run_status))await dispatch(db,temporal,run);
+   else await db.query("UPDATE iteration_execution_queue SET status='dispatched',detail='Попытка завершена',updated_at=now() WHERE run_id=$1 AND status='dispatching'",[run.run_id]);
   }
 
   await db.query(`WITH terminal AS (SELECT project_id,task_id,run_id,reason FROM (${queueState} WHERE q.status='queued') work
@@ -216,11 +217,15 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
     spec_version=EXCLUDED.spec_version,run_id=EXCLUDED.run_id,automatic=true,status='queued',detail='',updated_at=now()
    WHERE iteration_execution_queue.status IN ('stale','dispatched')`);
 
-  // Blocked tasks never consume candidate slots, even if many have higher priority.
-  const candidate=(await db.query(`SELECT * FROM (${queueState} WHERE q.status='queued') work WHERE reason IS NULL
-   ORDER BY priority,task_created_at,task_id LIMIT 1`)).rows[0];
-  if(!candidate)return;
-  await db.query('BEGIN');
+  // Fill available developer slots across ALL projects in the same tick. The
+  // database checks capacity by project_id, so a busy project cannot consume
+  // another project's slots. The bound prevents monopolizing the API loop.
+  for(let dispatched=0;dispatched<100;dispatched++){
+   // Blocked tasks never consume candidate slots, even if higher priority.
+   const candidate=(await db.query(`SELECT * FROM (${queueState} WHERE q.status='queued') work WHERE reason IS NULL
+    ORDER BY priority,task_created_at,task_id LIMIT 1`)).rows[0];
+   if(!candidate)break;
+   await db.query('BEGIN');
   try{
    if(candidate.iteration_id)await db.query('SELECT id FROM project_iterations WHERE id=$1 AND project_id=$2 FOR SHARE',[candidate.iteration_id,candidate.project_id]);
    await db.query('SELECT id FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[candidate.task_id,candidate.project_id]);
@@ -228,7 +233,7 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    const locked=(await db.query(`SELECT * FROM (${queueState} WHERE q.project_id=$1 AND q.task_id=$2 AND q.run_id=$3
     AND q.status='queued' FOR UPDATE OF q) work WHERE reason IS NULL`,[candidate.project_id,candidate.task_id,candidate.run_id])).rows[0];
    if(!locked||!await acquireTaskOrchestration(db,locked.project_id,locked.task_id,locked.run_id,'task-cycle-'+locked.run_id,'development')){
-    await db.query('ROLLBACK');return;
+    await db.query('ROLLBACK');continue;
    }
    if(locked.stage==='analysis'){
     await db.query("UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now() WHERE id=$1",[locked.task_id]);
@@ -245,7 +250,8 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
    await db.query("UPDATE iteration_execution_queue SET status='dispatching',detail='',updated_at=now() WHERE run_id=$1",[locked.run_id]);
    await db.query('COMMIT');
   }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}
-  await dispatch(db,temporal,candidate);
+   await dispatch(db,temporal,candidate);
+  }
  }finally{
   if(acquired)await db.query("SELECT pg_advisory_unlock(hashtext('ado-iteration-development-queue'))").catch(()=>{});
   db.release();
