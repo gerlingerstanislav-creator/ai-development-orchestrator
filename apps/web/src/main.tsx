@@ -59,7 +59,7 @@ type GitLink={repository:string,default_branch:string,target_branch?:string,conn
 type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';enabled:boolean};
 type CodexRateWindow={usedPercent:number;windowDurationMins:number|null;resetsAt:number|null};
 type CodexRateBucket={id:string;name:string|null;primary:CodexRateWindow|null;secondary:CodexRateWindow|null;planType:string|null;reachedType:string|null};
-type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checkedAt:string};
+type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checkedAt:string;stale?:boolean;warning?:string};
 type TokenTotals={input_tokens:string;cached_input_tokens:string;output_tokens:string;requests:number};
 type TokenUsageResponse={totals:TokenTotals;latest:Array<{operation:string;model:string;input_tokens:string;cached_input_tokens:string;output_tokens:string;created_at:string}>};
 type AiRun={id:string;task_id:string;model:string;status:string;branch?:string|null;pr_url?:string|null;message?:string;created_at?:string;started_at?:string|null};
@@ -1157,8 +1157,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  async function refreshRateLimits(silent=false){
   if(!silent)setRateLimitsBusy(true);
   setRateLimitsLoading(true);
-  try{const data=await api<CodexRateLimits>('/codex/rate-limits');setRateLimits(data);setRateLimitsError('');}
-  catch(e){setRateLimitsError('Данные лимитов временно недоступны');if(!silent)fail(e);}
+  try{
+   const data=await api<CodexRateLimits>('/codex/rate-limits'+(silent?'':'?refresh=1'));
+   setRateLimits(data);
+   setRateLimitsError(data.stale?(data.warning||'Показаны последние доступные данные; обновление не удалось'):'');
+  }catch(e){setRateLimitsError(e instanceof Error?e.message:'Не удалось получить лимиты Codex');if(!silent)fail(e);}
   finally{setRateLimitsBusy(false);setRateLimitsLoading(false);}
  }
  useEffect(()=>{
@@ -1921,7 +1924,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {shortSource&&<small className="quota-source">5 ч: {shortSource.bucketName} · использовано {formatPercent(shortWindow?.usedPercent??0)}%</small>}
      {weeklySource&&<small className="quota-source">Неделя: {weeklySource.bucketName} · использовано {formatPercent(weekWindow?.usedPercent??0)}%</small>}
      {rateLimits&&rateLimits.windows.length>1&&<small className="quota-source">Другие лимиты: {rateLimits.windows.map(bucket=>bucket.name||bucket.id).join(', ')}</small>}
-     <small className="quota-updated">{rateLimits?.checkedAt?'Обновлено: '+new Date(rateLimits.checkedAt).toLocaleTimeString('ru-RU'):'Данные не загружены'}{rateLimitsLoading?' · обновление…':''}{rateLimitsError?' · '+rateLimitsError:''}</small>
+     <small className="quota-updated">{rateLimits?.checkedAt?(rateLimits.stale?'Последние данные: ':'Обновлено: ')+new Date(rateLimits.checkedAt).toLocaleTimeString('ru-RU'):'Данные не загружены'}{rateLimitsLoading?' · обновление…':''}{rateLimitsError?' · '+rateLimitsError:''}</small>
     </div>
    </div>
    <div className="background-process-control" ref={processDropdownRef}>
@@ -1979,7 +1982,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     <small>{win.resetsAt?'Обновится: '+new Date(win.resetsAt*1000).toLocaleString('ru-RU'):'Время сброса не указано'}</small>
    </div>)}
   </div>)}
-  {rateLimits&&<p className="muted">Обновлено: {new Date(rateLimits.checkedAt).toLocaleString('ru-RU')}{rateLimits.resetCredits!==null?' · Доступно сбросов лимита: '+rateLimits.resetCredits:''}</p>}
+  {rateLimits&&<p className="muted">{rateLimits.stale?'Последние полученные данные: ':'Обновлено: '}{new Date(rateLimits.checkedAt).toLocaleString('ru-RU')}{rateLimits.resetCredits!==null?' · Доступно сбросов лимита: '+rateLimits.resetCredits:''}{rateLimits.stale?' · Обновление не удалось':''}</p>}
  </section>
  <section className="panel codex-panel">
  <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
