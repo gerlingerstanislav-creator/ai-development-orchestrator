@@ -241,36 +241,18 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    const call=async(path:string,payload:Record<string,unknown>)=>app.inject({method:'POST',url:taskPath+path,
     headers:{authorization:await deps.workerAuthorization(actor.actor_id,actor.email)},payload});
    if(startRequested&&snapshot.owner)return handled('Работа по задаче уже запущена. Статус виден в Центре процессов.');
-   const clarification=snapshot.requests.find(request=>request.kind==='analysis_clarifications'&&request.status==='open');
-   let analysisResult='';
+   const clarification=snapshot.requests.find(request=>['analysis_clarifications','question'].includes(request.kind)&&request.status==='open'&&snapshot.task.stage==='analysis');
    if(clarification){
-    let answer=message;
-    if(startRequested){
-     // Older clients sent answers to the manager as ordinary chat messages.
-     // Recover the latest answer from the same person and question round.
-     const previous=await pool.query("SELECT body,status FROM manager_messages WHERE project_id=$1 AND task_id=$2 AND actor_id=$3 AND role='user' AND status IN ('completed','queued','processing') AND created_at>=$4 AND created_at<$5 ORDER BY created_at DESC,id DESC LIMIT 8",
-      [projectId,taskId,actor.actor_id,clarification.created_at,actor.created_at]);
-     const earlier=previous.rows.filter(row=>!parseAgentMention(String(row.body||'')));
-     if(earlier.some(row=>row.status!=='completed'))return handled('Предыдущее сообщение ещё обрабатывается. Дождись ответа в чате задачи.');
-     // Preserve the latest message, which can include both answers and a launch request.
-     const context=earlier.reverse().map(row=>String(row.body)).join('\n\n');
-     if(context&&message.length<3998)answer=context.slice(-(3998-message.length))+'\n\n'+message;
-    }
     if(!await isTurnActive())return {message:'',handled:true};
-    const refined=await call('/assistant',{message:answer,mode:'clarification'});
-    const result=refined.json();
-    if(refined.statusCode>=400)return handled(String(result.error||'Аналитик не смог обработать уточнение.'));
-    if(result.relevant===false)
-     return startRequested?handled('Аналитик ждёт ответа на открытые вопросы. Ответь прямо в чате задачи.'):{message:''};
-    analysisResult=String(result.message||'Аналитик обработал уточнение.');
-    await syncManagerInbox(pool,projectId,taskId);
-    if(result.questions?.length)return handled(analysisResult);
-   }else if(!startRequested)return {message:''};
+    const saved=await acceptAnalysisAnswer(pool,projectId,taskId,actor.actor_id,message);
+    return handled(saved.reason);
+   }
+   if(!startRequested)return {message:''};
    if(!await isTurnActive())return {message:'',handled:true};
    const started=await call('/approve-development',{});
    const result=started.json();
    if(started.statusCode>=400)return handled([analysisResult,String(result.error||'Не удалось запустить разработку.')].filter(Boolean).join('\n\n'));
-   return handled([analysisResult,result.recovered?result.message:'Задача передана в разработку. Запуск принят в очередь Temporal.'].filter(Boolean).join('\n\n'));
+   return handled([result.recovered?result.message:'Задача передана в разработку. Запуск принят в очередь Temporal.'].join('\n\n'));
   }
   if(analysisActions||!['development','testing'].includes(snapshot.task.stage))return {message:''};
   if(snapshot.requests.length)return {message:''};
