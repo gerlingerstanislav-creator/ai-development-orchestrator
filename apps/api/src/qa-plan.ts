@@ -1,3 +1,4 @@
+import {readTaskWorkflowProfile,workflowProfileInstructions} from './workflow-profiles.js';
 import {acceptanceCriteria} from './acceptance-criteria.js';
 import {composeAgentPrompt} from './agent-prompt.js';
 import type { Pool } from 'pg';
@@ -65,9 +66,11 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  if(task.rows[0].analysis_state!=='approved')throw new Error('Сначала требуется утвердить анализ задачи');
  if(task.rows[0].spec_review_status!=='current'||task.rows[0].spec_version!==task.rows[0].spec_reviewed_version)throw new Error('Требования должны быть актуализированы аналитиком перед генерацией тестов');
  const row=task.rows[0];
+ const profile=await readTaskWorkflowProfile(pool,projectId,taskId);
+ const qaScope=profile==='fast'?'1–3 сценария и 1–6 тест-кейсов':profile==='extended'?'2–10 сценариев и 2–18 тест-кейсов':'1–6 сценариев и 1–12 тест-кейсов';
  const rulesText=rules.rows.map((r:any)=>r.body).join('\n').slice(0,9000);
  const instructions=String(stage.rows[0]?.agent_instructions||'').slice(0,7000);
- const hash=createHash('sha256').update(JSON.stringify({title:row.title,description:row.description,spec_version:row.spec_version,rulesText,instructions,qaPlanRevision:QA_PLAN_REVISION})).digest('hex');
+ const hash=createHash('sha256').update(JSON.stringify({title:row.title,description:row.description,spec_version:row.spec_version,rulesText,instructions,profile,qaPlanRevision:QA_PLAN_REVISION})).digest('hex');
  const plan=await pool.query('SELECT id,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId]);
  if(plan.rowCount&&plan.rows[0].spec_hash===hash){
   const count=await pool.query("SELECT count(*)::int AS count FROM qa_plan_cases p JOIN qa_test_cases c ON c.id=p.case_id WHERE p.plan_id=$1 AND c.project_id=$2 AND c.status='active' AND (p.purpose='targeted' OR "+qaRegressionScope('c',2,3)+")",[plan.rows[0].id,projectId,taskId]);
@@ -75,7 +78,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
  }
  const prompt=composeAgentPrompt({
   role:String(stage.rows[0]?.agent_name||'Независимый QA-инженер'),
-  objective:'Подготовь 1–6 сценариев и 1–12 конкретных тест-кейсов по актуальному ТЗ. Каждый критерий приёмки из ТЗ должен быть проверен конкретным ожидаемым результатом. Для каждого кейса укажи requirement_quote — ДОСЛОВНЫЙ фрагмент описания задачи, на котором основан кейс. Не придумывай обязательные макеты, координаты, разрешения или брейкпоинты, если их нет в источниках. Для общей адаптивности проверяй отсутствие переполнения, видимость и композицию на разумных типовых viewport; это тестовые данные, а не новые требования. Если точное расположение не утверждено, не делай сравнение с несуществующим макетом обязательным критерием. Не подгоняй ожидаемые результаты под код.\nЗадача: '+row.title+'\n'+String(row.description||'').slice(0,8500),
+  objective:'Профиль: '+profile+'. '+workflowProfileInstructions(profile,'testing')+' Подготовь '+qaScope+' по актуальному ТЗ. Каждый критерий приёмки из ТЗ должен быть проверен конкретным ожидаемым результатом. Для каждого кейса укажи requirement_quote — ДОСЛОВНЫЙ фрагмент описания задачи, на котором основан кейс. Не придумывай обязательные макеты, координаты, разрешения или брейкпоинты, если их нет в источниках. Для общей адаптивности проверяй отсутствие переполнения, видимость и композицию на разумных типовых viewport; это тестовые данные, а не новые требования. Если точное расположение не утверждено, не делай сравнение с несуществующим макетом обязательным критерием. Не подгоняй ожидаемые результаты под код.\nЗадача: '+row.title+'\n'+String(row.description||'').slice(0,8500),
   instructions:instructions.slice(0,1600),
   scope:'Проект '+projectId+', задача '+taskId+', версия ТЗ '+row.spec_version,
   tools:'Это составление тест-плана, а не выполнение тестов. Не утверждай, что тесты запускались.',
