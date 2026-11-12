@@ -1,3 +1,4 @@
+import {api,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle,Play,Square} from 'lucide-react';
@@ -100,7 +101,6 @@ type AssistantResponse={message:string;created_task_id?:string|null;created_docu
 type ImportJob={id:string;status:'running'|'completed'|'failed'|'cancelled';message:string;result:AssistantResponse|null};
 type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
-const key='ado-token';
 const defaultStages=['backlog','analysis','development','testing','merge_queue','deployment','documentation','done'];
 
 function markdownInline(source:string):React.ReactNode[]{
@@ -211,38 +211,6 @@ function DocumentMarkdown({source}:{source:string}){
  return <article className="docs-markdown">{result}</article>;
 }
 
-class AuthExpiredError extends Error {}
-let refreshInFlight:Promise<string|null>|null=null;
-function renewAccessToken():Promise<string|null>{
- if(refreshInFlight)return refreshInFlight;
- refreshInFlight=(async()=>{
-  try{
-   const response=await fetch('/api/auth/refresh',{method:'POST',credentials:'same-origin'});
-   if(!response.ok)return null;
-   const data=await response.json() as {token?:string};
-   if(!data.token)return null;
-   sessionStorage.setItem(key,data.token);
-   return data.token;
-  }catch{return null;}
- })().finally(()=>{refreshInFlight=null;});
- return refreshInFlight;
-}
-async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
- const send=(token:string|null)=>fetch('/api'+path,{...options,credentials:'same-origin',headers:{...(options.body!=null?{'Content-Type':'application/json'}:{}),...(token?{Authorization:'Bearer '+token}:{}),...options.headers}});
- let response=await send(sessionStorage.getItem(key));
- if(response.status===401 && path!=='/login' && !path.startsWith('/auth/')){
-  const nextToken=await renewAccessToken();
-  if(nextToken)response=await send(nextToken);
-  else{
-   sessionStorage.removeItem(key);
-   window.dispatchEvent(new Event('ado-session-expired'));
-   throw new AuthExpiredError('Сессия завершена');
-  }
- }
- const data=await response.json().catch(()=>({}));
- if(!response.ok)throw Object.assign(Error(data.error||'Ошибка запроса'),{status:response.status});
- return data as T;
-}
 const workflowRoleLabels:Record<string,string>={manager:'ПМ',analyst:'Аналитик BA/SA',platform:'Система',analysis:'Аналитик BA/SA',development:'Разработчик',testing:'QA',documentation:'Технический писатель',devops:'DevOps',architect:'Архитектор'};
 type ProjectSection='overview'|'tasks'|'plan'|'docs'|'qa'|'processes'|'team'|'workflow'|'settings';
 type AppRoute={kind:'projects'|'account'|'project'|'not-found';projectId?:string;section?:ProjectSection;taskId?:string;docId?:string;planning?:boolean;iterationId?:string};
