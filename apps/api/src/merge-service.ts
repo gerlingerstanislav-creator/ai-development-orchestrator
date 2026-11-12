@@ -9,13 +9,17 @@ async function requireQaForMerge(db:Pick<Pool,'query'>,projectId:string,taskId:s
  const spec=(await db.query('SELECT spec_version,spec_reviewed_version,spec_review_status,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId])).rows[0];
  if(!spec||spec.spec_review_status!=='current'||spec.spec_version!==spec.spec_reviewed_version||spec.spec_reviewed_commit!==headSha)
   throw Object.assign(Error('Аналитик не сверил текущую версию ТЗ с коммитом PR. Запустите сверку и QA в карточке задачи.'),{statusCode:409});
- const plan=(await db.query('SELECT spec_version,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId])).rows[0];
- if(!plan?.spec_hash||plan.spec_version!==spec.spec_version)
-  throw Object.assign(Error('Нет QA-плана для текущей версии ТЗ. Запустите QA в карточке задачи.'),{statusCode:409});
  const run=(await db.query('SELECT id,task_id,verdict,report,status,qa_spec_version,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[projectId,taskId])).rows[0];
+ const snapshot=run?.qa_plan_snapshot;
+ const adHoc=snapshot?.singlePass===true&&snapshot.adHoc===true;
+ const plan=adHoc?null:(await db.query('SELECT spec_version,spec_hash FROM qa_test_plans WHERE project_id=$1 AND task_id=$2',[projectId,taskId])).rows[0];
+ if(!adHoc&&(!plan?.spec_hash||plan.spec_version!==spec.spec_version))
+  throw Object.assign(Error('Нет QA-плана для текущей версии ТЗ. Запустите QA в карточке задачи.'),{statusCode:409});
  if(!run||run.status!=='completed'||run.report?.commit!==headSha||run.report?.staleSpecification===true||run.qa_spec_version!==spec.spec_version||
-  run.qa_plan_snapshot?.spec_hash!==plan.spec_hash||(!Array.isArray(run.qa_plan_snapshot?.cases)||!run.qa_plan_snapshot.cases.length))
-  throw Object.assign(Error('Нет завершённого QA-отчёта для текущего SHA, версии ТЗ и плана. Повторите QA в карточке задачи.'),{statusCode:409});
+  !Array.isArray(snapshot?.cases)||!snapshot.cases.length||!adHoc&&snapshot.spec_hash!==plan.spec_hash)
+  throw Object.assign(Error('Нет завершённого QA-отчёта для текущего SHA и версии ТЗ. Повторите QA в карточке задачи.'),{statusCode:409});
+ if(snapshot.singlePass===true&&run.report.executionVerified!==true)
+  throw Object.assign(Error('Runner не подтвердил результаты QA. Повторите проверку.'),{statusCode:409});
  if(run.verdict==='blocked'){
   if(run.qa_plan_snapshot?.simplified===true&&qaWaiverAssessment(run).eligible)return;
   const waiver=(await db.query('SELECT commit_sha,spec_version FROM qa_merge_waivers WHERE project_id=$1 AND task_id=$2 AND test_run_id=$3',
