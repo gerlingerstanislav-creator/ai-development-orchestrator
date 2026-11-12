@@ -12,6 +12,7 @@ import {DocumentationReset} from './DocumentationReset.js';
 import {ProjectIterations,TaskPlanningFields,type IterationSummary,type PlanningOptions} from './ProjectIterations.js';
 import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 import {ChatImagePicker,ChatImageGallery,ChatImageDropZone,prepareChatImages,type ChatImageDraft,type ChatImageMeta} from './ChatImages.js';
+import {BrowserPmVoice} from './BrowserPmVoice.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
@@ -1417,7 +1418,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     method:'POST',body:JSON.stringify({requestId:turn.request_id,message:turn.body,replyTo:turn.reply_to,topicId:turn.topic_id,images:(turn.images||[]).filter(image=>!!image.data).map(image=>({name:image.name,mimeType:image.mimeType,data:image.data}))})
    });
    updateTurn(message=>({...message,id:saved.id,status:saved.status,pending:false,awaitingHistory:true}));
-    updateProjectChat(chatKey,chat=>({...chat,images:[]}));
+    if(turn.images?.length)updateProjectChat(chatKey,chat=>({...chat,images:[]}));
   }catch(e){
    updateProjectChat(chatKey,chat=>chat.messages.some(message=>message.request_id===turn.request_id&&message.id.startsWith('pending-'))
     ?{...chat,error:e instanceof Error?e.message:String(e),messages:chat.messages.map(message=>
@@ -1425,7 +1426,23 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     :chat);
   }
  }
- async function sendProjectMessage(e:React.FormEvent){
+ function sendVoicePmMessage(text:string){
+   const projectId=selected?.id;
+   if(!projectId||projectChatMode!=='project'||!aiSettings.enabled||!text.trim())return;
+   const requestId=crypto.randomUUID();
+   const replyTo=projectReplyTo;
+   const quoted=projectMessages.find(message=>message.id===replyTo);
+   const quotedTopic=quoted?.topic_id&&projectTopics.some(topic=>topic.id===quoted.topic_id)?quoted.topic_id:null;
+   const topicId=projectTopicId||quotedTopic||null;
+   const turn:AssistantMessage&{request_id:string}={
+    id:'pending-'+requestId,request_id:requestId,role:'user',body:text.trim(),
+    reply_to:replyTo,topic_id:topicId,created_at:new Date().toISOString(),pending:true,images:[]
+   };
+   setProjectReplyTo(null);
+   updateProjectChat(projectChatKey(projectId,'project'),chat=>({...chat,error:'',messages:[...chat.messages,turn]}));
+   void sendPmMessage(projectId,turn);
+  }
+  async function sendProjectMessage(e:React.FormEvent){
   e.preventDefault();
   const files=projectChatMode==='documentation'?analystFiles:[];
   const images=projectImages;
@@ -2365,6 +2382,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <button className="secondary" type="button" aria-label="Прикрепить материалы" title="Прикрепить материалы" disabled={projectChatBusy||!!projectImportJobId} onClick={()=>analystFileInput.current?.click()}><Paperclip size={16}/></button>
     </>}
     <ChatImagePicker disabled={projectChatBusy||!aiSettings.enabled} onFiles={files=>void attachProjectImages(files)}/>
+     {projectChatMode==='project'&&<BrowserPmVoice key={selectedProjectId+':'+projectTopicId} disabled={!aiSettings.enabled} latestAssistant={visibleProjectMessages.filter(message=>message.role==='assistant'&&!message.pending).at(-1)||null} onSend={sendVoicePmMessage}/>}
      {mentionMatches(projectInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
       {mentionMatches(projectInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>{setProjectInput(addMention(projectInput,option.alias));projectInputRef.current?.focus();}}>
        <strong>@{option.alias}</strong><small>{aiAgentName(stages.find(s=>s.stage===option.stage)?.agent_name||option.alias)}</small></button>)}

@@ -1299,3 +1299,10 @@ body:has(.tasks-page){overflow:hidden}
 .chat-image-lightbox{position:fixed;inset:0;z-index:11000;display:flex;align-items:center;justify-content:center;background:rgba(8,16,33,.87);padding:50px 24px}
 .chat-image-lightbox img{max-width:100%;max-height:100%;object-fit:contain;border-radius:4px;box-shadow:0 14px 40px rgba(0,0,0,.35)}
 .chat-image-lightbox-close{position:absolute;top:12px;right:14px;display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:8px;color:white;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.25);cursor:pointer}
+
+/* Browser-only PM speech input and speech playback. */
+.pm-voice-controls{display:flex;align-items:center;gap:4px;flex:0 0 auto;min-width:0}
+.pm-voice-action{display:grid;place-items:center;flex:0 0 auto!important;width:30px;height:30px;padding:4px!important;border-radius:7px}
+.pm-voice-action.active{color:#4555c7;background:#edf0ff;border-color:#b9c2f9}
+.pm-voice-hint{font-size:10px;color:#626f86;max-width:104px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+@media(max-width:650px){.pm-voice-hint{max-width:60px}}
