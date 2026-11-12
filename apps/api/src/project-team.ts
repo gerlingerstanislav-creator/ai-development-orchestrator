@@ -17,7 +17,7 @@ const selectedModel=z.enum(selectableAgentModels);
 export async function resolveRoleAiSettings(pool:Pick<Pool,'query'>,projectId:string,role:string,defaults?:{model:string;reasoning:string;enabled?:boolean}){
  const [base,override]=await Promise.all([
   defaults?Promise.resolve({rows:[defaults]}):pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
-  pool.query('SELECT model FROM project_agent_models WHERE project_id=$1 AND role=$2',[projectId,role]).catch(error=>{if((error as {code?:string}).code==='42P01')return {rows:[]};throw error;})
+  pool.query('SELECT model FROM project_agent_models WHERE project_id=$1 AND role=$2',[projectId,role==='analyst'?'analysis':role]).catch(error=>{if((error as {code?:string}).code==='42P01')return {rows:[]};throw error;})
  ]);
  const fallback=base.rows[0]||{model:'gpt-6-luna',reasoning:'low',enabled:false};
  return {...fallback,model:override.rows[0]?.model||fallback.model};
@@ -175,7 +175,15 @@ export async function initProjectTeamSchema(pool:Pool){
 }
 export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId:string,role:'manager'|'analyst'){
  const row=(await pool.query(role==='analyst'?'SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2':'SELECT agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role==='analyst'?'analysis':role])).rows[0];
- return row?('Роль: '+row.agent_name+'\nПроектные инструкции:\n'+row.agent_instructions):'';
+ if(!row)return '';
+ if(role==='analyst'){
+  const legacy=(await pool.query("SELECT agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role='analyst'",[projectId])).rows[0];
+  const custom=String(legacy?.agent_instructions||'').trim();
+  const original='Работай с требованиями, исходными материалами и структурой технического задания.';
+  return 'Роль: '+row.agent_name+'\nИнструкции BA/SA:\n'+row.agent_instructions+
+   (custom&&!custom.startsWith(original)&&!row.agent_instructions.includes(custom)?'\nСохранённые инструкции прежнего BA:\n'+custom:'');
+ }
+ return 'Роль: '+row.agent_name+'\nПроектные инструкции:\n'+row.agent_instructions;
 }
 /** Only explicitly approved instruction proposals and observations are used at runtime. */
 export async function agentMemoryContext(pool:Pick<Pool,'query'>,projectId:string,role:string){
@@ -201,7 +209,7 @@ async function roleExists(pool:Pool,projectId:string,role:string){
 /** Runtime cap applies to new Codex work. Manager is structurally single-instance. */
 export async function roleCapacity(pool:Pick<Pool,'query'>,projectId:string,role:string){
  if(role==='manager')return 1;
- const result=await pool.query('SELECT capacity FROM project_role_capacity WHERE project_id=$1 AND role=$2',[projectId,role==='deployment'?'devops':role]);
+ const result=await pool.query('SELECT capacity FROM project_role_capacity WHERE project_id=$1 AND role=$2',[projectId,role==='deployment'?'devops':role==='analyst'?'analysis':role]);
  return Number(result.rows[0]?.capacity||1);
 }
 export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
