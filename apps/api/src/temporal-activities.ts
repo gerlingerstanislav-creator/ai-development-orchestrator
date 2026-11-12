@@ -1147,6 +1147,8 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
      "UPDATE task_agent_notes n SET status='answered',answer=$2,answer_author=$3,answered_at=now(),processing_at=NULL,requires_customer=false WHERE n.id=$1 AND n.status='processing' AND EXISTS(SELECT 1 FROM tasks t WHERE t.id=n.task_id AND t.project_id=n.project_id AND t.spec_version=$4)",
      [note.id,text+'\n\nИсточник ('+answer.source+'): «'+quote.slice(0,650)+'»',name,task.rows[0]?.spec_version]);
     if(!saved.rowCount)throw Error('ТЗ изменилось во время поиска ответа');
+    await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_consultation_answered',$3)",
+     [randomUUID(),taskId,name+': '+text.slice(0,1200)]);
     resolved++;
    }else if(answer.status==='needs_tool'){
     // A tool gap is NOT an answer. Keep it unresolved and visible, with
@@ -1157,6 +1159,8 @@ export async function resolvePeerQuestions(args:{projectId:string;taskId:string;
      WHERE NOT EXISTS(SELECT 1 FROM agent_blockers WHERE project_id=$2 AND task_id=$3 AND process_id=$4 AND status='open')`,
      [randomUUID(),projectId,taskId,note.id,note.target_stage,'Для ответа недоступен инструмент',text||'Для решения не удалось получить необходимые технические доказательства']);
     await event(projectId,note.id,'analysis','tool_unavailable',text||'Нужна техническая возможность для разрешения вопроса','warning');
+    await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_consultation_blocked',$3)",
+     [randomUUID(),taskId,name+': '+(text||'для консультации недоступен инструмент').slice(0,1200)]);
    }else if(answer.status==='needs_customer'){
     await pool.query("UPDATE task_agent_notes SET status='open',processing_at=NULL,requires_customer=true WHERE id=$1 AND status='processing'",[note.id]);
    }else{
