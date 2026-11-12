@@ -60,11 +60,11 @@ export async function analyzeTaskStage(runId:string):Promise<void>{
  await steps.runTaskStageAnalysis(runId);
 }
 export async function processPeerQuestionWork(noteId:string):Promise<void>{
- try{await waitForProjectAgents({runId:noteId,kind:'peer'});await steps.runPeerQuestionWork(noteId);
+ try{await waitForProjectAgents({runId:noteId,kind:'peer'});await steps.runPeerQuestionWork(noteId);}
  catch(error){await steps.failPeerQuestionWork(noteId,String(error));}
 }
 export async function prepareIterationPlan(runId:string):Promise<void>{
- try{await waitForProjectAgents({runId,kind:'planning'});await planningSteps.prepareIterationPlanDraft(runId);
+ try{await waitForProjectAgents({runId,kind:'planning'});await planningSteps.prepareIterationPlanDraft(runId);}
  catch(error){
   let cause=error;
   while(cause instanceof Error&&cause.cause instanceof Error)cause=cause.cause;
