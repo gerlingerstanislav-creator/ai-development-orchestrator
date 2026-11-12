@@ -1,3 +1,4 @@
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 import {createRunnerRecovery,runnerUnavailable} from './modules/execution/application/runner-recovery.js';
 import {readProjectAgentAvailability,ProjectAgentAvailabilityError,type ProjectAgentScope} from './modules/execution/project-agent-availability.js';
 import {createRunnerHttpClient} from './infrastructure/runner-http-client.js';
@@ -248,7 +249,7 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
    }
    if(output.outcome==='ready'){
     await updateCurrentSpecification(client,projectId,taskId,latest.title,preserveAcceptanceCriteria(latest.description,output.refined_description));
-    const questions=await client.query("SELECT 1 FROM task_agent_notes WHERE task_id=$1 AND kind='question' AND status IN ('open','processing') LIMIT 1",[taskId]);
+    const questions=await client.query(`SELECT 1 FROM task_agent_notes n WHERE n.task_id=$1 AND ${PENDING_OWNER_QUESTION_SQL} LIMIT 1`,[taskId]);
     if(questions.rowCount||latest.clarification_questions?.length){
      await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
     }else{
