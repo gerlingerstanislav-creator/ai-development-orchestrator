@@ -40,3 +40,24 @@ jobs:
           node --check apps/codex-runner/server.mjs
           node --test apps/codex-runner/job-scheduler.test.mjs
           node --test --test-concurrency=1 apps/api/tests/development-queue.test.mjs apps/api/tests/project-agent-parallelism.test.mjs
+
+  codex-runner-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Docker Compose dependencies and healthchecks
+        env:
+          POSTGRES_PASSWORD: ci_database_password
+          ADMIN_EMAIL: ci@example.test
+          ADMIN_PASSWORD: ci_admin_password
+          JWT_SECRET: ci_jwt_password
+          CREDENTIALS_KEY: ci_credential_password
+          RUNNER_SHARED_SECRET: 0123456789abcdef0123456789abcdef
+        run: docker compose config --quiet
+      - name: Build the actual Codex Runner image
+        run: docker build -f apps/codex-runner/Dockerfile -t ado-codex-runner-ci .
+      - name: Verify imports and authenticated HTTP readiness inside the built image
+        run: |
+          docker run --rm --network none \
+            -e RUNNER_SHARED_SECRET=0123456789abcdef0123456789abcdef \
+            --entrypoint node ado-codex-runner-ci /opt/codex-runner/startup-smoke.mjs
