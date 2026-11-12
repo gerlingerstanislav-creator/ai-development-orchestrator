@@ -29,3 +29,30 @@ export function parseExistingImplementation(text,{baseSha,headSha,trackedFiles})
  }
  return {summary:data.summary.trim().slice(0,1400),files:data.files,criteria:data.criteria,commit:baseSha};
 }
+
+/** Explicit, evidence-backed decision that QA feedback requires no code edits
+ * on the task's existing PR. The QA stage still decides acceptance.
+ */
+export function parseNoChangesNeeded(text,{headSha,trackedFiles}){
+ if(!/^RESULT:\s*no_changes_needed\s*$/im.test(text))return null;
+ const match=text.match(/^REWORK_REVIEW:\s*(\{[^\r\n]*\})\s*$/im);
+ if(!match)throw Error('Не указан REWORK_REVIEW с объяснением отсутствия доработок для QA');
+ let data;
+ try{data=JSON.parse(match[1]);}
+ catch{throw Error('REWORK_REVIEW должен быть корректным JSON');}
+ if(!sha.test(headSha||'')||!data||typeof data.summary!=='string'||
+  data.summary.trim().length<40||data.summary.length>1800||
+  !Array.isArray(data.files)||!data.files.length||data.files.length>20||
+  !Array.isArray(data.reasons)||!data.reasons.length||data.reasons.length>20)
+  throw Error('Нужны подробный комментарий, проверенные файлы и аргументы для QA');
+ const tracked=new Set(trackedFiles);
+ for(const file of data.files){
+  if(typeof file!=='string'||!sourcePath.test(file)||!tracked.has(file))
+   throw Error('Файл для QA не подтверждён репозиторием: '+String(file).slice(0,100));
+ }
+ for(const reason of data.reasons){
+  if(typeof reason!=='string'||reason.trim().length<16||reason.length>1000)
+   throw Error('Аргумент для возврата в QA должен быть конкретным и проверяемым');
+ }
+ return {summary:data.summary.trim(),files:data.files,reasons:data.reasons,commit:headSha};
+}
