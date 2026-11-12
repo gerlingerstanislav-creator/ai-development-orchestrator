@@ -17,7 +17,7 @@ test('the development dispatcher fills each project capacity in the same reconci
   await admin.end();
  });
  await db.query(`
-  CREATE TABLE projects(id uuid PRIMARY KEY,owner_id uuid,deleted_at timestamptz);
+  CREATE TABLE projects(id uuid PRIMARY KEY,owner_id uuid,deleted_at timestamptz,agents_running boolean NOT NULL DEFAULT true);
   CREATE TABLE users(id uuid PRIMARY KEY);
   CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,revision int,approved_revision int);
   CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,iteration_id uuid,title text DEFAULT '',display_number int DEFAULT 1,
