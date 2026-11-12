@@ -13,6 +13,12 @@ export type AgentPromptParts={
  budget?:number;
 };
 
+const taskCommunication=[
+ 'Если оставляешь комментарий в карточке задачи или отвечаешь пользователю в чате, по умолчанию пиши простым языком и по делу. Обычно достаточно 1–3 предложений.',
+ 'Скажи, что произошло, как это влияет на задачу и нужен ли следующий шаг. Укажи важные ограничения, даже если ответ короткий.',
+ 'Если пользователь явно просит детали, раскрой именно их по доступным фактам: при необходимости назови проверки, причины, команды или ссылки. Полные результаты сохраняй в предназначенных для этого отчётах и полях, соблюдая схему ответа.'
+].join(' ');
+
 /** One bounded context envelope for every AI role. Current work always wins over optional history. */
 export function composeAgentPrompt(input:AgentPromptParts):string{
  const max=Math.min(24000,Math.max(4000,input.budget??24000));
@@ -21,7 +27,8 @@ export function composeAgentPrompt(input:AgentPromptParts):string{
  const required=[
   part('Роль',input.role,1000),
   'Текущая задача:\n'+input.objective.trim(),
-  part('Доступные инструменты',input.tools,1400)
+  part('Доступные инструменты',input.tools,1400),
+  part('Общение с пользователем',taskCommunication,1400)
  ].filter(Boolean).join('\n\n');
  if(!input.objective.trim()||required.length>max)throw new Error('Текущая задача не помещается в контекст агента');
  let result=required;

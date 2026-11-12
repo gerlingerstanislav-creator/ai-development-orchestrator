@@ -28,7 +28,7 @@ import {initKnowledgeDocumentUpdates,registerKnowledgeDocumentUpdateRoutes} from
 import {fingerprint} from './topic-import.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes} from './qa-waiver.js';
-import {initRequirementsSchema,saveSpecRevision} from './requirements.js';
+import {initRequirementsSchema,saveSpecRevision,updateCurrentSpecification} from './requirements.js';
 import {initTaskAgentNotesSchema,registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
@@ -756,7 +756,6 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
  if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Сначала ответь на вопросы агентов'});
  if(!['testing','merge_queue'].includes(task.rows[0].stage)||!task.rows[0].pr_url||!task.rows[0].git_branch)
   return reply.code(409).send({error:'Сначала заверши разработку и создай PR'});
- if(['needs_approval','rejected'].includes(task.rows[0].spec_review_status))return reply.code(409).send({error:'Сначала разреши предложенное изменение ТЗ. При статусе pending аналитик будет вызван внутри QA-цикла.'});
  // A stale DB lock must not hide a finished QA run or prevent an explicit retry.
  // Verify actual Temporal state before reconciling ownership. Never start a second
  // worker when the first workflow (or Codex job) is still genuinely running.
@@ -814,7 +813,7 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
   await db.query('BEGIN');
   const locked=(await db.query('SELECT stage,pr_url,git_branch,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE',[taskId,id])).rows[0];
   if(!locked||!['testing','merge_queue'].includes(locked.stage)||!locked.pr_url||!locked.git_branch||
-   ['needs_approval','rejected'].includes(locked.spec_review_status)||await pendingAgentQuestions(db,id,taskId)){
+   await pendingAgentQuestions(db,id,taskId)){
    await db.query('ROLLBACK');
    return reply.code(409).send({error:'Условия повторной проверки изменились. Обновите карточку задачи.'});
   }
@@ -824,7 +823,7 @@ app.post('/api/projects/:id/tasks/:taskId/start-testing',async(req:any,reply)=>{
   }
   if(locked.stage==='merge_queue'){
    await db.query("UPDATE tasks SET stage='testing',updated_at=now() WHERE project_id=$1 AND id=$2",[id,taskId]);
-   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Повторная сверка ТЗ и QA перед слиянием')",
+   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'stage_changed','Повторное тестирование перед слиянием')",
     [randomUUID(),taskId,uid(req)]);
   }
   await db.query('COMMIT');
@@ -1372,18 +1371,18 @@ app.patch('/api/projects/:id/tasks/:taskId',async(req:any,reply)=>{
    return reply.code(409).send({error:'PR уже слит. Чтобы изменить завершённую функциональность, создай новую связанную задачу; нельзя переписывать утверждённое ТЗ уже внедрённой версии.'});
   }
   changed=title!==t.title||description!==t.description;
-  version=changed?await saveSpecRevision(client,t,{title,description,origin:'user',actorId:uid(req),reason:'Пользователь изменил требования задачи'}):t.spec_version;
+  version=t.spec_version;
+  if(changed)await updateCurrentSpecification(client,id,taskId,title,description);
   const stage=data.stage&&data.stage!==t.stage?data.stage:changed&&t.stage==='merge_queue'?'testing':t.stage;
   if(stage!==t.stage)await client.query('UPDATE tasks SET stage=$2,updated_at=now() WHERE id=$1',[taskId,stage]);
   if(changed){
    if(['analysis','backlog'].includes(t.stage))await client.query("UPDATE tasks SET analysis_state='new' WHERE id=$1",[taskId]);
-   await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'spec_changed','Требования изменены: версия '+version+'; требуется сверка аналитиком']);
+   await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'spec_changed','Обновлено текущее описание задачи']);
   }
   if(stage!==t.stage)await client.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',[randomUUID(),taskId,uid(req),'stage_changed',t.stage+' → '+stage]);
   await client.query('COMMIT');
  }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
- const review=changed?await startRequirementsReview(id,taskId,version):null;
- return {ok:true,spec_version:version,requirements_review:review};
+ return {ok:true,spec_version:version,requirements_review:null};
 });
 app.get('/api/projects/:id/tasks/:taskId/events',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
@@ -1654,7 +1653,7 @@ app.patch('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
  if(old.rows[0].system_key && (data.title!==old.rows[0].title || parentId!==null))return reply.code(409).send({error:'Название и расположение системного раздела нельзя менять'});
   if(!old.rows[0].system_key&&!parentId)return reply.code(409).send({error:'Страницу нельзя переместить за пределы системных разделов'});
   if(!await validDocParent(id,docId,parentId))return reply.code(400).send({error:'Нельзя переместить страницу в себя, своего потомка или другой проект'});
- await pool.query("WITH updated AS (UPDATE documents SET title=$1,body=$2,parent_id=$3,document_kind=COALESCE($6,document_kind),implementation_status=COALESCE($7,implementation_status),implementation_evidence=COALESCE($8,implementation_evidence),updated_at=clock_timestamp() WHERE id=$4 AND project_id=$5 RETURNING id,body) INSERT INTO document_versions(id,document_id,body) SELECT gen_random_uuid(),id,body FROM updated",[data.title,data.body,parentId,docId,id,data.document_kind||null,data.implementation_status||null,data.implementation_evidence??null]);
+ await pool.query("UPDATE documents SET title=$1,body=$2,parent_id=$3,document_kind=COALESCE($6,document_kind),implementation_status=COALESCE($7,implementation_status),implementation_evidence=COALESCE($8,implementation_evidence),updated_at=clock_timestamp() WHERE id=$4 AND project_id=$5",[data.title,data.body,parentId,docId,id,data.document_kind||null,data.implementation_status||null,data.implementation_evidence??null]);
  return {ok:true};
 });
 app.delete('/api/projects/:id/docs/:docId',async(req:any,reply)=>{
@@ -1840,8 +1839,8 @@ async function recoverTask({projectId,taskId,auth,cookie}:Parameters<ManagerDeps
   if(response.statusCode>=400)
    return {ok:false,status:response.statusCode,message:String(data.error||'Проверка условий перехода не прошла'),details:data};
   return {ok:true,status:202,message:task.stage==='development'
-   ?'Менеджер поставил разработку в очередь. После неё система сверит ТЗ и запустит тестирование.'
-   :'Менеджер запустил сверку требований и тестирование существующего PR.',details:data};
+   ?'Разработка в очереди. После неё автоматически запустится тестирование.'
+   :'Запущено тестирование существующего PR.',details:data};
  }
 registerTaskAgentNotesRoutes(app,{pool,uid,access,requireAdmin,startRequirementsReview,resumeAfterAnswer:async input=>{
  const owner=await pool.query("SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active'",[input.projectId,input.taskId]);

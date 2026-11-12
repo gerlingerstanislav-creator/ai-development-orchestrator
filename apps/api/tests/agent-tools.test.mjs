@@ -88,7 +88,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.ok(read.revision);
  const updated=await call('documents.update',{document_id:newId,expected_revision:read.revision,body:'Новые согласованные условия'});
  assert.equal(updated.statusCode,200,updated.body);
- assert.equal((await db.query('SELECT count(*)::int n FROM document_versions WHERE document_id=$1',[newId])).rows[0].n,1,'Agent changes must be versioned');
+ assert.equal((await db.query('SELECT count(*)::int n FROM document_versions WHERE document_id=$1',[newId])).rows[0].n,0,'Agent changes update the same page without a history row');
  assert.equal((await call('documents.update',{document_id:newId,expected_revision:read.revision,body:'Устаревшие изменения'})).statusCode,409);
  assert.equal((await call('documents.update',{document_id:root,expected_revision:(await call('documents.read',{document_id:root})).json().result.document.revision,title:'Удалить корень'})).statusCode,409);
  const change=await call('documents.changeset',{operations:[

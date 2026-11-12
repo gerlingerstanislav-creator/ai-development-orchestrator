@@ -9,6 +9,8 @@ test('one prompt builder preserves the current assignment and does not inject ex
  });
  assert.match(prompt,/Создай красный сайт/);
  assert.match(prompt,/tasks.read/);
+ assert.match(prompt,/по умолчанию пиши простым языком/);
+ assert.match(prompt,/пользователь явно просит детали/);
  assert.equal(prompt.includes('Задачи проекта:'),false);
  assert.ok(prompt.length<=24000);
 });

@@ -3,9 +3,6 @@ import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
 import {roleCapacity} from './project-team.js';
 
-/** Stage ownership: the analyst finishes analysis without launching development.
- * Starting Codex development still requires a separately authorized iteration launch.
- */
 export async function initTaskAnalysisQueue(pool:Pool){
  await pool.query(`CREATE TABLE IF NOT EXISTS agent_analysis_runs (
   id uuid PRIMARY KEY,
@@ -38,10 +35,8 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   }
 
   // Ready means the analyst already finalized the specification (e.g. published SA plan).
-  // Do not couple analysis completion to launch authorization or code dependencies.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
    WHERE t.stage='analysis' AND t.type='task' AND t.analysis_state='ready_for_development'
-    AND t.spec_review_status='current' AND t.spec_reviewed_version=t.spec_version
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.kind='question' AND n.status IN ('open','processing'))
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
@@ -50,16 +45,15 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   for(const t of ready.rows){
    const updated=await db.query(`UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now()
     WHERE id=$1 AND project_id=$2 AND stage='analysis' AND analysis_state='ready_for_development'
-    AND spec_review_status='current' AND spec_reviewed_version=spec_version
     AND coalesce(jsonb_array_length(clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$1 AND n.kind='question' AND n.status IN ('open','processing'))
     RETURNING id`,[t.id,t.project_id]);
    if(updated.rowCount){
     await db.query(`INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'stage_changed',$3)`,
-      [randomUUID(),t.id,'Аналитик завершил анализ. Анализ → Разработка. Запуск кода зависит от команды на итерацию.']);
+      [randomUUID(),t.id,'Аналитик завершил анализ и передал задачу в разработку.']);
     await db.query(`INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status)
      VALUES($1,$2,$3,'analysis','Системный аналитик','development','handoff',$4,'agent',$5,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING`,
-      [randomUUID(),t.project_id,t.id,'ТЗ подготовлено, вопросы закрыты. Задача передана разработчику и ожидает разрешённого запуска итерации.','analysis-stage-ready:'+t.id]);
+      [randomUUID(),t.project_id,t.id,'ТЗ готово. Разработчик получит задачу автоматически.','analysis-stage-ready:'+t.id]);
    }
   }
   const candidates=await db.query(`SELECT t.id,t.project_id,t.spec_version FROM tasks t

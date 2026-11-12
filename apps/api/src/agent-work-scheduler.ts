@@ -23,11 +23,12 @@ export async function initAgentWorkQueue(db:Db){
  ALTER TABLE iteration_execution_queue ALTER COLUMN iteration_id DROP NOT NULL;
  ALTER TABLE iteration_execution_queue ADD COLUMN IF NOT EXISTS approved_revision int;
  ALTER TABLE iteration_execution_queue ADD COLUMN IF NOT EXISTS spec_version int;
+ ALTER TABLE iteration_execution_queue ADD COLUMN IF NOT EXISTS automatic boolean NOT NULL DEFAULT false;
  ALTER TABLE iteration_execution_queue DROP CONSTRAINT IF EXISTS iteration_execution_queue_status_check;
  ALTER TABLE iteration_execution_queue ADD CONSTRAINT iteration_execution_queue_status_check
   CHECK(status IN ('queued','dispatching','dispatched','cancelled','stale'));
  UPDATE iteration_execution_queue SET status='stale',detail='У запуска нет сохранённой ревизии. Подтвердите запуск повторно.',updated_at=now()
-  WHERE status='queued' AND iteration_id IS NOT NULL AND approved_revision IS NULL;
+  WHERE status='queued' AND NOT automatic AND iteration_id IS NOT NULL AND approved_revision IS NULL;
  CREATE INDEX IF NOT EXISTS idx_iteration_execution_queue_pending ON iteration_execution_queue(status,created_at);`);
 }
 
@@ -78,7 +79,7 @@ export async function enqueueDevelopment(db:Db,projectId:string,actorId:string,s
    (project_id,iteration_id,task_id,requested_by,approved_revision,spec_version,run_id)
    VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(project_id,task_id) DO UPDATE
    SET iteration_id=EXCLUDED.iteration_id,requested_by=EXCLUDED.requested_by,approved_revision=EXCLUDED.approved_revision,
-    spec_version=EXCLUDED.spec_version,run_id=EXCLUDED.run_id,status='queued',detail='',created_at=now(),updated_at=now()
+    spec_version=EXCLUDED.spec_version,run_id=EXCLUDED.run_id,automatic=false,status='queued',detail='',created_at=now(),updated_at=now()
    RETURNING created_at`,[projectId,iterationId,task.id,actorId,revision,task.spec_version,runId])).rows[0];
   results.push({id:task.id,run_id:runId,status:'queued',created_at:row.created_at});
  }
@@ -89,10 +90,10 @@ export async function enqueueDevelopment(db:Db,projectId:string,actorId:string,s
 
 const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_task_id,t.stage,t.created_at AS task_created_at,
  CASE
-  WHEN t.iteration_id IS DISTINCT FROM q.iteration_id OR (q.iteration_id IS NOT NULL AND
-   (q.approved_revision IS NULL OR i.revision IS DISTINCT FROM q.approved_revision OR i.approved_revision IS DISTINCT FROM q.approved_revision))
+  WHEN NOT q.automatic AND (t.iteration_id IS DISTINCT FROM q.iteration_id OR (q.iteration_id IS NOT NULL AND
+   (q.approved_revision IS NULL OR i.revision IS DISTINCT FROM q.approved_revision OR i.approved_revision IS DISTINCT FROM q.approved_revision)))
    THEN 'iteration_changed'
-  WHEN t.spec_version IS DISTINCT FROM q.spec_version THEN 'spec_changed'
+  WHEN NOT q.automatic AND t.spec_version IS DISTINCT FROM q.spec_version THEN 'spec_changed'
   WHEN t.stage IN ('testing','merge_queue','deployment','documentation','done') THEN 'advanced'
   WHEN NOT COALESCE(settings.enabled,false) THEN 'ai_disabled'
   WHEN NOT EXISTS(SELECT 1 FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id
@@ -101,9 +102,9 @@ const queueState=`SELECT q.*,t.title,t.display_number,t.priority,t.depends_on_ta
   WHEN COALESCE(jsonb_array_length(t.clarification_questions),0)>0 OR EXISTS(
    SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id AND n.kind='question'
     AND n.status IN ('open','processing')) THEN 'questions'
-  WHEN t.spec_review_status IN ('pending','needs_approval') OR t.spec_version IS DISTINCT FROM t.spec_reviewed_version
+  WHEN NOT q.automatic AND (t.spec_review_status IN ('pending','needs_approval') OR t.spec_version IS DISTINCT FROM t.spec_reviewed_version)
    THEN 'spec_review'
-  WHEN (t.stage='analysis' AND (t.analysis_state<>'ready_for_development' OR t.spec_review_status<>'current'))
+  WHEN (t.stage='analysis' AND (t.analysis_state<>'ready_for_development' OR (NOT q.automatic AND t.spec_review_status<>'current')))
    OR (t.stage='development' AND t.analysis_state<>'approved') THEN 'stage'
   WHEN t.depends_on_task_id IS NOT NULL AND NOT COALESCE(
    dep.stage IN ('deployment','documentation','done') OR
@@ -194,6 +195,18 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
     updated_at=now() FROM terminal WHERE q.project_id=terminal.project_id AND q.task_id=terminal.task_id
     AND q.run_id IS NOT DISTINCT FROM terminal.run_id AND q.status='queued'`,
    [reasonText.iteration_changed,reasonText.spec_changed]);
+
+  await db.query(`INSERT INTO iteration_execution_queue
+   (project_id,iteration_id,task_id,requested_by,spec_version,run_id,automatic)
+   SELECT t.project_id,t.iteration_id,t.id,p.owner_id,t.spec_version,gen_random_uuid(),true
+   FROM tasks t JOIN projects p ON p.id=t.project_id AND p.deleted_at IS NULL
+   WHERE t.type='task' AND t.stage='development' AND t.analysis_state='approved'
+    AND NOT EXISTS(SELECT 1 FROM iteration_execution_queue q WHERE q.project_id=t.project_id AND q.task_id=t.id AND q.status<>'stale')
+    AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id)
+   ORDER BY t.priority,t.created_at LIMIT 25
+   ON CONFLICT(project_id,task_id) DO UPDATE SET iteration_id=EXCLUDED.iteration_id,requested_by=EXCLUDED.requested_by,
+    spec_version=EXCLUDED.spec_version,run_id=EXCLUDED.run_id,automatic=true,status='queued',detail='',updated_at=now()
+   WHERE iteration_execution_queue.status='stale'`);
 
   // Blocked tasks never consume candidate slots, even if many have higher priority.
   const candidate=(await db.query(`SELECT * FROM (${queueState} WHERE q.status='queued') work WHERE reason IS NULL

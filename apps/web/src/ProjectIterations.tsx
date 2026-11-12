@@ -12,7 +12,6 @@ type PlanPreview={id:string;items:PlanItem[];stale:boolean;published_at:string|n
 const initialDraft={title:'',body:'',document_ids:[] as string[]};
 const problem=(e:unknown)=>e instanceof Error?e.message:String(e);
 const requestBody=(method:string,body:unknown)=>({method,body:JSON.stringify(body)});
-const approved=(item:Pick<IterationSummary,'revision'|'approved_revision'>)=>item.approved_revision===item.revision;
 
 export function ProjectIterations({projectId,iterationId,summaries,documents,request,onSelect,onChange,onChat,documentLink,taskLink,stages,renderBody}:{
  projectId:string;iterationId:string|null;summaries:IterationSummary[];documents:PlanDocument[];request:Request;
@@ -22,7 +21,7 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
 }){
  const base='/projects/'+projectId+'/iterations',url=iterationId?base+'/'+iterationId:base;
  const [details,setDetails]=useState<IterationDetails|null>(null);
- const [draft,setDraft]=useState(initialDraft),[editing,setEditing]=useState(false),[draftRevision,setDraftRevision]=useState<number>();
+ const [draft,setDraft]=useState(initialDraft),[editing,setEditing]=useState(false);
  const [preview,setPreview]=useState<PlanPreview|null>(null),[answers,setAnswers]=useState<Record<string,string>>({});
  const [busy,setBusy]=useState(false),[loading,setLoading]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  useEffect(()=>{
@@ -49,14 +48,14 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
  async function refresh(){if(iterationId)setDetails(await request<IterationDetails>(url));}
  async function perform(action:()=>Promise<void>){if(busy)return;setBusy(true);setError('');setNotice('');
   try{await action();}catch(e){setError(problem(e));}finally{setBusy(false);}}
- function edit(){setDraft(details?{title:details.title,body:details.body,document_ids:details.documents.map(d=>d.id)}:initialDraft);setDraftRevision(details?.revision);setEditing(true);}
+ function edit(){setDraft(details?{title:details.title,body:details.body,document_ids:details.documents.map(d=>d.id)}:initialDraft);setEditing(true);}
  function save(event:React.FormEvent){event.preventDefault();void perform(async()=>{
-  const value=await request<{id:string}>(url,requestBody(details?'PUT':'POST',{...draft,expected_revision:draftRevision}));
+  const value=await request<{id:string}>(url,requestBody(details?'PUT':'POST',draft));
   setEditing(false);if(iterationId)await refresh();else onSelect(value.id);await onChange();
  });}
  function approve(){if(!details)return;void perform(async()=>{
-  await request(url+'/approve',requestBody('POST',{expected_revision:details.revision}));
-  await refresh();await onChange();setNotice('Итерация согласована. Подготовка единого плана передана аналитику.');
+  await request(url+'/prepare',requestBody('POST',{}));
+  await refresh();await onChange();setNotice('Аналитик готовит план и обновит карточки.');
  });}
  function answer(question:Question){if(!answers[question.id]?.trim())return;void perform(async()=>{
   await request(url+'/questions/'+question.id+'/answer',requestBody('POST',{answer:answers[question.id].trim()}));
@@ -70,7 +69,6 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
   <header className="iteration-header"><div>
    {iterationId&&<button type="button" className="textbtn iteration-back" onClick={()=>onSelect(null)}><ArrowLeft size={14}/> Все итерации</button>}
    <h2>{details?.title??(iterationId?'Итерация':'План разработки')}</h2>
-   {details&&<small className="muted">Редакция {details.revision} · {approved(details)?'Согласована':'Черновик'}</small>}
   </div>{!editing&&(!iterationId||details)&&<button type="button" className="secondary" disabled={busy} onClick={edit}>
    {details?<><Pencil size={15}/> Изменить</>:<><Plus size={15}/> Итерация</>}
   </button>}</header>
@@ -89,7 +87,7 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
   </form>}
   {!iterationId&&!editing&&<div className="iteration-list">
    {summaries.map(item=><button key={item.id} type="button" className="secondary iteration-list-item" onClick={()=>onSelect(item.id)}>
-    <strong>{item.title}</strong><span>{approved(item)?'Согласована':'Черновик'} · {item.done_count}/{item.task_count} задач</span></button>)}
+    <strong>{item.title}</strong><span>{item.done_count}/{item.task_count} задач</span></button>)}
    {!summaries.length&&<p className="muted">Создай первую итерацию или попроси ПМ сформировать её.</p>}
   </div>}
   {details&&!editing&&<>
@@ -107,15 +105,14 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
     </div>)}
    </section>
    <div className="iteration-actions">
-    {!approved(details)&&<button type="button" className="primary" disabled={busy||details.questions?.some(q=>q.status==='open')} onClick={approve}><Check size={15}/> Согласовать итерацию</button>}
-    <button type="button" className="secondary" onClick={()=>onChat('project','Проверь итерацию «'+details.title+'» (ID '+details.id+'), принятые решения и план. Доведи подготовку до результата. Запуск готовых задач организуй после моей команды.')}>
+    <button type="button" className="primary" disabled={busy||planning} onClick={approve}><Check size={15}/> Подготовить план</button>
+    <button type="button" className="secondary" onClick={()=>onChat('project','Подготовь план для итерации «'+details.title+'» (ID '+details.id+') и обнови карточки по актуальному ТЗ.')}>
      <MessageCircle size={15}/> Поручить ПМ</button>
     {planning&&<small className="muted">СА готовит план задач…</small>}
    </div>
    <section className="iteration-section">
     <h3><ClipboardList size={17}/> План задач</h3>
     {details.planning_runs[0]&&<p className="muted" role="status">{details.planning_runs[0].message}</p>}
-    {preview?.stale&&<p className="muted">План устарел после изменения итерации. Актуальная декомпозиция будет подготовлена после согласования.</p>}
     {epics.length>0&&<ul className="iteration-plan-tree">{epics.map(epic=><li key={epic.key}><details open>
      <summary><strong>{epic.title}</strong> <small className="muted">Эпик</small></summary>
      <ul className="iteration-plan-tree">{currentPlan.filter(child=>child.parent===epic.key).map(child=><li className="iteration-child" key={child.key}>
@@ -128,7 +125,7 @@ export function ProjectIterations({projectId,iterationId,summaries,documents,req
       <a href={taskLink(child.id)}>#{child.display_number} {child.title}</a><small>{child.depends_on_task_id?'Зависит от '+taskName(child.depends_on_task_id):stages.find(s=>s.stage===child.stage)?.label??child.stage}</small>
      </div>)}</li>)}</ul>}
     {!epics.length&&!roots.length&&<p className="muted">Список задач появится после декомпозиции итерации.</p>}
-    <p className="muted">Публикацию плана и запуск разработки организует ПМ. Кнопок ручного запуска задач здесь нет.</p>
+    <p className="muted">Готовые задачи автоматически передаются в разработку.</p>
    </section>
   </>}
  </div>;

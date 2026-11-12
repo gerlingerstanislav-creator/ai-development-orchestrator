@@ -41,6 +41,11 @@ export async function saveSpecRevision(client:PoolClient,old:any,data:{title:str
  return version;
 }
 
+export async function updateCurrentSpecification(db:Pick<PoolClient,'query'>,projectId:string,taskId:string,title:string,description:string){
+ await db.query("UPDATE tasks SET title=$3,description=$4,spec_review_status='current',spec_reviewed_version=spec_version,spec_review_note='',spec_reviewed_commit='',updated_at=now() WHERE project_id=$1 AND id=$2",
+  [projectId,taskId,title,description]);
+}
+
 const analystAnswer=z.object({
  classification:z.enum(['aligned','clarification','material_change','uncertain','qa_validation']),
  summary:z.string().trim().min(5).max(3000),

@@ -50,3 +50,41 @@ test('system analyst automatically owns analysis tasks, hands off completed work
  assert.equal((await db.query("SELECT count(*)::int n FROM task_events WHERE task_id=$1 AND event='stage_changed'",[ready])).rows[0].n,1);
  assert.equal((await db.query('SELECT count(*)::int n FROM task_agent_notes WHERE task_id=$1 AND kind=$2',[ready,'handoff'])).rows[0].n,1);
 });
+
+test('partial QA keeps its report and moves the same card to the merge queue',async t=>{
+ const originalUrl=process.env.DATABASE_URL;
+ const db=new pg.Client({connectionString:originalUrl});
+ await db.connect();
+ const schema='partial_qa_'+randomUUID().replaceAll('-','');
+ await db.query('CREATE SCHEMA '+schema);
+ await db.query('SET search_path TO '+schema);
+ t.after(async()=>{await db.query('DROP SCHEMA '+schema+' CASCADE');await db.end();});
+ const isolatedUrl=new URL(originalUrl);
+ isolatedUrl.searchParams.set('options','-c search_path='+schema);
+ process.env.DATABASE_URL=isolatedUrl.toString();
+ let noteBlockedTests;
+ try{({noteBlockedTests}=await import('../dist/temporal-activities.js'));}
+ finally{process.env.DATABASE_URL=originalUrl;}
+ await db.query(`
+  CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,stage text,test_feedback text,updated_at timestamptz);
+  CREATE TABLE ai_test_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text,verdict text,report jsonb,qa_plan_snapshot jsonb);
+  CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,event text,detail text);
+  CREATE TABLE process_events(id uuid PRIMARY KEY,project_id uuid,process_id uuid,process_kind text,stage text,detail text,level text);
+ `);
+ const [projectId,taskId,testId,apiCase,uiCase]=Array.from({length:5},randomUUID);
+ const report={summary:'Проверен ответ API.',caseResults:[
+  {case_id:apiCase,result:'passed',reason:'executed',evidence:'HTTP 200 и ожидаемое тело ответа'},
+  {case_id:uiCase,result:'blocked',reason:'tool_unavailable',evidence:'Для визуальной проверки нужен браузер'}
+ ]};
+ const plan={cases:[{id:apiCase,title:'Ответ API'},{id:uiCase,title:'Внешний вид формы'}]};
+ await db.query("INSERT INTO tasks(id,project_id,stage) VALUES($1,$2,'testing')",[taskId,projectId]);
+ await db.query("INSERT INTO ai_test_runs VALUES($1,$2,$3,'completed','blocked',$4,$5)",[testId,projectId,taskId,report,plan]);
+ await noteBlockedTests({projectId,taskId,testId,simplified:true});
+ await noteBlockedTests({projectId,taskId,testId,simplified:true});
+ const task=(await db.query('SELECT stage,test_feedback FROM tasks WHERE id=$1',[taskId])).rows[0];
+ assert.equal(task.stage,'merge_queue');
+ assert.match(task.test_feedback,/Проверено 1 из 2/);
+ assert.match(task.test_feedback,/Внешний вид формы — нет нужного инструмента/);
+ assert.deepEqual((await db.query('SELECT report FROM ai_test_runs WHERE id=$1',[testId])).rows[0].report,report);
+ assert.equal((await db.query('SELECT count(*)::int n FROM task_events')).rows[0].n,1);
+});

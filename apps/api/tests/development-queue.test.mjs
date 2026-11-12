@@ -13,7 +13,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  const db=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
  t.after(async()=>{await db.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
  await db.query(`
-  CREATE TABLE projects(id uuid PRIMARY KEY);
+  CREATE TABLE projects(id uuid PRIMARY KEY,owner_id uuid,deleted_at timestamptz);
   CREATE TABLE users(id uuid PRIMARY KEY);
   CREATE TABLE project_iterations(id uuid PRIMARY KEY,project_id uuid,revision int,approved_revision int);
   CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,iteration_id uuid,title text DEFAULT '',display_number int DEFAULT 1,
@@ -38,7 +38,7 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  await initTaskOrchestrationSchema(db);
  const project=randomUUID(),iteration=randomUUID(),actor=randomUUID(),connection=randomUUID();
  const [legacy,first,second,dependency,changedSpec]=Array.from({length:5},randomUUID);
- await db.query('INSERT INTO projects VALUES($1)',[project]);
+ await db.query('INSERT INTO projects(id,owner_id) VALUES($1,$2)',[project,actor]);
  await db.query('INSERT INTO users VALUES($1)',[actor]);
  await db.query('INSERT INTO project_iterations VALUES($1,$2,1,1)',[iteration,project]);
  await db.query("INSERT INTO project_ai_settings VALUES($1,true,'gpt-6-luna','low')",[project]);
@@ -108,4 +108,17 @@ test('development queue binds approval, skips blocked tasks and retries one stab
  await releaseTaskOrchestration(db,project,first,runId);
  await dispatch();
  assert.equal(starts[2].args[0].taskId,second);
+
+ const automatic=randomUUID();
+ await db.query("UPDATE ai_task_runs SET status='completed' WHERE task_id=$1",[second]);
+ await releaseTaskOrchestration(db,project,second,(await status(second)).run_id);
+ await db.query(`INSERT INTO tasks(id,project_id,iteration_id,stage,analysis_state,spec_review_status,priority)
+  VALUES($1,$2,$3,'development','approved','pending',0)`,[automatic,project,iteration]);
+ await db.query('UPDATE project_iterations SET approved_revision=NULL WHERE id=$1',[iteration]);
+ await dispatch();
+ await dispatch();
+ assert.equal(starts[3].args[0].taskId,automatic,'analysis handoff is sufficient for automatic development');
+ assert.equal(starts.length,4,'the same task is dispatched once');
+ assert.equal((await db.query('SELECT triggered_by FROM ai_task_runs WHERE task_id=$1',[automatic])).rows[0].triggered_by,actor);
+
 });
