@@ -1,3 +1,4 @@
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 import {randomUUID} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import type {FastifyInstance} from 'fastify';
@@ -59,7 +60,7 @@ export async function taskConversationEvidence(pool:Pick<Pool,'query'>,projectId
  * A material-change proposal must still receive an explicit human decision.
  */
 export async function resolveAgentQuestionsForReview(client:PoolClient,projectId:string,taskId:string,version:number){
- const open=await client.query("SELECT count(*)::int AS total FROM task_agent_notes WHERE project_id=$1 AND task_id=$2 AND kind='question' AND status IN ('open','processing')",[projectId,taskId]);
+ const open=await client.query(`SELECT count(*)::int AS total FROM task_agent_notes n WHERE n.project_id=$1 AND n.task_id=$2 AND ${PENDING_OWNER_QUESTION_SQL}`,[projectId,taskId]);
  const remaining=Number(open.rows[0].total);
  if(remaining)return {remaining,requiresApproval:false};
  const review=await client.query("SELECT classification FROM task_requirement_reviews WHERE project_id=$1 AND task_id=$2 AND spec_version=$3 AND status='needs_approval' ORDER BY created_at DESC LIMIT 1 FOR UPDATE",[projectId,taskId,version]);
