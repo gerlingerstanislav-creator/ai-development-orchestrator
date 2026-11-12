@@ -7,6 +7,11 @@ import {z} from 'zod';
 
 const {compare}=bcrypt;
 
+/** Signed user access token used by regular and internal authenticated routes. */
+export async function issueAccessToken(jwtKey:Uint8Array,userId:string,email:string){
+ return new SignJWT({email}).setProtectedHeader({alg:'HS256'}).setSubject(userId).setIssuedAt().setExpirationTime('12h').sign(jwtKey);
+}
+
 /** Authentication is the only owner of session rotation and cookie policy. */
 export function registerAuthRoutes(app:FastifyInstance,pool:Pool,jwtKey:Uint8Array){
 const REFRESH_DAYS=30;
@@ -23,9 +28,7 @@ function setRefreshCookie(req:any,reply:any,raw:string|null){
  const attrs=[REFRESH_COOKIE+'='+value,'HttpOnly','SameSite=Lax','Path=/api/auth',secure?'Secure':'',raw?'Max-Age='+REFRESH_DAYS*86400:'Max-Age=0'].filter(Boolean);
  reply.header('Set-Cookie',attrs.join('; '));
 }
-async function accessToken(userId:string,email:string){
- return new SignJWT({email}).setProtectedHeader({alg:'HS256'}).setSubject(userId).setIssuedAt().setExpirationTime('12h').sign(jwtKey);
-}
+const accessToken=(userId:string,email:string)=>issueAccessToken(jwtKey,userId,email);
 app.post('/api/login',async(req,reply)=>{
  const {email,password}=z.object({email:z.string().trim().min(3).max(254).regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/),password:z.string()}).parse(req.body);
  const u=await pool.query('SELECT * FROM users WHERE email=$1',[email.toLowerCase()]);
