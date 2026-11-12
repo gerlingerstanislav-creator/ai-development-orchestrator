@@ -11,8 +11,8 @@ RUN apt-get update \
  && test -x "$codex_native" \
  && ln -s "$codex_native" /usr/local/bin/codex-linux-sandbox \
  && codex-linux-sandbox --help >/dev/null \
- && mkdir -p /home/node/.codex /var/lib/ado-runner \
- && chown -R node:node /home/node/.codex /var/lib/ado-runner
+ && mkdir -p /home/node/.codex /var/lib/ado-runner /var/lib/ado-qa-workspaces \
+ && chown -R node:node /home/node/.codex /var/lib/ado-runner /var/lib/ado-qa-workspaces
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
