@@ -180,7 +180,8 @@ const taskAnalysisResult=z.object({
  outcome:z.enum(['ready','needs_input']),
  summary:z.string().trim().min(8).max(1500),
  refined_description:z.string().trim().min(20).max(16000),
- questions:z.array(z.string().trim().min(5).max(650)).max(8).default([])
+ questions:z.array(z.string().trim().min(5).max(650)).max(8).default([]),
+ documentation_notes:z.array(z.string().trim().min(5).max(1000)).max(5).default([])
 }).strict();
 function parseTaskAnalysisResult(text:string){
  const cleaned=text.trim().replace(/^\x60{3}(?:json)?\s*/i,'').replace(/\s*\x60{3}$/,'');
@@ -210,11 +211,12 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
   const instructions=(await pool.query("SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='analysis'",[projectId])).rows[0];
   const prompt=[
    'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
-   'Используй актуальное ТЗ и приложенные относящиеся к задаче сведения. Не придумывай продуктовые решения вместо владельца.',
-   'Если техническое описание достаточно для разработки, верни outcome="ready", уточнённое исполнимое ТЗ и конкретное краткое резюме.',
-   'Если без решения пользователя реализация неоднозначна, верни outcome="needs_input" и вопросы, которые действительно нельзя разрешить по документации. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
+   'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
+   'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
+   'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику.',
+   'Если без решения владельца реализация неоднозначна, верни outcome="needs_input" и действительно блокирующие вопросы. Каждый вопрос сформулируй кратко и простыми словами. Полное уточнение задачи сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
-   'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."]}.',
+   'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
    'Ключевые ответы и замечания: '+history.slice(-1200)
@@ -249,6 +251,10 @@ export async function runTaskStageAnalysis(runId:string):Promise<void>{
       [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',output.questions[index],'task-analysis:'+runId+':question:'+index]);
     }
     await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_blocked',$3)",[randomUUID(),taskId,'Аналитик запросил решения: '+output.questions.join('; ').slice(0,1200)]);
+   }
+   for(const [index,note] of output.documentation_notes.entries()){
+    await client.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status) VALUES($1,$2,$3,'analysis',$4,'documentation','observation',$5,'agent',$6,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING",
+     [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',note,'task-analysis:'+runId+':doc-note:'+index]);
    }
    await client.query("UPDATE agent_analysis_runs SET status=$2,message=$3,updated_at=now() WHERE id=$1",[runId,output.outcome==='ready'?'completed':'waiting',output.summary]);
    await client.query('COMMIT');
