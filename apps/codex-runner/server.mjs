@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { timingSafeEqual } from 'node:crypto';
+import {startQaBrowserGateway,openQaBrowserSession,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
@@ -42,6 +43,7 @@ proxyServer.on('connect',(req,client,head)=>{
  client.on('close',()=>remote.destroy());
 });
 proxyServer.listen(4399,'127.0.0.1');
+startQaBrowserGateway();
 const proxyUrl='http://127.0.0.1:4399';
 const baseEnv=runnerEnvironment();
 const cliEnv={...baseEnv,HOME:process.env.HOME||'/home/node',CODEX_HOME:home,SSL_CERT_FILE:'/etc/ssl/certs/ca-certificates.crt',HTTP_PROXY:proxyUrl,HTTPS_PROXY:proxyUrl,http_proxy:proxyUrl,https_proxy:proxyUrl,NO_PROXY:'localhost,127.0.0.1,::1',no_proxy:'localhost,127.0.0.1,::1'};
@@ -444,7 +446,8 @@ async function auditCodexPrompt(job,role,prompt){
 // A first-pass AI test agent runs within the disposable Codex container.
 // No persistent environment provisioning or Docker socket is exposed to it.
 async function runTestJob(job,state,context){
- const workdir=await mkdtemp(join(tmpdir(),'ado-test-'));
+ const workdir=join(process.env.QA_BROWSER_WORKSPACES_DIR||'/var/lib/ado-qa-workspaces','ado-qa-'+job.id);
+ await mkdir(workdir,{recursive:true,mode:0o700});
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
  const singlePass=job.testPlan?.singlePass===true;
@@ -474,7 +477,12 @@ async function runTestJob(job,state,context){
   const probe=await command('codex',[...policy.sandboxArgs,'--','sh','-c',probeScript],{
    cwd:dir,env:cliEnv,timeout:25000,maxOutputChars:6000,jobId:job.id
   });
-  const capabilities=probe.stdout.trim().slice(0,2500);
+  const browserAvailable=await browserHealth();
+  const capabilities=(probe.stdout.trim()+'\nqa_browser: '+(browserAvailable?'playwright chromium available':'unavailable')).slice(0,2500);
+  if(browserAvailable){
+   const browserSession=openQaBrowserSession(job.id);
+   await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
+  }
   state.capabilities=capabilities;
   const tracked=(await command('git',['ls-files'],{cwd:dir,env:gitEnv,timeout:10000,maxOutputChars:100000,jobId:job.id})).stdout.split(/\r?\n/);
   const prerequisite=qaPrerequisiteError(tracked,capabilities);
@@ -519,7 +527,7 @@ async function runTestJob(job,state,context){
    'Проверяй текущий PR и ранее слитую регрессию. Не требуй уже готового бота, прогноза или пользовательского пути от отдельного Python-модуля, если они реализуются другими незавершёнными задачами.',
    'Можно поднимать локальный тестовый HTTP-сервер на 127.0.0.1 и запускать тесты против него. Завершай сервер после теста (например, через trap). Не используй внешние живые сервисы: имитируй Telegram, погоду, платежи и время.',
    'ВАЖНО: сетевой proxy Codex сбрасывает NO_PROXY для каждой sandbox-команды. Если Node.js fetch, Playwright или тесты обращаются к локальному HTTP-серверу, запускай клиентскую команду с явными NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 (например: env NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 npm test). Это исключает только localhost из прокси; произвольные внешние хосты по-прежнему запрещены.',
-   'Браузер в текущем контейнере отсутствует: Linux Codex seccomp препятствует безопасному запуску Chromium. Не устанавливай браузер для обхода изоляции, не объявляй визуальные сценарии пройденными. Отмечай их blocked/tool_unavailable с конкретной причиной, если нет альтернативного действующего браузерного инструмента.',
+   browserAvailable?'Playwright Chromium ДОСТУПЕН через отдельный защищённый контейнер. Для браузерных проверок запускай node /opt/codex-runner/browser-client.mjs start, затем goto /, count CSS_SELECTOR, assert "JS boolean expression", viewport 390 844, screenshot. Можно выполнять клики через click CSS_SELECTOR, ввод через fill CSS_SELECTOR VALUE. Каждая команда выводит JSON и завершается кодом 1 при ошибке; используй реальные результаты как доказательство, указав точную команду в caseResults. После установки зависимостей или сборки повтори start. Браузер не имеет доступа к интернету или Docker. Не считай скриншот доказательством конкретного критерия без проверяемого утверждения.':'Браузерный сервис недоступен — браузерные кейсы должны получить blocked/tool_unavailable; не устанавливай Chromium в sandbox.',
    'Тестовая среда не имеет доступа к Docker-сокету, секретам приложения, внутренним сервисам платформы или произвольному интернету. Все команды выполняются в изоляции.',
    'Сбой Codex CLI — не доказательство отсутствия инструментов и не основание автоматически разрешать пропуск проверок.',
    'Используй реальные доступные инструменты и запускай E2E только если браузер или тестовый сервер действительно стартовали; иначе отметь точные недоступные сценарии.',
