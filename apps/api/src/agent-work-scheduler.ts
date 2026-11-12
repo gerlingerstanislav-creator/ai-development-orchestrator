@@ -213,6 +213,13 @@ export async function reconcileAgentWorkQueue(pool:Pool,temporal:()=>Promise<Tem
     -- Never restart finished work without a real rework reason. For returns
     -- from QA or PM, test_feedback is the explicit outstanding delta.
     AND (NULLIF(t.test_feedback,'') IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id))
+    -- QA environment/tool gaps are not product defects. Even if a manager
+    -- accidentally moves the card back to Development, do not auto-charge
+    -- Codex to modify code for unverified browser assertions. The PM can
+    -- still explicitly authorize a real new developer task when appropriate.
+    AND COALESCE((SELECT qa.verdict FROM ai_test_runs qa
+      WHERE qa.task_id=t.id AND qa.status='completed'
+      ORDER BY qa.completed_at DESC,qa.id DESC LIMIT 1),'') <> 'blocked'
     AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners o WHERE o.task_id=t.id AND o.state='active')
     AND NOT EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.task_id=t.id AND r.status IN ('queued','running'))
     -- An internal failure writes tasks.updated_at while persisting its
