@@ -1,0 +1,40 @@
+name: One-time PM order validation
+on:
+  push:
+    branches:
+      - ci/verify-pm-125
+permissions:
+  contents: read
+jobs:
+  pm-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: orchestrator
+          POSTGRES_PASSWORD: orchestrator
+          POSTGRES_DB: orchestrator_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orchestrator -d orchestrator_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://orchestrator:orchestrator@localhost:5432/orchestrator_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm install --no-package-lock --no-audit --no-fund
+      - name: TypeScript checks
+        run: npm run check
+      - name: Build
+        run: npm run build
+      - name: PM integration tests
+        run: node --test apps/api/tests/project-manager-inbox.test.mjs
