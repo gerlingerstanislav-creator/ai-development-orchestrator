@@ -181,6 +181,26 @@ async function run(s,body){
  if(action==='fill'){await page.locator(selector).first().fill(String(body.value||'').slice(0,2000),{timeout});return {ok:true,filled:selector};}
  if(action==='count')return {ok:true,selector,count:await page.locator(selector).count()};
  if(action==='text')return {ok:true,selector,text:(await page.locator(selector).first().innerText({timeout})).slice(0,3000)};
+ if(action==='inspect'){
+  // Bounded, read-only DOM exploration helps QA find the actual elements
+  // before authoring meaningful assertions. Inspection never counts as proof.
+  const target=selector||'body *';
+  const elements=await page.evaluate(css=>{
+   const nodes=Array.from(document.querySelectorAll(css)).slice(0,80);
+   return nodes.map(el=>{
+    const style=getComputedStyle(el),box=el.getBoundingClientRect();
+    return {
+     tag:el.tagName.toLowerCase(),id:String(el.id||'').slice(0,80),
+     classes:String(el.getAttribute('class')||'').slice(0,120),
+     text:String(el.textContent||'').trim().replace(/\\s+/g,' ').slice(0,70),
+     rect:{x:Math.round(box.x),y:Math.round(box.y),width:Math.round(box.width),height:Math.round(box.height)},
+     display:style.display,visibility:style.visibility,opacity:style.opacity,
+     color:style.color,background:style.backgroundColor,transform:style.transform
+    };
+   });
+  },target);
+  return {ok:true,selector:target,count:elements.length,truncated:elements.length===80,elements,viewport:page.viewportSize()};
+ }
  if(action==='screenshot'){
   const evidence=join(s.root,'.ado-qa-evidence');
   await mkdir(evidence,{recursive:true,mode:0o700});
