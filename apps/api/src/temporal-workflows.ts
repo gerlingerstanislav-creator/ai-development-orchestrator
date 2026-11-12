@@ -40,6 +40,7 @@ export async function processProjectManagerInbox(projectId:string,messageId:stri
   }
  }
 }
+const qualitySteps=proxyActivities<Pick<typeof activities,'runSelfHostedQualityGates'>>({startToCloseTimeout:'80 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
 const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
 const deploymentSteps=proxyActivities<typeof activities>({startToCloseTimeout:'30 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
 export async function automaticDeployment(runId:string):Promise<void>{
@@ -87,6 +88,24 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
   if(development.status==='failed'){
    await steps.noteCycleFailure({projectId:input.projectId,taskId:input.taskId,message:development.message,stage:'development'});
    return 'development_failed';
+  }
+  let quality;
+  try{quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId});}
+  catch(error){
+   await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Не удалось выполнить собственный CI/ревью: '+String(error),stage:'quality_gates'});
+   return 'quality_gates_blocked';
+  }
+  if(!quality.passed){
+   if(quality.message.startsWith('Сбой проверки:')){
+    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:quality.message,stage:'quality_gates'});
+    return 'quality_gates_blocked';
+   }
+   if(attempt>=input.maxFixes){
+    await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId,message:'Лимит доработок CI/архитектора: '+quality.message,stage:'quality_gates'});
+    return 'quality_gates_needs_attention';
+   }
+   runId=await steps.scheduleQualityFix({projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt:attempt+1,message:quality.message});
+   continue;
   }
   const simplified=patched('simplified-task-handoff');
   if(!simplified&&!patched('skip-post-implementation-requirements-gate-v1')){
@@ -158,6 +177,12 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
 
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
  try {
+ const quality=await qualitySteps.runSelfHostedQualityGates({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId});
+ if(!quality.passed){
+  await steps.noteHandoffFailure({projectId:input.projectId,taskId:input.taskId,runId:input.cycleId,
+   message:'Собственный CI / ревью архитектора: '+quality.message,stage:'quality_gates'});
+  return 'quality_gates_failed';
+ }
  const simplified=patched('simplified-manual-testing');
  if(!simplified&&!patched('skip-post-implementation-requirements-gate-v1')){
  await steps.resolvePeerQuestions({projectId:input.projectId,taskId:input.taskId});
@@ -307,4 +332,9 @@ export async function mergeReadyBatch(batchId:string):Promise<void>{
   throw error;
  }
  await steps.completeMergeBatch(batchId);
+}
+
+/** Explicit retry of the independent quality gate without running a redundant QA cycle. */
+export async function manualQualityGates(input:{projectId:string;taskId:string;runId:string}){
+ return qualitySteps.runSelfHostedQualityGates(input);
 }
