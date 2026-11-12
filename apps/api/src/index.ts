@@ -136,6 +136,10 @@ async function dbInit() {
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_url text;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_number int;
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS pr_base_branch text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS implementation_kind text NOT NULL DEFAULT 'pr';
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS implementation_commit text;
+ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS implementation_evidence jsonb;
+
  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS documentation_updated_at timestamptz;
  CREATE TABLE IF NOT EXISTS task_events (id uuid primary key, task_id uuid references tasks(id) on delete cascade, actor_id uuid references users(id), event text not null, detail text not null default '', created_at timestamptz not null default now());
  CREATE TABLE IF NOT EXISTS documents (id uuid primary key, project_id uuid not null references projects(id) on delete cascade, title text not null, body text not null default '', updated_at timestamptz not null default now());
