@@ -30,3 +30,10 @@ export function planManagerStageMove(current:WorkStage,target:WorkStage,hasPr:bo
   return {operation:'apply_qa',reason:'Применить ранее подтверждённый QA-результат'};
  return {operation:'blocked',reason:'Нельзя вручную обойти проверку требований, QA, GitHub CI, выкладку или документацию'};
 }
+
+/** Finishing is not cancellation. A PM may close a task only after a
+ * successfully merged PR and updated documentation, with no pending reviews.
+ */
+export function canManagerCloseTask(stage:WorkStage,documented:boolean,hasMergedArtifact:boolean,pendingDocumentation:boolean):boolean{
+ return stage==='documentation'&&documented&&hasMergedArtifact&&!pendingDocumentation;
+}
