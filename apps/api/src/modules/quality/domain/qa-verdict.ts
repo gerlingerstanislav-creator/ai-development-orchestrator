@@ -74,7 +74,7 @@ export function evaluateQaRun({snapshot,remote,status,message,qaSpecVersion,curr
  const ran=checked.filter(c=>c.result==='passed'||c.result==='failed').length;
  const outcome=singlePass&&status==='completed'?'Проверено '+ran+' из '+cases.length+'.':message;
  const screenshots=Array.isArray(remote.screenshots)?remote.screenshots.filter((s:any)=>s?.mime==='image/jpeg'&&
-   typeof s.data==='string'&&s.data.length<=250000&&/^[A-Za-z0-9+/=]+$/.test(s.data)).slice(0,3):[];
+   typeof s.data==='string'&&s.data.length<=450000&&/^[A-Za-z0-9+/=]+$/.test(s.data)).slice(0,3):[];
  const report={
   screenshots,summary:remote.summary||outcome,executionVerified:remote.executionVerified===true,
   findings:remote.findings||[],checks:remote.checks||[],caseResults:checked,
