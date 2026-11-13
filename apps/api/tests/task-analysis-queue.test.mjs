@@ -18,6 +18,7 @@ test('system analyst automatically owns analysis tasks, hands off completed work
    analysis_state text NOT NULL DEFAULT 'new',spec_version int NOT NULL DEFAULT 1,
    spec_review_status text NOT NULL DEFAULT 'current',spec_reviewed_version int NOT NULL DEFAULT 1,
    pr_url text,git_branch text,
+   execution_mode text NOT NULL DEFAULT 'code',evidence_source_sha text,implementation_kind text,implementation_commit text,
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,priority int NOT NULL DEFAULT 3,
    iteration_work_kind text,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
   CREATE TABLE project_ai_settings(project_id uuid,enabled boolean NOT NULL);
@@ -30,21 +31,26 @@ test('system analyst automatically owns analysis tasks, hands off completed work
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
  `);
  await initTaskAnalysisQueue(db);
- const project=randomUUID(),ready=randomUUID(),blocked=randomUUID(),newTask=randomUUID();
+ const project=randomUUID(),ready=randomUUID(),blocked=randomUUID(),newTask=randomUUID(),evidenceTask=randomUUID(),pinned='a'.repeat(40);
  await db.query('INSERT INTO projects(id) VALUES($1)',[project]);
  await db.query('INSERT INTO project_ai_settings VALUES($1,true)',[project]);
  await db.query("INSERT INTO project_role_capacity VALUES($1,'analysis',1)",[project]);
  await db.query("INSERT INTO tasks(id,project_id,analysis_state) VALUES($1,$2,'ready_for_development'),($3,$2,'ready_for_development'),($4,$2,'new')",
   [ready,project,blocked,newTask]);
+ await db.query("INSERT INTO tasks(id,project_id,analysis_state,execution_mode,evidence_source_sha) VALUES($1,$2,'ready_for_evidence','browser_evidence',$3)",[evidenceTask,project,pinned]);
  await db.query("INSERT INTO task_agent_notes VALUES($1,$2,$3,'analysis','SA','all','question','Нужен ответ','agent','q-1','open')",
   [randomUUID(),project,blocked]);
  const started=[];
  const temporal=async()=>({workflow:{start:async(name,options)=>started.push({name,options})}});
  await reconcileTaskAnalysisQueue(db,temporal);
- const rows=await db.query('SELECT id,stage,analysis_state FROM tasks WHERE project_id=$1',[project]);
+ const rows=await db.query('SELECT id,stage,analysis_state,execution_mode,implementation_kind,implementation_commit FROM tasks WHERE project_id=$1',[project]);
  const find=id=>rows.rows.find(row=>row.id===id);
  assert.equal(find(ready).stage,'development','ready analysis should move without an iteration launch');
  assert.equal(find(ready).analysis_state,'approved');
+ assert.equal(find(evidenceTask).stage,'testing','browser evidence must skip development');
+ assert.equal(find(evidenceTask).analysis_state,'approved');
+ assert.equal(find(evidenceTask).implementation_kind,'artifact');
+ assert.equal(find(evidenceTask).implementation_commit,pinned);
  assert.equal(find(blocked).stage,'analysis','unanswered owner question should block only its own task');
  assert.equal(find(newTask).analysis_state,'processing','available analysis task should be claimed automatically');
  assert.equal(started.length,1);
