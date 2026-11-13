@@ -1,4 +1,4 @@
-import type {MouseEvent} from 'react';
+import React from 'react';
 import {Clock3,FileDown} from 'lucide-react';
 import {KnowledgeAudit} from '../../KnowledgeAudit.js';
 import {api} from '../../api/client.js';
@@ -32,7 +32,7 @@ export type ProcessCenterProps={
  onRestartImport:Command;
  onSendInstruction:Command;
  onStopAnalyst:Command;
- onFollowLink:(event:MouseEvent<HTMLAnchorElement>,path:string)=>void;
+ onFollowLink:(event:React.MouseEvent<HTMLAnchorElement>,path:string)=>void;
  onNavigate:(path:string)=>void;
 };
 
