@@ -31,6 +31,8 @@ test('technical consultations do not deadlock analysis, while real owner questio
   CREATE TABLE project_ai_settings(project_id uuid,enabled boolean);
   CREATE TABLE project_role_capacity(project_id uuid,role text,capacity int);
   CREATE TABLE task_events(id uuid,task_id uuid,event text,detail text);
+  CREATE TABLE ai_task_runs(id uuid,project_id uuid,task_id uuid,status text,runner_spec_version int);
+  CREATE TABLE task_orchestration_owners(task_id uuid,state text);
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_requirement_reviews(task_id uuid,project_id uuid,spec_version int,status text,classification text,created_at timestamptz DEFAULT now(),resolved_at timestamptz);
  `);
