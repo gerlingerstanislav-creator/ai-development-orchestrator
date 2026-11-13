@@ -87,5 +87,5 @@ test('QA process report labels blocked evidence as requiring attention, not a pa
 
 test('PM inbox maintains original public execution entrypoint for Temporal Activities',()=>{
  assert.equal(typeof executeProjectManagerInbox,'function');
- assert.equal(executeProjectManagerInbox.length,4,'last retry attempt is optional');
+ assert.equal(executeProjectManagerInbox.length,5,'five required arguments; last retry attempt defaults to one');
 });
