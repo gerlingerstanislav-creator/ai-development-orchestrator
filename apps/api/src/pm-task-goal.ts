@@ -1,6 +1,4 @@
-import type {Pool} from 'pg';
-
-type Db=Pick<Pool,'query'>;
+type Db={query:(sql:string,values?:any[])=>Promise<{rows:any[]}>};
 export type PmTaskGoalState={
  task_id:string; title:string;display_number:number|null;stage:string;analysis_state:string;
  status:'running'|'needs_action'|'done'|'missing';reason:string;

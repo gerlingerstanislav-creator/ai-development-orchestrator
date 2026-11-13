@@ -6,14 +6,14 @@ import {spawn} from 'node:child_process';
  * injected so commands can be exercised without a running HTTP server.
  */
 export function createCommandExecutor({baseEnv,assertJobActive,jobChildren,stopCommand,codexFailureDetail,spawnImpl=spawn}){
- return function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId,allowNonzero=false}={}){
+ return function command(binary,args,{cwd,env,timeout=30000,maxOutputChars=16000,jobId,allowNonzero=false,onStdout}={}){
  return new Promise((resolve,reject)=>{
   if(jobId)assertJobActive(jobId);
   const child=spawnImpl(binary,args,{cwd,env:{...baseEnv,...env},stdio:['ignore','pipe','pipe'],detached:true});
   if(jobId)jobChildren.set(jobId,child);
   let output='',errors='',done=false,timedOut=false;
   const timer=setTimeout(()=>{timedOut=true;stopCommand(child);},timeout);
-  child.stdout.on('data',x=>{output=(output+x.toString()).slice(-maxOutputChars);});
+  child.stdout.on('data',x=>{const chunk=x.toString();output=(output+chunk).slice(-maxOutputChars);onStdout?.(chunk);});
   child.stderr.on('data',x=>{errors=(errors+x.toString()).slice(-16000);});
   const secret=env?.ADO_AGENT_SESSION_TOKEN;
   const redact=value=>secret?value.replaceAll(secret,'[REDACTED]'):value;

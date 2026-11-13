@@ -4,9 +4,12 @@ import {createCodexDeviceAuth} from './device-auth.mjs';
 import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
 import {createCommandExecutor} from './command-executor.mjs';
+import {createCodexThreadStore,createCodexAppExecutor} from './codex-app-server.mjs';
+import {createPersistentCliExecutor} from './codex-cli-session.mjs';
+import {conversationThreadScope} from './codex-thread-scope.mjs';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, writeFile, access, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, access, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -14,10 +17,14 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import {startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
+import {qaPrerequisiteError} from './qa-preflight.mjs';
+import {qaBaselineCommands,readQaCommands,readQaReceipts,verifyQaExecution} from './qa-run-evidence.mjs';
+import {incompleteQaCases,qaCompletionPrompt,completedQaSummary,applyVisualEvidenceGate} from './qa-completion.mjs';
 import {withRunnerImages} from './chat-images.mjs';
 import {createRateLimitCache,readCodexRateLimits} from './rate-limits.mjs';
 import {agentMcp,withReaderContext,scopedAgentPrompt} from './agent-context.mjs';
 import {assembleAgentPrompt} from '../api/src/prompt-assembler.mjs';
+import {buildQaPrompt} from './qa-prompt.mjs';
 import {buildDeveloperPrompt} from './developer-prompt.mjs';
 import {jobRole,projectKey,nextRunnableJobIndex} from './job-scheduler.mjs';
 import {parseExistingImplementation,parseNoChangesNeeded} from './development-outcome.mjs';
@@ -51,7 +58,19 @@ const {connected,runLogin,deviceInfo}=deviceAuth;
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
-const journal=openJobJournal(process.env.RUNNER_STATE_DIR||join(home,'runner-jobs'));
+const runnerStateDir=process.env.RUNNER_STATE_DIR||join(home,'runner-jobs');
+const journal=openJobJournal(runnerStateDir);
+const threadStore=createCodexThreadStore(join(runnerStateDir,'codex-threads'));
+const appExecutor=createCodexAppExecutor({store:threadStore,env:cliEnv});
+const globalCodexSettings=args=>{
+ const result=[];
+ for(let i=0;i<args.length;i++)if(args[i]==='-c'&&i+1<args.length)result.push('-c',args[++i]);
+ return result;
+};
+const appConversationSettings=globalCodexSettings(conversationPolicy);
+const imagePaths=args=>args.flatMap((value,i)=>value==='--image'&&typeof args[i+1]==='string'?[args[i+1]]:[]);
+
+
 journal.recover();
 const readJob=id=>activeJobs.get(id)||journal.read(id);
 function saveJob(job,state){journal.save({identity:jobIdentity(job),state},job.token);}
@@ -149,6 +168,7 @@ function authorized(req){
  return a.length===b.length && timingSafeEqual(a,b);
 }
 const command=createCommandExecutor({baseEnv,assertJobActive,jobChildren,stopCommand,codexFailureDetail});
+const persistentCli=createPersistentCliExecutor(threadStore,command);
 async function isolatedTaskPolicy(workdir,dir,jobId,writable=true,qa=false){
  const policy=await createTaskPolicy(workdir,{writable,qa});
  try{await command('codex',[...policy.sandboxArgs,'--','/bin/true'],{cwd:dir,env:cliEnv,jobId,timeout:15000});}
@@ -255,7 +275,10 @@ async function runJob(job,state,context){
  const deadline=Date.now()+job.maxRuntimeSeconds*1000;
  const timeLeft=()=>Math.max(0,deadline-Date.now());
  let cumulativeUsage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
- const workdir=await mkdtemp(join(tmpdir(),'ado-run-'));
+ // The workspace is task-owned, not run-owned: QA rework must see the same
+ // files and the same Codex thread. Secrets are never stored in Git config.
+ const workdir=join(runnerStateDir,'workspaces',job.taskId);
+ await mkdir(workdir,{recursive:true,mode:0o700});
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
  const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000,jobId:job.id});
@@ -264,8 +287,17 @@ async function runJob(job,state,context){
  const branch=taskBranchName(job.taskId);
  try{
   state.message='Клонирование репозитория';
-  await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
+  let existingWorkspace=false;
+  try{await access(join(dir,'.git'));existingWorkspace=true;}catch{}
+  if(!existingWorkspace)await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
    {cwd:workdir,env:gitEnv,timeout:75000,jobId:job.id});
+  else {
+   const origin=(await git('remote','get-url','origin')).stdout.trim();
+   if(origin!=='https://github.com/'+job.repository+'.git')
+    throw Error('Сохранённая рабочая копия относится к другому репозиторию');
+   // Never hard reset, checkout -f or clean: a killed Codex turn may leave
+   // valuable uncommitted work on disk.
+  }
   if(await resumePublishedCommit(job,state,git)){
    state.prUrl=await ensureTaskPullRequest(job,branch,state.checkpoint.commit,'Изменения восстановлены после перезапуска.');
    state.branch=branch;
@@ -281,7 +313,12 @@ async function runJob(job,state,context){
   if(remoteBranch.ok){
    state.message='Продолжение существующей ветки '+branch;
    await git('fetch','--depth','1','origin','refs/heads/'+branch+':refs/remotes/origin/'+branch);
-   await git('checkout','-b',branch,'refs/remotes/origin/'+branch);
+   const currentBranch=(await git('branch','--show-current')).stdout.trim();
+   if(currentBranch!==branch){
+    const local=(await command('git',['show-ref','--verify','--quiet','refs/heads/'+branch],
+     {cwd:dir,env:gitEnv,timeout:10000,jobId:job.id,allowNonzero:true})).exitCode===0;
+    await git('checkout',...(local?[branch]:['-b',branch,'refs/remotes/origin/'+branch]));
+   }
    // A depth-1 clone of main plus a depth-1 fetch of the task branch often
    // has no merge-base, even when GitHub does. Repair ancestry *before* the
    // model runs, so a 50-second Codex attempt is not wasted on git 128.
@@ -297,7 +334,12 @@ async function runJob(job,state,context){
     await git('push','origin','HEAD:refs/heads/'+branch);
    }
   }else if(remoteBranch.status===404){
-   await git('checkout','-b',branch);
+   const currentBranch=(await git('branch','--show-current')).stdout.trim();
+   if(currentBranch!==branch){
+    const local=(await command('git',['show-ref','--verify','--quiet','refs/heads/'+branch],
+     {cwd:dir,env:gitEnv,timeout:10000,jobId:job.id,allowNonzero:true})).exitCode===0;
+    await git('checkout',...(local?[branch]:['-b',branch]));
+   }
    state.message='Создание ветки задачи в GitHub';
    // Publish even before Codex edits, so failures retain a stable task branch.
    await git('push','-u','origin','HEAD:refs/heads/'+branch);
@@ -308,16 +350,32 @@ async function runJob(job,state,context){
   state.message='Изменяет код';
   const prompt=buildDeveloperPrompt(job);
   const policy=await isolatedTaskPolicy(workdir,dir,job.id);
+  const developerScope={projectId:job.projectId,taskId:job.taskId,role:'development'};
+  let codexTurns=0;
   const runCodex=async(instruction)=>{
    assertJobActive(job.id);
    const remaining=timeLeft();
-   if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
-   await auditCodexPrompt(job,'development',instruction);
-   const result=await command('codex',[
-    'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,instruction
-   ],{cwd:dir,env:{...cliEnv,...context.env},timeout:remaining,jobId:job.id});
-   // Codex emits tool-use and sandbox diagnostics on stderr.
+   if(remaining<15000)throw Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
+   const previous=await threadStore.read(developerScope);
+   // Initial handoff includes full instructions once. QA rework is a new turn
+   // in the SAME thread, with only fresh feedback and the current task state.
+   const nextPrompt=previous&&codexTurns===0
+    ?'Продолжи разработку ранее назначенной задачи. Не повторяй завершённую работу. '+
+     'Проверь текущие файлы и PR, учитывай изменения требований и следующие замечания:\n'+
+     ('Задача: '+job.title+'\n'+String(job.description||'').slice(0,4800)+
+      '\nЗамечания QA/CI: '+String(job.reworkFeedback||'нет новых замечаний').slice(0,4800))
+    :previous&&codexTurns>0
+    ?'Продолжи текущую попытку и устрани блокер. '+String(instruction).slice(-2400)
+    :instruction;
+   codexTurns++;
+   await auditCodexPrompt(job,'development',nextPrompt);
+   const result=await persistentCli({
+    scope:developerScope,requestId:job.id+':dev:'+codexTurns,prompt:nextPrompt,
+    model:job.model,reasoning:job.reasoning,cwd:dir,
+    timeout:remaining,policyArgs:policy.execArgs,mcpArgs:context.args,
+    env:{...cliEnv,...context.env},jobId:job.id,maxOutputChars:500000
+   });
+   state.threadId=result.threadId;
    const parsed=codexJsonResult(result.stdout);
    cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
    state.usage=cumulativeUsage;
@@ -402,7 +460,7 @@ async function runJob(job,state,context){
  }catch(e){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);}
  }finally{
-  await rm(workdir,{recursive:true,force:true}).catch(()=>{});
+  // Workspace is retained until the task is closed and explicitly archived.
  }
 }
 
@@ -425,7 +483,7 @@ async function auditCodexPrompt(job,role,prompt){
 // A first-pass AI test agent runs within the disposable Codex container.
 // No persistent environment provisioning or Docker socket is exposed to it.
 const runTestJob=createQaJobRunner({
- command,assertJobActive,saveJob,isolatedTaskPolicy,cliEnv,
+ command,assertJobActive,saveJob,isolatedTaskPolicy,cliEnv,persistentCli,
  auditCodexPrompt,codexJsonResult,addUsage,
  browser:{health:browserHealth,open:openQaBrowserSession,evidence:getQaBrowserEvidence,close:closeQaBrowserSession},
  isCancelled:id=>cancelledJobs.has(id)
@@ -453,10 +511,14 @@ async function runArchitectureReviewJob(job,state,context){
    budget:13000
   });
   state.message='Независимое ревью архитектора';
-  const result=await command('codex',['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-   '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,prompt],{
-   cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(1200000,job.maxRuntimeSeconds*1000),maxOutputChars:150000
+  const result=await persistentCli({
+   scope:{projectId:job.projectId,taskId:job.taskId,role:'architect'},
+   requestId:job.id+':review',model:job.model,reasoning:job.reasoning,
+   prompt,cwd:dir,env:{...cliEnv,...context.env},policyArgs:policy.execArgs,
+   mcpArgs:context.args,jobId:job.id,timeout:Math.min(1200000,job.maxRuntimeSeconds*1000),
+   maxOutputChars:150000
   });
+  state.threadId=result.threadId;
   const parsed=codexJsonResult(result.stdout);
   const response=String(parsed.message||'').trim().replace(/^`{3}(?:json)?\s*/i,'').replace(/\s*`{3}$/,'');
   const start=response.indexOf('{'),end=response.lastIndexOf('}');
@@ -610,10 +672,13 @@ async function runConflictJob(job,state,context){
     budget:14000
    });
    const policy=await isolatedTaskPolicy(workspace,dir,job.id);
-   const result=await command('codex',[
-     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-     '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,prompt
-   ],{cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
+   const result=await persistentCli({
+    scope:{projectId:job.projectId,taskId:job.taskId,role:'conflict_resolver'},
+    requestId:job.id+':resolve',model:job.model,reasoning:job.reasoning,prompt,
+    cwd:dir,env:{...cliEnv,...context.env},policyArgs:policy.execArgs,
+    mcpArgs:context.args,jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)
+   });
+   state.threadId=result.threadId;
    const parsed=codexJsonResult(result.stdout);
    state.usage=parsed.usage;
    const answer=parsed.message||'';
@@ -706,15 +771,19 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
     // The shell policies keep the MCP session out of project commands.
     const context=agentMcp(data.session_token,agentApi);
-    const result=await withRunnerImages(data.images,imageArgs=>command('codex',[
-     'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-     '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,data.prompt
-    ],{cwd:'/opt/codex-runner',env:{...cliEnv,...context.env},timeout:240000,maxOutputChars:500000}));
-    const parsed=codexJsonResult(result.stdout);
-    const message=parsed.message.trim();
+    const scope=conversationThreadScope(data,'analyst');
+    const previous=await threadStore.read(scope);
+    const result=await withRunnerImages(data.images,imageArgs=>appExecutor({
+     scope,requestId:String(data.request_id||data.session_token),
+     prompt:previous&&typeof data.resume_prompt==='string'&&data.resume_prompt.trim()?data.resume_prompt:data.prompt,model:data.model,effort:data.reasoning,cwd:'/opt/codex-runner',
+     timeout:240000,configArgs:[...appConversationSettings,...context.args],
+     envOverrides:context.env,images:imagePaths(imageArgs),
+     sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}}
+    }));
+    const message=result.message.trim();
     if(!message)return reply(res,502,{error:'Агент не вернул итоговое сообщение'});
     if(message.length>120000)return reply(res,413,{error:'Итоговый ответ агента превышает размер'});
-    return reply(res,200,{message,usage:parsed.usage});
+    return reply(res,200,{message,usage:result.usage,thread_id:result.threadId,turn_id:result.turnId});
    }catch(error){
     return reply(res,503,{error:'Агент Codex: '+String(error?.message||error).slice(0,900)});
    }finally{activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
@@ -728,15 +797,18 @@ http.createServer(async(req,res)=>{
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
     const result=await withReaderContext(agentApi,jobKey,data.context,context=>
-     withRunnerImages(data.images,imageArgs=>command('codex',[
-      'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,scopedAgentPrompt(context,data.prompt)
-     ],{cwd:'/opt/codex-runner',env:{...cliEnv,...context.env},timeout:240000,maxOutputChars:500000})));
-    const parsed=codexJsonResult(result.stdout);
-    const message=parsed.message.trim();
+     withRunnerImages(data.images,imageArgs=>appExecutor({
+      scope:{...conversationThreadScope(data,'assistant'),role:'assistant:'+String(data.context?.role||'general')},requestId:String(data.request_id||randomUUID()),
+      prompt:scopedAgentPrompt(context,data.prompt),model:data.model,effort:data.reasoning,
+      cwd:'/opt/codex-runner',timeout:240000,
+      configArgs:[...appConversationSettings,...context.args],
+      envOverrides:context.env,images:imagePaths(imageArgs),
+      sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}}
+     })));
+    const message=result.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
     if(message.length>120000)return reply(res,413,{error:'Слишком объёмный ответ AI для одного этапа. Раздели итоговую документацию на несколько частей.'});
-    return reply(res,200,{message,usage:parsed.usage});
+    return reply(res,200,{message,usage:result.usage,thread_id:result.threadId,turn_id:result.turnId});
    }catch(error){
     return reply(res,503,{error:'Codex: '+String(error?.message||error).slice(0,900)});
    }finally{activeChatRequests--;}

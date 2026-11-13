@@ -44,6 +44,10 @@ jobs:
           node --test apps/codex-runner/qa-job.test.mjs
           node --check apps/codex-runner/ci-test-discovery.mjs
           node --check apps/codex-runner/command-executor.mjs
+          node --check apps/codex-runner/codex-app-server.mjs
+          node --check apps/codex-runner/codex-cli-session.mjs
+          node --check apps/codex-runner/codex-thread-scope.mjs
+          node --test apps/codex-runner/codex-app-server.test.mjs apps/codex-runner/codex-cli-session.test.mjs
           node --check apps/codex-runner/codex-proxy.mjs
           node --test apps/codex-runner/codex-proxy.test.mjs
           node --check apps/codex-runner/device-auth.mjs

@@ -7,7 +7,7 @@ import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {initTaskCancellationSchema} from '../dist/task-cancellation.js';
 import {installDiagnosticStorageSchema,startDiagnosticRetention} from '../dist/diagnostics.js';
 
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=6);
 async function withSchema(fn){
  const schema='ado_runtime_storage_v6_'+randomUUID().replaceAll('-','');
  const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});
