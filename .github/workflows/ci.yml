@@ -72,6 +72,7 @@ jobs:
           node --test apps/api/tests/task-http-boundary.test.mjs
           node --test apps/api/tests/project-agent-availability.test.mjs
           node --test apps/api/tests/runner-recovery.test.mjs
+          node --test apps/api/tests/queue-reconciler.test.mjs
           node --test apps/api/tests/qa-verdict-policy.test.mjs
           node --test apps/api/tests/background-processes.test.mjs apps/api/tests/legacy-development-reconciler.test.mjs
           node --test apps/api/tests/agent-work-continuation.test.mjs

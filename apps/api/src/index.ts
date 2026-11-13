@@ -1,3 +1,4 @@
+import {createQueueReconciler} from './modules/execution/application/queue-reconciler.js';
 import {registerProjectTaskRoutes} from './modules/tasks/api.js';
 import {registerWorkflowSettingsRoutes} from './modules/projects/workflow-api.js';
 import {registerAiSettingsRoutes} from './modules/execution/api/ai-settings.js';
@@ -830,13 +831,14 @@ await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDi
   pool,path=>agentCall(path),
   (error,runId)=>app.log.warn({error,runId},'Legacy development reconciliation failed')
  );
- const reconcile=()=>void (async()=>{
-  try{await reconcileAgentPeerQueue(pool,temporal);}catch(error){app.log.error({error},'Agent peer queue reconciliation failed');}
-  try{await recoverMergeBatches(pool,startMergeBatch);}catch(error){app.log.error({error},'Merge queue reconciliation failed');}
-  try{await publishOwnerQuestionsToPmChat(pool);}catch(error){app.log.error({error},'PM owner questions reconciliation failed');}
-  try{await reconcileTaskAnalysisQueue(pool,temporal);}catch(error){app.log.error({error},'Task analyst queue reconciliation failed');}
-  try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}
-  try{await reconcileLegacyDevelopmentRuns();}catch(error){app.log.error({error},'Legacy development process reconciliation failed');}
- })();
+ const queueReconciler=createQueueReconciler([
+  {label:'Agent peer queue',execute:()=>reconcileAgentPeerQueue(pool,temporal)},
+  {label:'Merge queue',execute:()=>recoverMergeBatches(pool,startMergeBatch)},
+  {label:'PM owner questions',execute:()=>publishOwnerQuestionsToPmChat(pool)},
+  {label:'Task analyst queue',execute:()=>reconcileTaskAnalysisQueue(pool,temporal)},
+  {label:'Agent work queue',execute:()=>reconcileAgentWorkQueue(pool,temporal)},
+  {label:'Legacy development process',execute:()=>reconcileLegacyDevelopmentRuns()}
+ ],(label,error)=>app.log.error({error},label+' reconciliation failed'));
+ const reconcile=()=>{void queueReconciler.run();};
  reconcile();setInterval(reconcile,12000).unref();}
 main().catch(e=>{console.error(e);process.exit(1);});
