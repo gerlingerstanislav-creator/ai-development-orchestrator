@@ -128,9 +128,22 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    acceptance:z.string().trim().min(12).max(2000)
   }).parse(params);
   if(session.role!=='manager'&&session.task_id!==task_id)throw rejected('Нельзя делегировать работу для чужой задачи',403);
-  if(session.role!=='manager'&&!session.process_id)throw rejected('Нет активного поручения',403);
-  return delegateWork(pool,{projectId,taskId:task_id,role,objective,acceptance,sourceRole:session.role,
-   parentId:session.role==='manager'?null:session.process_id});
+  if(session.role!=='manager'&&!session.process_id)throw rejected('Нет активного процесса',403);
+  let parentId:string|null=null;
+  if(session.role!=='manager'){
+   const active=await pool.query(`SELECT id FROM agent_work_assignments
+    WHERE id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'`,[session.process_id,projectId,task_id,session.role]);
+   if(active.rowCount)parentId=session.process_id!;
+   else {
+    const authorized=await pool.query(`SELECT id FROM agent_peer_queue WHERE note_id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'
+     UNION ALL SELECT id FROM ai_task_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='development' AND status IN ('queued','running')
+     UNION ALL SELECT id FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='testing' AND status IN ('queued','running')
+     UNION ALL SELECT id FROM agent_analysis_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='analysis' AND status IN ('queued','running')`,
+     [session.process_id,projectId,task_id,session.role]);
+    if(!authorized.rowCount)throw rejected('Назначать работу может только действующий исполнитель этой задачи',403);
+   }
+  }
+  return delegateWork(pool,{projectId,taskId:task_id,role,objective,acceptance,sourceRole:session.role,parentId});
  }
  case 'work.report':{
   if(!session.task_id||!session.process_id)throw rejected('Нет активного поручения с привязкой к задаче',403);
