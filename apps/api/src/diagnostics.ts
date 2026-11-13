@@ -29,7 +29,8 @@ export function redactDiagnostic(value:unknown,depth=0):unknown {
 }
 
 /** Only authenticated project members generate events. Never capture HTTP bodies or headers. */
-export async function initDiagnosticSchema(pool:Pool){
+/** One-time DDL; installed by append-only schema migration v6. */
+export async function installDiagnosticStorageSchema(pool:Pool){
  await pool.query(
   "CREATE TABLE IF NOT EXISTS diagnostic_events ("+
   "id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,"+
@@ -38,6 +39,10 @@ export async function initDiagnosticSchema(pool:Pool){
   "created_at timestamptz NOT NULL DEFAULT now());"+
   "CREATE INDEX IF NOT EXISTS idx_diagnostic_events_project ON diagnostic_events(project_id,created_at DESC);"
  );
+}
+
+/** Runtime retention; deliberately runs on every server restart. */
+export async function startDiagnosticRetention(pool:Pool){
  await pool.query("DELETE FROM diagnostic_events WHERE created_at < now()-interval '14 days'");
  // A long-running server also enforces retention; no manual cleanup required.
  setInterval(()=>{
