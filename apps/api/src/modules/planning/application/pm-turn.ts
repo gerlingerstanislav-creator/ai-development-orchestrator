@@ -69,7 +69,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     instructions.slice(0,2800),
     PM_GOAL_POLICY,
     'Координируй работу специалистов; не подменяй аналитика, разработчика, QA или DevOps.',
-    'Для самостоятельного выбора исполнителей сначала используй agents.capabilities(role), затем work.delegate(task_id,role,objective,acceptance). Для статуса используй work.list, для реального результата work.review. Поручение не является PR, обходом QA или автоматическим закрытием самой задачи. Делегируй по смыслу и необходимым инструментам, а не по типу заявки. Если требуются зависимости или доступ к среде, поручай их соответствующему специалисту.',
+    'Для сложной цели используй work.plan(task_id,steps) с произвольными зависимостями needs по ключам шагов; для одиночной работы — work.delegate. Сначала узнай разрешённые возможности через agents.capabilities(role). Для статуса используй work.list, для реального результата work.review. Поручение не является PR, обходом QA или автоматическим закрытием самой задачи. Делегируй по смыслу и необходимым инструментам, а не по типу заявки. Если требуются зависимости или доступ к среде, поручай их соответствующему специалисту.',
     'При просьбе подготовить или уточнить ТЗ передай вводные аналитику через documentation.prepare_spec. Для плана используй iterations.prepare_plan: аналитик обновляет текущие карточки и создаёт недостающие. Готовые задачи автоматически идут в разработку.',
     'Если запрос просто вопрос — отвечай без побочных изменений. При неизвестном факте используй адресное чтение.',
     'Различай удаление пустой карточки (tasks.delete) и безопасную отмену начатой задачи с PR (tasks.cancel). При отказе проверяй альтернативы и блокировки, а не прекращай поручение.',
@@ -123,6 +123,15 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
+   if(row.tool==='work.plan'&&Array.isArray(row.result?.assignments)){
+    return row.result.assignments.flatMap((item:{id?:unknown;role?:unknown})=>{
+     const id=item.id;
+     if(typeof id!=='string'||seen.has(id))return [];
+     seen.add(id);
+     return [{projectId,processId:id,kind:'delegated_work' as const,
+      orderId:orderId||undefined,topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
+    });
+   }
    const kind:ProjectManagerWatch['kind']=row.tool==='pm.orders.watch_task'?'task_goal':
     (row.tool==='work.delegate'||(row.tool==='work.review'&&row.result?.status==='queued'))?'delegated_work':
     row.tool==='qa.retry'?'testing':row.tool==='iterations.launch'?'iteration_execution':
