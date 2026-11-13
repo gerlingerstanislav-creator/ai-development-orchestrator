@@ -36,7 +36,7 @@ import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
 import {createPeerQuestionResolution} from './modules/agents/application/peer-question-resolution.js';
-import {finalizeWorkAttempt} from './modules/agents/application/work-assignments.js';
+import {finalizeWorkAttempt} from './modules/agents/infrastructure/work-assignments.js';
 import {evaluateQaRun} from './modules/quality/domain/qa-verdict.js';
 import {browserEvidenceAssessment,validEvidenceSha} from './task-evidence.js';
 import {finishTaskEvidenceRun} from './task-evidence-queue.js';
