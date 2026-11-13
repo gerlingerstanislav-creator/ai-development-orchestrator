@@ -27,11 +27,11 @@ else if(action==='viewport'){body.width=Number(args[0]);body.height=Number(args[
 else if(['click','count','text','inspect'].includes(action))body.selector=args[0];
 else if(action==='fill'){body.selector=args[0];body.value=args[1]||'';}
 else if(action==='assert')body.expression=args[0];
-else if(!['start','restart','screenshot','close'].includes(action))throw Error('Unknown action: '+action);
+else if(!['start','restart','screenshot','close','ping'].includes(action))throw Error('Unknown action: '+action);
 try{
  const response=await fetch('http://127.0.0.1:4311/action',{method:'POST',
-  headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(action==='start'?90000:35000)});
+  headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(action==='start'?95000:action==='ping'?10000:45000)});
  const result=await response.json();
  process.stdout.write(JSON.stringify(result)+'\n');
  if(!response.ok||result.ok!==true)process.exitCode=1;
-}catch(error){process.stderr.write('QA browser unavailable: '+String(error.message||error)+'\n');process.exitCode=1;}
+}catch(error){process.stderr.write('QA browser '+action+' failed (loopback bridge 127.0.0.1:4311): '+String(error.message||error)+'\n');process.exitCode=1;}
