@@ -38,7 +38,13 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   // Older code marked an otherwise ready analysis as waiting_questions when
   // any technical consultation remained open. Those non-owner consultations
   // still live in the task history; they no longer deadlock analysis.
-  await db.query(`UPDATE tasks t SET analysis_state='new',updated_at=now()
+  await db.query(`UPDATE tasks t SET analysis_state=CASE
+     WHEN EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event='analysis_completed')
+      AND EXISTS(SELECT 1 FROM agent_analysis_runs r WHERE r.task_id=t.id
+       AND r.spec_version=t.spec_version AND r.status='completed')
+       THEN 'ready_for_development'
+     ELSE 'new'
+    END,updated_at=now()
    WHERE t.stage='analysis' AND t.analysis_state='waiting_questions'
     AND t.type IN ('task','bug','improvement')
     AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
@@ -50,7 +56,6 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   // Ready means the analyst finalized this task's requirements, independent of epic siblings.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'
-    AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND ${PENDING_OWNER_QUESTION_SQL})
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
