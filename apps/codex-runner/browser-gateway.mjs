@@ -11,12 +11,13 @@ export function openQaBrowserSession(id,caseIds=[],{adHoc=false}={}){
  // must use a fresh per-attempt UUID rather than invalidating the old token.
  if(sessions.has(id))throw Error('QA browser session already active');
  const token=randomBytes(32).toString('hex');
- sessions.set(id,{token,caseIds:new Set(caseIds),adHoc,assertions:[]});
+ sessions.set(id,{token,caseIds:new Set(caseIds),adHoc,assertions:[],screenshots:[]});
  return {session:id,token};
 }
 // Trusted evidence captured after Playwright has actually evaluated a JS assertion.
 // It is not derived from the QA model's summary or shell-command spelling.
 export function getQaBrowserEvidence(id){return (sessions.get(id)?.assertions||[]).map(entry=>({...entry}));}
+export function getQaScreenshotEvidence(id){return (sessions.get(id)?.screenshots||[]).map(entry=>({...entry}));}
 export async function closeQaBrowserSession(id){
  const session=sessions.get(id);
  if(!session)return;
@@ -53,6 +54,12 @@ export function startQaBrowserGateway(){
    if(body.action==='assert'&&kind&&['passed','failed'].includes(data.assertion)&&session.assertions.length<200){
     session.assertions.push({kind,id,result:data.assertion,expression:String(body.expression||'').slice(0,1800),
      actual:data.actual??null,viewport:data.viewport??null});
+   }
+   if(body.action==='screenshot'&&remote.ok&&data.ok===true&&session.screenshots.length<20){
+    const name=String(data.screenshot||'').split('/').at(-1)||'';
+    if(/^[0-9]{3,4}x[0-9]{3,4}-[a-f0-9-]{36}\.jpg$/i.test(name)&&
+      /^[a-f0-9]{64}$/i.test(String(data.sha256||'')))
+     session.screenshots.push({name,sha256:data.sha256,viewport:data.viewport,origin:data.origin});
    }
    if(body.action==='close')sessions.delete(body.session);
    return reply(res,remote.status,data);
