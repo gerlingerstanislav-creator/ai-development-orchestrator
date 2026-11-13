@@ -759,6 +759,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    const project=(await pool.query('SELECT name,description FROM projects WHERE id=$1',[id])).rows[0];
    const instructions=documentationMode?await businessAnalystModules(id):await stageAgentContext(id,'backlog');
    const conversationRole=await conversationInstructions(pool,id,role);
+   const governedRules=await agentMemoryContext(pool,id,role,String(project?.name||'')+' '+String(project?.description||''));
    const {id:sessionId,secret}=await createAgentSession(pool,id,uid(req),role);
    // Cite only an already-persisted user message when distributing permanent team rules.
    const userMessageId=await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
@@ -768,8 +769,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     objective:message,
     tools:'Открывай capabilities.list/describe по мере необходимости. Постоянные указания владельца распределяй через instructions.reconcile/propose с source_message_id. Учитывай область действия; опыт агентов и разовые просьбы не являются обязательными правилами.',
     instructions:[
-     conversationRole.slice(0,2400),
-     instructions.slice(0,1800),
+     conversationRole.slice(0,2000),
+     governedRules.slice(0,1600),
+     instructions.slice(0,1400),
      documentationMode
       ?'Отвечай за продуктовые требования. Не создавай самостоятельно задачи итерации. Для согласованного импорта документации используй documentation.import; для удаления используй безопасное подтверждение.'
       :'Координируй через штатные инструменты. Ты куратор инструкций команды: проверяй дубликаты и конфликты, адресуй правило нужным ролям и технологиям. При сомнении предлагай изменение для подтверждения владельцем на странице Команда.',
