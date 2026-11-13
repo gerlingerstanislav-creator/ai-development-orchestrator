@@ -271,7 +271,7 @@ export const prepareQaPlan=createQaPlanActivity({
  failNonRetryable:message=>ApplicationFailure.nonRetryable(message),
  event,
  recordActivity:(projectId,taskIds,runId,kind,status,message)=>recordAgentActivity(pool,projectId,taskIds,runId,kind,status,message),
- pendingQuestions:(projectId,taskId)=>pendingAgentQuestions(pool,projectId,taskId),
+ pendingQuestions:async(projectId,taskId)=>(await pendingAgentQuestions(pool,projectId,taskId))>0,
  prEvidence,
  loadKnowledge:async(projectId,taskId,runId)=>formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',runId)),
  taskHandoffContext,
