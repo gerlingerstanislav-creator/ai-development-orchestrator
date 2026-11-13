@@ -158,13 +158,23 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.equal((await createReader({'x-runner-secret':runnerSecret},{taskId:otherTaskId})).statusCode,404);
  const newReaders=[];
  for(const role of ['manager','analyst','business_analyst','analysis','development','testing','documentation','devops']){
-  const started=await createReader({'x-runner-secret':runnerSecret},{role});
+  // Documentation readers without an active documentation job are read-only.
+  // Running documentation jobs have their own scoped write authority and tests.
+  const started=await createReader({'x-runner-secret':runnerSecret},
+   {role,...(role==='documentation'?{processId:undefined}:{})});
   assert.equal(started.statusCode,201,started.body);
   const {id,secret}=started.json();
   const headers={'x-agent-token':secret};
   const callReader=(name,args)=>app.inject({method:'POST',url:'/internal/agent-tools/call',headers,payload:{name,arguments:args}});
   const readerCatalog=(await app.inject({url:'/internal/agent-tools/catalog',headers})).json().tools;
-  assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint));
+  const specialist=['analysis','development','testing','devops'].includes(role);
+   if(specialist){
+    assert.ok(readerCatalog.some(tool=>tool.name==='blockers.report'&&!tool.annotations.readOnlyHint),
+     'Task-scoped specialists can record verified blockers');
+    assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint||
+     ['agents.consult','blockers.report','blockers.resolve','processes.report'].includes(tool.name)),
+     'Scoped specialists may mutate only consultation, blockers and process reports');
+   }else assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint),'Reader session must be read-only');
   assert.ok(readerCatalog.some(tool=>tool.name==='knowledge.section'));
   assert.equal((await callReader('documents.update',{document_id:docId,body:'Чужое изменение'})).statusCode,403);
   assert.equal((await callReader('knowledge.read',{document_id:foreign,mode:'full'})).statusCode,404);
@@ -183,7 +193,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   assert.equal((await app.inject({method:'DELETE',url:readerUrl,headers:{...headers,'x-runner-secret':runnerSecret}})).statusCode,204);
   assert.equal((await callReader('knowledge.sections',{document_id:docId})).statusCode,403);
  }
- const reads=(await db.query('SELECT task_id,document_id,agent_stage,agent_session_id,section_id,section_title,process_id FROM knowledge_context_reads WHERE process_id=$1',[processId])).rows;
+ const reads=(await db.query('SELECT task_id,document_id,agent_stage,agent_session_id,section_id,section_title,process_id FROM knowledge_context_reads WHERE agent_session_id=ANY($1::uuid[])',[newReaders.map(x=>x.id)])).rows;
  assert.equal(reads.length,newReaders.length);
  for(const reader of newReaders){
   const row=reads.find(read=>read.agent_session_id===reader.id);
