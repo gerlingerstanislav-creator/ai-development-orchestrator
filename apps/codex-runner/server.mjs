@@ -3,6 +3,7 @@ import {createCodexDeviceAuth} from './device-auth.mjs';
 import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
 import {createCommandExecutor} from './command-executor.mjs';
+import {createCodexThreadStore,createCodexAppExecutor,asCodexExecResult} from './codex-app-server.mjs';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, writeFile, access, readFile, readdir } from 'node:fs/promises';
@@ -54,7 +55,17 @@ const {connected,runLogin,deviceInfo}=deviceAuth;
 // Single-flight task runner: all Git operations happen outside the Codex sandbox.
 // The GitHub credential is kept in process environment, never in CLI argv or git config files.
 const activeJobs=new Map();
-const journal=openJobJournal(process.env.RUNNER_STATE_DIR||join(home,'runner-jobs'));
+const runnerStateDir=process.env.RUNNER_STATE_DIR||join(home,'runner-jobs');
+const journal=openJobJournal(runnerStateDir);
+const threadStore=createCodexThreadStore(join(runnerStateDir,'codex-threads'));
+const appExecutor=createCodexAppExecutor({store:threadStore,env:cliEnv});
+const globalCodexSettings=args=>{
+ const result=[];
+ for(let i=0;i<args.length;i++)if(args[i]==='-c'&&i+1<args.length)result.push('-c',args[++i]);
+ return result;
+};
+const appConversationSettings=globalCodexSettings(conversationPolicy);
+
 journal.recover();
 const readJob=id=>activeJobs.get(id)||journal.read(id);
 function saveJob(job,state){journal.save({identity:jobIdentity(job),state},job.token);}
