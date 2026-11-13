@@ -20,7 +20,7 @@ import {scopedAgentPrompt} from './agent-context.mjs';
  */
 export function createQaJobRunner({
  command,assertJobActive,saveJob,isolatedTaskPolicy,cliEnv,
- auditCodexPrompt,codexJsonResult,addUsage,browser,isCancelled
+ auditCodexPrompt,codexJsonResult,addUsage,browser,isCancelled,persistentCli
 }){
  const {
   health:browserHealth,open:openQaBrowserSession,
@@ -193,13 +193,27 @@ async function runTestJob(job,state,context){
     throw Error('Отчёт должен содержать уникальные сценарии проверки с названиями');
    return data;
   };
+  const qaScope={projectId:job.projectId,taskId:job.taskId,role:'testing'};
+  let qaTurn=0;
   const args=['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-   '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,
-   '--output-schema',schemaPath];
+   '--json','--skip-git-repo-check',...policy.execArgs,'--output-schema',schemaPath];
+  const runQaCodex=async(instruction,{limit=900000,maxOutputChars=350000,useMcp=true}={})=>{
+   if(!persistentCli)return command('codex',[...args,...(useMcp?context.args:[]),instruction],{
+    cwd:dir,env:{...cliEnv,...(useMcp?context.env:{})},timeout:Math.min(limit,job.maxRuntimeSeconds*1000),maxOutputChars,jobId:job.id
+   });
+   const response=await persistentCli({
+    scope:qaScope,requestId:job.id+':qa:'+ ++qaTurn,
+    model:job.model,reasoning:job.reasoning,prompt:instruction,
+    cwd:dir,env:{...cliEnv,...(useMcp?context.env:{})},
+    policyArgs:policy.execArgs,mcpArgs:useMcp?context.args:[],
+    outputSchema:schemaPath,timeout:Math.min(limit,job.maxRuntimeSeconds*1000),
+    maxOutputChars,jobId:job.id
+   });
+   state.threadId=response.threadId;
+   return response;
+  };
   await auditCodexPrompt(job,'testing',prompt);
-  const firstRun=await command('codex',[...args,...context.args,prompt],{
-   cwd:dir,env:{...cliEnv,...context.env},timeout:Math.min(job.maxRuntimeSeconds*1000,900000),maxOutputChars:350000,jobId:job.id
-  });
+  const firstRun=await runQaCodex(prompt);
   let parsed=codexJsonResult(firstRun.stdout);
   state.usage=parsed.usage;
   let report,correctionOutput='';
@@ -220,9 +234,7 @@ async function runTestJob(job,state,context){
     budget:9000
    });
    await auditCodexPrompt(job,'testing',correction);
-   const second=await command('codex',[...args,correction],{
-    cwd:dir,env:cliEnv,timeout:Math.min(150000,job.maxRuntimeSeconds*1000),maxOutputChars:200000,jobId:job.id
-   });
+   const second=await runQaCodex(correction,{limit:150000,maxOutputChars:200000,useMcp:false});
    correctionOutput=second.stdout;
    const corrected=codexJsonResult(second.stdout);
    state.usage=addUsage(state.usage,corrected.usage);
@@ -255,11 +267,7 @@ async function runTestJob(job,state,context){
    const focus=qaCompletionPrompt(gaps,{taskTitle:job.title,taskDescription:job.description});
    await auditCodexPrompt(job,'testing',focus);
    try{
-    const extra=await command('codex',[...args,...context.args,scopedAgentPrompt(context,focus)],{
-     cwd:dir,env:{...cliEnv,...context.env},
-     timeout:Math.min(180000,job.maxRuntimeSeconds*1000),
-     maxOutputChars:170000,jobId:job.id
-    });
+    const extra=await runQaCodex(scopedAgentPrompt(context,focus),{limit:180000,maxOutputChars:170000});
     executedCommands.push(...readQaCommands(extra.stdout));
     try{
      const parsedExtra=codexJsonResult(extra.stdout);

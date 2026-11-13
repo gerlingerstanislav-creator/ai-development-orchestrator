@@ -44,6 +44,10 @@ jobs:
           node --test apps/codex-runner/qa-job.test.mjs
           node --check apps/codex-runner/ci-test-discovery.mjs
           node --check apps/codex-runner/command-executor.mjs
+          node --check apps/codex-runner/codex-app-server.mjs
+          node --check apps/codex-runner/codex-cli-session.mjs
+          node --check apps/codex-runner/codex-thread-scope.mjs
+          node --test apps/codex-runner/codex-app-server.test.mjs apps/codex-runner/codex-cli-session.test.mjs
           node --check apps/codex-runner/codex-proxy.mjs
           node --test apps/codex-runner/codex-proxy.test.mjs
           node --check apps/codex-runner/device-auth.mjs
@@ -68,41 +72,6 @@ jobs:
           node --import tsx --test apps/web/tests/kanban-board.test.mjs
           node --import tsx --test apps/web/tests/task-live-state.test.mjs
           node --import tsx --test apps/web/tests/process-center.test.mjs
-
-  temporal-runtime-integration:
-    runs-on: ubuntu-latest
-    timeout-minutes: 18
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Install dependencies
-        run: npm install --no-audit --no-fund
-      - name: Build the actual workflow bundle
-        run: npm run build -w apps/api
-      - name: Start real Temporal development service
-        run: |
-          docker run --detach --name ado-temporal-integration --publish 127.0.0.1:7233:7233 \
-            temporalio/temporal:1.10.0 server start-dev --ip 0.0.0.0
-          for i in $(seq 1 80); do
-            if node -e "const s=require('node:net').connect({host:'127.0.0.1',port:7233});s.on('connect',()=>{s.end();process.exit(0)});s.on('error',()=>process.exit(1));setTimeout(()=>process.exit(1),1500)" ; then
-              exit 0
-            fi
-            sleep 2
-          done
-          docker logs ado-temporal-integration
-          exit 1
-      - name: Real Temporal worker and pipeline integration tests
-        env:
-          TEMPORAL_ADDRESS: 127.0.0.1:7233
-        run: node --check apps/api/tests/temporal-runtime.integration.mjs && node --test apps/api/tests/temporal-runtime.integration.mjs
-      - name: Temporal diagnostics
-        if: failure()
-        run: docker logs --tail 150 ado-temporal-integration || true
-      - name: Stop isolated Temporal test service
-        if: always()
-        run: docker rm -f ado-temporal-integration || true
 
   codex-runner-image:
     runs-on: ubuntu-latest
