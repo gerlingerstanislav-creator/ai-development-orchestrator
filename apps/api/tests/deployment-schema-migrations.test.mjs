@@ -41,6 +41,8 @@ test('adopt historical startup deployment storage without dropping active runs o
   await db.query("INSERT INTO users(id,email,password_hash) VALUES($1,'deployment-v9@example.test','hash')",[user]);
   await db.query("INSERT INTO projects(id,name,owner_id,agents_running) VALUES($1,'Live deployment',$2,true)",[project,user]);
   await db.query("INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Release validated SHA')",[task,project]);
+  // Directly inserted fixtures bypass the application's project-creation route.
+  await db.query('INSERT INTO project_deployment_settings(project_id) VALUES($1) ON CONFLICT DO NOTHING',[project]);
   await db.query("UPDATE project_deployment_settings SET mode='automatic',health_url='https://example.test/health',environment='staging' WHERE project_id=$1",[project]);
   await db.query("INSERT INTO project_deployment_ssh(project_id,host,username,remote_path,private_key_encrypted,known_hosts) VALUES($1,'deploy.example.test','deployer','/srv/app','encrypted:private-key','deploy.example.test ssh-ed25519 placeholder')",[project]);
   await db.query("INSERT INTO deployment_runs(id,project_id,task_id,actor_id,sha,status,message) VALUES($1,$2,$3,$4,$5,'running','release underway')",[run,project,task,user,'a'.repeat(40)]);
