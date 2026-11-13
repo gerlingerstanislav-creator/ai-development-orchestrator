@@ -85,6 +85,7 @@ jobs:
           node --test apps/api/tests/quality-operations-api.test.mjs
           node --test apps/api/tests/background-processes.test.mjs apps/api/tests/legacy-development-reconciler.test.mjs
           node --test apps/api/tests/agent-work-continuation.test.mjs
+          node --test apps/api/tests/task-stage-analysis.test.mjs
           node --test apps/api/tests/project-process-controller.test.mjs
           node --test apps/api/tests/documentation-module.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
