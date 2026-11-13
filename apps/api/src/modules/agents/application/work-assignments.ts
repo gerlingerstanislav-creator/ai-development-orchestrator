@@ -9,7 +9,7 @@ export type WorkRole=typeof workRoles[number];
 const fail=(message:string,statusCode=409)=>Object.assign(Error(message),{statusCode});
 
 export async function installWorkAssignmentsSchema(db:Db){
- await db.query(\`CREATE TABLE IF NOT EXISTS agent_work_assignments(
+ await db.query(`CREATE TABLE IF NOT EXISTS agent_work_assignments(
   id uuid PRIMARY KEY,
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -29,7 +29,7 @@ export async function installWorkAssignmentsSchema(db:Db){
   updated_at timestamptz NOT NULL DEFAULT now()
  );
  CREATE INDEX IF NOT EXISTS idx_agent_work_pending ON agent_work_assignments(status,next_attempt_at);
- CREATE INDEX IF NOT EXISTS idx_agent_work_task ON agent_work_assignments(project_id,task_id,created_at DESC);\`);
+ CREATE INDEX IF NOT EXISTS idx_agent_work_task ON agent_work_assignments(project_id,task_id,created_at DESC);`);
 }
 
 async function event(db:Db,row:{id:string;project_id:string;task_id:string},state:string,detail:string){
@@ -82,10 +82,10 @@ export async function listWork(db:Db,projectId:string,taskId:string){
 export async function reportWork(db:Db,input:{
  projectId:string;taskId:string;assignmentId:string;role:string;status:'submitted'|'blocked';result:string;evidence:string
 }){
- const r=await db.query(\`UPDATE agent_work_assignments a SET status=$5,result=$6,evidence=$7,updated_at=now()
+ const r=await db.query(`UPDATE agent_work_assignments a SET status=$5,result=$6,evidence=$7,updated_at=now()
  FROM tasks t WHERE a.id=$1 AND a.project_id=$2 AND a.task_id=$3 AND a.role=$4
  AND a.status='running' AND t.id=a.task_id AND t.project_id=a.project_id
- AND t.spec_version=a.spec_version AND t.stage<>'done' RETURNING a.id,a.project_id,a.task_id\`,
+ AND t.spec_version=a.spec_version AND t.stage<>'done' RETURNING a.id,a.project_id,a.task_id`,
  [input.assignmentId,input.projectId,input.taskId,input.role,input.status,input.result.slice(0,3000),input.evidence.slice(0,3000)]);
  if(!r.rowCount)throw fail('Поручение не активно, не ваше или версия задачи изменилась');
  await event(db,r.rows[0],input.status,input.role+': '+input.result);
@@ -95,9 +95,9 @@ export async function reportWork(db:Db,input:{
 export async function reviewWork(db:Db,input:{
  projectId:string;assignmentId:string;action:'accept'|'retry'|'cancel';reason:string
 }){
- const r=await db.query(\`SELECT a.*,t.spec_version AS actual_version
+ const r=await db.query(`SELECT a.*,t.spec_version AS actual_version
  FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
- WHERE a.project_id=$1 AND a.id=$2 FOR UPDATE OF a\`,[input.projectId,input.assignmentId]);
+ WHERE a.project_id=$1 AND a.id=$2 FOR UPDATE OF a`,[input.projectId,input.assignmentId]);
  if(!r.rowCount)throw fail('Поручение не найдено',404);
  const row=r.rows[0];
  let target:string;
@@ -131,18 +131,18 @@ export async function reconcileAgentWorkAssignments(pool:Pool,temporal:()=>Promi
  try{
   locked=(await db.query("SELECT pg_try_advisory_lock(hashtext('ado-agent-work-assignments')) AS ok")).rows[0]?.ok===true;
   if(!locked)return;
-  await db.query(\`UPDATE agent_work_assignments a SET status='blocked',result='ТЗ изменилось; нужно пересмотреть поручение',updated_at=now()
+  await db.query(`UPDATE agent_work_assignments a SET status='blocked',result='ТЗ изменилось; нужно пересмотреть поручение',updated_at=now()
    FROM tasks t WHERE t.id=a.task_id AND t.project_id=a.project_id AND a.status IN ('queued','submitted')
-   AND (a.spec_version<>t.spec_version OR t.stage='done')\`);
-  const r=await db.query(\`SELECT a.id,a.project_id,a.task_id,a.role FROM agent_work_assignments a
+   AND (a.spec_version<>t.spec_version OR t.stage='done')`);
+  const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.role FROM agent_work_assignments a
    JOIN projects p ON p.id=a.project_id JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
    WHERE a.status='queued' AND a.next_attempt_at<=now() AND p.agents_running=true AND p.deleted_at IS NULL
-   AND t.stage<>'done' AND a.spec_version=t.spec_version ORDER BY a.created_at LIMIT 40\`);
+   AND t.stage<>'done' AND a.spec_version=t.spec_version ORDER BY a.created_at LIMIT 40`);
   for(const job of r.rows){
    const cap=await roleCapacity(pool,job.project_id,job.role);
-   const used=await db.query(\`SELECT
+   const used=await db.query(`SELECT
     (SELECT count(*)::int FROM agent_work_assignments WHERE project_id=$1 AND role=$2 AND status='running') AS assignments,
-    (SELECT count(*)::int FROM agent_peer_queue WHERE project_id=$1 AND role=$2 AND status='running') AS consultations\`,
+    (SELECT count(*)::int FROM agent_peer_queue WHERE project_id=$1 AND role=$2 AND status='running') AS consultations`,
     [job.project_id,job.role]);
    if(Number(used.rows[0].assignments)+Number(used.rows[0].consultations)>=cap)continue;
    const claimed=await db.query("UPDATE agent_work_assignments SET status='running',attempts=attempts+1,updated_at=now() WHERE id=$1 AND status='queued' RETURNING attempts",[job.id]);
