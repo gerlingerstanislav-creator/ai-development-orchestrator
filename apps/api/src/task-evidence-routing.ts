@@ -39,7 +39,7 @@ export async function routeTaskToBrowserEvidence(db:Db,args:{
  await db.query("UPDATE iteration_execution_queue SET status='stale',detail='Задача переведена в исполнение артефактов без разработки',updated_at=now() WHERE task_id=$1 AND project_id=$2 AND status IN ('queued','dispatching')",[taskId,projectId]);
  const changed=await db.query(`UPDATE tasks
   SET stage='testing',execution_mode='browser_evidence',evidence_source_sha=$3,
-   implementation_kind='artifact',implementation_commit=$3,test_feedback=NULL,updated_at=now()
+   implementation_kind='artifact',implementation_commit=$3,test_feedback='',updated_at=now()
   WHERE id=$1 AND project_id=$2 AND stage IN ('development','testing') AND pr_url IS NULL
   RETURNING id,stage,execution_mode,evidence_source_sha`,[taskId,projectId,sourceSha.toLowerCase()]);
  if(!changed.rowCount)throw failure('Маршрут задачи изменился до сохранения');
