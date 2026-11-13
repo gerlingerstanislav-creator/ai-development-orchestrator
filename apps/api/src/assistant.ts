@@ -419,15 +419,24 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     'Последнее сообщение:\n'+message.slice(0,4000)
    ].join('\n\n');
     if(prompt.length>24000)throw Error('Выбери более узкий раздел ТЗ для обсуждения.');
-    const result=await completeLive(prompt,config,{maxAttempts:2});
+    let result=await completeLive(prompt,config,{maxAttempts:2});
     await storeTokenUsage(id,null,config.model,result.usage);
-    const output=z.object({
+    const outputSchema=z.object({
      reply:z.string().trim().min(1).max(4000),
      operations:z.array(z.discriminatedUnion('op',[
       z.object({op:z.literal('create'),key:z.string().regex(/^[a-zA-Z0-9_-]{1,60}$/),title:z.string().trim().min(2).max(180),body:z.string().trim().min(10).max(15000),parent_id:z.string().uuid().nullable().optional(),parent_key:z.string().nullable().optional()}),
       z.object({op:z.literal('update'),id:z.string().uuid(),title:z.string().trim().min(2).max(180),body:z.string().trim().min(10).max(15000),parent_id:z.string().uuid().nullable().optional()})
      ])).max(12)
-    }).parse(jsonObject(result.text));
+    });
+    let output=outputSchema.parse(jsonObject(result.text));
+    if(requireChanges&&!output.operations.length){
+     await updateProgress('retrying','Аналитик не сохранил ТЗ — адресная повторная подготовка');
+     result=await completeLive(prompt+'\n\nПРЕДЫДУЩИЙ ОТВЕТ НЕ ВЫПОЛНИЛ ПОРУЧЕНИЕ: '+output.reply.slice(0,600)+
+      '\nСформируй хотя бы одну операцию create/update из подтверждённых материалов. Не заявляй об успехе без записи.',config,{maxAttempts:2});
+     await storeTokenUsage(id,null,config.model,result.usage);
+     output=outputSchema.parse(jsonObject(result.text));
+    }
+    assertDocumentationWasPrepared(!!requireChanges,output.operations.length,output.reply);
     const known=new Set<string>(docs.map((d:any)=>d.id));
     const ids=new Map<string,string>();
     const prepared:Array<{id:string;op:'create'|'update';title:string;body:string;parentId:string|null;key?:string}>=[];
