@@ -51,7 +51,8 @@ async function updatePage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<
  return {id:params.document_id,revision:revision(updated.rows[0].updated_at)};
 }
 export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSession,name:string,args:unknown,
- _startWorkflow:(jobId:string)=>Promise<void>):Promise<unknown>{
+ _startWorkflow:(jobId:string)=>Promise<void>,
+ readSource?:(projectId:string,actorId:string,path?:string,commit?:string)=>Promise<unknown>):Promise<unknown>{
  const projectId=session.project_id,actorId=session.actor_id;
  const params={...(args&&typeof args==='object'&&!Array.isArray(args)?args:{})} as Record<string,unknown>;
  if(session.task_id&&['knowledge.read','knowledge.section','knowledge.context','tasks.read','processes.list'].includes(name)){
@@ -59,6 +60,48 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   params.task_id=session.task_id;
  }
  switch(name){
+ case 'project.source':{
+  if(!readSource)throw rejected('Источник проекта недоступен для агента',503);
+  const data=z.object({path:z.string().trim().max(500).optional(),commit:z.string().regex(/^[a-f0-9]{40}$/i).optional()}).parse(params);
+  return readSource(projectId,actorId,data.path,data.commit);
+ }
+ case 'documentation.complete':{
+  if(session.role!=='documentation'||!session.process_id||session.task_id)
+   throw rejected('Завершить документацию вправе только назначенный аналитик',403);
+  const {document_ids,summary}=z.object({
+   document_ids:z.array(uuid).min(1).max(60),summary:z.string().trim().min(20).max(2400)
+  }).parse(params);
+  if(new Set(document_ids).size!==document_ids.length)throw rejected('Документы результата должны быть уникальными');
+  const records=await pool.query(
+   'SELECT id,title FROM documents WHERE project_id=$1 AND id=ANY($2::uuid[]) AND length(btrim(body))>=10',
+   [projectId,document_ids]);
+  if(records.rowCount!==document_ids.length)throw rejected('Не все документы результата существуют и содержат текст');
+  const events=await pool.query(`SELECT e.tool,e.result FROM agent_tool_events e JOIN agent_sessions s ON s.id=e.session_id
+   WHERE s.project_id=$1 AND s.process_id=$2 AND e.success=true AND e.tool IN ('documents.create','documents.update','documents.changeset')`,
+   [projectId,session.process_id]);
+  const writes=events.rows.reduce((n:number,row:any)=>n+(row.tool==='documents.changeset'
+   ?(Array.isArray(row.result?.changed)?row.result.changed.length:0):1),0);
+  const outcome={summary,document_ids,verified_documents:records.rows,
+   saved_documents:writes,source:'mcp-documents'};
+  const updated=await pool.query(`UPDATE document_import_jobs SET status='completed',
+   message='Подтверждена документация: '+$3::text,result=$4::jsonb,saved_documents=$5,updated_at=now()
+   WHERE id=$1 AND project_id=$2 AND status='running' RETURNING id`,
+   [session.process_id,projectId,String(records.rowCount),JSON.stringify(outcome),writes]);
+  if(!updated.rowCount)throw rejected('Поручение уже завершено или приостановлено');
+  return {status:'completed',...outcome};
+ }
+ case 'documentation.request_input':{
+  if(session.role!=='documentation'||!session.process_id||session.task_id)
+   throw rejected('Запросить данные вправе только назначенный аналитик',403);
+  const {question,context}=z.object({question:z.string().trim().min(12).max(1800),
+   context:z.string().trim().max(1800).default('')}).parse(params);
+  const result={question,context,waiting_for:'project_manager'};
+  const updated=await pool.query(`UPDATE document_import_jobs SET status='waiting_input',message=$3,
+   result=$4::jsonb,updated_at=now() WHERE id=$1 AND project_id=$2 AND status='running' RETURNING id`,
+   [session.process_id,projectId,'Аналитик запросил данные у ПМ: '+question.slice(0,550),JSON.stringify(result)]);
+  if(!updated.rowCount)throw rejected('Поручение уже не выполняется');
+  return {status:'waiting_input',...result};
+ }
  case 'blockers.list':{
   const {task_id}=z.object({task_id:uuid}).parse(params);
   if(session.task_id&&session.task_id!==task_id)throw rejected('Другую задачу читать нельзя',403);
@@ -446,6 +489,23 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    [jobId,projectId,actorId,'Ответ на вопрос: '+question.description+'\n\n'+answer,'po-answer:'+question_id,JSON.stringify(input)]);
   return {import_job_id:jobId,status:'queued'};
  }
+ case 'documentation.resume_spec':{
+  if(session.role!=='manager')throw rejected('Продолжить поручение может ПМ',403);
+  const {job_id,answer}=z.object({job_id:uuid,answer:z.string().trim().min(5).max(6000)}).parse(params);
+  const previous=(await pool.query(
+   "SELECT actor_id,request_text,analyst_input,result FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='waiting_input' FOR UPDATE",
+   [job_id,projectId])).rows[0];
+  if(!previous)throw rejected('Исходное поручение не ожидает ответа',409);
+  const jobId=randomUUID(),context=previous.analyst_input||{};
+  const input={...context,autonomous:true,previousJobId:job_id,readProjectSource:false,requireChanges:false};
+  await pool.query(`INSERT INTO document_import_jobs
+   (id,project_id,actor_id,status,message,request_text,source_key,analyst_input)
+   VALUES($1,$2,$3,'queued','Продолжение после ответа ПМ',$4,$5,$6::jsonb)`,
+   [jobId,projectId,previous.actor_id,String(previous.request_text||'')+
+    '\n\nУточнение для продолжения от ПМ: '+answer,'documentation.continue:'+jobId,JSON.stringify(input)]);
+  await pool.query("UPDATE document_import_jobs SET status='continued',updated_at=now() WHERE id=$1 AND status='waiting_input'",[job_id]);
+  return {import_job_id:jobId,status:'queued',resumes:job_id,kind:'documentation.resume_spec'};
+ }
  case 'documentation.prepare_spec':case 'documentation.import':case 'documentation.rebuild':case 'documentation.organize':{
   const data=z.object({source_url:z.string().url().max(1000).optional(),instructions:z.string().max(16000).default(''),document_id:uuid.optional()}).parse(params);
   const location=name==='documentation.import'?extractGitHubDocumentLocation(data.source_url||''):null;
@@ -455,10 +515,10 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const jobId=randomUUID(),sourceUrl=data.source_url||null;
   const input={location,attachments:[],mode:'documentation',documentId:data.document_id??null,
    structureOnly:name==='documentation.organize',rebuildSpec:name==='documentation.rebuild',
-   requireChanges:name==='documentation.prepare_spec',readProjectSource:name==='documentation.prepare_spec'};
+   requireChanges:false,readProjectSource:false,autonomous:name==='documentation.prepare_spec'};
   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:name+':'+jobId;
   const competing=await pool.query(
-   "SELECT id FROM document_import_jobs WHERE project_id=$1 AND status IN ('running','queued') LIMIT 1 FOR UPDATE",
+   "SELECT id FROM document_import_jobs WHERE project_id=$1 AND status IN ('running','queued','waiting_input') LIMIT 1 FOR UPDATE",
    [projectId]);
   if(competing.rowCount)throw rejected('В проекте уже выполняется процесс аналитика');
   // The job and audit event commit together. Temporal is started only after COMMIT,
