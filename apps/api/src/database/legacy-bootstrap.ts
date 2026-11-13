@@ -21,7 +21,7 @@ export async function applyLegacySchema(pool:Pool,workflowStageDescriptions:Reco
  CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
  CREATE TABLE IF NOT EXISTS projects (id uuid primary key, name text not null, description text not null default '', owner_id uuid not null references users(id), created_at timestamptz not null default now());
  ALTER TABLE projects ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
- -- Every backend rollout requires an explicit per-project resume. This flag is
+ -- Project start/stop is durable across API restarts. This flag is
  -- intentionally distinct from project_ai_settings.enabled (account setup).
  ALTER TABLE projects ADD COLUMN IF NOT EXISTS agents_running boolean NOT NULL DEFAULT false;
  CREATE INDEX IF NOT EXISTS idx_projects_owner_trash ON projects(owner_id,deleted_at,created_at DESC);
