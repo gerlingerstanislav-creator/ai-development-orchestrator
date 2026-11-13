@@ -2,7 +2,7 @@ import {ProcessCenter} from './features/processes/ProcessCenter.js';
 import type {ProjectProcess,ProjectProcessEvent} from './features/processes/process-center-model.js';
 import {TaskBoard} from './features/tasks/TaskBoard.js';
 import type {KanbanGroupKey} from './features/tasks/board-model.js';
-import {activeTaskAgentExecutions,latestTaskQa,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
+import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
 import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.js';
 import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/AgentPromptDisclosure.js';
 import {parseAppRoute,projectUrl,uuidPattern,type ProjectSection,type AppRoute} from './features/navigation/routes.js';
@@ -1151,6 +1151,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   return()=>{active=false;window.clearInterval(timer);document.removeEventListener('visibilitychange',onVisible);};
  },[token,selected?.id]);
  const newestTaskTest=activeTask?latestTaskQa(activeTask.id,activeTask.id,taskTestRuns,testRuns):null;
+ const qaOutcome=activeTask?.stage==='testing'?qaOutcomeLabel(newestTaskTest):'';
  useEffect(()=>{
   if(!selected?.id||!activeTask?.id){setQaWaiver(null);return;}
   const projectId=selected.id,taskId=activeTask.id;
@@ -2250,7 +2251,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="task-modal-top">
     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
     <div className="task-modal-actions">
-     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}</span>
+     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}{qaOutcome?' · '+qaOutcome:''}</span>
      {['backlog','analysis'].includes(activeTask.stage)&&<button type="button" className="secondary" title="Удалить ненужную задачу без результатов разработки" onClick={()=>void deleteUnstartedTask()}><Trash2 size={14}/> Удалить</button>}
      {activeTask.type!=='question'&&!['documentation','done'].includes(activeTask.stage)&&
       <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
@@ -2485,7 +2486,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        onClick={()=>void advanceTask(activeTask,stages[i-1].stage,stage.stage)}><ArrowRight size={18}/></button>}
      <div className={'workflow-step '+(stage.stage===activeTask.stage?'current'+((activeTask.stage==='testing'?testingWorking(activeTask.id):agentWorking(activeTask.id))?' working':' idle'):stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?'passed':'pending')}>
       {stage.stage===activeTask.stage?(activeTask.stage==='done'?<CheckCircle2 size={16}/>:((activeTask.stage==='testing'?testingWorking(activeTask.id):agentWorking(activeTask.id))?<LoaderCircle size={16}/>:<Clock3 size={16}/>)):stages.findIndex(x=>x.stage===stage.stage)<stages.findIndex(x=>x.stage===activeTask.stage)?<CheckCircle2 size={16}/>:<Clock3 size={16}/>}
-      <span>{stage.label}</span>
+      <span>{stage.label}{stage.stage===activeTask.stage&&stage.stage==='testing'&&qaOutcome&&<small className="workflow-qa-outcome"> · {qaOutcome}</small>}</span>
      </div>
     </React.Fragment>)}
    </div>}
