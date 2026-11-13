@@ -48,6 +48,8 @@ jobs:
           node --test apps/codex-runner/device-auth.test.mjs
           node --test apps/codex-runner/command-executor.test.mjs
           node --test apps/codex-runner/ci-test-discovery.test.mjs
+          node --check apps/codex-runner/browser-client.mjs
+          node --check apps/codex-runner/browser-gateway.mjs
           node --check apps/codex-runner/qa-completion.mjs
           node --check apps/codex-runner/qa-prompt.mjs
           node --check apps/codex-runner/developer-prompt.mjs
@@ -106,6 +108,31 @@ jobs:
           docker run --rm --network none \
             -e RUNNER_SHARED_SECRET=0123456789abcdef0123456789abcdef \
             --entrypoint node ado-codex-runner-ci /opt/codex-runner/startup-smoke.mjs
+
+  qa-browser-end-to-end:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POSTGRES_PASSWORD: ci_database_password
+      ADMIN_EMAIL: ci@example.test
+      ADMIN_PASSWORD: ci_admin_password
+      JWT_SECRET: ci_jwt_password
+      CREDENTIALS_KEY: ci_credential_password
+      RUNNER_SHARED_SECRET: 0123456789abcdef0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production Runner and isolated Chromium images
+        run: docker compose build codex qa-browser
+      - name: Start isolated Chromium in the real Compose network
+        run: docker compose up -d --no-deps qa-browser
+      - name: Verify real sandbox -> loopback gateway -> Chromium assertion
+        run: docker compose run --rm --no-deps --entrypoint node codex /opt/codex-runner/browser-smoke.mjs
+      - name: Browser diagnostics after failure
+        if: failure()
+        run: docker compose logs --no-color qa-browser
+      - name: Stop services and clear test workspaces
+        if: always()
+        run: docker compose down -v --remove-orphans
 
   qa-browser-image:
     runs-on: ubuntu-latest
