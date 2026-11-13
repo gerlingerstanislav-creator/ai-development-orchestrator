@@ -16,6 +16,7 @@ RUN apt-get update \
 ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
+COPY apps/codex-runner/qa-job.mjs ./qa-job.mjs
 COPY apps/codex-runner/command-executor.mjs ./command-executor.mjs
 COPY apps/codex-runner/ci-test-discovery.mjs ./ci-test-discovery.mjs
 COPY apps/codex-runner/codex-proxy.mjs ./codex-proxy.mjs
