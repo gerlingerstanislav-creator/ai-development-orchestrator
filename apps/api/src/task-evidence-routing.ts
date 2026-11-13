@@ -20,7 +20,7 @@ export async function routeTaskToBrowserEvidence(db:Db,args:{
  [taskId,projectId])).rows[0];
  if(!task)throw failure('Задача не найдена',404);
  if(!['task','bug','improvement'].includes(task.type)||!['analysis','development','testing'].includes(task.stage)||
-   task.pr_url||task.implementation_kind==='pr'||task.implementation_kind==='code_changed')
+   task.pr_url||task.implementation_kind==='code_changed')
   throw failure('Нельзя менять маршрут после реальных изменений с PR либо завершения задачи');
  if(task.stage==='analysis'||task.analysis_state!=='approved')
   throw failure('Сначала требуется завершить анализ задачи');
@@ -60,7 +60,7 @@ export async function retryTaskBrowserEvidence(db:Db,args:{projectId:string;task
   throw failure('Браузерный процесс ещё выполняется');
  const prior=await db.query("SELECT id,status FROM task_evidence_runs WHERE task_id=$1 AND spec_version=$2 AND source_sha=$3 ORDER BY created_at DESC LIMIT 1",
   [args.taskId,task.spec_version,task.evidence_source_sha]);
- if(!prior.rowCount||prior.rows[0].status==='completed')
+ if(!prior.rowCount||!['blocked','failed','cancelled'].includes(prior.rows[0].status))
   throw failure('Нет завершённой с блокировкой попытки для повтора');
  const id=randomUUID();
  await db.query("INSERT INTO task_evidence_runs(id,project_id,task_id,spec_version,source_sha,status,message) VALUES($1,$2,$3,$4,$5,'queued',$6)",
