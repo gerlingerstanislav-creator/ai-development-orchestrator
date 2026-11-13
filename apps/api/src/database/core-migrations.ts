@@ -8,6 +8,8 @@ import {initQualityGateSchema} from '../quality-gates.js';
 import {initTaskOrchestrationSchema} from '../task-orchestration.js';
 import {initProjectManagerInbox} from '../project-manager-inbox.js';
 import {installMergeBatchSchema} from '../merge-batch.js';
+import {initProjectManagerSchema} from '../project-manager.js';
+import {initChatImages} from '../chat-images.js';
 
 /**
  * Append-only, transactional schema history.
@@ -38,8 +40,7 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    up:async database=>{
     // These initializers perform only CREATE/ALTER/INDEX DDL. Their referenced
     // users/projects/tasks/messages exist after the legacy schema baseline.
-    // Chat images and merge/deployment schemas remain startup-managed because
-    // their dependencies must be migrated separately.
+    // Manager history and chat images are installed in dependency order by v5.
     await initQualityGateSchema(database);
     await initTaskOrchestrationSchema(database);
     await initProjectManagerInbox(database);
@@ -48,6 +49,15 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
   {
    version:4,name:'merge-batch-schema',checksum:'ado-merge-batch-ddl-v4',
    up:database=>installMergeBatchSchema(database)
+  },
+  {
+   version:5,name:'manager-chat-history-and-attachments',checksum:'ado-manager-chat-attachments-ddl-v5',
+   up:async database=>{
+    // Explicit dependency order: baseline projects/tasks/users/assistant_messages,
+    // then manager_messages/manager_requests, then chat_images with both FKs.
+    await initProjectManagerSchema(database);
+    await initChatImages(database);
+   }
   }
  ];
 }
