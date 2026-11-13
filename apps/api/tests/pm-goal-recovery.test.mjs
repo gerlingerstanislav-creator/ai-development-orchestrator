@@ -51,6 +51,11 @@ test('task-goal watch reports stalled QA to the same PM order and resumes exactl
  await db.query("INSERT INTO task_orchestration_owners VALUES($1,$2,'active')",[task,project]);
  await db.query("INSERT INTO project_pm_orders(id,project_id,actor_id,status) VALUES($1,$2,$3,'waiting_agents')",[order,project,owner]);
  const session={id:randomUUID(),project_id:project,actor_id:owner,role:'manager',read_only:false};
+ const unbound=await executeAgentTool(db,session,'pm.orders.watch_task',{task_id:task},async()=>{});
+ assert.equal(unbound.status,'needs_action','task chat must not claim an unregistered Temporal watch');
+ const turn=randomUUID();
+ await db.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status) VALUES($1,$2,$3,'user','Доведи задачу до конца','project','processing')",[turn,project,owner]);
+ session.process_id=turn;
  const read=await executeAgentTool(db,session,'pm.orders.watch_task',{task_id:task},async()=>{});
  assert.equal(read.status,'watching');
  assert.ok(read.watch_id);
