@@ -1022,7 +1022,7 @@ export async function runDelegatedWork(assignmentId:string):Promise<void>{
   ].join('\\n'),
   output:'Кратко объясни выполненные действия и фактические результаты; обязательно вызови work.report через MCP. Не утверждай успех без подтверждения инструмента.'
  });
- await recordAgentPrompt(pool,{projectId:item.project_id,taskId:item.task_id,processId:assignmentId,role:item.role,operation:'delegated_work',prompt}).catch(()=>{});
+ await recordAgentPrompt(pool,{projectId:item.project_id,processId:assignmentId,role:item.role,operation:'delegated_work',prompt}).catch(()=>{});
  try{
   const output=await askRunnerAssistant(prompt,item.project_id,item.task_id,'delegated_work',roleSettings,195000,[],
    {role:item.role,processId:assignmentId});
