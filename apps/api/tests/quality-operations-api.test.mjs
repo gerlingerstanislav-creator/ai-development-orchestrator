@@ -116,7 +116,7 @@ test('a live Temporal workflow prevents a duplicate manual testing worker',async
 });
 test('QA recovery refuses missing confirmed verdict without mutating workflow',async()=>{
  const f=fixture({query:async sql=>{
-  if(sql.startsWith('SELECT t.id,t.stage,t.pr_number'))return {
+  if(sql.startsWith('SELECT t.id,t.stage,t.execution_mode,t.pr_number'))return {
    rows:[{id:task,stage:'testing',pr_number:9,
     spec_version:2,spec_reviewed_version:2,spec_review_status:'current'}],rowCount:1
   };
