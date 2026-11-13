@@ -213,7 +213,9 @@ async function run(s,body){
  if(action==='screenshot'){
   const evidence=join(s.root,'.ado-qa-evidence');
   await mkdir(evidence,{recursive:true,mode:0o700});
-  const filename=randomUUID()+'.jpg';
+  const viewport=page.viewportSize();
+  if(!viewport)throw Error('Viewport is unavailable');
+  const filename=viewport.width+'x'+viewport.height+'-'+randomUUID()+'.jpg';
   await page.screenshot({path:join(evidence,filename),type:'jpeg',quality:68,fullPage:false,timeout:20000});
   return {ok:true,screenshot:'.ado-qa-evidence/'+filename,viewport:page.viewportSize()};
  }
