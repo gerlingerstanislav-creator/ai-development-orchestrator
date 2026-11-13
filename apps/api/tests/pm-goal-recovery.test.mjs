@@ -84,7 +84,7 @@ test('task-goal watch reports stalled QA to the same PM order and resumes exactl
  assert.equal(done.status,'done');
  const finished={...watch,processId:randomUUID()};
  assert.equal(await checkProjectManagerWatch(db,finished),'completed');
- const results=(await db.query("SELECT body FROM assistant_messages WHERE channel='project' ORDER BY body")).rows;
+ const results=(await db.query("SELECT body FROM assistant_messages WHERE channel='project' AND role='assistant' ORDER BY body")).rows;
  assert.equal(results.length,2);
  assert.ok(results.some(v=>/Цель достигнута/.test(v.body)));
 });
