@@ -41,6 +41,16 @@ async function runTestJob(job,state,context){
   state.message='Получение ветки для независимой проверки';
   await command('git',['clone','--depth','1','--branch',job.branch||job.taskId,'https://github.com/'+job.repository+'.git',dir],
    {cwd:workdir,env:gitEnv,timeout:90000,jobId:job.id});
+  if(job.checkoutCommit){
+   if(!/^[a-f0-9]{40}$/i.test(job.checkoutCommit)||job.expectedCommit!==job.checkoutCommit)
+    throw Error('Некорректный закреплённый SHA браузерной задачи');
+   await command('git',['fetch','--depth','1','origin',job.checkoutCommit],{
+    cwd:dir,env:gitEnv,timeout:90000,jobId:job.id
+   });
+   await command('git',['checkout','--detach',job.checkoutCommit],{
+    cwd:dir,env:gitEnv,timeout:15000,jobId:job.id
+   });
+  }
   const rev=await command('git',['rev-parse','HEAD'],{cwd:dir,timeout:10000,jobId:job.id});
   const commit=rev.stdout.trim();
   if((job.expectedCommit&&commit!==job.expectedCommit)||(state.testedCommit&&commit!==state.testedCommit))
@@ -299,7 +309,7 @@ async function runTestJob(job,state,context){
   const screenshotDir=join(dir,'.ado-qa-evidence');
   const shots=await readdir(screenshotDir).catch(()=>[]);
   const screenshots=[];
-  for(const name of shots.filter(name=>/^[0-9a-f-]{36}\.jpg$/i.test(name)).slice(0,3)){
+  for(const name of shots.filter(name=>/^(?:[0-9]{3,4}x[0-9]{3,4}-)?[0-9a-f-]{36}\.jpg$/i.test(name)).slice(0,3)){
    const bytes=await readFile(join(screenshotDir,name)).catch(()=>null);
    if(bytes&&bytes.length>100&&bytes.length<=180000)screenshots.push({name,mime:'image/jpeg',data:bytes.toString('base64')});
   }
