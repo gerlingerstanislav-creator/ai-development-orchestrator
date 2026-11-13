@@ -38,7 +38,9 @@ export async function readGitHubProjectSource(
  const head=await get('/commits/'+encodeURIComponent(branch));
  const commit=String(head?.sha||'');
  if(!/^[a-f0-9]{40}$/i.test(commit))throw Error('GitHub не вернул проверяемый SHA репозитория');
- const tree=await get('/git/trees/'+commit+'?recursive=1');
+ const treeSha=String(head?.commit?.tree?.sha||'');
+ if(!/^[a-f0-9]{40}$/i.test(treeSha))throw Error('GitHub не вернул SHA дерева исходников');
+ const tree=await get('/git/trees/'+treeSha+'?recursive=1');
  if(tree.truncated)throw Error('Дерево GitHub слишком велико для подтверждённого обзора проекта');
  const paths:Array<{path:string;size:number}>=Array.isArray(tree.tree)?tree.tree.filter((item:any)=>
   item.type==='blob'&&typeof item.path==='string'&&typeof item.size==='number'&&item.size>0&&item.size<=60000&&
