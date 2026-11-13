@@ -4,13 +4,23 @@
  * task-scoped feed.
  */
 export type QaExecution={
- id:string;task_id:string;cycle_id:string;status:string;created_at:string
+ id:string;task_id:string;cycle_id:string;status:string;created_at:string;verdict?:string|null
 };
 export type TaskLease={owner_id:string;state:string}|null;
 export type AgentExecution={id:string;kind:string;status:string};
 
 const ongoing=(status:string)=>status==='queued'||status==='running';
 const terminal=(status:string)=>['completed','failed','cancelled'].includes(status);
+
+/** Human-facing outcome belongs to the finished QA execution, not the stage. */
+export function qaOutcomeLabel(run:QaExecution|null):string{
+ if(!run)return '';
+ if(run.status==='failed')return 'Сбой QA';
+ if(run.status!=='completed')return '';
+ return run.verdict==='passed'?'Проверено':
+  run.verdict==='failed'?'Есть замечания':
+  run.verdict==='blocked'?'Ожидает решения':'Завершено';
+}
 
 export function latestTaskQa(
  taskId:string,openTaskId:string|null,
