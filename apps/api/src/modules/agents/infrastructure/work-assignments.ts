@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
 import {roleCapacity} from '../../../project-team.js';
+import {orderWorkPlan,type WorkPlanStep} from '../domain/work-plan.js';
 
 type Db=Pick<Pool,'query'>;
 export const workRoles=['analysis','development','testing','documentation','devops','architect'] as const;
@@ -31,6 +32,68 @@ export async function installWorkAssignmentsSchema(db:Db){
  );
  CREATE INDEX IF NOT EXISTS idx_agent_work_pending ON agent_work_assignments(status,next_attempt_at);
  CREATE INDEX IF NOT EXISTS idx_agent_work_task ON agent_work_assignments(project_id,task_id,created_at DESC);`);
+}
+
+
+/** v14: immutable per-plan dependency edges, enforced to the same task by composite foreign keys. */
+export async function installWorkPlanSchema(db:Db){
+ await db.query(\`ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS plan_id uuid;
+ ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS plan_key text;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_identity
+  ON agent_work_assignments(project_id,task_id,id);
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_plan_key
+  ON agent_work_assignments(plan_id,plan_key) WHERE plan_id IS NOT NULL;
+ CREATE TABLE IF NOT EXISTS agent_work_plan_dependencies (
+  project_id uuid NOT NULL,
+  task_id uuid NOT NULL,
+  assignment_id uuid NOT NULL,
+  requires_id uuid NOT NULL,
+  PRIMARY KEY(assignment_id,requires_id),
+  CONSTRAINT work_plan_not_self CHECK (assignment_id<>requires_id),
+  CONSTRAINT work_plan_assignment_scope FOREIGN KEY(project_id,task_id,assignment_id)
+    REFERENCES agent_work_assignments(project_id,task_id,id) ON DELETE CASCADE,
+  CONSTRAINT work_plan_prerequisite_scope FOREIGN KEY(project_id,task_id,requires_id)
+    REFERENCES agent_work_assignments(project_id,task_id,id) ON DELETE CASCADE
+ );
+ CREATE INDEX IF NOT EXISTS idx_agent_work_dependency_predecessor
+  ON agent_work_plan_dependencies(requires_id);\`);
+}
+
+/** Planning is one transaction: either all steps and edges exist, or none. */
+export async function planWork(db:Db,input:{
+ projectId:string;taskId:string;sourceRole:string;steps:readonly WorkPlanStep[]
+}){
+ const steps=orderWorkPlan(input.steps);
+ for(const step of steps)if(!(workRoles as readonly string[]).includes(step.role))
+  throw fail('Неизвестная роль в плане: '+step.role,400);
+ const task=(await db.query(
+  'SELECT id,stage,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',
+  [input.projectId,input.taskId])).rows[0];
+ if(!task)throw fail('Задача не найдена',404);
+ if(task.stage==='done')throw fail('Готовую задачу нельзя повторно планировать без нового задания');
+ const usage=(await db.query(
+  "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted','blocked')",
+  [input.projectId,input.taskId])).rows[0];
+ if(Number(usage?.n||0)+steps.length>12)throw fail('Превышен лимит незавершённых поручений в задаче');
+ const planId=randomUUID();
+ const ids=new Map(steps.map(step=>[step.key,randomUUID()]));
+ const assignments:{id:string;key:string;role:string;depends_on:string[]}[]=[];
+ for(const step of steps){
+  const id=ids.get(step.key)!;
+  const row={id,project_id:input.projectId,task_id:input.taskId};
+  await db.query(\`INSERT INTO agent_work_assignments
+   (id,project_id,task_id,plan_id,plan_key,source_role,role,objective,acceptance,spec_version)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)\`,
+   [id,input.projectId,input.taskId,planId,step.key,input.sourceRole,
+    step.role,step.objective,step.acceptance,task.spec_version]);
+  for(const need of step.needs)await db.query(\`INSERT INTO agent_work_plan_dependencies
+   (project_id,task_id,assignment_id,requires_id) VALUES($1,$2,$3,$4)\`,
+   [input.projectId,input.taskId,id,ids.get(need)!]);
+  assignments.push({id,key:step.key,role:step.role,depends_on:step.needs.map(need=>ids.get(need)!)});
+  await event(db,row,'queued',input.sourceRole+' → '+step.role+': '+step.objective+
+   (step.needs.length?' · после '+step.needs.join(', '):''));
+ }
+ return {plan_id:planId,task_id:input.taskId,status:'queued',assignments};
 }
 
 async function event(db:Db,row:{id:string;project_id:string;task_id:string},state:string,detail:string){
@@ -75,7 +138,15 @@ export async function delegateWork(db:Db,input:{
 export async function listWork(db:Db,projectId:string,taskId:string){
  const task=await db.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
  if(!task.rowCount)throw fail('Задача не найдена',404);
- const r=await db.query("SELECT id,parent_id,source_role,role,objective,acceptance,status,spec_version,attempts,result,evidence,reviewer_note,created_at,updated_at FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 ORDER BY created_at,id LIMIT 100",[projectId,taskId]);
+ const r=await db.query(`SELECT a.id,a.plan_id,a.plan_key,a.parent_id,a.source_role,a.role,a.objective,a.acceptance,
+  a.status,a.spec_version,a.attempts,a.result,a.evidence,a.reviewer_note,a.created_at,a.updated_at,
+  COALESCE((SELECT jsonb_agg(jsonb_build_object('id',dependency.id,'key',dependency.plan_key,
+    'status',dependency.status) ORDER BY dependency.created_at,dependency.id)
+   FROM agent_work_plan_dependencies link
+   JOIN agent_work_assignments dependency ON dependency.id=link.requires_id
+   WHERE link.assignment_id=a.id),'[]'::jsonb) AS prerequisites
+ FROM agent_work_assignments a WHERE a.project_id=$1 AND a.task_id=$2
+ ORDER BY a.created_at,a.id LIMIT 100`,[projectId,taskId]);
  return {assignments:r.rows};
 }
 
@@ -138,7 +209,12 @@ export async function reconcileAgentWorkAssignments(pool:Pool,temporal:()=>Promi
   const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.role,a.status,a.attempts FROM agent_work_assignments a
    JOIN projects p ON p.id=a.project_id JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
    WHERE (a.status='queued' OR (a.status='running' AND a.dispatched_at IS NULL)) AND a.next_attempt_at<=now() AND p.agents_running=true AND p.deleted_at IS NULL
-   AND t.stage<>'done' AND a.spec_version=t.spec_version ORDER BY a.created_at LIMIT 40`);
+   AND t.stage<>'done' AND a.spec_version=t.spec_version
+   AND NOT EXISTS(
+    SELECT 1 FROM agent_work_plan_dependencies deps
+    JOIN agent_work_assignments prereq ON prereq.id=deps.requires_id
+    WHERE deps.assignment_id=a.id AND prereq.status<>'completed'
+   ) ORDER BY a.created_at LIMIT 40`);
   for(const job of r.rows){
    const cap=await roleCapacity(pool,job.project_id,job.role);
    const used=await db.query(`SELECT
