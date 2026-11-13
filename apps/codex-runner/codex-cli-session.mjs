@@ -14,7 +14,7 @@ export function createPersistentCliExecutor(store,command){
   policyArgs=[],mcpArgs=[],outputSchema,timeout,jobId,maxOutputChars=350000}){
   return store.run(scope,requestId,async()=>{
    const saved=await store.read(scope);
-   const common=['-m',model,'-c','model_reasoning_effort="'+reasoning+'"',
+   const common=['-C',cwd,'-m',model,'-c','model_reasoning_effort="'+reasoning+'"',
     '--json','--skip-git-repo-check',...policyArgs,...mcpArgs];
    // The output schema is used for first turns. On resume, follow-up prompts
    // are validated by the existing QA verifier regardless of model prose.
