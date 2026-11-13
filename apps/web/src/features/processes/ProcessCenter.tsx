@@ -99,6 +99,12 @@ export function ProcessCenter({
      </details>}
 
      {process.result&&<div className="process-result"><strong>Результат</strong><p>{process.result.message||'Операция завершена'}</p>
+      {process.kind==='agent'&&<>
+       {process.result.role&&<p><strong>Исполнитель:</strong> {process.result.role}</p>}
+       {process.result.acceptance&&<p><strong>Критерии:</strong> {process.result.acceptance}</p>}
+       {process.result.evidence&&<p><strong>Доказательства:</strong> {process.result.evidence}</p>}
+       {process.result.reviewerNote&&<p><strong>Решение ПМ:</strong> {process.result.reviewerNote}</p>}
+      </>}
       {process.iterationId&&projectId&&<button className="secondary" onClick={()=>onNavigate(projectUrl(projectId,'plan')+'/'+process.iterationId)}>Открыть итерацию</button>}
       {process.result.created_document_id&&<button className="secondary" onClick={()=>onNavigate(projectUrl(projectId,'docs')+'/'+process.result!.created_document_id)}>Открыть документацию</button>}
       {process.result.verdict&&<p><strong>Вердикт: {process.result.verdict==='passed'?'Проверки пройдены':process.result.verdict==='failed'?'Обнаружены ошибки':'Не удалось проверить'}</strong></p>}
