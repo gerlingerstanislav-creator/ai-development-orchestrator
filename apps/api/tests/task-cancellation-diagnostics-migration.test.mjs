@@ -36,7 +36,7 @@ test('fresh migration v6 installs cancellation audit, task-origin index and scop
   const constraint=(await db.query(`SELECT pg_get_constraintdef(c.oid) AS definition
    FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid
    WHERE t.relname='documents' AND c.conname='documents_created_by_task_id_fkey'`)).rows[0];
-  assert.match(constraint.definition,/REFERENCES tasks\(id\) ON DELETE SET NULL/);
+  assert.match(constraint.definition,/REFERENCES (?:[a-z_][a-z0-9_]*\.)?tasks\(id\) ON DELETE SET NULL/);
   const ledger=(await db.query('SELECT version,checksum FROM schema_migrations ORDER BY version')).rows;
   assert.deepEqual(ledger.map(x=>x.version),[1,2,3,4,5,6]);
   assert.deepEqual(ledger.map(x=>x.checksum),[
@@ -58,8 +58,10 @@ test('v6 adopts existing cancellation and diagnostics tables without deleting au
   await db.query("INSERT INTO users(id,email,password_hash) VALUES($1,'v6-adoption@example.test','hash')",[ids.user]);
   await db.query("INSERT INTO projects(id,name,owner_id,agents_running) VALUES($1,'Legacy project',$2,true)",[ids.project,ids.user]);
   await db.query("INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Original task')",[ids.task,ids.project]);
-  await db.query("INSERT INTO documents(id,project_id,title,body,created_by_task_id) VALUES($1,$2,'Original document','Durable content',$3)",
-   [ids.document,ids.project,ids.task]);
+  const specRoot=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[ids.project])).rows[0]?.id;
+  assert.ok(specRoot,'new project seeds the canonical specification root');
+  await db.query("INSERT INTO documents(id,project_id,title,body,created_by_task_id,parent_id) VALUES($1,$2,'Original document','Durable content',$3,$4)",
+   [ids.document,ids.project,ids.task,specRoot]);
   await db.query(`INSERT INTO task_cancellation_audit(id,project_id,task_id,title,actor_id,branch,pr_number,documents_removed)
    VALUES($1,$2,$3,'Cancelled old feature',$4,'task-branch',17,2)`,
    [ids.audit,ids.project,ids.task,ids.user]);
@@ -95,7 +97,9 @@ test('task-origin link is nulled on task deletion while immutable cancellation a
   await db.query("INSERT INTO users(id,email,password_hash) VALUES($1,'v6-origin@example.test','hash')",[user]);
   await db.query("INSERT INTO projects(id,name,owner_id) VALUES($1,'Test', $2)",[project,user]);
   await db.query("INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Delete me')",[task,project]);
-  await db.query("INSERT INTO documents(id,project_id,title,created_by_task_id) VALUES($1,$2,'Retain page',$3)",[doc,project,task]);
+  const specRoot=(await db.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[project])).rows[0]?.id;
+  assert.ok(specRoot,'projects receive their five system roots automatically');
+  await db.query("INSERT INTO documents(id,project_id,title,created_by_task_id,parent_id) VALUES($1,$2,'Retain page',$3,$4)",[doc,project,task,specRoot]);
   await db.query("INSERT INTO task_cancellation_audit(id,project_id,task_id,title) VALUES($1,$2,$3,'Historical cancellation')",[audit,project,task]);
   await db.query('DELETE FROM tasks WHERE id=$1',[task]);
   assert.equal((await db.query('SELECT created_by_task_id FROM documents WHERE id=$1',[doc])).rows[0].created_by_task_id,null);
