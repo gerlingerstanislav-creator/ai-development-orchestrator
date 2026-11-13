@@ -21,6 +21,7 @@ export async function installWorkAssignmentsSchema(db:Db){
   spec_version integer NOT NULL,
   status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','submitted','completed','blocked','failed','cancelled')),
   attempts integer NOT NULL DEFAULT 0,
+  dispatched_at timestamptz,
   result text NOT NULL DEFAULT '',
   evidence text NOT NULL DEFAULT '',
   reviewer_note text NOT NULL DEFAULT '',
@@ -112,7 +113,7 @@ export async function reviewWork(db:Db,input:{
   if(!['queued','blocked','failed','submitted'].includes(row.status))throw fail('Активную работу нельзя отменить без остановки исполнителя');
   target='cancelled';
  }
- await db.query("UPDATE agent_work_assignments SET status=$3,reviewer_note=$4,next_attempt_at=now(),updated_at=now() WHERE project_id=$1 AND id=$2",
+ await db.query("UPDATE agent_work_assignments SET status=$3,reviewer_note=$4,next_attempt_at=now(),dispatched_at=CASE WHEN $3='queued' THEN NULL ELSE dispatched_at END,updated_at=now() WHERE project_id=$1 AND id=$2",
  [input.projectId,input.assignmentId,target,input.reason.slice(0,1500)]);
  await event(db,row,target,'ПМ: '+input.reason);
  return {id:row.id,status:target,task_id:row.task_id};
@@ -134,9 +135,9 @@ export async function reconcileAgentWorkAssignments(pool:Pool,temporal:()=>Promi
   await db.query(`UPDATE agent_work_assignments a SET status='blocked',result='ТЗ изменилось; нужно пересмотреть поручение',updated_at=now()
    FROM tasks t WHERE t.id=a.task_id AND t.project_id=a.project_id AND a.status IN ('queued','submitted')
    AND (a.spec_version<>t.spec_version OR t.stage='done')`);
-  const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.role FROM agent_work_assignments a
+  const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.role,a.status,a.attempts FROM agent_work_assignments a
    JOIN projects p ON p.id=a.project_id JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
-   WHERE a.status='queued' AND a.next_attempt_at<=now() AND p.agents_running=true AND p.deleted_at IS NULL
+   WHERE (a.status='queued' OR (a.status='running' AND a.dispatched_at IS NULL)) AND a.next_attempt_at<=now() AND p.agents_running=true AND p.deleted_at IS NULL
    AND t.stage<>'done' AND a.spec_version=t.spec_version ORDER BY a.created_at LIMIT 40`);
   for(const job of r.rows){
    const cap=await roleCapacity(pool,job.project_id,job.role);
@@ -144,17 +145,27 @@ export async function reconcileAgentWorkAssignments(pool:Pool,temporal:()=>Promi
     (SELECT count(*)::int FROM agent_work_assignments WHERE project_id=$1 AND role=$2 AND status='running') AS assignments,
     (SELECT count(*)::int FROM agent_peer_queue WHERE project_id=$1 AND role=$2 AND status='running') AS consultations`,
     [job.project_id,job.role]);
-   if(Number(used.rows[0].assignments)+Number(used.rows[0].consultations)>=cap)continue;
-   const claimed=await db.query("UPDATE agent_work_assignments SET status='running',attempts=attempts+1,updated_at=now() WHERE id=$1 AND status='queued' RETURNING attempts",[job.id]);
+   if(job.status==='queued'&&Number(used.rows[0].assignments)+Number(used.rows[0].consultations)>=cap)continue;
+   const claimed=job.status==='queued'
+    ?await db.query("UPDATE agent_work_assignments SET status='running',attempts=attempts+1,dispatched_at=NULL,updated_at=now() WHERE id=$1 AND status='queued' RETURNING attempts",[job.id])
+    :{rowCount:1,rows:[{attempts:job.attempts}]};
    if(!claimed.rowCount)continue;
+   const attempt=Number(claimed.rows[0].attempts);
    try{
-    await (await temporal()).workflow.start('executeDelegatedWork',{
-     taskQueue:'agent-pipeline',workflowId:'agent-work-'+job.id+'-'+claimed.rows[0].attempts,
-     workflowIdReusePolicy:'REJECT_DUPLICATE',args:[job.id]
-    });
+    try{
+     await (await temporal()).workflow.start('executeDelegatedWork',{
+      taskQueue:'agent-pipeline',workflowId:'agent-work-'+job.id+'-'+attempt,
+      workflowIdReusePolicy:'REJECT_DUPLICATE',args:[job.id]
+     });
+    }catch(error){
+     if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error).name))throw error;
+    }
+    await db.query("UPDATE agent_work_assignments SET dispatched_at=now(),updated_at=now() WHERE id=$1 AND status='running' AND attempts=$2",[job.id,attempt]);
    }catch(error){
-    await db.query("UPDATE agent_work_assignments SET status='queued',result=$2,next_attempt_at=now()+interval '1 minute',updated_at=now() WHERE id=$1 AND status='running'",
-    [job.id,'Temporal временно недоступен: '+String(error).slice(0,400)]);
+    // Preserve this attempt number on uncertain starts. Recovery retries exactly
+    // the same Temporal workflow ID instead of opening a duplicate execution.
+    await db.query("UPDATE agent_work_assignments SET result=$2,next_attempt_at=now()+interval '1 minute',updated_at=now() WHERE id=$1 AND status='running' AND attempts=$3",
+     [job.id,'Temporal запуск не подтверждён: '+String(error).slice(0,400),attempt]);
    }
   }
  }finally{
