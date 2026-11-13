@@ -79,6 +79,7 @@ jobs:
           node --test apps/api/tests/connection-settings.test.mjs
           node --test apps/api/tests/merge-operations-api.test.mjs
           node --test apps/api/tests/merge-schema-migrations.test.mjs
+          node --test apps/api/tests/pm-chat-schema-migrations.test.mjs
           node --test apps/api/tests/durable-merge.test.mjs
           node --test apps/api/tests/project-lifecycle-api.test.mjs
           node --test apps/api/tests/workflow-settings-api.test.mjs
@@ -97,7 +98,9 @@ jobs:
           node --test apps/api/tests/documentation-module.test.mjs
           node --test apps/api/tests/documentation-preparation.test.mjs
           node --test apps/api/tests/autonomous-documentation-delegation.test.mjs
+          node --test apps/api/tests/autonomous-documentation-execution.test.mjs
           node --test apps/api/tests/project-manager-inbox.test.mjs
+          node --test apps/api/tests/pm-watch-report.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
           node --import tsx --test apps/web/tests/feature-boundaries.test.mjs
           node --import tsx --test apps/web/tests/kanban-board.test.mjs

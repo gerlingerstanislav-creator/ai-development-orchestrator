@@ -29,7 +29,7 @@ import {recoverInterruptedLegacyMergeBatches,recoverMergeBatches} from './merge-
 import {registerMergeOperationsRoutes} from './modules/execution/api/merge-operations.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
-import {initChatImages,registerChatImageRoutes} from './chat-images.js';
+import {registerChatImageRoutes} from './chat-images.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
 import {resolveRoleAiSettings} from './project-team.js';
 import {initAgentToolsSchema} from './agent-tools.js';
@@ -52,7 +52,7 @@ import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
 import {reconcileIdlePullRequests} from './idle-pr-recovery.js';
-import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,type ManagerDeps} from './project-manager.js';
+import {acceptAnalysisAnswer,isPrEvidenceRequest,registerProjectManagerRoutes,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT } from 'jose';
@@ -557,7 +557,7 @@ async function main(){
  // These are runtime policies, not schema migrations: run on every restart.
  // Preserve the project's durable agents_running choice across deployments.
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
-await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
   pool,path=>agentCall(path),

@@ -6,7 +6,8 @@ import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {recoverInterruptedLegacyMergeBatches} from '../dist/merge-batch.js';
 
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+// Lock this suite to v4; new schema steps have independent adoption tests.
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=4);
 
 async function withSchema(callback){
  const name='ado_merge_v4_'+randomUUID().replaceAll('-','');
