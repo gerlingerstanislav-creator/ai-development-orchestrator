@@ -10,6 +10,8 @@ import {initProjectManagerInbox} from '../project-manager-inbox.js';
 import {installMergeBatchSchema} from '../merge-batch.js';
 import {initProjectManagerSchema} from '../project-manager.js';
 import {initChatImages} from '../chat-images.js';
+import {initTaskCancellationSchema} from '../task-cancellation.js';
+import {installDiagnosticStorageSchema} from '../diagnostics.js';
 
 /**
  * Append-only, transactional schema history.
@@ -57,6 +59,15 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
     // then manager_messages/manager_requests, then chat_images with both FKs.
     await initProjectManagerSchema(database);
     await initChatImages(database);
+   }
+  },
+  {
+   version:6,name:'task-cancellation-and-diagnostic-storage',checksum:'ado-task-cancellation-diagnostics-v6',
+   up:async database=>{
+    // Dependency order: baseline projects, users, tasks and documents already exist.
+    // Retention timers and cleanup remain runtime policies, never migrations.
+    await initTaskCancellationSchema(database);
+    await installDiagnosticStorageSchema(database);
    }
   }
  ];
