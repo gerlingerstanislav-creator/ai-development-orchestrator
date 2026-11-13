@@ -1,4 +1,5 @@
 import type {Pool} from 'pg';
+import {createHash} from 'node:crypto';
 import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 
 /**
@@ -81,12 +82,21 @@ export function browserEvidenceAssessment(report:any,sourceSha:string){
   report.checks.some((check:any)=>check.result!=='passed'))
   return {passed:false,reason:'Нет полностью пройденных проверок'};
  const screenshots=Array.isArray(report.screenshots)?report.screenshots:[];
- const dimensions=screenshots.map((shot:any)=>evidenceViewport(shot?.name));
+ const dimensions=screenshots.map((shot:any)=>{
+  const size=evidenceViewport(shot?.name);
+  if(!size||shot?.viewport?.width!==size.width||shot?.viewport?.height!==size.height||
+    shot?.origin!=='isolated-local-browser')return null;
+  if(shot?.mime!=='image/jpeg'||typeof shot.data!=='string'||! /^[A-Za-z0-9+/=]+$/.test(shot.data)||
+    !/^[a-f0-9]{64}$/i.test(String(shot.sha256||'')))return null;
+  const bytes=Buffer.from(shot.data,'base64');
+  if(bytes.length<100||bytes.length>320000||
+    createHash('sha256').update(bytes).digest('hex')!==shot.sha256)return null;
+  return size;
+ });
  const desktop=dimensions.some((size:any)=>size&&size.width>=1000);
  const mobile=dimensions.some((size:any)=>size&&size.width<=500);
  if(!desktop||!mobile)return {passed:false,reason:'Нет подлинных desktop и mobile скриншотов, сохранённых Chromium'};
- if(screenshots.some((shot:any)=>shot.mime!=='image/jpeg'||typeof shot.data!=='string'||
-  !/^[A-Za-z0-9+/=]+$/.test(shot.data)||Buffer.from(shot.data,'base64').length<100))
+ if(dimensions.some(size=>size===null))
   return {passed:false,reason:'Повреждён или не сохранён файл доказательства'};
  return {passed:true,reason:'Подтверждены проверки и изображения desktop/mobile на закреплённом SHA'};
 }
