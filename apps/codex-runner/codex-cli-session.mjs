@@ -18,21 +18,27 @@ export function createPersistentCliExecutor(store,command){
     '--json','--skip-git-repo-check',...policyArgs,...mcpArgs];
    // The output schema is used for first turns. On resume, follow-up prompts
    // are validated by the existing QA verifier regardless of model prose.
-   const args=saved
-    ?['exec','resume',...common,saved.threadId,prompt]
-    :['exec',...common,...(outputSchema?['--output-schema',outputSchema]:[]),prompt];
-   let pending='',written=null;
-   const result=await command('codex',args,{cwd,env,timeout,jobId,maxOutputChars,
-    onStdout:chunk=>{
-     pending=(pending+chunk).slice(-200000);
-     for(let i=pending.indexOf('\n');i>=0;i=pending.indexOf('\n')){
-      const line=pending.slice(0,i);pending=pending.slice(i+1);
-      const threadId=codexThreadIdFromJson(line);
-      if(threadId&&!written)written=store.save(scope,threadId);
+   const args=['exec',...common,...(outputSchema?['--output-schema',outputSchema]:[]),
+    ...(saved?['resume',saved.threadId]:[]),prompt];
+   let pending='',seenThread=false;
+   const writes=[];
+   let result;
+   try{
+    result=await command('codex',args,{cwd,env,timeout,jobId,maxOutputChars,
+     onStdout:chunk=>{
+      pending=(pending+chunk).slice(-200000);
+      for(let i=pending.indexOf('\n');i>=0;i=pending.indexOf('\n')){
+       const line=pending.slice(0,i);pending=pending.slice(i+1);
+       const threadId=codexThreadIdFromJson(line);
+       if(threadId&&!seenThread){seenThread=true;writes.push(store.save(scope,threadId));}
+      }
      }
-    }
-   });
-   if(written)await written;
+    });
+   }finally{
+    // Preserve the thread ID even when the Codex turn times out after emitting
+    // its first event. Never silently lose a failed storage write.
+    await Promise.all(writes);
+   }
    const current=await store.read(scope);
    if(!current)throw Error('Codex CLI не сохранил идентификатор сессии для безопасного продолжения');
    return {...result,threadId:current.threadId};
