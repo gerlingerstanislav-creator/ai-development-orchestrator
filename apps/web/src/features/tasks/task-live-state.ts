@@ -76,7 +76,7 @@ export function taskHasLiveWork(
   return qaWorking||otherProcesses||(focused&&activeTaskAgentExecutions(agents,current)
    .some(run=>run.kind!=='testing'));
  }
- return otherProcesses||(focused&&!!lease&&lease.state==='active')||
+ return qaWorking||otherProcesses||(focused&&!!lease&&lease.state==='active')||
   developments.some(run=>run.task_id===taskId&&ongoing(run.status))||
   (focused&&activeTaskAgentExecutions(agents,current).length>0);
 }
