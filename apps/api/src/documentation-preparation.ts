@@ -3,7 +3,7 @@
  */
 type Fetch=typeof fetch;
 export type ProjectSource={repository:string;commit:string;paths:string[];files:Array<{path:string;content:string}>};
-const MAX_SOURCE_BYTES=16000;
+const MAX_SOURCE_BYTES=9000;
 const pathScore=(path:string)=>{
  const p=path.toLowerCase();
  if(/^(readme|overview)(?:\.[a-z-]+)?\.md$/.test(p))return 1;
@@ -55,7 +55,7 @@ export async function readGitHubProjectSource(
   const file=await get('/contents/'+path+'?ref='+commit);
   if(file.type!=='file'||file.encoding!=='base64'||typeof file.content!=='string')continue;
   const decoded=Buffer.from(file.content.replace(/\s/g,''),'base64').toString('utf8');
-  const excerpt=decoded.slice(0,Math.min(3500,budget));
+  const excerpt=decoded.slice(0,Math.min(2700,budget));
   files.push({path:entry.path,content:excerpt});
   budget-=excerpt.length;
  }
