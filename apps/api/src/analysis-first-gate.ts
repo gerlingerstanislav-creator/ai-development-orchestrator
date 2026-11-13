@@ -40,7 +40,7 @@ export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>
  UPDATE tasks t SET analysis_state='new',updated_at=now()
  WHERE t.type IN ('task','bug','improvement') AND t.stage='analysis'
   AND t.analysis_state='ready_for_development'
-  AND NOT EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event='analysis_completed')
+  AND NOT EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event IN ('analysis_completed','analysis_reused_by_owner'))
   AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status='completed');
  DROP TRIGGER IF EXISTS trg_ado_analysis_first_guard ON tasks;
  CREATE TRIGGER trg_ado_analysis_first_guard
