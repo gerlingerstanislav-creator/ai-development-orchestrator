@@ -24,7 +24,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   'CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid,title text,body text,parent_id uuid,system_key text,source_refs jsonb DEFAULT \u0027[]\u0027::jsonb,import_source text,updated_at timestamptz DEFAULT now())',
   'CREATE UNIQUE INDEX idx_docs_src ON documents(project_id,import_source) WHERE import_source IS NOT NULL',
   'CREATE TABLE document_versions(id uuid PRIMARY KEY,document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,body text NOT NULL,task_ids jsonb NOT NULL DEFAULT jsonb_build_array(),created_at timestamptz NOT NULL DEFAULT now())',
-  'CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,description text,type text,stage text,analysis_state text,clarification_questions jsonb,depends_on_task_id uuid,pr_url text,updated_at timestamptz DEFAULT now())',
+  'CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,description text,type text,stage text,analysis_state text,clarification_questions jsonb,depends_on_task_id uuid,pr_url text,document_id uuid,updated_at timestamptz DEFAULT now())',
   'CREATE TABLE task_events(id uuid,task_id uuid,actor_id uuid,event text,detail text)',
   'CREATE TABLE documentation_questions(id uuid,project_id uuid,job_id uuid,topic_key text,question_key text,document_id uuid,question text,status text DEFAULT \u0027open\u0027,answer text,created_at timestamptz DEFAULT now(),UNIQUE(project_id,document_id,question_key))',
   'CREATE TABLE project_rules(project_id uuid,body text,created_at timestamptz DEFAULT now())',
@@ -60,6 +60,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   assert.deepEqual(tools.get(name).annotations,{readOnlyHint:true,openWorldHint:false,destructiveHint:false});
  }
  assert.equal(tools.get('documents.changeset').annotations.readOnlyHint,false);
+ assert.equal(tools.get('documents.delete').annotations.readOnlyHint,false);
  const manager=await createAgentSession(pool,project,user,'manager');
  const managerCatalog=await app.inject({url:'/internal/agent-tools/catalog',headers:{'x-agent-token':manager.secret}});
  assert.equal(managerCatalog.json().tools.find(tool=>tool.name==='tasks.list').annotations.readOnlyHint,true);
@@ -99,6 +100,39 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.equal((await db.query('SELECT count(*)::int n FROM document_versions WHERE document_id=$1',[newId])).rows[0].n,0,'Agent changes update the same page without a history row');
  assert.equal((await call('documents.update',{document_id:newId,expected_revision:read.revision,body:'Устаревшие изменения'})).statusCode,409);
  assert.equal((await call('documents.update',{document_id:root,expected_revision:(await call('documents.read',{document_id:root})).json().result.document.revision,title:'Удалить корень'})).statusCode,409);
+ // The analyst chooses the layout; empty, non-sourced leaves may be cleaned up,
+ // but source evidence, content, links, children and system roots remain safe.
+ const getRevision=async id=>(await call('documents.read',{document_id:id})).json().result.document.revision;
+ const empty=await call('documents.create',{title:'Пустая заготовка',body:'',parent_id:root});
+ const emptyId=empty.json().result.id;
+ const deleteArgs={document_id:emptyId,expected_revision:await getRevision(emptyId),idempotency_key:'delete-blank-stub'};
+ assert.equal((await call('documents.delete',{document_id:foreign,expected_revision:await getRevision(emptyId)})).statusCode,404);
+ assert.equal((await call('documents.delete',{document_id:root,expected_revision:await getRevision(root)})).statusCode,409);
+ assert.equal((await call('documents.delete',{document_id:newId,expected_revision:await getRevision(newId)})).statusCode,409,'Cannot discard a page with requirements');
+ assert.equal((await call('documents.delete',deleteArgs)).statusCode,200);
+ assert.equal((await call('documents.delete',deleteArgs)).json().cached,true,'Safe retries do not delete again');
+ assert.equal((await call('documents.read',{document_id:emptyId})).statusCode,404);
+ const parentPage=(await call('documents.create',{title:'Ненужная папка',parent_id:root})).json().result.id;
+ const childPage=(await call('documents.create',{title:'Вложенная заготовка',parent_id:parentPage})).json().result.id;
+ assert.equal((await call('documents.delete',{document_id:parentPage,expected_revision:await getRevision(parentPage)})).statusCode,409);
+ const childRevision=await getRevision(childPage);
+ const batch=await call('documents.changeset',{operations:[
+  {op:'delete',document_id:childPage,expected_revision:childRevision},
+  {op:'update',document_id:foreign,expected_revision:childRevision,body:'Wrong project'}
+ ]});
+ assert.equal(batch.statusCode,404,'A failed restructuring batch must roll back deletion');
+ assert.equal((await call('documents.read',{document_id:childPage})).statusCode,200);
+ assert.equal((await call('documents.delete',{document_id:childPage,expected_revision:childRevision})).statusCode,200);
+ assert.equal((await call('documents.delete',{document_id:parentPage,expected_revision:await getRevision(parentPage)})).statusCode,200);
+ const linked=(await call('documents.create',{title:'Связанная пустая страница',parent_id:root})).json().result.id;
+ await db.query("INSERT INTO tasks(id,project_id,title,description,document_id) VALUES($1,$2,'Связанная задача','Ссылка на страницу',$3)",[randomUUID(),project,linked]);
+ assert.equal((await call('documents.delete',{document_id:linked,expected_revision:await getRevision(linked)})).statusCode,409);
+ const importedStub=(await call('documents.create',{title:'Импортированная пустая страница',parent_id:root})).json().result.id;
+ await db.query("UPDATE documents SET import_source='topic:protected' WHERE id=$1",[importedStub]);
+ assert.equal((await call('documents.delete',{document_id:importedStub,expected_revision:await getRevision(importedStub)})).statusCode,409);
+ const versioned=(await call('documents.create',{title:'Пустая страница с историей',parent_id:root})).json().result.id;
+ await db.query('INSERT INTO document_versions(id,document_id,body) VALUES($1,$2,$3)',[randomUUID(),versioned,'Старая версия']);
+ assert.equal((await call('documents.delete',{document_id:versioned,expected_revision:await getRevision(versioned)})).statusCode,409);
  const change=await call('documents.changeset',{operations:[
   {op:'create',title:'Внутренний вопрос',body:'Текст',parent_id:root},
   {op:'create',title:'Недопустимый',body:'Текст',parent_id:foreign}
@@ -125,6 +159,10 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  const jobId=requested.json().result.import_job_id;
  assert.equal(requested.json().result.status,'running');
  assert.equal(startedWorkflows[0],jobId);
+ const organizeContext=(await db.query('SELECT analyst_input FROM document_import_jobs WHERE id=$1',[jobId])).rows[0].analyst_input;
+ assert.equal(organizeContext.autonomous,true,'PM organization must use the autonomous analyst, not imported-topic legacy');
+ assert.equal(organizeContext.structureOnly,false);
+ assert.equal(organizeContext.rebuildSpec,false);
  const requestedAgain=await call('documentation.organize',longAction);
  assert.equal(requestedAgain.statusCode,200,requestedAgain.body);
  assert.equal(requestedAgain.json().result.import_job_id,jobId,'Retries reuse one durable Temporal job');

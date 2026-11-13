@@ -9,7 +9,7 @@ import {inspectGitHubProjectSource} from '../dist/documentation-preparation.js';
 test('the delegated documentation agent can write and finish, but other specialists cannot',()=>{
  const docs=toolsForRole('documentation').map(x=>x.name);
  const pm=toolsForRole('manager').map(x=>x.name);
- for(const name of ['project.source','documents.list','documents.create','documents.update','documents.changeset','documentation.complete','documentation.request_input'])assert.ok(docs.includes(name),name);
+ for(const name of ['project.source','documents.list','documents.create','documents.update','documents.delete','documents.changeset','documentation.complete','documentation.request_input'])assert.ok(docs.includes(name),name);
  for(const name of ['tasks.delete','qa.retry','documentation.resume_spec','pm.orders.update'])assert.ok(!docs.includes(name),name);
  assert.ok(pm.includes('documentation.resume_spec'));
  assert.ok(!pm.includes('documentation.complete'));
