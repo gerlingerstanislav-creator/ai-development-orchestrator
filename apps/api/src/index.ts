@@ -747,6 +747,12 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    if(move.operation==='blocked')return {status:'blocked',stage:row.stage,reason:move.reason};
    if(move.operation==='same')return {status:'already_on_stage',stage:row.stage,message:move.reason};
    if(move.operation==='patch')return await call('PATCH','',{stage:target});
+   if(move.operation==='approve_development'){
+    if(row.analysis_state!=='ready_for_development')
+     return {status:'blocked',stage:row.stage,
+      reason:'Аналитик ещё не подтвердил готовность требований. Готовая постановка автоматически перейдёт в разработку после анализа; технические консультации не блокируют передачу.'};
+    return await call('POST','/run-ai',{approveAnalysis:true});
+   }
    if(move.operation==='resume_development'){
     const state=await recoverTask({projectId,taskId,auth:'Bearer '+token,cookie:''});
     return state.ok?{status:'queued',stage:target,message:state.message}:{status:'blocked',stage:row.stage,reason:state.message};
