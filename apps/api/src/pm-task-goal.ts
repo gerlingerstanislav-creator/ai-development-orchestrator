@@ -21,6 +21,9 @@ export async function readPmTaskGoal(db:Db,projectId:string,taskId:string):Promi
   OR EXISTS(SELECT 1 FROM ai_test_runs WHERE task_id=$1 AND project_id=$2 AND status IN ('queued','running'))
   OR EXISTS(SELECT 1 FROM agent_analysis_runs WHERE task_id=$1 AND project_id=$2 AND status IN ('queued','running'))
   OR EXISTS(SELECT 1 FROM requirement_review_runs WHERE task_id=$1 AND project_id=$2 AND status IN ('queued','running'))
+  -- A specialist assignment is real work even when it does not create a PR or QA run.
+  -- Submitted/blocked work needs PM review, not an infinite 'running' indicator.
+  OR EXISTS(SELECT 1 FROM agent_work_assignments WHERE task_id=$1 AND project_id=$2 AND status IN ('queued','running'))
   AS active`,[taskId,projectId])).rows[0]?.active===true;
  return {task_id:taskId,title:task.title,display_number:task.display_number,
   stage:task.stage,analysis_state:task.analysis_state,
