@@ -15,6 +15,7 @@ import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {assertDocumentationWasPrepared,readGitHubProjectSource} from './documentation-preparation.js';
 import {runAutonomousDocumentationAgent} from './modules/knowledge/application/autonomous-documentation-agent.js';
+import {createImportedDraftStore} from './modules/knowledge/infrastructure/imported-draft-store.js';
 import {createAgentSession,createAgentReaderSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
@@ -121,40 +122,10 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'document_import',$4,$5,$6)",
    [randomUUID(),projectId,processId,level,stage,detail.slice(0,2500)]);
  }
- async function saveImportedDraft(projectId:string,jobId:string,draft:any,sourceKey:string,input?:{actorId:string;message:string;mode:AnalystInput['mode']}){
-  const client=await pool.connect();
-  try{
-   await client.query('BEGIN');
-   const existing=(await client.query('SELECT status,result FROM document_import_jobs WHERE id=$1 AND project_id=$2 FOR UPDATE',[jobId,projectId])).rows[0];
-   if(!existing)throw Error('Запуск аналитика не найден');
-   if(existing.status==='completed'){await client.query('COMMIT');return existing.result;}
-   if(existing.status!=='running')throw Error('Процесс аналитика остановлен; сохранение результата отменено');
-   const parent=(await client.query("SELECT id FROM documents WHERE project_id=$1 AND system_key='spec'",[projectId])).rows[0];
-   if(!parent)throw Error('Не найден системный раздел ТЗ');
-   const root=await client.query(
-    "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,document_kind,implementation_status) VALUES($1,$2,$3,$4,$6,$5,'technical','unverified') ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,updated_at=now() RETURNING id",
-    [randomUUID(),projectId,draft.collection_title,'# '+draft.collection_title+'\n\nИсточник: '+draft.sourceName+'\n\n'+draft.notes,sourceKey,parent.id]);
-   const rootId:string=root.rows[0].id;
-   for(const [idx,doc] of draft.documents.entries()){
-    const sources=doc.sources.filter((name:string)=>draft.sourcePaths.includes(name));
-    const body=doc.body+(sources.length?'\n\n---\n**Исходные материалы:** '+sources.join(', '):'');
-    await client.query(
-     "INSERT INTO documents(id,project_id,title,body,parent_id,import_source,document_kind,implementation_status) VALUES($1,$2,$3,$4,$5,$6,'technical','unverified') ON CONFLICT(project_id,import_source) WHERE import_source IS NOT NULL DO UPDATE SET title=EXCLUDED.title,body=EXCLUDED.body,parent_id=EXCLUDED.parent_id,updated_at=now()",
-     [randomUUID(),projectId,doc.title,body,rootId,sourceKey+'/generated/'+idx]);
-   }
-   const result={message:'ТЗ подготовлено. Страниц: '+draft.documents.length+'.'+(draft.notes?'\n\n'+draft.notes:''),created_task_id:null,created_document_id:rootId,generated_documents:draft.documents.length};
-   // Transactional status means a failed chat save cannot mark an already committed import failed.
-   await client.query("UPDATE document_import_jobs SET status='completed',message='Документация сохранена',result=$2,saved_documents=$3,updated_at=now() WHERE id=$1",
-    [jobId,JSON.stringify(result),draft.documents.length]);
-   if(input){
-    await store(projectId,null,input.actorId,'user',input.message,null,null,input.mode,client);
-    await store(projectId,null,null,'assistant',result.message,null,rootId,input.mode,client);
-   }
-   await client.query('COMMIT');
-   return result;
-  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
-  finally{client.release();}
- }
+  const saveImportedDraft=createImportedDraftStore(pool,async(client,projectId,input,result,rootId)=>{
+   await store(projectId,null,input.actorId,'user',input.message,null,null,input.mode,client);
+   await store(projectId,null,null,'assistant',result.message,null,rootId,input.mode,client);
+  });
  async function history(id:string,taskId:string|null,channel:'project'|'documentation'='project'){
   const r=await pool.query('SELECT role,body FROM assistant_messages WHERE project_id=$1 AND task_id IS NOT DISTINCT FROM $2 AND channel=$3 ORDER BY created_at DESC,role ASC,id DESC LIMIT 10',[id,taskId,channel]);
   return r.rows.reverse().map(x=>x.role+': '+x.body.slice(0,1600)).join('\n\n');
