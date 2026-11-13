@@ -14,6 +14,7 @@ import {taskConversationEvidence} from './task-agent-notes.js';
 import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
+import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
 
 const uuid=z.string().uuid();
 const createDoc=z.object({title:z.string().trim().min(1).max(200),body:z.string().max(100000).default(''),parent_id:uuid,
@@ -555,6 +556,21 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const last=page.at(-1);
   return {task_id,events:page,next_cursor:events.rows.length>limit&&last
    ?Buffer.from(new Date(last.created_at).toISOString()+'|'+last.id).toString('base64url'):null};
+ }
+ case 'tasks.route_execution':{
+  if(session.role!=='manager')throw rejected('Маршрутизация доступна только ПМ',403);
+  const {task_id,source_sha,reason}=z.object({
+   task_id:uuid,source_sha:z.string().regex(/^[a-f0-9]{40}$/i),
+   reason:z.string().trim().min(12).max(1600)
+  }).parse(params);
+  return routeTaskToBrowserEvidence(pool,{
+   projectId,taskId:task_id,actorId,sourceSha:source_sha,reason
+  });
+ }
+ case 'tasks.retry_evidence':{
+  if(session.role!=='manager')throw rejected('Повтор доступен только ПМ',403);
+  const {task_id,reason}=z.object({task_id:uuid,reason:z.string().trim().min(12).max(1600)}).parse(params);
+  return retryTaskBrowserEvidence(pool,{projectId,taskId:task_id,actorId,reason});
  }
  case 'tasks.create':{
   const {title,description}=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(10).max(12000)}).parse(params);
