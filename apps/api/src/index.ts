@@ -50,6 +50,7 @@ import {enqueueDevelopment,reconcileAgentWorkQueue,reconcileLegacyAgentWorkQueue
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
 import {reconcileIdlePullRequests} from './idle-pr-recovery.js';
+import {reconcileTaskEvidenceQueue} from './task-evidence-queue.js';
 import {acceptAnalysisAnswer,isPrEvidenceRequest,registerProjectManagerRoutes,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -568,6 +569,7 @@ await startDiagnosticRetention(pool);await reconcileLegacyAgentWorkQueue(pool);a
   {label:'PM stalled work diagnostics',execute:()=>scanStalledPmInbox(pool)},
   {label:'Task analyst queue',execute:()=>reconcileTaskAnalysisQueue(pool,temporal)},
   {label:'Agent work queue',execute:()=>reconcileAgentWorkQueue(pool,temporal)},
+   {label:'Browser evidence queue',execute:()=>reconcileTaskEvidenceQueue(pool,temporal)},
    {label:'Existing PR QA recovery',execute:()=>reconcileIdlePullRequests(pool,recoverTask,accessToken)},
   {label:'Legacy development process',execute:()=>reconcileLegacyDevelopmentRuns()}
  ],(label,error)=>app.log.error({error},label+' reconciliation failed'));
