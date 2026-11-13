@@ -41,6 +41,7 @@ test('task-goal watch reports stalled QA to the same PM order and resumes exactl
   CREATE TABLE ai_test_runs(task_id uuid,project_id uuid,status text);
   CREATE TABLE agent_analysis_runs(task_id uuid,project_id uuid,status text);
   CREATE TABLE requirement_review_runs(task_id uuid,project_id uuid,status text);
+  CREATE TABLE agent_work_assignments(task_id uuid,project_id uuid,status text);
   CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id));
   CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,role text,body text,channel text,status text,topic_id uuid,pm_order_id uuid);
   CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,source_message_id uuid,topic_id uuid,status text,updated_at timestamptz DEFAULT now());
@@ -62,6 +63,10 @@ test('task-goal watch reports stalled QA to the same PM order and resumes exactl
  const watch={projectId:project,processId:watchId,taskId:task,kind:'task_goal',orderId:order,actorId:owner};
  assert.equal(await checkProjectManagerWatch(db,watch),'pending');
  await db.query("UPDATE task_orchestration_owners SET state='completed' WHERE task_id=$1",[task]);
+ await db.query("INSERT INTO agent_work_assignments VALUES($1,$2,'queued')",[task,project]);
+ assert.equal((await readPmTaskGoal(db,project,task)).status,'running',
+  'queued specialist work keeps PM goal watch active without a PR');
+ await db.query("UPDATE agent_work_assignments SET status='submitted' WHERE task_id=$1",[task]);
  const now=await readPmTaskGoal(db,project,task);
  assert.equal(now.status,'needs_action','QA completed does not imply task completed');
  assert.equal(await checkProjectManagerWatch(db,watch),'completed');
