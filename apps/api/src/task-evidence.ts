@@ -1,4 +1,5 @@
 import type {Pool} from 'pg';
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 
 /**
  * Additional execution lane for deliverables that do not modify source code.
@@ -32,6 +33,29 @@ export async function installTaskEvidenceSchema(db:Pick<Pool,'query'>){
  ON task_evidence_runs(task_id) WHERE status IN ('queued','dispatching','running');
  CREATE INDEX IF NOT EXISTS idx_task_evidence_project
  ON task_evidence_runs(project_id,status,created_at);
+ -- Applied after v11; never change the historical analysis-first migration.
+ CREATE OR REPLACE FUNCTION ado_browser_evidence_guard() RETURNS trigger AS $
+ BEGIN
+  IF NEW.execution_mode='browser_evidence' AND NEW.stage='testing'
+   AND (TG_OP='INSERT' OR OLD.stage IS DISTINCT FROM NEW.stage) THEN
+   IF NEW.analysis_state<>'approved' OR NEW.implementation_kind<>'artifact'
+     OR NEW.evidence_source_sha IS NULL OR NEW.implementation_commit IS DISTINCT FROM NEW.evidence_source_sha THEN
+    RAISE EXCEPTION 'Нет подтверждённого анализа и закреплённого SHA для браузерного исполнения' USING ERRCODE='23514';
+   END IF;
+   IF NOT EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=NEW.id AND e.event='analysis_completed')
+     OR COALESCE(jsonb_array_length(NEW.clarification_questions),0)>0
+     OR EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.project_id=NEW.project_id AND n.task_id=NEW.id
+       AND ${PENDING_OWNER_QUESTION_SQL}) THEN
+    RAISE EXCEPTION 'Нельзя миновать согласование требований для артефактов' USING ERRCODE='23514';
+   END IF;
+  END IF;
+  RETURN NEW;
+ END;
+ $ LANGUAGE plpgsql;
+ DROP TRIGGER IF EXISTS trg_ado_browser_evidence_guard ON tasks;
+ CREATE TRIGGER trg_ado_browser_evidence_guard
+ BEFORE INSERT OR UPDATE OF stage,execution_mode ON tasks
+ FOR EACH ROW EXECUTE FUNCTION ado_browser_evidence_guard();
  `);
 }
 
