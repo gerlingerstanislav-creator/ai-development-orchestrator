@@ -103,13 +103,19 @@ async function prepare(id,token){
  sessions.set(id,session);
  return session;
 }
+// Session teardown must not wait forever for a stuck browser renderer or
+// HTTP keep-alive connection. Chromium is process-isolated per QA session.
+const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function stop(s){
  if(s.stopping)return s.stopping;
  s.stopping=(async()=>{
   try{
-   await s.browser?.close().catch(()=>{});
+   if(s.browser)await Promise.race([s.browser.close().catch(()=>{}),wait(5000)]);
    if(s.proc){s.proc.kill('SIGTERM');s.proc=null;}
-   if(s.server)await new Promise(r=>s.server.close(r));
+   if(s.server){
+    s.server.closeAllConnections?.();
+    await Promise.race([new Promise(r=>s.server.close(r)),wait(2000)]);
+   }
   }finally{sessions.delete(s.id);}
  })();
  return s.stopping;
@@ -134,13 +140,16 @@ async function run(s,body){
   if(s.page)return {ok:true,message:'Browser already started',path:s.path};
   try{
    const {port,entry,pages}=await application(s);
+   if(s.stopping)throw Error('QA session was stopped during application startup');
    const path=localPagePath(body.path||entry);
    s.origin='http://127.0.0.1:'+port;
    // Verify the application HTTP endpoint before starting Chromium, so a
    // Vite/static-server failure is distinguishable from a browser failure.
    const response=await fetch(s.origin+path,{signal:AbortSignal.timeout(7000)});
    if(!response.ok)throw Error('Local application HTTP '+response.status+' at '+path);
-   s.browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server']});
+   const browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server'],timeout:15000});
+   if(s.stopping){await browser.close().catch(()=>{});throw Error('QA session stopped during Chromium launch');}
+   s.browser=browser;
    s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
    s.page=await s.context.newPage();
    // DOMContentLoaded may be indefinitely delayed by third-party scripts
@@ -217,6 +226,25 @@ async function run(s,body){
  }
  throw Error('Unsupported QA browser action');
 }
+// A Playwright evaluate call may never settle if page JavaScript enters an
+// infinite loop. The host must expire and tear down that session before the
+// gateway/client deadline; otherwise subsequent QA attempts remain blocked.
+async function boundedRun(s,body){
+ const limit=body.action==='start'?65000:Number(process.env.QA_BROWSER_ACTION_TIMEOUT_MS||20000);
+ let timer,expired=false;
+ try{
+  return await Promise.race([
+   run(s,body),
+   new Promise((_,reject)=>{timer=setTimeout(()=>{
+    expired=true;
+    reject(Error('Chromium operation timed out: '+body.action));
+   },limit);})
+  ]);
+ }catch(error){
+  if(expired)await stop(s);
+  throw error;
+ }finally{clearTimeout(timer);}
+}
 const server=http.createServer(async(req,res)=>{
  try{
   if(req.method==='GET'&&req.url==='/health'){
@@ -227,7 +255,7 @@ const server=http.createServer(async(req,res)=>{
   if(req.method!=='POST'||req.url!=='/action'||req.headers['content-type']!=='application/json')return send(res,404,{error:'Not found'});
   const body=await readBody(req);
   const s=await prepare(String(body.session||''),String(body.token||''));
-  try{return send(res,200,await run(s,body));}
+  try{return send(res,200,await boundedRun(s,body));}
   catch(error){return send(res,422,{ok:false,error:String(error.message||error).slice(0,1500)});}
  }catch(error){return send(res,400,{ok:false,error:String(error.message||error).slice(0,1000)});}
 });
