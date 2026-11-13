@@ -1,5 +1,6 @@
 import {reportPmWatchCompletion,type PmWatchReport} from './modules/planning/application/pm-watch-report.js';
 import {PM_GOAL_POLICY,pmOrderStateFromResults} from './pm-goal-policy.js';
+import {readPmTaskGoal} from './pm-task-goal.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
@@ -330,11 +331,18 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
-   const kind:ProjectManagerWatch['kind']=row.tool==='qa.retry'?'testing':row.tool==='iterations.launch'?'iteration_execution':['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':row.tool==='workflow.approve_development'?'development':'document_import';
-   const id=kind==='testing'?row.result?.cycle_id:kind==='iteration_execution'?row.result?.iteration_id:kind==='iteration_plan'?row.result?.planning_run_id:kind==='development'?row.result?.id:row.result?.import_job_id;
+   const kind:ProjectManagerWatch['kind']=row.tool==='pm.orders.watch_task'?'task_goal':
+    row.tool==='qa.retry'?'testing':row.tool==='iterations.launch'?'iteration_execution':
+    ['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':
+    row.tool==='workflow.approve_development'?'development':'document_import';
+   const id=kind==='task_goal'?row.result?.watch_id:kind==='testing'?row.result?.cycle_id:
+    kind==='iteration_execution'?row.result?.iteration_id:kind==='iteration_plan'?
+    row.result?.planning_run_id:kind==='development'?row.result?.id:row.result?.import_job_id;
    if(typeof id!=='string'||seen.has(id))return [];
    seen.add(id);
-   return [{projectId,processId:id,kind,orderId:orderId||undefined,topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
+   return [{projectId,processId:id,kind,
+    ...(kind==='task_goal'?{taskId:row.result?.task_id}:{}),
+    orderId:orderId||undefined,topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
   });
   const openedTopic=toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string');
   const effectiveTopic=turn.topic_id||openedTopic||null;
@@ -416,6 +424,19 @@ async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch
 /** Polling is a short database activity; the waiting happens in Temporal,
  * not in the PM AI session or an HTTP request. */
 export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
+ if(watch.kind==='task_goal'){
+  if(!watch.taskId)return 'completed';
+  const task=await readPmTaskGoal(pool,watch.projectId,watch.taskId);
+  if(task.status==='running')return 'pending';
+  const name=task.display_number?'#'+task.display_number+' «'+task.title+'»':'«'+task.title+'»';
+  const message=task.status==='done'?'Цель достигнута: задача '+name+' прошла все этапы и имеет подтверждённый done.':
+   task.status==='missing'?'Контролируемая задача отсутствует. Проверь историю отмены и исходное поручение.':
+   'Цель пока не достигнута: задача '+name+' остановилась на этапе '+task.stage+
+   '. '+task.reason;
+  return reportPmWatchCompletion(pool,watch,{message,
+   resumeInstruction:task.status==='done'?' Проверь связанные поручения и заверши исходную цель.':
+    ' Это не успех. Проверь состояние и блокировки, делегируй допустимое исправление или задай владельцу конкретный вопрос. Не регистрируй тот же watch_task до изменения состояния или запуска новой работы.'});
+ }
  if(watch.kind==='testing'){
   // A QA retry is a Temporal manualTesting cycle. The workflow owner is
   // durable even if QA planning fails before ai_test_runs is created.
