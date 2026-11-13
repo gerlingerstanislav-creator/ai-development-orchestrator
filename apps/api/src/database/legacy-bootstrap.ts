@@ -290,7 +290,7 @@ export async function applyLegacySchema(pool:Pool,workflowStageDescriptions:Reco
  await initKnowledgeDocumentUpdates(pool);
 }
 
-/** Apply runtime policy each restart: paused agents must explicitly resume after deployment. */
+/** Emergency maintenance operation only. Normal startup preserves the owner's durable start/stop choice. */
 export async function pauseAllProjectAgents(pool:Pool){
  await pool.query('UPDATE projects SET agents_running=false WHERE agents_running=true');
 }
