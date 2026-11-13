@@ -62,10 +62,10 @@ export function createCodexThreadStore(directory){
  */
 export function createCodexAppExecutor({store,spawnImpl=spawn,env={},command='codex'}){
  return async function execute({scope,requestId,prompt,model,effort,cwd,timeout=240000,
-  configArgs=[],sandboxPolicy,images=[],onStarted,onProgress,onChild,signal}){
+  configArgs=[],sandboxPolicy,images=[],envOverrides={},onStarted,onProgress,onChild,signal}){
   return store.run(scope,requestId,async()=>{
    const child=spawnImpl(command,[...configArgs,'app-server'],{
-    cwd,env,stdio:['pipe','pipe','pipe'],detached:true
+    cwd,env:{...env,...envOverrides},stdio:['pipe','pipe','pipe'],detached:true
    });
    onChild?.(child);
    const rl=createInterface({input:child.stdout,crlfDelay:Infinity});
