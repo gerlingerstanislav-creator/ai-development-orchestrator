@@ -7,9 +7,9 @@ const taskId='123e4567-e89b-42d3-a456-426614174001';
 const projectId='123e4567-e89b-42d3-a456-426614174002';
 const ready={outcome:'ready',summary:'Требования уточнены и переданы разработчику',refined_description:'Сохранить все существующие критерии приёмки, добавить конкретную проверку готовности.',questions:[],documentation_notes:[]};
 
-function fixture({status='queued',output=ready,freshInputs=false,openQuestions=false,questionsFromTask=[],cancelDuringCompletion=false}={}){
+function fixture({status='queued',output=ready,freshInputs=false,openQuestions=false,questionsFromTask=[],cancelDuringCompletion=false,taskDescription='Initial requirements and acceptance criteria'}={}){
  const statements=[],events=[],assistantPrompts=[],task={
-  id:taskId,project_id:projectId,title:'Implement request',description:'Initial requirements and acceptance criteria',
+  id:taskId,project_id:projectId,title:'Implement request',description:taskDescription,
   stage:'analysis',analysis_state:'processing',clarification_questions:questionsFromTask,spec_version:2
  };
  const run={id:runId,project_id:projectId,task_id:taskId,spec_version:2,status};
@@ -33,6 +33,10 @@ function fixture({status='queued',output=ready,freshInputs=false,openQuestions=f
   if(sql.includes('UNION ALL SELECT 1 FROM manager_messages'))return {rows:freshInputs?[{one:1}]:[],rowCount:freshInputs?1:0};
   if(sql.startsWith('SELECT 1 FROM task_agent_notes n WHERE n.task_id='))return {rows:openQuestions?[{one:1}]:[],rowCount:openQuestions?1:0};
   if(sql.startsWith('UPDATE tasks SET title=$3')){task.description=args[3];return {rows:[],rowCount:1};}
+  if(sql.startsWith('UPDATE tasks SET analysis_state=$2,')){
+   task.analysis_state=args[1];task.execution_mode=args[2];task.evidence_source_sha=args[3];
+   return {rows:[],rowCount:1};
+  }
   if(sql.startsWith('UPDATE tasks SET analysis_state=')){
    const found=sql.match(/analysis_state='([^']+)'/);
    if(found)task.analysis_state=found[1];
@@ -93,7 +97,7 @@ test('ready outcome updates specification and generates one durable handoff',asy
   [projectId,taskId,'task_analysis',runId]);
  const handoff=f.statements.filter(x=>x.sql.includes("'handoff'"));
  assert.equal(handoff.length,1);
- assert.equal(handoff[0].args[5],'task-analysis:'+runId);
+ assert.equal(handoff[0].args[6],'task-analysis:'+runId);
  assert.deepEqual(f.events[0].slice(0,4),[projectId,runId,'analysis','completed']);
 });
 
@@ -141,5 +145,25 @@ test('invalid structured response fails explicitly instead of marking analysis r
  assert.equal(f.run.status,'failed');
  assert.equal(f.task.analysis_state,'failed');
  assert.equal(f.events[0][3],'failed');
+ assert.equal(f.commits(),0);
+});
+
+test('analyst may route a pinned browser-only task to evidence instead of a developer',async()=>{
+ const sha='a'.repeat(40);
+ const f=fixture({taskDescription:'Capture real site screenshots from pinned SHA '+sha,
+  output:{...ready,execution_mode:'browser_evidence',source_sha:sha}});
+ await f.runAnalysis(runId);
+ assert.equal(f.task.analysis_state,'ready_for_evidence');
+ assert.equal(f.task.execution_mode,'browser_evidence');
+ assert.equal(f.task.evidence_source_sha,sha);
+ const handoff=f.statements.find(x=>x.sql.includes("'handoff'"));
+ assert.equal(handoff.args[4],'testing','browser work must not be handed to the code developer');
+ assert.equal(f.run.status,'completed');
+});
+
+test('analyst cannot invent a pinned commit for a browser artifact task',async()=>{
+ const f=fixture({output:{...ready,execution_mode:'browser_evidence',source_sha:'b'.repeat(40)}});
+ await f.runAnalysis(runId);
+ assert.equal(f.task.analysis_state,'failed');
  assert.equal(f.commits(),0);
 });
