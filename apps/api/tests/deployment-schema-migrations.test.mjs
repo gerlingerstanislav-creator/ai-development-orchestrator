@@ -6,7 +6,8 @@ import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {initAutomaticDeployment} from '../dist/deployment-automation.js';
 
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+// Historical v9 adoption tests must not include later versioned schema migrations.
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=9);
 async function withSchema(fn){
  const schema='ado_deployment_v9_'+randomUUID().replaceAll('-','');
  const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});

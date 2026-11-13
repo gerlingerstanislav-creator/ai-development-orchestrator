@@ -20,6 +20,7 @@ import {installProjectIterationsSchema} from '../project-iterations.js';
 import {installAgentWorkQueueSchema} from '../agent-work-scheduler.js';
 import {initRequirementsSchema} from '../requirements.js';
 import {initAutomaticDeployment} from '../deployment-automation.js';
+import {installProjectTeamSchema} from '../project-team.js';
 
 /**
  * Append-only, transactional schema history.
@@ -106,6 +107,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:9,name:'deployment-automation-storage',
    checksum:'ado-deployment-automation-storage-v9',
    up:database=>initAutomaticDeployment(database)
+  },
+  {
+   version:10,name:'project-team-profile-and-memory-schema',
+   checksum:'ado-project-team-profile-memory-v10',
+   up:database=>installProjectTeamSchema(database)
   }
  ];
 }
