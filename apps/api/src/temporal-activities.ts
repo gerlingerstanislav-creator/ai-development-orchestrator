@@ -138,7 +138,8 @@ async function askTaskManagerAgent(prompt:string,projectId:string,taskId:string,
   const response=await fetch(codexUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
    body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning,session_token:session.secret,
-    agent_role:'manager',project_id:projectId,role_capacity:1,images}),
+    agent_role:'manager',project_id:projectId,task_id:taskId,process_id:taskId,
+    actor_id:actorId,request_id:messageId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
