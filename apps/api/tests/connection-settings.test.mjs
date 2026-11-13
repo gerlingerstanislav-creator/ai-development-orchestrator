@@ -83,7 +83,7 @@ test('create and rotate a token in place without exposing the new secret',async(
   assert.equal(patch.body.includes('rotated-secret'),false);
   const renamed=await f.app.inject({method:'PATCH',url:'/api/connections/'+id,payload:{name:'Ещё раз'}});
   assert.equal(renamed.statusCode,200);
-  assert.equal(f.state.get(id).secret_encrypted,'encrypted:rotated-secret');
+  assert.equal(decryptConnectionSecret(f.state.get(id).secret_encrypted,Buffer.alloc(32,7)),'rotated-secret');
   const bad=await f.app.inject({method:'PATCH',url:'/api/connections/'+id,payload:{}});
   assert.equal(bad.statusCode,400);
  }finally{await f.app.close();}
