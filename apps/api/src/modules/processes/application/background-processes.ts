@@ -5,7 +5,7 @@ import {developmentProcessDetail} from '../domain/development-process-detail.js'
 type Db={query:(sql:string,args?:any[])=>Promise<{rows:any[]}>};
 
 
-export type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
+export type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review'|'agent';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect'|'documentation';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 
 export async function listBackgroundProcesses(pool:Db,userId:string){
  const [developments,imports,tests,merges,analyses,iterationRuns,taskAnalyses]=await Promise.all([
@@ -34,12 +34,24 @@ export async function listBackgroundProcesses(pool:Db,userId:string){
    FROM agent_analysis_runs a JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
    JOIN tasks t ON t.id=a.task_id WHERE a.status IN ('queued','running') ORDER BY a.created_at DESC LIMIT 50`,[userId])
  ]);
+ const assignments=await pool.query(`SELECT a.id,a.project_id,a.task_id,a.role,a.objective,a.status,a.created_at,
+  t.display_number,t.title,p.name AS project_name FROM agent_work_assignments a
+  JOIN projects p ON p.id=a.project_id JOIN memberships m ON m.project_id=a.project_id AND m.user_id=$1
+  JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+  WHERE a.status IN ('queued','running') ORDER BY a.created_at DESC LIMIT 60`,[userId]);
  const qualityGateProcesses=await pool.query(`SELECT g.id,g.project_id,g.task_id,g.kind,g.status,g.message,g.started_at,
   p.name AS project_name,t.title AS task_title,t.display_number
   FROM quality_gate_runs g JOIN projects p ON p.id=g.project_id JOIN memberships m ON m.project_id=g.project_id AND m.user_id=$1
   JOIN tasks t ON t.id=g.task_id WHERE g.status IN ('queued','running')
   ORDER BY g.started_at DESC LIMIT 60`,[userId]);
  const processes:BackgroundProcess[]=[];
+ for(const a of assignments.rows){
+  processes.push({id:'agent-work:'+a.id,kind:'agent',role:a.role,
+   projectId:a.project_id,projectName:a.project_name,taskId:a.task_id,
+   title:'Поручение '+a.role+' #'+a.display_number+' · '+a.title,
+   detail:String(a.objective).slice(0,250),status:a.status,
+   createdAt:a.created_at,url:'/projects/'+a.project_id+'/processes?process='+a.id});
+ }
  for(const gate of qualityGateProcesses.rows){
   processes.push({id:gate.kind+':'+gate.id,kind:gate.kind==='ci'?'ci':'review',role:gate.kind==='ci'?'devops':'architect',
    projectId:gate.project_id,projectName:gate.project_name,taskId:gate.task_id,
