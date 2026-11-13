@@ -40,6 +40,8 @@ jobs:
       - name: Full backend, Runner and web regression tests
         run: |
           node --check apps/codex-runner/server.mjs
+          node --check apps/codex-runner/qa-job.mjs
+          node --test apps/codex-runner/qa-job.test.mjs
           node --check apps/codex-runner/ci-test-discovery.mjs
           node --check apps/codex-runner/command-executor.mjs
           node --check apps/codex-runner/codex-app-server.mjs
