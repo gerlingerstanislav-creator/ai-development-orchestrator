@@ -55,7 +55,7 @@ test('empty page delete refuses source links, children, tasks and revisioned doc
  const db={query:async(sql,params)=>{
   queries.push(sql);
   if(sql.includes('SELECT id,body,system_key'))return {rowCount:1,rows:[entry]};
-  if(sql.includes('SELECT 1 FROM'))return {rowCount:sql.includes(blocker)?1:0,rows:[]};
+  if(sql.includes('SELECT 1 FROM'))return {rowCount:(blocker!==''&&sql.includes(blocker))?1:0,rows:[]};
   if(sql.startsWith('DELETE FROM documents'))return {rowCount:1,rows:[]};
   throw Error('Unexpected SQL '+sql);
  }};
