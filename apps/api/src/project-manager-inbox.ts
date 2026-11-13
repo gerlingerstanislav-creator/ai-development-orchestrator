@@ -1,3 +1,4 @@
+import {reportPmWatchCompletion,type PmWatchReport} from './modules/planning/application/pm-watch-report.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
@@ -253,7 +254,7 @@ export async function failProjectManagerInbox(pool:Pick<Pool,'query'>,projectId:
    WHERE o.id=f.pm_order_id AND o.status IN ('working','queued')`,[projectId,messageId,attempt]);
 }
 
-export type ProjectManagerWatch={projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution'|'testing';orderId?:string;topicId?:string|null;actorId?:string};
+export type ProjectManagerWatch=PmWatchReport;
 export async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string,attempt=1):Promise<ProjectManagerWatch[]>{
  const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel IN ('project','pm-internal') AND role='user' AND pm_dispatch_attempt=$3 AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id,pm_order_id,channel",[messageId,projectId,attempt]);
  if(!claim.rowCount)return [];
@@ -404,24 +405,10 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
 }
 
 async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch,total:number,finished:number,stale:number):Promise<'completed'>{
- const client=await pool.connect();
- try{
-  await client.query('BEGIN');
-  const mark=await client.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,'iteration_execution') ON CONFLICT DO NOTHING RETURNING process_id",[watch.projectId,watch.processId]);
-  if(mark.rowCount){
-   const message='Обработка очереди итерации завершена: '+finished+' из '+total+'.'+
-    (stale?' Запуск '+stale+' задач требует повторного подтверждения.':'')+
-    ' Проверь результаты и сообщи владельцу.';
-   await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",[randomUUID(),watch.projectId,message,watch.topicId||null,watch.orderId||null]);
-   if(watch.orderId&&watch.actorId){
-    const next=randomUUID();
-    await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'pm-internal','queued',$5,$6)",[next,watch.projectId,watch.actorId,'СИСТЕМНОЕ СОБЫТИЕ: '+message,watch.topicId||null,watch.orderId]);
-    await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail,process_id) VALUES($1,$2,'resume',$3,$4)",[randomUUID(),watch.orderId,next,watch.processId]);
-    await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[watch.orderId]);
-   }
-  }
-  await client.query('COMMIT');return 'completed';
- }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+ const message='Обработка очереди итерации завершена: '+finished+' из '+total+'.'+
+  (stale?' Запуск '+stale+' задач требует повторного подтверждения.':'')+
+  ' Проверь результаты и сообщи владельцу.';
+ return reportPmWatchCompletion(pool,watch,{message,resumeInstruction:''});
 }
 
 /** Polling is a short database activity; the waiting happens in Temporal,
@@ -449,27 +436,11 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
   const explanation=qa.qa_status==='completed'
    ?'Вердикт QA: '+String(qa.qa_verdict||'не установлен')+'. '+String(qa.qa_summary||qa.qa_message||'')
    :String(qa.qa_message||'QA завершился до получения подтверждённого отчёта. Проверь журнал процесса.');
-  const client=await pool.connect();
-  try{
-   await client.query('BEGIN');
-   const mark=await client.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,'testing') ON CONFLICT DO NOTHING RETURNING process_id",
-    [watch.projectId,watch.processId]);
-   if(!mark.rowCount){await client.query('ROLLBACK');return 'completed';}
-   const message='Повторная проверка QA задачи «'+String(qa.name)+'» завершена: '+(outcome==='completed'?'тестирование пройдено. ':'требуется внимание. ')+explanation.slice(0,2100);
-   await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",
-    [randomUUID(),watch.projectId,message,watch.topicId||null,watch.orderId||null]);
-   if(watch.orderId&&watch.actorId){
-    const next=randomUUID();
-    await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'pm-internal','queued',$5,$6)",
-     [next,watch.projectId,watch.actorId,'СИСТЕМНОЕ СОБЫТИЕ: '+message+' Проанализируй результат QA и продолжи исходное поручение. Не запускай бесконечные повторы, не объявляй непроверенное успешным.',watch.topicId||null,watch.orderId]);
-    await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail,process_id) VALUES($1,$2,'resume',$3,$4)",
-     [randomUUID(),watch.orderId,next,watch.processId]);
-    await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[watch.orderId]);
-   }
-   await client.query('COMMIT');
-   return 'completed';
-  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
-  finally{client.release();}
+  const message='Повторная проверка QA задачи «'+String(qa.name)+'» завершена: '+(outcome==='completed'?'тестирование пройдено. ':'требуется внимание. ')+explanation.slice(0,2100);
+  return reportPmWatchCompletion(pool,watch,{
+   message,
+   resumeInstruction:' Проанализируй результат QA и продолжи исходное поручение. Не запускай бесконечные повторы, не объявляй непроверенное успешным.'
+  });
  }
  if(watch.kind==='iteration_execution'){
   const status=await pool.query(`SELECT count(*)::int AS total,count(*) FILTER (WHERE t.stage='done' OR q.status IN ('cancelled','stale'))::int AS finished,count(*) FILTER (WHERE q.status='stale')::int AS stale FROM iteration_execution_queue q JOIN tasks t ON t.id=q.task_id WHERE q.project_id=$1 AND q.iteration_id=$2`,[watch.projectId,watch.processId]);
@@ -497,12 +468,6 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
   if(next.rows[0]?.id!==process.id)process=next.rows[0];
  }
  if(['queued','running','dispatching'].includes(process.status))return 'pending';
- const client=await pool.connect();
- try{
- await client.query('BEGIN');
- const mark=await client.query("INSERT INTO project_pm_process_reports(project_id,process_id,kind) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING process_id",
-  [watch.projectId,watch.processId,watch.kind]);
- if(!mark.rowCount){await client.query('ROLLBACK');return 'completed';}
  const title=watch.kind==='iteration_plan'?'Подготовка задач итерации «'+process.name+'»':watch.kind==='development'?'Разработка задачи «'+process.name+'»':'Работа с документацией';
  const docsWritten=Number(process.saved_documents||process.result?.changed_documents||process.result?.generated_documents||0);
  const verifiedCount=Array.isArray(process.result?.document_ids)?process.result.document_ids.length:0;
@@ -521,20 +486,12 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
    ?title+' завершена. '+String(process.message||'')+(process.pr_url?' PR: '+process.pr_url:'')
    :title+' завершена. Сохранено страниц: '+docsWritten+'. Подтверждено страниц: '+verifiedCount+'. '+String(process.result?.summary||process.message||'Документация обновлена')
   :title+' завершилась со статусом «'+process.status+'». '+String(process.message||'Посмотри детали в Центре процессов');
- await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",
-  [randomUUID(),watch.projectId,message.slice(0,3500),watch.topicId||null,watch.orderId||null]);
- if(watch.orderId&&watch.actorId){
-  const resumeMessageId=randomUUID();
-  await client.query("INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,$3,'user',$4,'pm-internal','queued',$5,$6)",
-   [resumeMessageId,watch.projectId,watch.actorId,'СИСТЕМНОЕ СОБЫТИЕ: '+message+' Продолжи исходное поручение, проверь результат, примени допустимые дальнейшие действия или запроси решение владельца.',watch.topicId||null,watch.orderId]);
-  await client.query("INSERT INTO project_pm_order_events(id,order_id,kind,detail,process_id) VALUES($1,$2,'resume',$3,$4)",
-   [randomUUID(),watch.orderId,resumeMessageId,watch.processId]);
-  await client.query("UPDATE project_pm_orders SET status='queued',updated_at=now() WHERE id=$1",[watch.orderId]);
- }
- await client.query('COMMIT');
- return 'completed';
- }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}
- finally{client.release();}
+ return reportPmWatchCompletion(pool,watch,{
+  message,
+  resumeInstruction:' Продолжи исходное поручение, проверь результат, примени допустимые дальнейшие действия или запроси решение владельца.',
+  visibleLimit:3500
+ });
+
 }
 
 /** Resume reference is persisted transactionally with the completion report.
