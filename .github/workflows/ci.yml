@@ -92,6 +92,7 @@ jobs:
           node --test apps/api/tests/project-process-controller.test.mjs
           node --test apps/api/tests/documentation-module.test.mjs
           node --test apps/api/tests/documentation-preparation.test.mjs
+          node --test apps/api/tests/autonomous-documentation-delegation.test.mjs
           node --test apps/api/tests/project-manager-inbox.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
           node --import tsx --test apps/web/tests/feature-boundaries.test.mjs

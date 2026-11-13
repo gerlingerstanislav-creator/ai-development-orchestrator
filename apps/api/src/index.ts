@@ -170,7 +170,7 @@ async function startIterationPlanning(runId:string){
    workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
  }catch(error){if((error as Error)?.name!=='WorkflowExecutionAlreadyStartedError')throw error;}
 }
-registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,startIterationPlanning,startDocumentationWorkflow:async jobId=>{
+registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,decryptToken,startIterationPlanning,startDocumentationWorkflow:async jobId=>{
  const client=await temporal();
  await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
 },delegateManagerAction:async(session,name,args)=>{

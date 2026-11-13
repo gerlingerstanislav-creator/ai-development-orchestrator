@@ -4,6 +4,7 @@ import {randomUUID,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
 import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,createAgentReaderSession,finishAgentSession,readerRoles,type AgentSession} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
+import {inspectGitHubProjectSource} from './documentation-preparation.js';
 
 const uuid=z.string().uuid();
 const callSchema=z.object({
@@ -25,6 +26,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  startDocumentationWorkflow:(jobId:string)=>Promise<void>;
  startIterationPlanning?:(runId:string)=>Promise<void>;
  delegateManagerAction?:(session:AgentSession,name:string,args:Record<string,unknown>)=>Promise<unknown>;
+ decryptToken?:(encrypted:string)=>string;
 }){
  const {pool,access,requireAdmin,startDocumentationWorkflow,startIterationPlanning,delegateManagerAction}=deps;
  async function startQueuedJob(jobId:string){
@@ -121,6 +123,13 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   const key=!session.read_only&&typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
   const digest=hashSecret(JSON.stringify({name,args}));
   const mutating=!tool.annotations.readOnlyHint;
+  if(mutating&&session.role==='documentation'){
+   if(!session.process_id)return reply.code(403).send({error:'Нет поручения аналитика'});
+   const running=await pool.query(
+    "SELECT id FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='running'",
+    [session.process_id,session.project_id]);
+   if(!running.rowCount)return reply.code(409).send({error:'Поручение аналитика уже не выполняется'});
+  }
   // All PostgreSQL changes and their success evidence use the SAME
   // transaction, including document changesets, task creation and memories.
   const connection=mutating?await pool.connect():null;
@@ -157,7 +166,18 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    if(delegated&&(!delegateManagerAction||session.role!=='manager'))throw Error('Недоступно делегированное действие ПМ');
    const result=delegated
     ?await delegateManagerAction!(session,name,args)
-    :await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow);
+    :await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow,
+      async(projectId,actorId,path,commit)=>{
+       const linked=(await db.query(`SELECT g.repository,g.default_branch,g.target_branch,c.secret_encrypted
+        FROM project_git_repositories g LEFT JOIN connections c ON c.id=g.connection_id AND c.owner_id=$2
+        WHERE g.project_id=$1`,[projectId,actorId])).rows[0];
+       if(!linked)return {available:false,reason:'К проекту не подключён GitHub-репозиторий'};
+       if(!linked.secret_encrypted||!deps.decryptToken)
+        return {available:false,reason:'Для GitHub-репозитория нет доступного подключения с правом Contents: Read'};
+       const token=deps.decryptToken(linked.secret_encrypted);
+       return {available:true,...await inspectGitHubProjectSource(linked.repository,
+        commit||linked.target_branch||linked.default_branch||'main',token,path)};
+      });
    // A successful PM delegation is explicit authorization to wake the
    // project's specialists. Informational tools and chat leave Stop intact.
    if(session.role==='manager'&&(result as any)?.ok!==false&&(result as any)?.recorded!==false&&new Set([
