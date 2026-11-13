@@ -461,13 +461,39 @@ async function runTestJob(job,state,context){
   const probe=await command('codex',[...policy.sandboxArgs,'--','sh','-c',probeScript],{
    cwd:dir,env:cliEnv,timeout:25000,maxOutputChars:6000,jobId:job.id
   });
-  const browserAvailable=await browserHealth();
-  const capabilities=(probe.stdout.trim()+'\nqa_browser: '+(browserAvailable?'playwright chromium available':'unavailable')).slice(0,2500);
+  let browserAvailable=await browserHealth();
   let browserSession=null;
+  let browserStartupEvidence='';
   if(browserAvailable){
    browserSession=openQaBrowserSession(qaBrowserSessionId,(job.testPlan?.cases||[]).map(test=>test.id),{adHoc});
    await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
+   // A host-side /health or /start is not proof that Codex commands can
+   // reach the loopback bridge through the real QA permission profile.
+   // Probe the *same* client and sandbox that the agent will use.
+   let bridgeReady=false,bridgeError='';
+   for(let attempt=0;attempt<2&&!bridgeReady;attempt++){
+    try{
+     const result=await command('codex',[...policy.sandboxArgs,'--',
+      'node','/opt/codex-runner/browser-client.mjs','ping'],{
+      cwd:dir,env:cliEnv,timeout:20000,maxOutputChars:2500,jobId:job.id
+     });
+     if(!/"ok":true/.test(result.stdout)||!/"bridge":"connected"/.test(result.stdout))
+      throw Error('Browser bridge ping did not confirm an authenticated session: '+result.stdout.slice(-400));
+     bridgeReady=true;
+    }catch(error){
+     assertJobActive(job.id);
+     bridgeError=String(error.message||error).slice(0,650);
+    }
+   }
+   if(!bridgeReady){
+    browserAvailable=false;
+    browserStartupEvidence='Браузерный мост недоступен из песочницы Codex после двух проверок: '+bridgeError;
+    state.browserStartup=browserStartupEvidence;
+    await closeQaBrowserSession(qaBrowserSessionId);
+    browserSession=null;
+   }
   }
+  const capabilities=(probe.stdout.trim()+'\nqa_browser: '+(browserAvailable?'playwright chromium available':'unavailable')).slice(0,2500);
   state.capabilities=capabilities;
   const tracked=(await command('git',['ls-files'],{cwd:dir,env:gitEnv,timeout:10000,maxOutputChars:100000,jobId:job.id})).stdout.split(/\r?\n/);
   const prerequisite=qaPrerequisiteError(tracked,capabilities);
@@ -495,7 +521,6 @@ async function runTestJob(job,state,context){
   // browser can open the application before asking the model to test it.
   // Rich frontend projects may need npm install/build, so leave their setup
   // to the QA agent and let it start Chromium after preparing dependencies.
-  let browserStartupEvidence='';
   if(browserSession&&tracked.some(name=>/\.html?$/i.test(name))){
    const pkg=tracked.includes('package.json')
     ?await readFile(join(dir,'package.json'),'utf8').then(JSON.parse).catch(()=>null):null;
