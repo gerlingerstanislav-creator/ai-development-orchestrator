@@ -11,6 +11,8 @@ import {workflowStageDescriptions} from './modules/projects/domain/workflow-defa
 import {createLegacyDevelopmentReconciler} from './modules/processes/infrastructure/reconcile-legacy-development.js';
 import {registerBackgroundProcessRoutes} from './modules/processes/api.js';
 import {registerProjectGitRoutes} from './modules/integrations/github/api.js';
+import {registerConnectionRoutes} from './modules/integrations/connections/api.js';
+import {encryptConnectionSecret,decryptConnectionSecret} from './modules/integrations/connections/secret-cipher.js';
 import {registerCodexAdminRoutes} from './modules/codex/api.js';
 import {registerAuthRoutes} from './modules/auth/api.js';
 import {issueAccessToken} from './modules/auth/application/tokens.js';
@@ -53,7 +55,7 @@ import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,regist
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT } from 'jose';
-import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import { z } from 'zod';
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
@@ -125,12 +127,7 @@ async function requireAdmin(req:any,reply:any){
  return true;
 }
 registerCloudDiagnosticsSettings(app,{pool,requireAdmin});
-function decryptToken(packedText:string){
- const bytes=Buffer.from(packedText,'base64');
- const d=createDecipheriv('aes-256-gcm',encryptionKey,bytes.subarray(0,12));
- d.setAuthTag(bytes.subarray(12,28));
- return Buffer.concat([d.update(bytes.subarray(28)),d.final()]).toString('utf8');
-}
+function decryptToken(packedText:string){return decryptConnectionSecret(packedText,encryptionKey);}
 registerAiSettingsRoutes(app,{pool,access,requireAdmin});
 app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
@@ -247,15 +244,7 @@ registerWorkflowSettingsRoutes(app,{pool,uid,access,requireAdmin});
 const {updateDependency,startRequirementsReview}=registerProjectTaskRoutes(app,{pool,uid,access,requireAdmin,temporal});
 registerProjectProcessRoutes(app,{pool,uid,access,requireAdmin,temporal});
 registerDocumentationRoutes(app,{pool,access,requireAdmin});
-app.get('/api/connections',async(req)=>{return (await pool.query('SELECT id,name,provider,created_at FROM connections WHERE owner_id=$1 ORDER BY created_at DESC',[uid(req)])).rows;});
-app.post('/api/connections',async(req,reply)=>{
- const {name,provider,secret}=parse(z.object({name:z.string().min(1).max(100),provider:z.enum(['openai_api','github_token']),secret:z.string().min(8).max(2000)}),req.body);
- const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',encryptionKey,iv);
- const encrypted=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);const packed=Buffer.concat([iv,cipher.getAuthTag(),encrypted]).toString('base64');
- const id=randomUUID();await pool.query('INSERT INTO connections(id,owner_id,name,provider,secret_encrypted) VALUES($1,$2,$3,$4,$5)',[id,uid(req),name,provider,packed]);return reply.code(201).send({id,name,provider});
-});
-app.get('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return (await pool.query('SELECT c.id,c.name,c.provider FROM connections c JOIN project_connections pc ON pc.connection_id=c.id WHERE pc.project_id=$1 AND c.owner_id=$2',[id,uid(req)])).rows;});
-app.post('/api/projects/:id/connections',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;const {connectionId}=parse(z.object({connectionId:z.string().uuid()}),req.body);const r=await pool.query('INSERT INTO project_connections(project_id,connection_id) SELECT $1,id FROM connections WHERE id=$2 AND owner_id=$3 ON CONFLICT DO NOTHING RETURNING connection_id',[id,connectionId,uid(req)]);if(!r.rowCount)return reply.code(400).send({error:'Подключение не найдено или уже добавлено'});return {ok:true};});
+registerConnectionRoutes({app,pool,uid,access,encryptionKey});
 async function startIterationPlanning(runId:string){
  try{
   const client=await temporal();
@@ -528,8 +517,7 @@ registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
 registerProjectIterationRoutes(app,{pool,uid,access,requireAdmin,startPlanning:startIterationPlanning});
 registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,
- encrypt:(secret:string)=>{const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',encryptionKey,iv);
-  const encrypted=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),encrypted]).toString('base64');},
+ encrypt:(secret:string)=>encryptConnectionSecret(secret,encryptionKey),
  start:async runId=>{
  const client=await temporal();
  await client.workflow.start('automaticDeployment',{taskQueue:'agent-pipeline',workflowId:'deployment-'+runId,
