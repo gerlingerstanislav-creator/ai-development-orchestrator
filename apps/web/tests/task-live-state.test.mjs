@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {latestTaskQa,taskQaIsRunning,activeTaskAgentExecutions,taskHasLiveWork}
+import {latestTaskQa,taskQaIsRunning,qaOutcomeLabel,activeTaskAgentExecutions,taskHasLiveWork}
  from '../src/features/tasks/task-live-state.ts';
 
 const taskId='task-34';
@@ -58,4 +58,12 @@ test('task indicators never borrow a different task scoped run or a closed task 
  assert.equal(taskQaIsRunning(taskId,'other-task',[finished],[finished],lease),false);
  assert.equal(taskHasLiveWork(taskId,'testing','other-task',[],[finished],
   null,[],background,[],[]),false);
+});
+
+test('testing stage has a distinct terminal label without implying that the agent is still working',()=>{
+ assert.equal(qaOutcomeLabel({...finished,verdict:'blocked'}),'Сбой QA');
+ assert.equal(qaOutcomeLabel({...finished,status:'completed',verdict:'blocked'}),'Ожидает решения');
+ assert.equal(qaOutcomeLabel({...finished,status:'completed',verdict:'failed'}),'Есть замечания');
+ assert.equal(qaOutcomeLabel({...finished,status:'completed',verdict:'passed'}),'Проверено');
+ assert.equal(qaOutcomeLabel({...finished,status:'running',verdict:null}),'');
 });
