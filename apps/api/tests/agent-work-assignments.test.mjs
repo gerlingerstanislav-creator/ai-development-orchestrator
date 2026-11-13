@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
  installWorkAssignmentsSchema,delegateWork,reportWork,reviewWork,listWork,finalizeWorkAttempt,workRoles
-} from '../dist/modules/agents/application/work-assignments.js';
+} from '../dist/modules/agents/infrastructure/work-assignments.js';
 import {toolsForRole,capabilitiesForRole} from '../dist/agent-tools.js';
 import {checkProjectManagerWatch} from '../dist/modules/planning/application/pm-watch-monitor.js';
 
