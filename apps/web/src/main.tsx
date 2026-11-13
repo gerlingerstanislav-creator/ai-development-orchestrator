@@ -1,6 +1,7 @@
 import {ProcessCenter} from './features/processes/ProcessCenter.js';
 import type {ProjectProcess,ProjectProcessEvent} from './features/processes/process-center-model.js';
 import {TaskBoard} from './features/tasks/TaskBoard.js';
+import {buildTaskTimeline,type ActivityItem} from './features/tasks/task-timeline.js';
 import type {KanbanGroupKey} from './features/tasks/board-model.js';
 import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
 import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.js';
@@ -88,7 +89,7 @@ const emptyProjectChat:ProjectChatState={
 const projectChatKey=(projectId:string,mode:ProjectChatMode)=>projectId+':'+mode;
 type AssistantResponse={message:string;created_task_id?:string|null;created_document_id?:string|null;summary?:string|null;questions?:string[];import_job_id?:string;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ImportJob={id:string;status:'running'|'completed'|'failed'|'cancelled';message:string;result:AssistantResponse|null};
-type ActivityItem={id:string;kind:'user'|'assistant'|'event'|'run'|'note';text:string;time:string;title?:string;link?:string;status?:string;pending?:boolean;failed?:boolean};
+
 type CodexState={connected:boolean;detail?:string;error?:string;login?:{state:string;url?:string|null;code?:string|null;instructions?:string;diagnosis?:string;startedAt?:number|null}|null};
 const defaultStages=['backlog','analysis','development','testing','merge_queue','deployment','documentation','done'];
 
@@ -428,37 +429,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  });
 
  function timeline(taskId:string):ActivityItem[]{
-  return [
-   ...taskMessages.map(m=>({id:'msg-'+m.id,kind:m.role,text:m.body,time:m.created_at||new Date().toISOString(),pending:m.pending,failed:m.failed})),
-   ...taskAgentNotes.map(note=>({id:'note-'+note.id,kind:'note' as const,title:note.author_name+
-    ' → '+(note.target_stage==='all'?'всем участникам':({analysis:'аналитику',development:'разработчику',testing:'тестировщику',merge_queue:'ответственному за слияние',deployment:'DevOps',documentation:'документатору'} as Record<string,string>)[note.target_stage]||note.target_stage)+
-    ' · '+(note.kind==='question'?'Вопрос':note.kind==='risk'?'Риск':'Рабочий комментарий'),
-    text:note.body+(note.answer?'\n\nОтвет: '+note.answer:note.status==='open'?'\n\nОжидает ответа':''),
-    time:note.created_at})),
-   ...events.map(ev=>({id:'evt-'+ev.id,kind:'event' as const,title:({
-    created:'Задача создана',analyzed:'Анализ завершён',stage_changed:'Переход этапа',spec_changed:'Изменение требований',
-    requirements_proposed:'Аналитик · требуется согласование',requirements_reviewed:'Аналитик · ТЗ проверено',requirements_approved:'Изменение ТЗ согласовано',
-    requirements_rejected:'Изменение ТЗ отклонено',tests_passed:'Тестирование пройдено',
-    tests_failed:'Замечания тестировщика',qa_tools_unavailable:'Тестировщик · проверки ограничены средой',
-    qa_waiver_approved:'Непроверенные сценарии согласованы',handoff_blocked:'Передача на следующий этап остановлена',
-    merged:'PR слит',deployment_skipped:'Выкладка пропущена',deployment_pending:'Ожидает выкладки',deployment_manual_confirmed:'Ручная выкладка подтверждена',documentation_updated:'Документация обновлена'
-   } as Record<string,string>)[ev.event]||'Событие задачи',text:ev.detail,time:ev.created_at})),
-   ...taskProcessEvents.map(ev=>({id:'process-'+ev.id,kind:'event' as const,title:(ev.process_kind==='testing'?'Тестировщик':ev.process_kind==='analysis'?'Аналитик':ev.process_kind==='development'?'Разработчик':'Процесс')+' · '+({
-    review_started:'Сверка требований',needs_approval:'Нужно решение',current:'ТЗ актуально',test_design_started:'Генерация тест-кейсов',
-    test_design_ready:'QA-план готов',test_design_failed:'Ошибка подготовки QA',started:'Работа запущена',
-    progress:'Выполнение',passed:'Проверки пройдены',failed:'Ошибка или дефект',blocked:'Не удалось проверить',
-    approved:'Переход к слиянию',awaiting_manual_qa_decision:'Требуется решение по тестам'
-   } as Record<string,string>)[ev.stage]||ev.stage,text:ev.detail,time:ev.created_at,failed:ev.level==='error'})),
-   ...aiRuns.filter(r=>r.task_id===taskId).map(r=>({id:'run-'+r.id,kind:'run' as const,title:r.status==='completed'?'Разработка завершена':r.status==='failed'?'Ошибка разработки':r.status==='running'?'Codex работает':'Задача в очереди',text:r.message||'Агент выполняет задачу',time:r.created_at||new Date().toISOString(),status:r.status,link:r.pr_url||undefined})),
-   ...(activeTask?.id===taskId&&taskTestRuns.length?taskTestRuns:testRuns.filter(r=>r.task_id===taskId)).map(r=>({id:'test-'+r.id,kind:'run' as const,title:r.status==='completed'?(r.verdict==='passed'?'Тесты пройдены':r.verdict==='failed'?'Тестировщик обнаружил ошибки':'Тестирование требует внимания'):r.status==='failed'?'Ошибка тестирования':r.status==='queued'?'Тестировщик в очереди':'AI-тестировщик работает',
-    text:[r.report?.summary||r.message||'Тестировщик выполняет проверку',
-     ...(r.report?.checks||[]).map(c=>c.name+': '+c.result+(c.details?' — '+c.details:'')),
-     ...(r.report?.findings||[]).map(f=>'Дефект ('+f.severity+'): '+f.description+(f.steps?' · '+f.steps:'')),
-     ...(r.report?.caseResults||[]).slice(0,30).map(c=>c.case_id+': '+c.result+(c.evidence?' — '+c.evidence:''))
-    ].filter(Boolean).join('\n'),time:r.completed_at||r.created_at,status:r.status,failed:r.status==='failed'}))
-  ].sort((a,b)=>new Date(a.time).getTime()-new Date(b.time).getTime());
- }
- async function loadRequirements(projectId:string,taskId:string){
+  return buildTaskTimeline({taskId,messages:taskMessages,notes:taskAgentNotes,events,
+   processEvents:taskProcessEvents,aiRuns,activeTaskId:activeTask?.id,taskTestRuns,testRuns});
+ } async function loadRequirements(projectId:string,taskId:string){
   const data=await api<RequirementInfo>('/projects/'+projectId+'/tasks/'+taskId+'/requirements');
   setRequirements(data);
  }
