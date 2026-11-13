@@ -278,7 +278,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   ]);
   const config=await resolveRoleAiSettings(pool,projectId,'manager',configResult.rows[0]);
   if(!config?.enabled)throw Error('AI выключен в настройках проекта');
-  const session=await createAgentSession(pool,projectId,turn.actor_id,'manager');
+  const session=await createAgentSession(pool,projectId,turn.actor_id,'manager',messageId);
   sessionId=session.id;
   const instructions=await conversationInstructions(pool,projectId,'manager');
   const ownerQuestion=orderId?(await pool.query(
