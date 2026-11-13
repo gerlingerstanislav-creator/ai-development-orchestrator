@@ -64,7 +64,7 @@ export function createCodexAppExecutor({store,spawnImpl=spawn,env={},command='co
  return async function execute({scope,requestId,prompt,model,effort,cwd,timeout=240000,
   configArgs=[],sandboxPolicy,images=[],envOverrides={},onStarted,onProgress,onChild,signal}){
   return store.run(scope,requestId,async()=>{
-   const child=spawnImpl(command,[...configArgs,'app-server'],{
+   const child=spawnImpl(command,['app-server','--listen','stdio://',...configArgs],{
     cwd,env:{...env,...envOverrides},stdio:['pipe','pipe','pipe'],detached:true
    });
    onChild?.(child);
