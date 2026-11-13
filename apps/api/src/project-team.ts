@@ -1,4 +1,5 @@
 import {agentInstructions} from './agent-instructions.js';
+import {applicabilitySchema,applicabilityText,inspectInstruction,reconcileInstructions,type Applicability} from './instruction-governance.js';
 import {responsibilityFor} from './role-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
@@ -81,6 +82,13 @@ export async function initProjectTeamSchema(pool:Pool){
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS author_id uuid REFERENCES users(id) ON DELETE SET NULL;
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent';
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source_run_id uuid;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS applicability jsonb NOT NULL DEFAULT '{}'::jsonb;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source_message_id uuid;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS instruction_group_id uuid;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS supersedes_id uuid REFERENCES agent_memory(id);
+ CREATE INDEX IF NOT EXISTS idx_agent_memory_source_message ON agent_memory(project_id,source_message_id) WHERE source_message_id IS NOT NULL;
+ CREATE TABLE IF NOT EXISTS agent_memory_events(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,memory_id uuid NOT NULL REFERENCES agent_memory(id) ON DELETE CASCADE,action text NOT NULL,actor_id uuid REFERENCES users(id) ON DELETE SET NULL,details jsonb NOT NULL DEFAULT '{}'::jsonb,created_at timestamptz NOT NULL DEFAULT now());
+ CREATE INDEX IF NOT EXISTS idx_agent_memory_events ON agent_memory_events(project_id,memory_id,created_at DESC);
  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memory_run_learning ON agent_memory(project_id,role,source_run_id) WHERE source_run_id IS NOT NULL;
  CREATE INDEX IF NOT EXISTS idx_agent_memory_role_status ON agent_memory(project_id,role,status,created_at DESC);
  ALTER TABLE project_specialist_agents DROP CONSTRAINT IF EXISTS project_specialist_agents_role_check;
@@ -185,12 +193,26 @@ export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId
  }
  return 'Роль: '+row.agent_name+'\nПроектные инструкции:\n'+row.agent_instructions;
 }
-/** Only explicitly approved instruction proposals and observations are used at runtime. */
-export async function agentMemoryContext(pool:Pick<Pool,'query'>,projectId:string,role:string){
- const rows=(await pool.query(`SELECT body,evidence,kind FROM agent_memory
+/** Approved directives only; observations remain labelled as experience, not commands.
+ * A scope is always explicit so a Laravel rule cannot become a Node.js mandate. */
+export async function agentMemoryContext(pool:Pick<Pool,'query'>,projectId:string,role:string,contextHint=''){
+ const rows=(await pool.query(`SELECT body,evidence,kind,applicability,status FROM agent_memory
  WHERE project_id=$1 AND role=$2 AND ((kind='observation' AND status IN ('recorded','approved')) OR (kind='instruction_suggestion' AND status='approved'))
- ORDER BY created_at DESC,id DESC LIMIT 20`,[projectId,role])).rows;
- return rows.reverse().map(r=>'- '+String(r.body).slice(0,800)+(r.evidence?' (основание: '+String(r.evidence).slice(0,160)+')':'')).join('\n').slice(0,12500);
+ ORDER BY created_at DESC,id DESC LIMIT 80`,[projectId,role])).rows;
+ const words=contextHint.toLowerCase();
+ const ranked=rows.map((r:any)=>{
+  const scope=(r.applicability||{}) as Applicability;
+  const fields=Object.values(scope).filter(Boolean).map(value=>String(value).toLowerCase());
+  const matched=fields.length>0&&fields.every(value=>words.includes(value));
+  const text=String(r.body).slice(0,800);
+  return {score:r.kind==='instruction_suggestion'?(matched?4:fields.length?1:3):0,
+   line:(r.kind==='observation'?'Опыт, не обязательное правило: ':'')+text+
+    (fields.length?' [Применять только если '+applicabilityText(scope)+']':'')};
+ }).sort((a:any,b:any)=>b.score-a.score);
+ const lines=ranked.map((r:any)=>'- '+r.line);
+ let answer='';
+ for(const line of lines){if(answer.length+line.length+1>4800)break;answer+=(answer?'\n':'')+line;}
+ return answer;
 }
 /** One suggested reusable lesson per completed execution, never auto-approved. */
 export async function recordAgentLearning(pool:Pool,args:{projectId:string;role:string;runId:string;body:unknown;evidence:string}){
@@ -227,7 +249,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
    pool.query('SELECT role,agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 ORDER BY role',[id]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 ORDER BY CASE role WHEN \'manager\' THEN 0 ELSE 1 END',[id]),
    pool.query('SELECT role,model FROM project_agent_models WHERE project_id=$1',[id]),
-   pool.query(`SELECT m.id,m.role,m.kind,m.body,m.evidence,m.status,m.origin,m.author_id,m.created_at,m.reviewed_at,
+   pool.query(`SELECT m.id,m.role,m.kind,m.body,m.evidence,m.status,m.origin,m.author_id,m.created_at,m.reviewed_at,m.applicability,m.source_message_id,m.instruction_group_id,m.supersedes_id,
     u.email AS author_email FROM agent_memory m LEFT JOIN users u ON u.id=m.author_id
     WHERE m.project_id=$1 ORDER BY m.created_at DESC,m.id DESC LIMIT 1000`,[id]),
     pool.query('SELECT role,capacity FROM project_role_capacity WHERE project_id=$1',[id])
@@ -286,30 +308,62 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
   const {id,role}=changeParam.parse(req.params);if(!await access(req,reply,id))return;
   return {history:(await pool.query('SELECT id,previous_name,previous_instructions,next_name,next_instructions,created_at FROM agent_instruction_history WHERE project_id=$1 AND role=$2 ORDER BY created_at DESC LIMIT 50',[id,role])).rows};
  });
+ app.get('/api/projects/:id/team/instruction-audit',async(req:any,reply)=>{
+  const {id}=param.parse(req.params);if(!await access(req,reply,id))return;
+  const rows=(await pool.query(`SELECT id,role,body,status,applicability,source_message_id FROM agent_memory
+   WHERE project_id=$1 AND kind='instruction_suggestion' AND status IN ('approved','proposed')
+   ORDER BY created_at DESC LIMIT 400`,[id])).rows;
+  const findings=[];
+  for(let i=0;i<rows.length;i++){
+   const candidates=rows.slice(i+1).filter((r:any)=>r.role===rows[i].role);
+   for(const match of inspectInstruction(rows[i].body,rows[i].applicability||{},candidates)){
+    findings.push({role:rows[i].role,id:rows[i].id,other_id:match.id,relation:match.relation,
+     text:rows[i].body,other_text:match.body});
+   }
+  }
+  return {findings:findings.slice(0,100),checked:rows.length};
+ });
  app.post('/api/projects/:id/team/:role/memory',async(req:any,reply)=>{
   const {id,role}=changeParam.parse(req.params);if(!await canWrite(req,reply,id))return;
   if(!await roleExists(pool,id,role))return reply.code(404).send({error:'Роль не найдена'});
-  const data=z.object({body:z.string().trim().min(5).max(1600),evidence:z.string().max(600).default('')}).parse(req.body);
+  const data=z.object({body:z.string().trim().min(5).max(1600),evidence:z.string().max(600).default(''),applicability:applicabilitySchema.default({})}).parse(req.body);
+  const existing=await reconcileInstructions(pool,id,[role],data.body,data.applicability);
+  if(existing.some(v=>v.relation==='duplicate'))return reply.code(409).send({error:'Такая инструкция уже сохранена для выбранной роли и области применения'});
   const newId=randomUUID();
-  const row=(await pool.query(`INSERT INTO agent_memory(id,project_id,role,kind,body,evidence,status,origin,author_id,reviewed_at)
-   VALUES($1,$2,$3,'instruction_suggestion',$4,$5,'approved','user',$6,now())
-   RETURNING id`,[newId,id,role,data.body,data.evidence,uid(req)])).rows[0];
+  const row=(await pool.query(`INSERT INTO agent_memory(id,project_id,role,kind,body,evidence,status,origin,author_id,reviewed_at,applicability)
+   VALUES($1,$2,$3,'instruction_suggestion',$4,$5,'approved','user',$6,now(),$7::jsonb)
+   RETURNING id`,[newId,id,role,data.body,data.evidence,uid(req),JSON.stringify(data.applicability)])).rows[0];
   return reply.code(201).send({id:row.id});
  });
  app.patch('/api/projects/:id/team/:role/memory/:memoryId',async(req:any,reply)=>{
   const {id,role,memoryId}=changeParam.extend({memoryId:uuid}).parse(req.params);
   if(!await canWrite(req,reply,id))return;
   const {status}=z.object({status:memoryStatus}).parse(req.body);
-  const row=(await pool.query(`UPDATE agent_memory SET status=$4,reviewed_at=now() WHERE project_id=$1 AND role=$2 AND id=$3
-   AND kind='instruction_suggestion' AND origin='agent' RETURNING id`,[id,role,memoryId,status])).rows[0];
-  if(!row)return reply.code(404).send({error:'Предложение не найдено'});
-  return {ok:true};
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const old=(await client.query(`SELECT id,status,supersedes_id FROM agent_memory
+    WHERE project_id=$1 AND role=$2 AND id=$3 AND kind='instruction_suggestion' AND origin='agent' FOR UPDATE`,[id,role,memoryId])).rows[0];
+   if(!old){await client.query('ROLLBACK');return reply.code(404).send({error:'Предложение не найдено'});}
+   if(old.status===status){await client.query('COMMIT');return {ok:true};}
+   if(status==='approved'&&old.supersedes_id){
+    await client.query("UPDATE agent_memory SET status='rejected',reviewed_at=now() WHERE id=$1 AND project_id=$2 AND role=$3 AND status='approved'",[old.supersedes_id,id,role]);
+   }
+   await client.query('UPDATE agent_memory SET status=$4,reviewed_at=now() WHERE project_id=$1 AND role=$2 AND id=$3',[id,role,memoryId,status]);
+   await client.query(`INSERT INTO agent_memory_events(id,project_id,memory_id,action,actor_id,details)
+    VALUES($1,$2,$3,$4,$5,$6::jsonb)`,[randomUUID(),id,memoryId,'review',uid(req),JSON.stringify({before:old.status,after:status,supersedes_id:old.supersedes_id})]);
+   await client.query('COMMIT');
+   return {ok:true};
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
  });
  app.delete('/api/projects/:id/team/:role/memory/:memoryId',async(req:any,reply)=>{
   const {id,role,memoryId}=changeParam.extend({memoryId:uuid}).parse(req.params);
   if(!await canWrite(req,reply,id))return;
-  const row=(await pool.query(`DELETE FROM agent_memory WHERE project_id=$1 AND role=$2 AND id=$3 AND origin='user' RETURNING id`,[id,role,memoryId])).rows[0];
-  if(!row)return reply.code(404).send({error:'Пользовательская инструкция не найдена'});
+  const result=await pool.query(`UPDATE agent_memory SET status='rejected',reviewed_at=now()
+   WHERE project_id=$1 AND role=$2 AND id=$3 AND origin='user' AND status<>'rejected' RETURNING id`,[id,role,memoryId]);
+  if(!result.rowCount)return reply.code(404).send({error:'Активная пользовательская инструкция не найдена'});
+  await pool.query(`INSERT INTO agent_memory_events(id,project_id,memory_id,action,actor_id)
+   VALUES($1,$2,$3,'deactivate',$4)`,[randomUUID(),id,memoryId,uid(req)]);
   return {ok:true};
  });
 }
