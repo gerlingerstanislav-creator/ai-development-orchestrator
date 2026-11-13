@@ -62,16 +62,19 @@ export function createCodexThreadStore(directory){
  */
 export function createCodexAppExecutor({store,spawnImpl=spawn,env={},command='codex'}){
  return async function execute({scope,requestId,prompt,model,effort,cwd,timeout=240000,
-  configArgs=[],sandboxPolicy,images=[],onStarted,onProgress,signal}){
+  configArgs=[],sandboxPolicy,images=[],onStarted,onProgress,onChild,signal}){
   return store.run(scope,requestId,async()=>{
    const child=spawnImpl(command,[...configArgs,'app-server'],{
     cwd,env,stdio:['pipe','pipe','pipe'],detached:true
    });
+   onChild?.(child);
    const rl=createInterface({input:child.stdout,crlfDelay:Infinity});
    const pending=new Map();
    let seq=0,turnId=null,threadId=null,answer='',lastUsage=null,closed=false,completed=false;
    let completionResolve,completionReject;
    const completedTurn=new Promise((resolve,reject)=>{completionResolve=resolve;completionReject=reject;});
+   // A failed handshake can occur before we start awaiting turn completion.
+   completedTurn.catch(()=>{});
    let errorLog='';
    child.stderr.on('data',data=>{errorLog=(errorLog+data.toString()).slice(-2000);});
    function send(method,params,id=null){
@@ -159,7 +162,7 @@ export function createCodexAppExecutor({store,spawnImpl=spawn,env={},command='co
     clearTimeout(timer);signal?.removeEventListener('abort',abort);
     // The turn is finished/failed, so the child has no work to preserve.
     if(!closed)kill();
-    rl.close();
+    rl.close();onChild?.(null);
    }
   });
  };
