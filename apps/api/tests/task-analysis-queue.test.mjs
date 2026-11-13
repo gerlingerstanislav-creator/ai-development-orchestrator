@@ -17,6 +17,7 @@ test('system analyst automatically owns analysis tasks, hands off completed work
    type text NOT NULL DEFAULT 'task',stage text NOT NULL DEFAULT 'analysis',
    analysis_state text NOT NULL DEFAULT 'new',spec_version int NOT NULL DEFAULT 1,
    spec_review_status text NOT NULL DEFAULT 'current',spec_reviewed_version int NOT NULL DEFAULT 1,
+   pr_url text,git_branch text,
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,priority int NOT NULL DEFAULT 3,
    iteration_work_kind text,created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now());
   CREATE TABLE project_ai_settings(project_id uuid,enabled boolean NOT NULL);
@@ -24,6 +25,8 @@ test('system analyst automatically owns analysis tasks, hands off completed work
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,author_stage text,author_name text,
    target_stage text,kind text,body text,source_kind text,source_key text,status text,UNIQUE(task_id,source_key));
   CREATE TABLE task_events(id uuid,task_id uuid,event text,detail text);
+  CREATE TABLE ai_task_runs(id uuid,project_id uuid,task_id uuid,status text,runner_spec_version int);
+  CREATE TABLE task_orchestration_owners(task_id uuid,state text);
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
  `);
  await initTaskAnalysisQueue(db);

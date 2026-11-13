@@ -84,6 +84,44 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
       AND n.project_id=t.project_id AND ${PENDING_OWNER_QUESTION_SQL})
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))`);
 
+  // A previously developed task does not become unanalysed merely because its
+  // Kanban column returned to Analysis. Recover from version-matched evidence,
+  // not from an owner's repeated instruction or a synthetic analyst result.
+  // Never silently discard product-owner questions or changed specifications.
+  await db.query('BEGIN');
+  try{
+   const recovered=await db.query(`UPDATE tasks t
+    SET analysis_state='ready_for_development',updated_at=now()
+    WHERE t.id IN (
+     SELECT candidate.id FROM tasks candidate
+     WHERE candidate.stage='analysis'
+      AND candidate.type IN ('task','bug','improvement')
+      AND candidate.analysis_state NOT IN ('ready_for_development','processing')
+      AND candidate.spec_review_status='current'
+      AND candidate.spec_reviewed_version=candidate.spec_version
+      AND NULLIF(BTRIM(candidate.pr_url),'') IS NOT NULL
+      AND NULLIF(BTRIM(candidate.git_branch),'') IS NOT NULL
+      AND COALESCE(jsonb_array_length(candidate.clarification_questions),0)=0
+      AND EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.project_id=candidate.project_id
+       AND r.task_id=candidate.id AND r.status IN ('completed','failed')
+       AND (r.runner_spec_version=candidate.spec_version
+        OR (r.runner_spec_version IS NULL AND candidate.spec_version=1)))
+      AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.project_id=candidate.project_id
+       AND n.task_id=candidate.id AND ${PENDING_OWNER_QUESTION_SQL})
+      AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=candidate.id
+       AND a.status IN ('queued','running'))
+      AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners o WHERE o.task_id=candidate.id
+       AND o.state='active')
+     ORDER BY candidate.priority,candidate.created_at LIMIT 30
+    ) AND t.stage='analysis'
+    RETURNING t.id`);
+   for(const task of recovered.rows){
+    await db.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_reused_from_existing_pr',$3)",
+     [randomUUID(),task.id,'Восстановлена ранее выполненная работа: есть PR и попытка разработки для актуальной версии требований. Повторный анализ не требуется.']);
+   }
+   await db.query('COMMIT');
+  }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}
+
   // Ready means the analyst finalized this task's requirements, independent of epic siblings.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'

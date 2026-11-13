@@ -19,6 +19,8 @@ test('technical consultations do not deadlock analysis, while real owner questio
    priority int DEFAULT 2,created_at timestamptz NOT NULL DEFAULT now(),
    type text DEFAULT 'task',stage text DEFAULT 'analysis',
    analysis_state text DEFAULT 'new',spec_version int DEFAULT 1,
+   spec_review_status text NOT NULL DEFAULT 'current',spec_reviewed_version int NOT NULL DEFAULT 1,
+   pr_url text,git_branch text,
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,
    updated_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,
@@ -29,6 +31,8 @@ test('technical consultations do not deadlock analysis, while real owner questio
   CREATE TABLE project_ai_settings(project_id uuid,enabled boolean);
   CREATE TABLE project_role_capacity(project_id uuid,role text,capacity int);
   CREATE TABLE task_events(id uuid,task_id uuid,event text,detail text);
+  CREATE TABLE ai_task_runs(id uuid,project_id uuid,task_id uuid,status text,runner_spec_version int);
+  CREATE TABLE task_orchestration_owners(task_id uuid,state text);
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
   CREATE TABLE task_requirement_reviews(task_id uuid,project_id uuid,spec_version int,status text,classification text,created_at timestamptz DEFAULT now(),resolved_at timestamptz);
  `);

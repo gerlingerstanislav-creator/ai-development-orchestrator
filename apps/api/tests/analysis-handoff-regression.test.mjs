@@ -26,7 +26,7 @@ test('completed, clearly specified analysis passes technical consultations, even
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,
    updated_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,event text,detail text,actor_id uuid);
-  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text);
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text,runner_spec_version int);
   CREATE TABLE task_orchestration_owners(task_id uuid,state text);
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,
    kind text,status text,target_stage text DEFAULT 'all',requires_customer boolean NOT NULL DEFAULT false,
@@ -39,7 +39,7 @@ test('completed, clearly specified analysis passes technical consultations, even
  `);
  await initTaskAnalysisQueue(db);
  const project=randomUUID();
- const [readyTech,readyOwner,waitingRecovered,unverified,resumePrevious,resumeOwner,actorId]=Array.from({length:7},randomUUID);
+ const [readyTech,readyOwner,waitingRecovered,unverified,resumePrevious,resumeOwner,actorId,autoResume,changedSpec]=Array.from({length:9},randomUUID);
  await db.query('INSERT INTO projects(id,agents_running) VALUES($1,false)',[project]);
  await db.query('INSERT INTO project_ai_settings VALUES($1,true)',[project]);
  await db.query("INSERT INTO tasks(id,project_id,analysis_state) VALUES($1,$5,'ready_for_development'),($2,$5,'ready_for_development'),($3,$5,'waiting_questions'),($4,$5,'ready_for_development')",
@@ -49,7 +49,13 @@ test('completed, clearly specified analysis passes technical consultations, even
  await db.query("INSERT INTO tasks(id,project_id,analysis_state,pr_url,git_branch) VALUES($1,$3,'new','https://github.com/example/repo/pull/2','fix/prior-work'),($2,$3,'new','https://github.com/example/repo/pull/3','fix/prior-owner')",
   [resumePrevious,resumeOwner,project]);
  for(const taskId of [resumePrevious,resumeOwner])
-  await db.query("INSERT INTO ai_task_runs VALUES($1,$2,$3,'failed')",[randomUUID(),project,taskId]);
+  await db.query("INSERT INTO ai_task_runs(id,project_id,task_id,status,runner_spec_version) VALUES($1,$2,$3,'failed',1)",[randomUUID(),project,taskId]);
+ await db.query("INSERT INTO tasks(id,project_id,analysis_state,pr_url,git_branch) VALUES($1,$2,'new','https://github.com/example/repo/pull/4','fix/automatic-resume')",
+  [autoResume,project]);
+ await db.query("INSERT INTO tasks(id,project_id,analysis_state,spec_version,spec_reviewed_version,pr_url,git_branch) VALUES($1,$2,'new',2,2,'https://github.com/example/repo/pull/5','fix/changed-spec')",
+  [changedSpec,project]);
+ for(const taskId of [autoResume,changedSpec])
+  await db.query("INSERT INTO ai_task_runs(id,project_id,task_id,status,runner_spec_version) VALUES($1,$2,$3,'completed',1)",[randomUUID(),project,taskId]);
  await db.query("INSERT INTO agent_analysis_runs(id,project_id,task_id,spec_version,status) VALUES($1,$2,$3,1,'completed')",
   [randomUUID(),project,waitingRecovered]);
  const addNote=(id,target,requiresCustomer)=>db.query("INSERT INTO task_agent_notes(id,project_id,task_id,kind,status,target_stage,requires_customer,source_key) VALUES($1,$2,$3,'question','open',$4,$5,$6)",
@@ -68,6 +74,11 @@ test('completed, clearly specified analysis passes technical consultations, even
  await reconcileTaskAnalysisQueue(db,temporal);
  const state=async id=>(await db.query('SELECT stage,analysis_state FROM tasks WHERE id=$1',[id])).rows[0];
  assert.deepEqual(await state(readyTech),{stage:'development',analysis_state:'approved'});
+ assert.deepEqual(await state(autoResume),{stage:'development',analysis_state:'approved'},
+  'a prior implementation automatically leaves analysis without new owner intervention');
+ assert.deepEqual(await state(changedSpec),{stage:'analysis',analysis_state:'new'},
+  'completed PR at an older specification must not bypass current requirements');
+ assert.equal((await db.query("SELECT count(*)::int AS n FROM task_events WHERE task_id=$1 AND event='analysis_reused_from_existing_pr'",[autoResume])).rows[0].n,1);
  assert.deepEqual(await state(resumePrevious),{stage:'development',analysis_state:'approved'},
   'previous PR can resume on explicit owner approval without repeated analysis');
  assert.deepEqual(await state(resumeOwner),{stage:'analysis',analysis_state:'new'});

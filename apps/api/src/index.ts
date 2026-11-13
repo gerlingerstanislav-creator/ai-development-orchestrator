@@ -14,7 +14,7 @@ import {registerProjectGitRoutes} from './modules/integrations/github/api.js';
 import {registerCodexAdminRoutes} from './modules/codex/api.js';
 import {registerAuthRoutes} from './modules/auth/api.js';
 import {issueAccessToken} from './modules/auth/application/tokens.js';
-import {pauseAllProjectAgents,ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
+import {ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
 import {runSchemaMigrations} from './database/schema-migrations.js';
 import {initEpicStageSync} from './epic-stage-sync.js';
 import {initAnalysisFirstGate} from './analysis-first-gate.js';
@@ -48,6 +48,7 @@ import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-
 import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
+import {reconcileIdlePullRequests} from './idle-pr-recovery.js';
 import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -648,7 +649,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
 async function main(){
  await runSchemaMigrations(pool,coreSchemaMigrations(workflowStageDescriptions));
  // These are runtime policies, not schema migrations: run on every restart.
- await pauseAllProjectAgents(pool);
+ // Preserve the project's durable agents_running choice across deployments.
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
 await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
@@ -662,6 +663,7 @@ await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDi
   {label:'PM owner questions',execute:()=>publishOwnerQuestionsToPmChat(pool)},
   {label:'Task analyst queue',execute:()=>reconcileTaskAnalysisQueue(pool,temporal)},
   {label:'Agent work queue',execute:()=>reconcileAgentWorkQueue(pool,temporal)},
+   {label:'Existing PR QA recovery',execute:()=>reconcileIdlePullRequests(pool,recoverTask,accessToken)},
   {label:'Legacy development process',execute:()=>reconcileLegacyDevelopmentRuns()}
  ],(label,error)=>app.log.error({error},label+' reconciliation failed'));
  const reconcile=()=>{void queueReconciler.run();};
