@@ -35,7 +35,7 @@ export async function installTaskEvidenceSchema(db:Pick<Pool,'query'>){
  CREATE INDEX IF NOT EXISTS idx_task_evidence_project
  ON task_evidence_runs(project_id,status,created_at);
  -- Applied after v11; never change the historical analysis-first migration.
- CREATE OR REPLACE FUNCTION ado_browser_evidence_guard() RETURNS trigger AS $
+ CREATE OR REPLACE FUNCTION ado_browser_evidence_guard() RETURNS trigger AS $$
  BEGIN
   IF NEW.execution_mode='browser_evidence' AND NEW.stage='testing'
    AND (TG_OP='INSERT' OR OLD.stage IS DISTINCT FROM NEW.stage) THEN
@@ -52,7 +52,7 @@ export async function installTaskEvidenceSchema(db:Pick<Pool,'query'>){
   END IF;
   RETURN NEW;
  END;
- $ LANGUAGE plpgsql;
+ $$ LANGUAGE plpgsql;
  DROP TRIGGER IF EXISTS trg_ado_browser_evidence_guard ON tasks;
  CREATE TRIGGER trg_ado_browser_evidence_guard
  BEFORE INSERT OR UPDATE OF stage,execution_mode ON tasks
