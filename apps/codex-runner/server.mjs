@@ -65,6 +65,13 @@ const globalCodexSettings=args=>{
  return result;
 };
 const appConversationSettings=globalCodexSettings(conversationPolicy);
+const imagePaths=args=>args.flatMap((value,i)=>value==='--image'&&typeof args[i+1]==='string'?[args[i+1]]:[]);
+const conversationScope=(data,fallbackRole)=>({
+ projectId:String(data.project_id||data.context?.projectId||'unknown'),
+ role:String(data.agent_role||data.context?.role||fallbackRole),
+ taskId:data.task_id||data.context?.taskId||undefined,
+ processId:String(data.process_id||data.context?.processId||data.request_id||data.session_token?.slice(0,16)||randomUUID())
+});
 
 journal.recover();
 const readJob=id=>activeJobs.get(id)||journal.read(id);
@@ -1041,15 +1048,17 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
     // The shell policies keep the MCP session out of project commands.
     const context=agentMcp(data.session_token,agentApi);
-    const result=await withRunnerImages(data.images,imageArgs=>command('codex',[
-     'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-     '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,data.prompt
-    ],{cwd:'/opt/codex-runner',env:{...cliEnv,...context.env},timeout:240000,maxOutputChars:500000}));
-    const parsed=codexJsonResult(result.stdout);
-    const message=parsed.message.trim();
+    const result=await withRunnerImages(data.images,imageArgs=>appExecutor({
+     scope:conversationScope(data,'analyst'),requestId:String(data.request_id||data.session_token),
+     prompt:data.prompt,model:data.model,effort:data.reasoning,cwd:'/opt/codex-runner',
+     timeout:240000,configArgs:[...appConversationSettings,...context.args],
+     envOverrides:context.env,images:imagePaths(imageArgs),
+     sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}}
+    }));
+    const message=result.message.trim();
     if(!message)return reply(res,502,{error:'Агент не вернул итоговое сообщение'});
     if(message.length>120000)return reply(res,413,{error:'Итоговый ответ агента превышает размер'});
-    return reply(res,200,{message,usage:parsed.usage});
+    return reply(res,200,{message,usage:result.usage,thread_id:result.threadId,turn_id:result.turnId});
    }catch(error){
     return reply(res,503,{error:'Агент Codex: '+String(error?.message||error).slice(0,900)});
    }finally{activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
@@ -1063,15 +1072,18 @@ http.createServer(async(req,res)=>{
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
     const result=await withReaderContext(agentApi,jobKey,data.context,context=>
-     withRunnerImages(data.images,imageArgs=>command('codex',[
-      'exec','-m',data.model,'-c','model_reasoning_effort="'+data.reasoning+'"',
-      '--json','--ephemeral','--skip-git-repo-check',...conversationPolicy,...context.args,...imageArgs,scopedAgentPrompt(context,data.prompt)
-     ],{cwd:'/opt/codex-runner',env:{...cliEnv,...context.env},timeout:240000,maxOutputChars:500000})));
-    const parsed=codexJsonResult(result.stdout);
-    const message=parsed.message.trim();
+     withRunnerImages(data.images,imageArgs=>appExecutor({
+      scope:conversationScope(data,'assistant'),requestId:String(data.request_id||randomUUID()),
+      prompt:scopedAgentPrompt(context,data.prompt),model:data.model,effort:data.reasoning,
+      cwd:'/opt/codex-runner',timeout:240000,
+      configArgs:[...appConversationSettings,...context.args],
+      envOverrides:context.env,images:imagePaths(imageArgs),
+      sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}}
+     })));
+    const message=result.message.trim();
     if(!message)return reply(res,502,{error:'Codex вернул пустой ответ'});
     if(message.length>120000)return reply(res,413,{error:'Слишком объёмный ответ AI для одного этапа. Раздели итоговую документацию на несколько частей.'});
-    return reply(res,200,{message,usage:parsed.usage});
+    return reply(res,200,{message,usage:result.usage,thread_id:result.threadId,turn_id:result.turnId});
    }catch(error){
     return reply(res,503,{error:'Codex: '+String(error?.message||error).slice(0,900)});
    }finally{activeChatRequests--;}
