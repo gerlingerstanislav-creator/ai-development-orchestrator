@@ -1025,7 +1025,7 @@ registerProjectManagerRoutes(app,{pool,uid,access,requireAdmin,
 async function main(){
  await runSchemaMigrations(pool,coreSchemaMigrations(workflowStageDescriptions));
  // These are runtime policies, not schema migrations: run on every restart.
- await pauseAllProjectAgents(pool);
+ // Running/paused is a durable owner decision, not a transient deployment state.
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
 await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
