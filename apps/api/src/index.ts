@@ -1,3 +1,4 @@
+import {registerDevelopmentRunStatusRoutes} from './modules/execution/api/development-run-status.js';
 import {registerQualityOperationsRoutes} from './modules/quality/api.js';
 import {createQueueReconciler} from './modules/execution/application/queue-reconciler.js';
 import {registerProjectTaskRoutes} from './modules/tasks/api.js';
@@ -151,64 +152,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
 });
 registerQualityOperationsRoutes(app,{pool,uid,access,requireAdmin,temporal,runnerUrl:codexUrl,runnerSecret:runnerKey,decryptToken});
-app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
- const {id,runId}=parse(z.object({id:z.string().uuid(),runId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id))return;
- const run=await pool.query('SELECT id,task_id,model,status,branch,pr_url,message,created_at,completed_at,cycle_id FROM ai_task_runs WHERE id=$1 AND project_id=$2',[runId,id]);
- if(!run.rowCount){
-  const intent=(await pool.query(`SELECT q.run_id AS id,q.task_id,q.status,q.created_at,q.detail AS message,
-   COALESCE(s.model,'gpt-6-luna') AS model FROM iteration_execution_queue q
-   LEFT JOIN project_ai_settings s ON s.project_id=q.project_id WHERE q.project_id=$1 AND q.run_id=$2`,[id,runId])).rows[0];
-  if(!intent)return reply.code(404).send({error:'Запуск не найден'});
-  return {...intent,status:intent.status==='stale'?'failed':intent.status==='dispatched'?'completed':intent.status,
-   message:intent.message||'Ожидает диспетчера разработки'};
- }
- const current=run.rows[0];
- if(current.cycle_id)return current; // Temporal worker is the single owner of lifecycle transitions.
- if(current.status==='running'||current.status==='queued'){
-  try{
-   const remote=await agentCall('/jobs/'+runId);
-   const phase=String(remote.message||'').slice(0,1600);
-   if(remote.branch&&remote.branch!==current.branch){
-    await pool.query('UPDATE ai_task_runs SET branch=$2 WHERE id=$1',[runId,remote.branch]);
-    await pool.query('UPDATE tasks SET git_branch=$2 WHERE id=$1 AND project_id=$3',[current.task_id,remote.branch,id]);
-   }
-   if(remote.status!==current.status)await pool.query('UPDATE ai_task_runs SET status=$2 WHERE id=$1',[runId,remote.status]);
-   if(phase && phase!==current.message){
-    await pool.query('UPDATE ai_task_runs SET message=$2 WHERE id=$1',[runId,phase]);
-    await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'development',$4,$5,$6)",
-     [randomUUID(),id,runId,remote.status==='failed'?'error':'info',remote.status||'running',phase]).catch(()=>{});
-    await pool.query('INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,$4,$5)',
-      [randomUUID(),current.task_id,uid(req),remote.status==='failed'?'ai_failed':remote.status==='completed'?'ai_completed':'ai_progress',phase]);
-   }
-   if(['completed','failed'].includes(remote.status)){
-    if(remote.usage){
-     const u=remote.usage;
-     await pool.query("INSERT INTO ai_token_usage(id,project_id,task_id,source_id,operation,model,input_tokens,cached_input_tokens,output_tokens) VALUES($1,$2,$3,$4,'development',$5,$6,$7,$8) ON CONFLICT(source_id) DO NOTHING",
-      [randomUUID(),id,current.task_id,runId,current.model,Math.max(0,Number(u.input_tokens)||0),Math.max(0,Number(u.cached_input_tokens)||0),Math.max(0,Number(u.output_tokens)||0)]);
-    }
-    await pool.query('UPDATE ai_task_runs SET status=$2,branch=$3,pr_url=$4,message=$5,completed_at=now() WHERE id=$1',
-     [runId,remote.status,remote.branch||null,remote.prUrl||null,String(remote.message||'').slice(0,2000)]);
-    if(remote.status==='completed'&&remote.prUrl){
-     const prMatch=/\/pull\/(\d+)$/.exec(remote.prUrl);
-     await pool.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$6,updated_at=now() WHERE id=$1 AND project_id=$5",[current.task_id,remote.branch,remote.prUrl,prMatch?Number(prMatch[1]):null,id,remote.baseBranch||null]);
-    }
-    return {...current,status:remote.status,branch:remote.branch,pr_url:remote.prUrl,message:remote.message};
-   }
-   return {...current,status:remote.status,branch:remote.branch||current.branch,message:phase,started_at:remote.startedAt||null};
-  }catch(e){
-   const problem=e instanceof Error?e.message:'ошибка';
-   if(problem.includes('Задача не найдена (возможно, исполнитель перезапущен)')){
-    await pool.query("UPDATE ai_task_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1",[runId,'Исполнитель перезапустился; повтори запуск задачи']);
-    return {...current,status:'failed',message:'Исполнитель перезапустился; повтори запуск задачи'};
-   }
-   return {...current,message:'Нет связи с исполнителем: '+problem};
-  }
- }
- return current;
-});
-
-
+registerDevelopmentRunStatusRoutes({app,pool,access});
 
 const {mergeTaskPr,startMergeBatch}=registerMergeOperationsRoutes({app,pool,uid,access,requireAdmin,temporal,decryptToken});
 registerBackgroundProcessRoutes(app,pool,uid);

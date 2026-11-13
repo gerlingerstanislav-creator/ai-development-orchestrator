@@ -84,6 +84,7 @@ jobs:
           node --test apps/api/tests/qa-verdict-policy.test.mjs
           node --test apps/api/tests/quality-operations-api.test.mjs
           node --test apps/api/tests/background-processes.test.mjs apps/api/tests/legacy-development-reconciler.test.mjs
+          node --test apps/api/tests/development-run-status-api.test.mjs
           node --test apps/api/tests/agent-work-continuation.test.mjs
           node --test apps/api/tests/task-stage-analysis.test.mjs
           node --test apps/api/tests/project-process-controller.test.mjs
