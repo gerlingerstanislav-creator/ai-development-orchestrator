@@ -17,7 +17,7 @@ type DocumentationRounds={
 
 export function recoverableDocumentAgentError(error:unknown):boolean{
  const reason=error instanceof Error?error.message:String(error);
- return /превысил ограничение времени|превышено время|timed?\\s*out|timeout|AbortError|aborted|ETIMEDOUT|ECONNRESET|ECONNABORTED|fetch failed|socket hang up|502 Bad Gateway|503 Service Unavailable|исполнитель этой роли занят|очередь агентных диалогов заполнена|несколько AI-диалогов/i.test(reason);
+ return /превысил ограничение времени|превышено время|timed?\s*out|timeout|AbortError|aborted|ETIMEDOUT|ECONNRESET|ECONNABORTED|fetch failed|socket hang up|502 Bad Gateway|503 Service Unavailable|исполнитель этой роли занят|очередь агентных диалогов заполнена|несколько AI-диалогов/i.test(reason);
 }
 
 /** Event results are evidence, not instructions. Keep only bounded excerpts. */
@@ -32,8 +32,8 @@ export function documentationAgentHistory(events:DocumentationAgentEvent[],lastM
  });
  const result=[
   lastMessage?'Последний ответ/сбой агента: '+lastMessage.slice(0,600):'',
-  tools.length?'Сохранённые вызовы MCP этого поручения (уже выполнены; не дублируй запись):\\n'+tools.join('\\n'):''
- ].filter(Boolean).join('\\n');
+  tools.length?'Сохранённые вызовы MCP этого поручения (уже выполнены; не дублируй запись):\n'+tools.join('\n'):''
+ ].filter(Boolean).join('\n');
  return result.slice(-5700);
 }
 
@@ -74,7 +74,7 @@ export async function advanceDocumentationAgent(options:DocumentationRounds):Pro
   idle=progressed?0:idle+1;
   const reason=failure instanceof Error?failure.message:String(failure||'');
   history=documentationAgentHistory(events,message||reason);
-  if(failure)history+='\\nПредыдущий вызов Codex был прерван. Используй сохранённые результаты MCP и продолжай с последнего подтверждённого действия, не повторяя выполненные изменения.';
+  if(failure)history+='\nПредыдущий вызов Codex был прерван. Используй сохранённые результаты MCP и продолжай с последнего подтверждённого действия, не повторяя выполненные изменения.';
   if(idle>=maxIdleRounds){
    throw Error('Аналитик не продвигается: '+idle+' последовательных шага без новых вызовов MCP. Сохранённая история доступна для возобновления. Последний результат: '+(reason||message||'нет').slice(0,220));
   }
