@@ -503,12 +503,16 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
   [watch.projectId,watch.processId,watch.kind]);
  if(!mark.rowCount){await client.query('ROLLBACK');return 'completed';}
  const title=watch.kind==='iteration_plan'?'Подготовка задач итерации «'+process.name+'»':watch.kind==='development'?'Разработка задачи «'+process.name+'»':'Работа с документацией';
- const message=process.status==='completed'
+ const docsWritten=Number(process.saved_documents||process.result?.changed_documents||process.result?.generated_documents||0);
+ const emptyDocumentation=watch.kind==='document_import'&&process.status==='completed'&&docsWritten===0;
+ const message=emptyDocumentation
+  ?'Аналитик завершил ответ, но не создал и не изменил ни одной страницы ТЗ. Поручение НЕ выполнено. Проверь доступность источников проекта; не запускай повтор без новых данных или устранения причины.'
+  :process.status==='completed'
   ?watch.kind==='iteration_plan'
    ?title+' завершена. '+String(process.message||'')+' План разработки: '+String(process.plan_id||'не указан')+'. Карточки готовы. Задачи без открытых вопросов передаются в разработку.'
    :watch.kind==='development'
    ?title+' завершена. '+String(process.message||'')+(process.pr_url?' PR: '+process.pr_url:'')
-   :title+' завершена. '+String(process.message||'Документация обновлена')
+   :title+' завершена. Сохранено страниц: '+docsWritten+'. '+String(process.message||'Документация обновлена')
   :title+' завершилась со статусом «'+process.status+'». '+String(process.message||'Посмотри детали в Центре процессов');
  await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",
   [randomUUID(),watch.projectId,message.slice(0,3500),watch.topicId||null,watch.orderId||null]);
