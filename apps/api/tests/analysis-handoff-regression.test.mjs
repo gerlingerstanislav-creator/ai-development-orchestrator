@@ -22,7 +22,7 @@ test('completed, clearly specified analysis passes technical consultations, even
    type text NOT NULL DEFAULT 'task',stage text NOT NULL DEFAULT 'analysis',
    analysis_state text NOT NULL DEFAULT 'new',spec_version int NOT NULL DEFAULT 1,
    spec_review_status text NOT NULL DEFAULT 'current',spec_reviewed_version int NOT NULL DEFAULT 1,
-   pr_url text,git_branch text,
+   pr_url text,git_branch text,execution_mode text NOT NULL DEFAULT 'code',evidence_source_sha text,implementation_kind text,implementation_commit text,
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,
    updated_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,event text,detail text,actor_id uuid);
