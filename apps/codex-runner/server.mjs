@@ -66,12 +66,16 @@ const globalCodexSettings=args=>{
 };
 const appConversationSettings=globalCodexSettings(conversationPolicy);
 const imagePaths=args=>args.flatMap((value,i)=>value==='--image'&&typeof args[i+1]==='string'?[args[i+1]]:[]);
-const conversationScope=(data,fallbackRole)=>({
- projectId:String(data.project_id||data.context?.projectId||'unknown'),
- role:String(data.agent_role||data.context?.role||fallbackRole),
- taskId:data.task_id||data.context?.taskId||undefined,
- processId:String(data.process_id||data.context?.processId||data.request_id||data.session_token?.slice(0,16)||randomUUID())
-});
+const conversationScope=(data,fallbackRole)=>{
+ const role=String(data.agent_role||data.context?.role||fallbackRole);
+ const projectId=String(data.project_id||data.context?.projectId||'unknown');
+ // PM has a persistent owner/project chat, while each delegated job is a
+ // separate Temporal process. Never key a thread by an ephemeral MCP token.
+ const owner=typeof data.actor_id==='string'&&/^[a-f0-9-]{36}$/i.test(data.actor_id)?data.actor_id:'owner';
+ const processId=role==='manager'?'owner-chat:'+owner:
+  String(data.process_id||data.context?.processId||'project-chat:'+owner);
+ return {projectId,role,taskId:data.task_id||data.context?.taskId||undefined,processId};
+};
 
 journal.recover();
 const readJob=id=>activeJobs.get(id)||journal.read(id);
@@ -1048,9 +1052,11 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
     // The shell policies keep the MCP session out of project commands.
     const context=agentMcp(data.session_token,agentApi);
+    const scope=conversationScope(data,'analyst');
+    const previous=await threadStore.read(scope);
     const result=await withRunnerImages(data.images,imageArgs=>appExecutor({
-     scope:conversationScope(data,'analyst'),requestId:String(data.request_id||data.session_token),
-     prompt:data.prompt,model:data.model,effort:data.reasoning,cwd:'/opt/codex-runner',
+     scope,requestId:String(data.request_id||data.session_token),
+     prompt:previous&&typeof data.resume_prompt==='string'&&data.resume_prompt.trim()?data.resume_prompt:data.prompt,model:data.model,effort:data.reasoning,cwd:'/opt/codex-runner',
      timeout:240000,configArgs:[...appConversationSettings,...context.args],
      envOverrides:context.env,images:imagePaths(imageArgs),
      sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}}
