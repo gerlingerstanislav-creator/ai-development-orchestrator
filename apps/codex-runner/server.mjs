@@ -807,10 +807,14 @@ async function runArchitectureReviewJob(job,state,context){
    budget:13000
   });
   state.message='Независимое ревью архитектора';
-  const result=await command('codex',['exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-   '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,prompt],{
-   cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(1200000,job.maxRuntimeSeconds*1000),maxOutputChars:150000
+  const result=await persistentCli({
+   scope:{projectId:job.projectId,taskId:job.taskId,role:'architect'},
+   requestId:job.id+':review',model:job.model,reasoning:job.reasoning,
+   prompt,cwd:dir,env:{...cliEnv,...context.env},policyArgs:policy.execArgs,
+   mcpArgs:context.args,jobId:job.id,timeout:Math.min(1200000,job.maxRuntimeSeconds*1000),
+   maxOutputChars:150000
   });
+  state.threadId=result.threadId;
   const parsed=codexJsonResult(result.stdout);
   const response=String(parsed.message||'').trim().replace(/^`{3}(?:json)?\s*/i,'').replace(/\s*`{3}$/,'');
   const start=response.indexOf('{'),end=response.lastIndexOf('}');
@@ -964,10 +968,13 @@ async function runConflictJob(job,state,context){
     budget:14000
    });
    const policy=await isolatedTaskPolicy(workspace,dir,job.id);
-   const result=await command('codex',[
-     'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-     '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,prompt
-   ],{cwd:dir,env:{...cliEnv,...context.env},jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)});
+   const result=await persistentCli({
+    scope:{projectId:job.projectId,taskId:job.taskId,role:'conflict_resolver'},
+    requestId:job.id+':resolve',model:job.model,reasoning:job.reasoning,prompt,
+    cwd:dir,env:{...cliEnv,...context.env},policyArgs:policy.execArgs,
+    mcpArgs:context.args,jobId:job.id,timeout:Math.min(job.maxRuntimeSeconds*1000,900000)
+   });
+   state.threadId=result.threadId;
    const parsed=codexJsonResult(result.stdout);
    state.usage=parsed.usage;
    const answer=parsed.message||'';
