@@ -34,6 +34,7 @@ import {initProjectIterations,registerProjectIterationRoutes} from './project-it
 import {resolveRoleAiSettings} from './project-team.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
+import {authorizePmDestructiveSource} from './pm-source-authorization.js';
 import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {registerDocumentationResetRoutes} from './documentation-reset.js';
@@ -179,21 +180,9 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
  const user=(await pool.query('SELECT email FROM users WHERE id=$1',[session.actor_id])).rows[0];
  if(!user)throw Object.assign(Error('Пользователь не найден'),{statusCode:403});
  const id=z.string().uuid();
- // Message provenance is a capability gate, not a keyword-based intent router.
- // The owner message must belong to the PM turn being executed (or its durable order).
- const authorizeDestructiveSource=async(sourceId:string)=>{
-  if(!session.process_id)throw Object.assign(Error('Нет текущего сообщения для опасного действия'),{statusCode:403});
-  const allowed=await pool.query(`SELECT 1 FROM assistant_messages current
-   WHERE current.id=$1 AND current.project_id=$3 AND current.actor_id=$4 AND current.role='user'
-    AND (current.channel='project' AND current.id=$2 OR current.channel='pm-internal' AND EXISTS(
-     SELECT 1 FROM assistant_messages source JOIN project_pm_orders o ON o.id=current.pm_order_id
-      WHERE source.id=$2 AND source.project_id=$3 AND source.actor_id=$4 AND source.role='user'
-       AND source.channel='project' AND (source.pm_order_id=o.id OR source.id=o.source_message_id)))
-   UNION ALL SELECT 1 FROM manager_messages current
-    WHERE current.id=$1 AND current.id=$2 AND current.project_id=$3 AND current.actor_id=$4 AND current.role='user'
-   LIMIT 1`,[session.process_id,sourceId,projectId,session.actor_id]);
-  if(!allowed.rowCount)throw Object.assign(Error('Опасное действие требует исходного сообщения владельца из текущего поручения'),{statusCode:403});
- };
+ const authorizeDestructiveSource=(sourceId:string)=>authorizePmDestructiveSource(pool,{
+  projectId,actorId:session.actor_id,currentMessageId:session.process_id,sourceMessageId:sourceId
+ });
  if(name==='tasks.update_dependency'){
    const taskId=id.parse(args.task_id);
    const parentId=z.string().uuid().nullable().parse(args.depends_on_task_id);
