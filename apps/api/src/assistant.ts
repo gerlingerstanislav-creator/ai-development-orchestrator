@@ -13,6 +13,7 @@ import {updateCurrentSpecification} from './requirements.js';
 import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {assertDocumentationWasPrepared,readGitHubProjectSource} from './documentation-preparation.js';
+import {advanceDocumentationAgent} from './autonomous-documentation-execution.js';
 import {createAgentSession,createAgentReaderSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole,type AgentReaderScope} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
@@ -253,47 +254,50 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     const identity=[
      'Ты автономный аналитик проекта. Цель: '+message.slice(0,5000),
      'Используй каталог MCP orchestrator, выбирая необходимые инструменты и документы самостоятельно.',
-     'Исследуй доступные факты (project.context, project.source, documents.*), сохрани результаты в проектной документации через documents.create/update/changeset.',
+     'Исследуй доступные факты (project.context, project.source, documents.*), сохраняй результаты в документации через documents.create/update/changeset по мере исследования.',
+     'Для большого проекта разделяй работу на короткие действия с MCP. Не откладывай запись всех документов до конца длительного анализа.',
+     'После прерывания Codex опирайся на сохранённую историю MCP; не повторяй уже выполненные изменения. Для повторяемых записей используй idempotency_key.',
      'Когда цель достигнута, вызови documentation.complete с ID реально проверенных страниц и итогом. Если подтверждённых сведений недостаточно, вызови documentation.request_input с конкретным вопросом ПМ. Не объявляй успех без documentation.complete.',
      'Не выдумывай содержание источников, не создавай фиктивный документ ради прохождения проверки, не подменяй исследование пересказом задания.',
      'Дополнительные инструкции команды: '+instructions.slice(0,2600)
     ].join('\n\n');
-    let previous='';
-    for(let step=1;step<=4;step++){
-     await running();
-     const latest=await liveInstructions();
-     const extra=latest.length?'\nУточнения владельца:\n'+latest.slice(-10).map(x=>x.body).join('\n').slice(-3500):'';
-     const prompt=(identity+extra+(previous?'\n\nПродолжай начатое поручение. Предыдущий шаг и доступная история действий:\n'+previous:'')).slice(0,22500);
-     await recordAgentPrompt(pool,{projectId:id,processId:jobId,role:'analyst',operation:'autonomous_documentation',prompt}).catch(()=>{});
-     await updateProgress('agent_working','Аналитик изучает проект и выполняет документирование · шаг '+step);
-     const response=await fetch(codexUrl+'/agent',{
-      method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-      body:JSON.stringify({model:config.model,reasoning:config.reasoning,
-       prompt,session_token:agent.secret,project_id:id,agent_role:'analyst',
-       role_capacity:await roleCapacity(pool,id,'analyst')}),
-      signal:AbortSignal.timeout(265000)
-     });
-     const body=await response.json().catch(()=>({})) as {message?:string;error?:string;usage?:any};
-     if(!response.ok)throw Error('Аналитик не завершил шаг: '+String(body.error||'HTTP '+response.status).slice(0,550));
-     await storeTokenUsage(id,null,config.model,body.usage);
-     const state=(await pool.query("SELECT status,message,result FROM document_import_jobs WHERE id=$1 AND project_id=$2",[jobId,id])).rows[0];
-     if(state?.status==='completed'){
-      await processEvent(id,jobId,'verified','Документы подтверждены средствами MCP');
-      return;
+    await advanceDocumentationAgent({
+     readState:async()=>{
+      const state=(await pool.query(
+       'SELECT status,message FROM document_import_jobs WHERE id=$1 AND project_id=$2',[jobId,id])).rows[0];
+      return {status:String(state?.status||'missing'),message:String(state?.message||'')};
+     },
+     // Query by process, not just this session: a resumed Temporal activity must
+     // see calls committed by earlier sessions of the same import.
+     readEvents:async()=>(await pool.query(
+      `SELECT e.id::text AS id,e.tool,e.success,e.result FROM agent_tool_events e
+       JOIN agent_sessions s ON s.id=e.session_id
+       WHERE s.project_id=$1 AND s.process_id=$2
+       ORDER BY e.created_at DESC,e.id DESC LIMIT 18`,[id,jobId])).rows,
+     runRound:async(step,history)=>{
+      await running();
+      const latest=await liveInstructions();
+      const extra=latest.length?'\nУточнения владельца:\n'+latest.slice(-10).map(x=>x.body).join('\n').slice(-3500):'';
+      const prompt=(identity+extra+(history?'\n\nСохранённая история действий, продолжай без повторной записи:\n'+history:'')).slice(0,22500);
+      await recordAgentPrompt(pool,{projectId:id,processId:jobId,role:'analyst',operation:'autonomous_documentation',prompt}).catch(()=>{});
+      await updateProgress('agent_working','Аналитик изучает проект и выполняет документирование · шаг '+step);
+      const response=await fetch(codexUrl+'/agent',{
+       method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
+       body:JSON.stringify({model:config.model,reasoning:config.reasoning,
+        prompt,session_token:agent.secret,project_id:id,agent_role:'analyst',
+        role_capacity:await roleCapacity(pool,id,'analyst')}),
+       signal:AbortSignal.timeout(265000)
+      });
+      const body=await response.json().catch(()=>({})) as {message?:string;error?:string;usage?:any};
+      if(!response.ok)throw Error('Аналитик не завершил шаг: '+String(body.error||'HTTP '+response.status).slice(0,550));
+      await storeTokenUsage(id,null,config.model,body.usage);
+      return String(body.message||'');
+     },
+     onProgress:async(stage,detail)=>{
+      if(stage==='retrying'||stage==='continuation')await updateProgress(stage,detail);
+      else await processEvent(id,jobId,stage,detail);
      }
-     if(state?.status==='waiting_input'){
-      await processEvent(id,jobId,'waiting_input',String(state.message||'Ожидаются сведения ПМ'));
-      return;
-     }
-     if(state?.status!=='running')throw Error('Поручение аналитика больше не активно');
-     const events=(await pool.query(
-      "SELECT tool,success,result FROM agent_tool_events WHERE session_id=$1 ORDER BY created_at DESC,id DESC LIMIT 16",
-      [agent.id])).rows;
-     previous=('Последнее сообщение: '+String(body.message||'').slice(0,1250)+
-      '\nВызванные инструменты: '+JSON.stringify(events.reverse()).slice(0,3900)).slice(0,5500);
-     await processEvent(id,jobId,'continuation','Аналитик продолжает поручение: ещё нет подтверждённого завершения или вопроса');
-    }
-    throw Error('Аналитик исчерпал шаги без подтверждённого результата или запроса данных. История MCP сохранена для диагностики.');
+    });
    }finally{await finishAgentSession(pool,agent.id).catch(()=>{});}
   };
   try{
