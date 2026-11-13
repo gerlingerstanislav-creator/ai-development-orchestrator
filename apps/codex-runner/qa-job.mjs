@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {mkdir,writeFile,readFile,readdir,rm} from 'node:fs/promises';
 import {join} from 'node:path';
 import {gitEnvironment} from './execution-policy.mjs';
@@ -24,7 +24,7 @@ export function createQaJobRunner({
 }){
  const {
   health:browserHealth,open:openQaBrowserSession,
-  evidence:getQaBrowserEvidence,close:closeQaBrowserSession
+  evidence:getQaBrowserEvidence,screenshots:getQaScreenshotEvidence,close:closeQaBrowserSession
  }=browser;
 
 async function runTestJob(job,state,context){
@@ -307,11 +307,17 @@ async function runTestJob(job,state,context){
    state.learningSuggestion=String(report.learningSuggestion||'').slice(0,1600);
   // Keep small screenshots as immutable QA evidence before deleting the workspace.
   const screenshotDir=join(dir,'.ado-qa-evidence');
-  const shots=await readdir(screenshotDir).catch(()=>[]);
+  const trusted=getQaScreenshotEvidence?.(qaBrowserSessionId)||[];
   const screenshots=[];
-  for(const name of shots.filter(name=>/^(?:[0-9]{3,4}x[0-9]{3,4}-)?[0-9a-f-]{36}\.jpg$/i.test(name)).slice(0,3)){
-   const bytes=await readFile(join(screenshotDir,name)).catch(()=>null);
-   if(bytes&&bytes.length>100&&bytes.length<=180000)screenshots.push({name,mime:'image/jpeg',data:bytes.toString('base64')});
+  // Never accept an artifact merely because the agent wrote a file. The
+  // signed-like, internal-only browser gateway receipt must match its hash.
+  for(const receipt of trusted.filter(item=>/^[0-9]{3,4}x[0-9]{3,4}-[a-f0-9-]{36}\.jpg$/i.test(item.name)).slice(0,3)){
+   const bytes=await readFile(join(screenshotDir,receipt.name)).catch(()=>null);
+   if(!bytes||bytes.length<=100||bytes.length>320000)continue;
+   const digest=createHash('sha256').update(bytes).digest('hex');
+   if(digest!==receipt.sha256)continue;
+   screenshots.push({name:receipt.name,mime:'image/jpeg',data:bytes.toString('base64'),
+    sha256:digest,viewport:receipt.viewport,origin:receipt.origin});
   }
   state.screenshots=screenshots;
   state.findings=report.findings.slice(0,20);
