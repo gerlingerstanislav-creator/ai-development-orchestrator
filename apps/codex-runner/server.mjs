@@ -5,6 +5,7 @@ import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
 import {createCommandExecutor} from './command-executor.mjs';
 import {createCodexThreadStore,createCodexAppExecutor,asCodexExecResult} from './codex-app-server.mjs';
 import {createPersistentCliExecutor} from './codex-cli-session.mjs';
+import {conversationThreadScope} from './codex-thread-scope.mjs';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, writeFile, access, readFile, readdir } from 'node:fs/promises';
@@ -67,18 +68,7 @@ const globalCodexSettings=args=>{
 };
 const appConversationSettings=globalCodexSettings(conversationPolicy);
 const imagePaths=args=>args.flatMap((value,i)=>value==='--image'&&typeof args[i+1]==='string'?[args[i+1]]:[]);
-const conversationScope=(data,fallbackRole)=>{
- const role=String(data.agent_role||data.context?.role||fallbackRole);
- const projectId=String(data.project_id||data.context?.projectId||'unknown');
- // PM has a persistent owner/project chat, while each delegated job is a
- // separate Temporal process. Never key a thread by an ephemeral MCP token.
- const owner=typeof data.actor_id==='string'&&/^[a-f0-9-]{36}$/i.test(data.actor_id)?data.actor_id:null;
- const taskId=data.task_id||data.context?.taskId||undefined;
- // No shared anonymous fallback: unrelated users must never share history.
- const processId=role==='manager'&&!taskId&&owner?'owner-chat:'+owner:
-  String(data.process_id||data.context?.processId||(owner?'project-chat:'+owner:randomUUID()));
- return {projectId,role,taskId,processId};
-};
+
 
 journal.recover();
 const readJob=id=>activeJobs.get(id)||journal.read(id);
@@ -1067,7 +1057,7 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
     // The shell policies keep the MCP session out of project commands.
     const context=agentMcp(data.session_token,agentApi);
-    const scope=conversationScope(data,'analyst');
+    const scope=conversationThreadScope(data,'analyst');
     const previous=await threadStore.read(scope);
     const result=await withRunnerImages(data.images,imageArgs=>appExecutor({
      scope,requestId:String(data.request_id||data.session_token),
@@ -1094,7 +1084,7 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
     const result=await withReaderContext(agentApi,jobKey,data.context,context=>
      withRunnerImages(data.images,imageArgs=>appExecutor({
-      scope:{...conversationScope(data,'assistant'),role:'assistant:'+String(data.context?.role||'general')},requestId:String(data.request_id||randomUUID()),
+      scope:{...conversationThreadScope(data,'assistant'),role:'assistant:'+String(data.context?.role||'general')},requestId:String(data.request_id||randomUUID()),
       prompt:scopedAgentPrompt(context,data.prompt),model:data.model,effort:data.reasoning,
       cwd:'/opt/codex-runner',timeout:240000,
       configArgs:[...appConversationSettings,...context.args],
