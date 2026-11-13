@@ -70,7 +70,7 @@ export async function readGitHubProjectSource(
 export async function inspectGitHubProjectSource(
  repository:string,ref:string,token:string,path?:string,fetchFn:Fetch=fetch
 ):Promise<{repository:string;commit:string;paths?:Array<{path:string;size:number}>;file?:{path:string;content:string;truncated:boolean}}> {
- const match=/^([\\w-]{1,39})\\/([\\w.-]{1,100})$/.exec(repository);
+ const match=/^([\w-]{1,39})\/([\w.-]{1,100})$/.exec(repository);
  if(!match)throw Error('Некорректный GitHub-репозиторий проекта');
  const base='https://api.github.com/repos/'+encodeURIComponent(match[1])+'/'+encodeURIComponent(match[2]);
  const headers:Record<string,string>={Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'};
@@ -88,17 +88,17 @@ export async function inspectGitHubProjectSource(
  if(tree.truncated)throw Error('Список файлов GitHub обрезан: нужен более узкий источник');
  const files:Array<{path:string;size:number}>=Array.isArray(tree.tree)?tree.tree.filter((x:any)=>
   x?.type==='blob'&&typeof x.path==='string'&&Number.isInteger(x.size)&&x.size>=0&&x.size<=120000&&
-  !/(^|\\/)(node_modules|dist|build|vendor|coverage|\\.git|\\.next)(\\/|$)/.test(x.path)
+  !/(^|\/)(node_modules|dist|build|vendor|coverage|\.git|\.next)(\/|$)/.test(x.path)
  ).map((x:any)=>({path:x.path,size:x.size})): [];
  if(!path)return {repository,commit,paths:files.slice(0,1200)};
  // Access only tracked, text-like paths from this specific commit; no general URL fetch.
- if(!files.some(x=>x.path===path)||!/\\.(md|mdx|txt|json|ya?ml|toml|xml|html|css|scss|js|jsx|ts|tsx|vue|php|py|sql|sh)$/i.test(path))
+ if(!files.some(x=>x.path===path)||!/\.(md|mdx|txt|json|ya?ml|toml|xml|html|css|scss|js|jsx|ts|tsx|vue|php|py|sql|sh)$/i.test(path))
   throw Error('Указанного текстового файла нет в закреплённом дереве GitHub');
  const encoded=path.split('/').map(encodeURIComponent).join('/');
  const result=await get('/contents/'+encoded+'?ref='+commit);
  if(result.type!=='file'||result.encoding!=='base64'||typeof result.content!=='string')
   throw Error('GitHub не предоставил текст выбранного файла');
- const bytes=Buffer.from(result.content.replace(/\\s/g,''),'base64');
+ const bytes=Buffer.from(result.content.replace(/\s/g,''),'base64');
  if(bytes.includes(0))throw Error('Файл имеет бинарное содержимое');
  const body=bytes.toString('utf8');
  return {repository,commit,file:{path,content:body.slice(0,18000),truncated:body.length>18000}};
