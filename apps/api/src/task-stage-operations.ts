@@ -4,7 +4,7 @@
  * owned by their actual verifiable workers.
  */
 export type WorkStage='backlog'|'analysis'|'development'|'testing'|'merge_queue'|'deployment'|'documentation'|'done';
-export type StageOperation='same'|'patch'|'reanalyze'|'developer_rework'|'resume_development'|'retry_qa'|'apply_qa'|'blocked';
+export type StageOperation='same'|'patch'|'reanalyze'|'developer_rework'|'resume_development'|'approve_development'|'retry_qa'|'apply_qa'|'blocked';
 export function planManagerStageMove(current:WorkStage,target:WorkStage,hasPr:boolean):{operation:StageOperation;reason:string}{
  if(current===target){
   if(current==='analysis')return {operation:'reanalyze',reason:'Переанализировать задачу с текущими комментариями'};
@@ -21,7 +21,7 @@ export function planManagerStageMove(current:WorkStage,target:WorkStage,hasPr:bo
  if(target==='development'&&['testing','merge_queue'].includes(current))
   return {operation:hasPr?'developer_rework':'blocked',reason:hasPr?'Исправить текущий PR по замечаниям':'Для возврата после QA нужен существующий PR'};
  if(target==='development'&&current==='analysis')
-  return {operation:'blocked',reason:'Аналитик должен завершить уточнение задачи; переход автоматический'};
+  return {operation:'approve_development',reason:'Подтвердить готовый анализ и поставить разработку в штатную очередь'};
  if(target==='testing'&&current==='development')
   return {operation:hasPr?'resume_development':'blocked',reason:hasPr?'Завершить передачу существующего PR в QA':'Для тестирования требуется PR'};
  if(target==='testing'&&current==='merge_queue')
