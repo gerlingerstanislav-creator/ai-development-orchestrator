@@ -361,7 +361,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
     await client.query('ROLLBACK');
     return reply.code(409).send({error:'Исходные инструкции изменились — обнови предпросмотр'});
    }
-   const others=await reconcileInstructions(client as Pool,id,[role],proposal.text,proposal.applicability);
+   const others=await reconcileInstructions(client,id,[role],proposal.text,proposal.applicability);
    if(others.some(match=>match.relation==='duplicate'&&!proposal.source_ids.includes(match.id))){
     await client.query('ROLLBACK');return reply.code(409).send({error:'Такая инструкция уже существует'});
    }
