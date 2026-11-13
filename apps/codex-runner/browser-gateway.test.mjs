@@ -43,6 +43,9 @@ test('QA browser bridge isolates attempts, rejects stale tokens and closes sessi
  };
  const firstId=randomUUID(),secondId=randomUUID(),caseId=randomUUID();
  const first=openQaBrowserSession(firstId,[caseId]);
+ assert.deepEqual((await invoke(first,'ping')).body,{ok:true,bridge:'connected'},'Sandbox ping must be authenticated without starting Chromium');
+ assert.equal(upstreamSessions.has(firstId),false,'Bridge ping must not open an upstream session');
+ assert.equal((await invoke({...first,token:'f'.repeat(64)},'ping')).status,403);
  assert.equal((await invoke(first,'start')).body.ok,true);
  assert.throws(()=>openQaBrowserSession(firstId,[caseId]),/already active/,'never rotate a live token');
  assert.equal((await invoke({...first,token:'f'.repeat(64)},'start')).status,403);
