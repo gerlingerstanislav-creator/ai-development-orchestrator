@@ -49,6 +49,7 @@ import {acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestr
 import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
+import {reconcileIdlePullRequests} from './idle-pr-recovery.js';
 import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -1039,6 +1040,7 @@ await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDi
   try{await publishOwnerQuestionsToPmChat(pool);}catch(error){app.log.error({error},'PM owner questions reconciliation failed');}
   try{await reconcileTaskAnalysisQueue(pool,temporal);}catch(error){app.log.error({error},'Task analyst queue reconciliation failed');}
   try{await reconcileAgentWorkQueue(pool,temporal);}catch(error){app.log.error({error},'Agent work queue reconciliation failed');}
+  try{await reconcileIdlePullRequests(pool,recoverTask,accessToken);}catch(error){app.log.error({error},'Idle PR recovery reconciliation failed');}
   try{await reconcileLegacyDevelopmentRuns();}catch(error){app.log.error({error},'Legacy development process reconciliation failed');}
  })();
  reconcile();setInterval(reconcile,12000).unref();}
