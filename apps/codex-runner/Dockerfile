@@ -19,6 +19,7 @@ COPY apps/codex-runner/server.mjs ./server.mjs
 COPY apps/codex-runner/command-executor.mjs ./command-executor.mjs
 COPY apps/codex-runner/codex-app-server.mjs ./codex-app-server.mjs
 COPY apps/codex-runner/codex-cli-session.mjs ./codex-cli-session.mjs
+COPY apps/codex-runner/codex-thread-scope.mjs ./codex-thread-scope.mjs
 COPY apps/codex-runner/ci-test-discovery.mjs ./ci-test-discovery.mjs
 COPY apps/codex-runner/codex-proxy.mjs ./codex-proxy.mjs
 COPY apps/codex-runner/device-auth.mjs ./device-auth.mjs
