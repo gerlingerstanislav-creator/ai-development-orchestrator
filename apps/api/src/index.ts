@@ -45,7 +45,6 @@ import {initQaWaiverSchema,registerQaWaiverRoutes} from './qa-waiver.js';
 import {initRequirementsSchema} from './requirements.js';
 import {registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
-import {acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
