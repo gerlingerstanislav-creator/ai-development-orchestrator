@@ -50,7 +50,7 @@ test('completed, clearly specified analysis passes technical consultations, even
   [resumePrevious,resumeOwner,project]);
  for(const taskId of [resumePrevious,resumeOwner])
   await db.query("INSERT INTO ai_task_runs(id,project_id,task_id,status,runner_spec_version) VALUES($1,$2,$3,'failed',1)",[randomUUID(),project,taskId]);
- await db.query("INSERT INTO tasks(id,project_id,analysis_state,pr_url,git_branch) VALUES($1,$3,'new','https://github.com/example/repo/pull/4','fix/automatic-resume')",
+ await db.query("INSERT INTO tasks(id,project_id,analysis_state,pr_url,git_branch) VALUES($1,$2,'new','https://github.com/example/repo/pull/4','fix/automatic-resume')",
   [autoResume,project]);
  await db.query("INSERT INTO tasks(id,project_id,analysis_state,spec_version,spec_reviewed_version,pr_url,git_branch) VALUES($1,$2,'new',2,2,'https://github.com/example/repo/pull/5','fix/changed-spec')",
   [changedSpec,project]);
