@@ -31,7 +31,7 @@ test('PM watch reports and Temporal retries share one transactional, durable res
  assert.deepEqual(statuses,Array(8).fill('completed'));
  const reports=(await db.query('SELECT project_id,process_id,kind FROM project_pm_process_reports')).rows;
  assert.equal(reports.length,1);
- assert.deepEqual(reports[0],{project_id:project,process_id:process,kind:'testing'});
+ assert.deepEqual(reports[0],{project_id:project,process_id:processId,kind:'testing'});
  const messages=(await db.query('SELECT id,actor_id,role,body,channel,status,topic_id,pm_order_id FROM assistant_messages ORDER BY role')).rows;
  assert.equal(messages.length,2,'one owner report and one PM resume');
  const owner=messages.find(m=>m.role==='assistant');
