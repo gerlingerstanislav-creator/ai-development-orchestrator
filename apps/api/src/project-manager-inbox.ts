@@ -328,7 +328,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    images.length?'Приложены изображения: '+images.map(image=>image.name).join(', '):'',
    'Не пересказывай всю историю. При необходимости используй адресные MCP-инструменты; '+
     'сохранённые фоновые поручения отслеживаются Temporal, не ожидай их синхронно.'
-  ].filter(Boolean).join('\\n');
+  ].filter(Boolean).join('\n');
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
