@@ -58,6 +58,8 @@ jobs:
           node --check apps/qa-browser/browser-smoke.mjs
           node --test apps/codex-runner/job-scheduler.test.mjs apps/codex-runner/agent-context.test.mjs apps/codex-runner/browser-gateway.test.mjs apps/codex-runner/development-outcome.test.mjs apps/codex-runner/qa-run-evidence.test.mjs apps/codex-runner/qa-completion.test.mjs apps/codex-runner/prompt-assembler.test.mjs apps/codex-runner/task-branch-history.test.mjs
           node --test apps/api/tests/agent-task-reader.test.mjs
+          node --test apps/api/tests/instruction-governance.test.mjs
+          node --test apps/api/tests/task-history-tools.test.mjs
           node --test apps/api/tests/runner-http-client.test.mjs
           node --test apps/api/tests/database-bootstrap.test.mjs
           node --test apps/api/tests/idle-pr-recovery.test.mjs
