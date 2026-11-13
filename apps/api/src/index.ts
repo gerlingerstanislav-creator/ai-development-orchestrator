@@ -1,6 +1,7 @@
 import {registerDevelopmentRunStatusRoutes} from './modules/execution/api/development-run-status.js';
 import {registerQualityOperationsRoutes} from './modules/quality/api.js';
 import {createQueueReconciler} from './modules/execution/application/queue-reconciler.js';
+import {scanStalledPmInbox} from './modules/planning/infrastructure/pm-inbox-diagnostics.js';
 import {registerProjectTaskRoutes} from './modules/tasks/api.js';
 import {registerWorkflowSettingsRoutes} from './modules/projects/workflow-api.js';
 import {registerAiSettingsRoutes} from './modules/execution/api/ai-settings.js';
@@ -567,6 +568,7 @@ await initEpicStageSync(pool);await startDiagnosticRetention(pool);await initClo
   {label:'Agent peer queue',execute:()=>reconcileAgentPeerQueue(pool,temporal)},
   {label:'Merge queue',execute:()=>recoverMergeBatches(pool,startMergeBatch)},
   {label:'PM owner questions',execute:()=>publishOwnerQuestionsToPmChat(pool)},
+  {label:'PM stalled work diagnostics',execute:()=>scanStalledPmInbox(pool)},
   {label:'Task analyst queue',execute:()=>reconcileTaskAnalysisQueue(pool,temporal)},
   {label:'Agent work queue',execute:()=>reconcileAgentWorkQueue(pool,temporal)},
    {label:'Existing PR QA recovery',execute:()=>reconcileIdlePullRequests(pool,recoverTask,accessToken)},

@@ -1,5 +1,6 @@
 import type {PmWatchReport} from './modules/planning/application/pm-watch-report.js';
 import {createProjectManagerTurnExecutor} from './modules/planning/application/pm-turn.js';
+import {recordPmInboxDiagnostic} from './modules/planning/infrastructure/pm-inbox-diagnostics.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
@@ -7,7 +8,7 @@ import {z} from 'zod';
 import {chatImagesSchema,validateChatImages,saveChatImages} from './chat-images.js';
 import {isProjectManagerOrderAction} from './agent-tools.js';
 
-type PendingTurn={id:string;project_id:string;channel:'project'|'pm-internal';pm_dispatch_attempt:number};
+type PendingTurn={id:string;project_id:string;channel:'project'|'pm-internal';pm_dispatch_attempt:number;pm_order_id:string|null};
 type RouteDeps={
  pool:Pool;
  uid:(req:any)=>string;
@@ -129,7 +130,7 @@ export async function publishOwnerQuestionsToPmChat(pool:Pick<Pool,'query'>){
 }
 
 export async function deliverProjectManagerInbox(pool:Pick<Pool,'query'>,start:RouteDeps['start'],onError:(error:unknown,turn:PendingTurn)=>void){
- const pending=await pool.query<PendingTurn>(`SELECT id,project_id,channel,pm_dispatch_attempt FROM assistant_messages
+ const pending=await pool.query<PendingTurn>(`SELECT id,project_id,channel,pm_dispatch_attempt,pm_order_id FROM assistant_messages
   WHERE channel IN ('project','pm-internal') AND role='user' AND status='queued'
    AND pm_dispatched_at IS NULL AND pm_next_dispatch_at<=now()
   ORDER BY pm_next_dispatch_at,created_at,id LIMIT 15`);
@@ -139,12 +140,14 @@ export async function deliverProjectManagerInbox(pool:Pick<Pool,'query'>,start:R
    if(!['WorkflowExecutionAlreadyStartedError','WorkflowAlreadyStartedError'].includes((error as Error)?.name)){
     await pool.query(`UPDATE assistant_messages SET pm_next_dispatch_at=now()+interval '15 seconds'
      WHERE id=$1 AND pm_dispatch_attempt=$2 AND pm_dispatched_at IS NULL`,[turn.id,turn.pm_dispatch_attempt]);
+    await recordPmInboxDiagnostic(pool,{projectId:turn.project_id,messageId:turn.id,orderId:turn.pm_order_id,attempt:turn.pm_dispatch_attempt,stage:'dispatch_deferred',level:'warning',error}).catch(()=>{});
     onError(error,turn);
     return;
    }
   }
   await pool.query('UPDATE assistant_messages SET pm_dispatched_at=now() WHERE id=$1 AND pm_dispatch_attempt=$2',
    [turn.id,turn.pm_dispatch_attempt]);
+  await recordPmInboxDiagnostic(pool,{projectId:turn.project_id,messageId:turn.id,orderId:turn.pm_order_id,attempt:turn.pm_dispatch_attempt,stage:'dispatch_queued'}).catch(()=>{});
  }));
 }
 
@@ -254,6 +257,7 @@ export async function failProjectManagerInbox(pool:Pick<Pool,'query'>,projectId:
 export type ProjectManagerWatch=PmWatchReport;
 /** Preserve the public PM inbox API while execution lives in an application use case. */
 export const executeProjectManagerInbox=createProjectManagerTurnExecutor({
- ensureProjectManagerActionOrder,shouldCreateProjectManagerOrder,failProjectManagerInbox
+ ensureProjectManagerActionOrder,shouldCreateProjectManagerOrder,failProjectManagerInbox,
+ recordDiagnostic:recordPmInboxDiagnostic
 });
 export {checkProjectManagerWatch,readProjectManagerWatchResume} from './modules/planning/application/pm-watch-monitor.js';
