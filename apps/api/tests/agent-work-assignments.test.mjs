@@ -4,6 +4,7 @@ import {
  installWorkAssignmentsSchema,delegateWork,reportWork,reviewWork,listWork,finalizeWorkAttempt,workRoles
 } from '../dist/modules/agents/application/work-assignments.js';
 import {toolsForRole,capabilitiesForRole} from '../dist/agent-tools.js';
+import {checkProjectManagerWatch} from '../dist/modules/planning/application/pm-watch-monitor.js';
 
 const projectId='00000000-0000-4000-8000-000000000001';
 const taskId='00000000-0000-4000-8000-000000000002';
@@ -115,4 +116,43 @@ test('read returns only assignments of the specified project and task',async()=>
  const data=await listWork(db,projectId,taskId);
  assert.deepEqual(data.assignments,[{id:assignmentId}]);
  assert.deepEqual(calls[1].args,[projectId,taskId]);
+});
+
+
+test('PM watch stays pending for active work and never reports premature success',async()=>{
+ const queries=[];
+ const pool={
+  query:async(sql,args)=>{
+   queries.push(sql);
+   return {rows:[{status:'running',role:'testing',objective:'Collect evidence',task_title:'Screens',display_number:36}],rowCount:1};
+  },
+  connect:async()=>{throw Error('must not write while work is active');}
+ };
+ const status=await checkProjectManagerWatch(pool,{
+  projectId,processId:assignmentId,taskId,kind:'delegated_work'});
+ assert.equal(status,'pending');
+ assert.equal(queries.length,1);
+});
+
+test('PM watch reports blocked work once and requests corrective action',async()=>{
+ const queries=[];
+ const pool={
+  query:async(sql)=>{queries.push(sql);return {
+   rows:[{status:'blocked',role:'testing',objective:'Collect screenshots',result:'No browser access',
+    evidence:'No active test environment',task_title:'Screenshot task',display_number:36}],rowCount:1};},
+  connect:async()=>({
+   query:async(sql,args)=>{
+    queries.push(sql);
+    if(sql.includes('INSERT INTO project_pm_process_reports'))return {rowCount:1,rows:[{process_id:assignmentId}]};
+    return {rowCount:1,rows:[]};
+   },
+   release:()=>{}
+  })
+ };
+ const done=await checkProjectManagerWatch(pool,{
+  projectId,processId:assignmentId,kind:'delegated_work',taskId});
+ assert.equal(done,'completed');
+ assert.ok(queries.some(sql=>sql.includes('project_pm_process_reports')));
+ assert.ok(queries.some(sql=>sql.includes('assistant_messages')));
+ assert.ok(!queries.some(sql=>sql.includes('UPDATE tasks SET stage')));
 });
