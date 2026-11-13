@@ -9,6 +9,7 @@ import {saveSpecRevision,updateCurrentSpecification} from '../../requirements.js
 import {pendingAgentQuestions} from '../../task-agent-notes.js';
 import {readAgentActivity} from '../../task-agent-activity.js';
 import {qaEventDetail,formatQaReportMessage} from '../../qa-report-message.js';
+import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from '../../task-evidence-routing.js';
 
 type Deps={
  pool:Pool;
@@ -45,6 +46,41 @@ app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
  }
  await pool.query('INSERT INTO task_events(id,task_id,actor_id,event) VALUES($1,$2,$3,$4)',[randomUUID(),taskId,uid(req),'created']);
  return reply.code(201).send({id:taskId});
+});
+// An explicit owner route and PM tool use the same validated service; they
+// never bypass the analysis, active-run or provenance gates.
+app.post('/api/projects/:id/tasks/:taskId/execution-route',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const data=parse(z.object({
+  mode:z.literal('browser_evidence'),source_sha:z.string().regex(/^[a-f0-9]{40}$/i),
+  reason:z.string().trim().min(12).max(1600)
+ }),req.body);
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const routed=await routeTaskToBrowserEvidence(client,{
+   projectId:id,taskId,actorId:uid(req),sourceSha:data.source_sha,reason:data.reason
+  });
+  await client.query('COMMIT');return routed;
+ }catch(error){
+  await client.query('ROLLBACK').catch(()=>{});
+  return reply.code(Math.min(599,Math.max(400,Number((error as any).statusCode)||409))).send({error:String((error as Error).message)});
+ }finally{client.release();}
+});
+app.post('/api/projects/:id/tasks/:taskId/retry-evidence',async(req:any,reply)=>{
+ const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
+ const {reason}=parse(z.object({reason:z.string().trim().min(12).max(1600)}),req.body);
+ const client=await pool.connect();
+ try{
+  await client.query('BEGIN');
+  const result=await retryTaskBrowserEvidence(client,{projectId:id,taskId,actorId:uid(req),reason});
+  await client.query('COMMIT');return result;
+ }catch(error){
+  await client.query('ROLLBACK').catch(()=>{});
+  return reply.code(Math.min(599,Math.max(400,Number((error as any).statusCode)||409))).send({error:String((error as Error).message)});
+ }finally{client.release();}
 });
 async function updateDependency(projectId:string,taskId:string,parentId:string|null,actorId:string){
  if(parentId===taskId)throw Object.assign(new Error('Задача не может зависеть от самой себя'),{statusCode:409});
