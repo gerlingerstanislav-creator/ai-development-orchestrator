@@ -290,7 +290,7 @@ export async function applyLegacySchema(pool:Pool,workflowStageDescriptions:Reco
  await initKnowledgeDocumentUpdates(pool);
 }
 
-/** Emergency maintenance operation only. Normal startup preserves the owner's durable start/stop choice. */
+/** Emergency maintenance operation only; normal startup preserves explicit user start/stop. */
 export async function pauseAllProjectAgents(pool:Pool){
  await pool.query('UPDATE projects SET agents_running=false WHERE agents_running=true');
 }

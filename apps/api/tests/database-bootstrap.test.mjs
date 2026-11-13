@@ -15,7 +15,7 @@ test('legacy bootstrap retains startup SQL ordering and admin initialization',as
   await initializeLegacyDatabase(db,{analysis:'Analysis stage'},'admin@example.test');
   assert.match(statements[0].sql,/CREATE TABLE IF NOT EXISTS users/);
   assert.ok(!statements.some(s=>s.sql.includes('UPDATE projects SET agents_running=false')),
-   'normal startup must preserve the owners durable project pause/run choice');
+   'normal startup must preserve the durable project start/stop choice');
   const stage=statements.find(x=>x.sql.includes('UPDATE workflow_stages s SET description'));
   assert.ok(stage,'workflow descriptions must be backfilled');
   assert.deepEqual(stage.args,['analysis','Analysis stage']);
