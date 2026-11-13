@@ -127,7 +127,7 @@ async function requireAdmin(req:any,reply:any){
  return true;
 }
 registerCloudDiagnosticsSettings(app,{pool,requireAdmin});
-const decryptToken=(packedText:string)=>decryptConnectionSecret(packedText,encryptionKey);
+function decryptToken(packedText:string){return decryptConnectionSecret(packedText,encryptionKey);}
 registerAiSettingsRoutes(app,{pool,access,requireAdmin});
 app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
