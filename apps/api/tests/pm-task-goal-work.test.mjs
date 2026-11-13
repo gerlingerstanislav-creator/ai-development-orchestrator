@@ -34,3 +34,18 @@ test('PM task goal requires action after all executions become terminal',async()
  assert.equal(result.status,'needs_action');
  assert.match(result.reason,/не выполняется активный процесс/);
 });
+
+test('PM goal watches development, QA and delegated work for bug and improvement types',async()=>{
+ for(const type of ['bug','improvement']){
+  const db=store(true);
+  const original=db.query;
+  db.query=async(sql,args)=>{
+   const result=await original(sql,args);
+   if(sql.includes('SELECT id,title,display_number,stage,analysis_state,type'))
+    result.rows[0].type=type;
+   return result;
+  };
+  assert.equal((await readPmTaskGoal(db,project,task)).status,'running');
+  assert.equal(db.queries.length,2);
+ }
+});
