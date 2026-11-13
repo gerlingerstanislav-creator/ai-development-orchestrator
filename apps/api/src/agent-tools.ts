@@ -58,6 +58,17 @@ export const agentToolCatalog=[
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('project.agents.start','Запустить специалистов выбранного проекта после остановки или новой выкладки по прямому поручению владельца; запланированные задачи продолжат обработку.',{}),
  tool('work.list','Прочитать поручения и доказательства по задаче, не подменяя ими статус самой задачи.',{task_id:id},['task_id']),
+ tool('work.plan','Составить произвольный проверяемый план из нескольких поручений с зависимостями. Зависимости задаются ключами шагов, не этапами Kanban. Все шаги и связи сохраняются атомарно; исполнители запускаются по мере завершения предусловий.',{
+  task_id:id,
+  steps:{type:'array',items:{type:'object',properties:{
+   key:field('string','Короткий уникальный ключ шага, например prepare-env'),
+   role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},
+   objective:field('string','Конкретная цель поручения'),
+   acceptance:field('string','Проверяемые критерии результата'),
+   needs:{type:'array',items:{type:'string'}}
+  },required:['key','role','objective','acceptance'],additionalProperties:false}},
+  idempotency_key:idem
+ },['task_id','steps']),
  tool('work.delegate','Поручить специалисту конкретную работу на основе цели, критериев приёмки и его инструментов. Без фиктивных PR и переходов Kanban; результат проверяет ПМ.',{task_id:id,role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},objective:str,acceptance:str,idempotency_key:idem},['task_id','role','objective','acceptance']),
  tool('work.report','Исполнитель: сообщить проверяемый результат или конкретную блокировку своего активного поручения. Сообщение не закрывает задачу; итог изучает ПМ.',{result:str,evidence:str,status:{type:'string',enum:['submitted','blocked']}},['result','evidence','status']),
  tool('work.review','ПМ: проверить результат или назначить повтор после блокировки. Принятие поручения не обходит QA/PR/выкладку и не переводит саму задачу в done.',{assignment_id:id,action:{type:'string',enum:['accept','retry','cancel']},reason:str,idempotency_key:idem},['assignment_id','action','reason']),
