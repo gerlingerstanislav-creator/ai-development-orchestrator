@@ -7,7 +7,7 @@ const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
  'pm.decisions.list','pm.orders.list','iterations.preview_plan','approvals.list','discussions.list',
  'tasks.list','tasks.read','tasks.history','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','blockers.list','memory.list','documentation.request_reset',
- 'history.search','discussions.read','capabilities.list','capabilities.describe','instructions.reconcile','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections','project.source']);
+ 'history.search','discussions.read','agents.capabilities','work.list','capabilities.list','capabilities.describe','instructions.reconcile','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections','project.source']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
  annotations:readOnlyTools.has(name)
@@ -19,6 +19,7 @@ const idem=field('string','Необязательный стабильный к�
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
  tool('project.source','Исследовать исходники подключённого GitHub-репозитория. Без path вернуть список файлов и закреплённый SHA; с path прочитать выбранный файл с того же SHA. Выбирай файлы самостоятельно по цели исследования.',{path:str,commit:str}),
+ tool('agents.capabilities','Посмотреть доступные инструменты, компетенции и ограничения выбранного специалиста до делегирования.',{role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']}},['role']),
  tool('capabilities.list','Краткий каталог разрешённых действий с категориями и побочными эффектами.',{category:field('string','Необязательный префикс категории')}),
  tool('capabilities.describe','Подробный контракт разрешённого инструмента, его параметры и ограничения.',{name:str},['name']),
  tool('instructions.reconcile','Проверить новое правило на дубли и возможные конфликты с правилами адресатов. Не меняет инструкции.',{target_roles:{type:'array',items:{type:'string',enum:['manager','analyst','analysis','development','testing','documentation','devops','architect']}},text:str,applicability:{type:'object',properties:{technology:str,repository:str,task_type:str},additionalProperties:false}},['target_roles','text']),
@@ -56,6 +57,10 @@ export const agentToolCatalog=[
  tool('knowledge.related','Найти связанные требования и архитектурные документы.',{document_id:id},['document_id']),
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('project.agents.start','Запустить специалистов выбранного проекта после остановки или новой выкладки по прямому поручению владельца; запланированные задачи продолжат обработку.',{}),
+ tool('work.list','Прочитать поручения и доказательства по задаче, не подменяя ими статус самой задачи.',{task_id:id},['task_id']),
+ tool('work.delegate','Поручить специалисту конкретную работу на основе цели, критериев приёмки и его инструментов. Без фиктивных PR и переходов Kanban; результат проверяет ПМ.',{task_id:id,role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},objective:str,acceptance:str,idempotency_key:idem},['task_id','role','objective','acceptance']),
+ tool('work.report','Исполнитель: сообщить проверяемый результат или конкретную блокировку своего активного поручения. Сообщение не закрывает задачу; итог изучает ПМ.',{result:str,evidence:str,status:{type:'string',enum:['submitted','blocked']}},['result','evidence','status']),
+ tool('work.review','ПМ: проверить результат или назначить повтор после блокировки. Принятие поручения не обходит QA/PR/выкладку и не переводит саму задачу в done.',{assignment_id:id,action:{type:'string',enum:['accept','retry','cancel']},reason:str,idempotency_key:idem},['assignment_id','action','reason']),
  tool('tasks.list','Получить все задачи и этапы; product_owner_questions_only=true показывает задачи с ожидаемыми ответами владельца, не перемещая их между этапами.',{product_owner_questions_only:field('boolean','Показать задачи с открытыми вопросами владельцу')}),
  tool('tasks.history','Постраничная полная история сообщений, событий и заметок задачи. Передавай cursor следующей страницы при необходимости.',{task_id:id,cursor:field('string','Курсор next_cursor из предыдущего ответа'),limit:field('integer','10–80 записей')},['task_id']),
  tool('tasks.dependency_graph','Проверить реальные технические зависимости, блокировки и этапы задач, прежде чем снимать или менять связи.',{}),
@@ -116,12 +121,12 @@ export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;pro
 
 const readerTools=new Set([
  'project.context','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
- 'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','project.source','capabilities.list','capabilities.describe'
+ 'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','project.source','work.list','agents.capabilities','capabilities.list','capabilities.describe'
 ]);
 
 const autonomousSpecialistRoles=new Set<AgentRole>(['analysis','development','testing','documentation','devops','architect']);
-const specialistTools=new Set([...readerTools,'agents.consult','blockers.report','blockers.resolve','processes.report']);
-const documentationTools=new Set([...readerTools,'documents.list','documents.create','documents.update','documents.delete','documents.changeset','documentation.complete','documentation.request_input']);
+const specialistTools=new Set([...readerTools,'agents.consult','work.delegate','work.report','blockers.report','blockers.resolve','processes.report']);
+const documentationTools=new Set([...readerTools,'work.delegate','work.report','documents.list','documents.create','documents.update','documents.delete','documents.changeset','documentation.complete','documentation.request_input']);
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['documentation.complete','documentation.request_input','documentation.resume_spec','project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
@@ -175,7 +180,9 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  // Only documentation-write sessions need the documentation job table.
  // Task-only/reader tests and migrations may run without that table.
  const docJob=role==='documentation'&&!!processId;
- const docGuard=docJob?` AND EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running')`:'';
+ const docGuard=docJob?(taskId
+  ?` AND EXISTS (SELECT 1 FROM agent_work_assignments a WHERE a.id=$4 AND a.project_id=p.id AND a.task_id=$3 AND a.role='documentation' AND a.status='running')`
+  :` AND EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running')`):'';
  const result=await pool.query(`SELECT COALESCE($2::uuid,p.owner_id) AS actor_id FROM projects p
   WHERE p.id=$1 AND p.deleted_at IS NULL
    AND ($2::uuid IS NULL OR p.owner_id=$2 OR EXISTS(SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=$2))
@@ -185,7 +192,7 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
  await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
   VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',$8,$6,$7)`,
- [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!(processId&&!taskId):!autonomousSpecialistRoles.has(role)||!taskId]);
+ [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!processId:!autonomousSpecialistRoles.has(role)||!taskId]);
  return {id,secret};
 }
 export async function finishAgentSession(pool:Pick<Pool,'query'>,id:string){

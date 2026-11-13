@@ -19,7 +19,7 @@ const inboxSteps=proxyActivities<Pick<typeof activities,'runProjectManagerInbox'
 const watchSteps=proxyActivities<Pick<typeof activities,'readProjectManagerWatch'>>({
  startToCloseTimeout:'30 seconds',retry:{maximumAttempts:3,initialInterval:'2 seconds'}
 });
-export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution'|'testing'|'task_goal';taskId?:string;orderId?:string;topicId?:string|null;actorId?:string}):Promise<void>{
+export async function watchProjectManagerDelegation(watch:{projectId:string;processId:string;kind:'iteration_plan'|'document_import'|'development'|'iteration_execution'|'testing'|'task_goal'|'delegated_work';taskId?:string;orderId?:string;topicId?:string|null;actorId?:string}):Promise<void>{
  for(let count=0;count<20160;count++){
   const status=await watchSteps.readProjectManagerWatch(watch);
   if(status.status==='completed'){
@@ -62,6 +62,17 @@ export async function analyzeTaskStage(runId:string):Promise<void>{
  await waitForProjectAgents({runId,kind:'analysis'});
  await steps.runTaskStageAnalysis(runId);
 }
+/** New workflow name preserves replay of all existing cycles. */
+export async function executeDelegatedWork(assignmentId:string):Promise<void>{
+ try{
+  const {projectId}=await steps.delegatedWorkScope(assignmentId);
+  await waitForProjectAgents({projectId});
+  await steps.runDelegatedWork(assignmentId);
+ }catch(error){
+  await steps.failDelegatedWork(assignmentId,String(error));
+ }
+}
+
 export async function processPeerQuestionWork(noteId:string):Promise<void>{
  try{await waitForProjectAgents({runId:noteId,kind:'peer'});await steps.runPeerQuestionWork(noteId);}
  catch(error){await steps.failPeerQuestionWork(noteId,String(error));}

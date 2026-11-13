@@ -15,6 +15,8 @@ import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
+import {delegateWork,listWork,reportWork,reviewWork,workRoles} from './modules/agents/infrastructure/work-assignments.js';
+import {responsibilityFor} from './role-responsibilities.js';
 import {createDoc,updateDoc,deleteDoc,documentRevision as revision,parentExists,createPage,updatePage,deleteEmptyPage} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
 
@@ -108,6 +110,57 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
     [randomUUID(),item.task_id,session.role+': '+resolution_evidence.slice(0,1200)]);
   }
   return {id:blocker_id,status:'resolved',already_resolved:!result.rowCount};
+ }
+ case 'agents.capabilities':{
+  const {role}=z.object({role:z.enum(workRoles)}).parse(params);
+  return {role,responsibility:responsibilityFor(role),
+   tools:capabilitiesForRole(role,false).map(t=>({name:t.name,description:t.description,readOnly:t.readOnly})),
+   note:'Возможность роли не означает наличие настроенной среды; реальные эффекты подтверждают инструменты.'};
+ }
+ case 'work.list':{
+  const {task_id}=z.object({task_id:uuid}).parse(params);
+  if(session.task_id&&session.task_id!==task_id)throw rejected('Нельзя читать поручения другой задачи',403);
+  return listWork(pool,projectId,task_id);
+ }
+ case 'work.delegate':{
+  const {task_id,role,objective,acceptance}=z.object({
+   task_id:uuid,role:z.enum(workRoles),objective:z.string().trim().min(12).max(2000),
+   acceptance:z.string().trim().min(12).max(2000)
+  }).parse(params);
+  if(session.role!=='manager'&&session.task_id!==task_id)throw rejected('Нельзя делегировать работу для чужой задачи',403);
+  if(session.role!=='manager'&&!session.process_id)throw rejected('Нет активного процесса',403);
+  let parentId:string|null=null;
+  if(session.role!=='manager'){
+   const active=await pool.query(`SELECT id FROM agent_work_assignments
+    WHERE id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'`,[session.process_id,projectId,task_id,session.role]);
+   if(active.rowCount)parentId=session.process_id!;
+   else {
+    const authorized=await pool.query(`SELECT id FROM agent_peer_queue WHERE note_id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'
+     UNION ALL SELECT id FROM ai_task_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='development' AND status IN ('queued','running')
+     UNION ALL SELECT id FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='testing' AND status IN ('queued','running')
+     UNION ALL SELECT id FROM agent_analysis_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='analysis' AND status IN ('queued','running')`,
+     [session.process_id,projectId,task_id,session.role]);
+    if(!authorized.rowCount)throw rejected('Назначать работу может только действующий исполнитель этой задачи',403);
+   }
+  }
+  return delegateWork(pool,{projectId,taskId:task_id,role,objective,acceptance,sourceRole:session.role,parentId});
+ }
+ case 'work.report':{
+  if(!session.task_id||!session.process_id)throw rejected('Нет активного поручения с привязкой к задаче',403);
+  const {result,evidence,status}=z.object({
+   result:z.string().trim().min(20).max(3000),evidence:z.string().trim().min(12).max(3000),
+   status:z.enum(['submitted','blocked'])
+  }).parse(params);
+  return reportWork(pool,{projectId,taskId:session.task_id,assignmentId:session.process_id,
+   role:session.role,status,result,evidence});
+ }
+ case 'work.review':{
+  if(session.role!=='manager')throw rejected('Принять результат может только ПМ',403);
+  const {assignment_id,action,reason}=z.object({
+   assignment_id:uuid,action:z.enum(['accept','retry','cancel']),
+   reason:z.string().trim().min(12).max(2000)
+  }).parse(params);
+  return reviewWork(pool,{projectId,assignmentId:assignment_id,action,reason});
  }
  case 'agents.consult':{
   const {task_id,target_role,question,idempotency_key}=z.object({
@@ -594,7 +647,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    if(session.task_id){
     const process=await pool.query(`SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
      UNION ALL SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
-     UNION ALL SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND id=$3`,[projectId,session.task_id,process_id]);
+     UNION ALL SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
+     UNION ALL SELECT id FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND id=$3`,[projectId,session.task_id,process_id]);
     if(!process.rowCount)throw rejected('Процесс не найден в задаче',404);
    }
    const test=(await pool.query('SELECT id,task_id,status,verdict,report,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND id=$2',[projectId,process_id])).rows[0];
@@ -606,14 +660,15 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    const events=await pool.query('SELECT stage,detail,created_at FROM process_events WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 20',[projectId,process_id]);
    return {process_id,events:events.rows};
   }
-  const [a,b,queue,testing,reviews]=await Promise.all([
+  const [a,b,queue,testing,reviews,assignments]=await Promise.all([
    pool.query('SELECT id,status,message,created_at,updated_at FROM document_import_jobs WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30',[projectId]),
    pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
    readDevelopmentQueue(pool,projectId),
    pool.query('SELECT id,task_id,status,verdict,message,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
-   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM requirement_review_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null])
+   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM requirement_review_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
+   pool.query('SELECT id,task_id,role,status,objective,result,evidence,created_at,updated_at FROM agent_work_assignments WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 50',[projectId,task_id??null])
   ]);
-  return {documentation:task_id?[]:a.rows,development:b.rows,testing:testing.rows,requirements:reviews.rows,development_queue:queue.filter(row=>!task_id||row.task_id===task_id).map(({task_id,display_number,title,status,reason,detail})=>({task_id,display_number,title,status,reason,detail}))};
+  return {documentation:task_id?[]:a.rows,development:b.rows,testing:testing.rows,requirements:reviews.rows,assignments:assignments.rows,development_queue:queue.filter(row=>!task_id||row.task_id===task_id).map(({task_id,display_number,title,status,reason,detail})=>({task_id,display_number,title,status,reason,detail}))};
  }
  case 'processes.report':{
   const {stage,message}=z.object({stage:z.string().trim().min(2).max(80),message:z.string().trim().min(3).max(2000)}).parse(params);

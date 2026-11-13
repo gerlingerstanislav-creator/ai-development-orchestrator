@@ -48,6 +48,7 @@ import {registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-n
 import {registerTaskCancellationRoutes} from './task-cancellation.js';
 import {enqueueDevelopment,reconcileAgentWorkQueue,reconcileLegacyAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
+import {reconcileAgentWorkAssignments} from './modules/agents/infrastructure/work-assignments.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
 import {reconcileIdlePullRequests} from './idle-pr-recovery.js';
 import {reconcileTaskEvidenceQueue} from './task-evidence-queue.js';
@@ -564,6 +565,7 @@ await startDiagnosticRetention(pool);await reconcileLegacyAgentWorkQueue(pool);a
  );
  const queueReconciler=createQueueReconciler([
   {label:'Agent peer queue',execute:()=>reconcileAgentPeerQueue(pool,temporal)},
+  {label:'Generic delegated work',execute:()=>reconcileAgentWorkAssignments(pool,temporal)},
   {label:'Merge queue',execute:()=>recoverMergeBatches(pool,startMergeBatch)},
   {label:'PM owner questions',execute:()=>publishOwnerQuestionsToPmChat(pool)},
   {label:'PM stalled work diagnostics',execute:()=>scanStalledPmInbox(pool)},
