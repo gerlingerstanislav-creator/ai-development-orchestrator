@@ -6,6 +6,7 @@ import {parseAgentObject} from './structured-agent-response.js';
 import {boundedIterationPrompt} from './iteration-prompt-budget.js';
 import {updateCurrentSpecification} from './requirements.js';
 import {enqueueDevelopment,initAgentWorkQueue} from './agent-work-scheduler.js';
+import {validatePlan,planItems,planDiff,normalizeIterationName,type TaskPlanRow} from './modules/planning/domain/iteration-plan.js';
 
 type Db=Pick<Pool,'query'>;
 const uuid=z.string().uuid();
@@ -25,7 +26,7 @@ const epicPlan=z.object({
 const planInput=epicPlan.extend({iteration_id:uuid,expected_revision:revision,source_revision:z.string().length(64)});
 type Plan=z.infer<typeof planInput>;
 type IterationRow={id:string;title:string;body:string;revision:number;approved_revision:number|null;recommended_task_ids:string[]};
-type TaskPlanRow={id:string;project_id:string;title:string;description:string;type:string;stage:string;parent_id:string|null;iteration_item_key:string|null;depends_on_task_id:string|null;iteration_work_kind:string|null;tags:string[];spec_version:number;updated_at:string};
+
 function problem(statusCode:number,message:string){return Object.assign(Error(message),{statusCode});}
 
 /** One-time DDL. The legacy queue policy remains a separate startup operation. */
@@ -159,31 +160,6 @@ export async function saveIteration(db:Db,projectId:string,input:unknown){
  return {id,revision:currentRevision};
 }
 
-function validatePlan(plan:Plan){
- const keys=new Set<string>();
- const known=new Map<string,z.infer<typeof work>>();
- const total=plan.epics.reduce((count,epic)=>count+epic.tasks.length,0);
- if(total>80)throw problem(400,'В одном плане допускается до 80 задач');
- const unique=(item:{key:string})=>{
-  if(keys.has(item.key))throw problem(400,'Ключи эпиков и задач должны быть уникальны');
-  keys.add(item.key);
- };
- for(const epic of plan.epics){
-  unique(epic);
-  for(const task of epic.tasks){unique(task);known.set(task.key,task);}
- }
- for(const task of known.values()){
-  const visited=new Set([task.key]);
-  let dependency=task.depends_on;
-  while(dependency){
-   const parent=known.get(dependency);
-   if(!parent||visited.has(dependency))throw problem(400,'В плане есть неизвестная или циклическая зависимость');
-   visited.add(dependency);
-   dependency=parent.depends_on;
-  }
- }
-}
-
 export async function proposeIterationPlan(db:Db,projectId:string,actorId:string,input:unknown){
  const plan=planInput.parse(input);
  validatePlan(plan);
@@ -299,57 +275,8 @@ export async function runIterationPlanning(pool:Pool,runId:string,ask:(prompt:st
  });
 }
 
-const normalize=(name:string)=>name.trim().toLowerCase();
 async function currentPlanItems(db:Db,projectId:string,id:string,lock=false){
  return (await db.query<TaskPlanRow>('SELECT id,project_id,title,description,type,stage,parent_id,iteration_item_key,depends_on_task_id,iteration_work_kind,tags,spec_version,updated_at FROM tasks WHERE project_id=$1 AND iteration_id=$2 ORDER BY position,id'+(lock?' FOR UPDATE':''),[projectId,id])).rows;
-}
-
-function planDiff(items:ReturnType<typeof planItems>['items']){
- const known=new Map(items.filter(i=>i.existing).map(i=>[i.key,i.existing!.id]));
- return items.map(item=>{
-  const old=item.existing;
-  if(!old)return {...item,changes:[] as string[]};
-  const changes:string[]=[];
-  const check=(field:string,a:unknown,b:unknown)=>{if(JSON.stringify(a)!==JSON.stringify(b))changes.push(field);};
-  check('title',old.title,item.title);check('description',old.description,item.description);
-  if(item.parent){
-   check('tags',[...(old.tags||[])].sort(),[...(item.tags||[])].sort());
-   check('kind',old.iteration_work_kind,item.kind??null);
-   check('parent',old.parent_id,known.get(item.parent)??null);
-   check('depends_on',old.depends_on_task_id,item.depends_on?known.get(item.depends_on)??null:null);
-  }
-  return {...item,changes};
- });
-}
-function planItems(plan:Plan,current:TaskPlanRow[]){
- const items:{key:string;title:string;description:string;kind?:'analysis'|'development';tags?:string[];depends_on?:string;document_ids?:string[];parent?:string;existing?:TaskPlanRow}[]=[];
- const clarifications:{epicKey:string;key:string;title:string;description:string}[]=[];
- const claimed=new Set<string>();
- function find(item:{key:string;title:string},epic:boolean,parentId:string|null,hasParent:boolean){
-  const match=current.find(task=>task.iteration_item_key===item.key&&(task.type==='epic')===epic)||
-   (hasParent?current.find(task=>task.parent_id===parentId&&(task.type==='epic')===epic&&normalize(task.title)===normalize(item.title)):undefined);
-  if(match&&claimed.has(match.id))throw problem(409,'Две позиции плана совпадают с одной существующей задачей. Уточни план.');
-  if(match)claimed.add(match.id);
-  return match;
- }
- for(const epic of plan.epics){
-  const existing=find(epic,true,null,true);
-  items.push({key:epic.key,title:epic.title,description:epic.description,existing});
-  for(const task of epic.tasks){
-   // Old saved plans may still contain analysis-only cards. Convert them to
-   // questions on the corresponding implementation task, never new tasks.
-   if(task.kind==='analysis'){
-    clarifications.push({epicKey:epic.key,key:task.key,title:task.title,description:task.description});
-    continue;
-   }
-   // A dependency on an old clarification-only card is now satisfied
-   // inside this task's own analysis. It must not point to a missing task ID.
-   const clarificationDependency=epic.tasks.some(other=>other.kind==='analysis'&&other.key===task.depends_on);
-   items.push({...task,depends_on:clarificationDependency?undefined:task.depends_on,
-    parent:epic.key,existing:find(task,false,existing?.id??null,!!existing)});
-  }
- }
- return {items,clarifications,unmentioned:current.filter(task=>!claimed.has(task.id)).map(({id,title})=>({id,title}))};
 }
 
 async function transaction<T>(pool:Pool,run:(db:PoolClient)=>Promise<T>){
@@ -398,7 +325,7 @@ async function publishPlan(db:Db,projectId:string,id:string,planId:string,actorI
  const inserted=items.filter(item=>!item.existing);
  const names=new Set<string>();
  for(const item of inserted){
-  const name=(item.parent??'')+'\0'+normalize(item.title);
+  const name=(item.parent??'')+'\0'+normalizeIterationName(item.title);
   if(names.has(name))throw problem(409,'В плане есть одинаковые названия в одной группе');
   names.add(name);
  }
