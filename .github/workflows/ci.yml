@@ -77,6 +77,7 @@ jobs:
           node --test apps/api/tests/connection-settings.test.mjs
           node --test apps/api/tests/merge-operations-api.test.mjs
           node --test apps/api/tests/merge-schema-migrations.test.mjs
+          node --test apps/api/tests/pm-chat-schema-migrations.test.mjs
           node --test apps/api/tests/durable-merge.test.mjs
           node --test apps/api/tests/project-lifecycle-api.test.mjs
           node --test apps/api/tests/workflow-settings-api.test.mjs
