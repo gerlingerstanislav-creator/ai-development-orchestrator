@@ -127,9 +127,9 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  const linked=(await call('documents.create',{title:'Связанная пустая страница',parent_id:root})).json().result.id;
  await db.query("INSERT INTO tasks(id,project_id,title,description,document_id) VALUES($1,$2,'Связанная задача','Ссылка на страницу',$3)",[randomUUID(),project,linked]);
  assert.equal((await call('documents.delete',{document_id:linked,expected_revision:await getRevision(linked)})).statusCode,409);
- const imported=(await call('documents.create',{title:'Импортированная пустая страница',parent_id:root})).json().result.id;
- await db.query("UPDATE documents SET import_source='topic:protected' WHERE id=$1",[imported]);
- assert.equal((await call('documents.delete',{document_id:imported,expected_revision:await getRevision(imported)})).statusCode,409);
+ const importedStub=(await call('documents.create',{title:'Импортированная пустая страница',parent_id:root})).json().result.id;
+ await db.query("UPDATE documents SET import_source='topic:protected' WHERE id=$1",[importedStub]);
+ assert.equal((await call('documents.delete',{document_id:importedStub,expected_revision:await getRevision(importedStub)})).statusCode,409);
  const versioned=(await call('documents.create',{title:'Пустая страница с историей',parent_id:root})).json().result.id;
  await db.query('INSERT INTO document_versions(id,document_id,body) VALUES($1,$2,$3)',[randomUUID(),versioned,'Старая версия']);
  assert.equal((await call('documents.delete',{document_id:versioned,expected_revision:await getRevision(versioned)})).statusCode,409);
