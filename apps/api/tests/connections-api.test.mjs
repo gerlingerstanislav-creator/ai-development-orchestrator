@@ -20,7 +20,7 @@ function fixture(allowed=true){
  });
  const pool={query:async(sql,args)=>{
   statements.push({sql,args});
-  if(sql.startsWith('SELECT id,name,provider,created_at FROM connections'))
+  if(sql.startsWith('SELECT c.id,c.name,c.provider,c.created_at,'))
    return {rows:[{id:connection,name:'GitHub',provider:'github_token',created_at:'2026-11-13'}],rowCount:1};
   if(sql.startsWith('SELECT c.id,c.name,c.provider FROM connections'))
    return {rows:[{id:connection,name:'GitHub',provider:'github_token'}],rowCount:1};

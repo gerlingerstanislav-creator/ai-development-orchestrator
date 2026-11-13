@@ -100,6 +100,7 @@ test('permanent deletion requires exact confirmation and never deletes GitHub da
   assert.equal(removed.statusCode,200);
   assert.deepEqual(removed.json(),{deleted:true,project_id:project,github_untouched:true});
   assert.ok(f.statements.some(s=>s.sql.includes('DELETE FROM projects WHERE id=$1')));
+  assert.equal(f.statements.some(s=>s.sql.includes('DELETE FROM connections')),false,'Personal credentials must survive project deletion');
   assert.equal(f.statements.filter(s=>s.sql==='COMMIT').length,1);
   assert.equal(f.statements.filter(s=>s.sql==='ROLLBACK').length,1);
  }finally{await f.app.close();}

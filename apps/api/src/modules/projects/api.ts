@@ -80,15 +80,10 @@ app.delete('/api/projects/:id/permanent',async(req:any,reply)=>{
    await client.query('ROLLBACK');
    return reply.code(409).send({error:'Найдены незавершённые процессы. Удаление остановлено без потери данных.'});
   }
-  const connections=await client.query('SELECT connection_id AS id FROM project_connections WHERE project_id=$1 UNION SELECT connection_id AS id FROM project_git_repositories WHERE project_id=$1',[id]);
-  // Database FK cascades remove all scoped records atomically. No GitHub API calls are made.
+  // Only project-scoped links cascade. Credentials are personal resources and
+  // must survive project deletion, even when this was their last project.
+  // No GitHub API operations are performed.
   await client.query('DELETE FROM projects WHERE id=$1',[id]);
-  const connectionIds=connections.rows.map((x:any)=>x.id);
-  if(connectionIds.length){
-   await client.query(`DELETE FROM connections c WHERE c.id=ANY($1::uuid[]) AND c.owner_id=$2
-     AND NOT EXISTS(SELECT 1 FROM project_connections pc WHERE pc.connection_id=c.id)
-     AND NOT EXISTS(SELECT 1 FROM project_git_repositories gr WHERE gr.connection_id=c.id)`,[connectionIds,uid(req)]);
-  }
   await client.query('COMMIT');
   return {deleted:true,project_id:id,github_untouched:true};
  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
