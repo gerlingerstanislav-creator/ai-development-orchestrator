@@ -32,7 +32,7 @@ try{
   '<!doctype html><meta charset="utf-8"><title>Eight lines</title><main>'+lines+'</main>');
  // Intentionally no index.html: the original browser host rejected such apps.
  child=spawn(process.execPath,[fileURLToPath(new URL('./server.mjs',import.meta.url))],{
-  env:{...process.env,QA_WORKSPACES_DIR:root},stdio:['ignore','pipe','pipe']
+  env:{...process.env,QA_WORKSPACES_DIR:root,QA_BROWSER_ACTION_TIMEOUT_MS:'2500'},stdio:['ignore','pipe','pipe']
  });
  child.stderr.on('data',chunk=>{stderr+=chunk.toString();});
  child.stdout.on('data',chunk=>{stdout+=chunk.toString();});
@@ -75,7 +75,19 @@ try{
  assert.match(retryBody.error,/HTTP 404/);
  assert.equal((await request('start',{path:'/lines.html'})).path,'/lines.html');
  await request('close');
- console.log('PASS: real isolated Chromium loaded lines.html, asserted count/colors/mobile, saved screenshot, rejected false assertion and recovered after failed navigation');
+ // Regression: unresponsive page scripts must not hold the QA browser worker
+ // forever or poison subsequent attempts using the same session identity.
+ await request('start',{path:'/lines.html'});
+ const hung=await fetch(url+'/action',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({session:id,token,action:'assert',expression:'(()=>{for(;;){} })()'}),
+  signal:AbortSignal.timeout(15000)});
+ assert.equal(hung.status,422,'An infinite page evaluation must fail within the watchdog deadline');
+ assert.match((await hung.json()).error,/Chromium operation timed out: assert/);
+ assert.equal((await request('start',{path:'/lines.html'})).path,'/lines.html',
+  'A timed-out Chromium session must be restartable with the same QA credentials');
+ assert.equal((await request('assert',{expression:'document.querySelectorAll(".line").length === 8'})).assertion,'passed');
+ await request('close');
+ console.log('PASS: isolated Chromium counted/colors/mobile/screenshot/negative assertion, recovered from navigation failure and killed a hung page evaluation');
 }finally{
  if(child&&child.exitCode===null){
   child.kill('SIGTERM');
