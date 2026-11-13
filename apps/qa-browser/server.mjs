@@ -4,7 +4,7 @@ import http from 'node:http';
 import {spawn} from 'node:child_process';
 import {readFile,stat,realpath,mkdir,readdir} from 'node:fs/promises';
 import {join,resolve,extname,sep} from 'node:path';
-import {randomUUID,timingSafeEqual} from 'node:crypto';
+import {randomUUID,timingSafeEqual,createHash} from 'node:crypto';
 import {chromium} from 'playwright';
 
 const workspaceRoot=process.env.QA_WORKSPACES_DIR||'/var/lib/ado-qa-workspaces';
@@ -216,8 +216,10 @@ async function run(s,body){
   const viewport=page.viewportSize();
   if(!viewport)throw Error('Viewport is unavailable');
   const filename=viewport.width+'x'+viewport.height+'-'+randomUUID()+'.jpg';
-  await page.screenshot({path:join(evidence,filename),type:'jpeg',quality:68,fullPage:false,timeout:20000});
-  return {ok:true,screenshot:'.ado-qa-evidence/'+filename,viewport:page.viewportSize()};
+  const target=join(evidence,filename);
+  await page.screenshot({path:target,type:'jpeg',quality:68,fullPage:false,timeout:20000});
+  const checksum=createHash('sha256').update(await readFile(target)).digest('hex');
+  return {ok:true,screenshot:'.ado-qa-evidence/'+filename,viewport,sha256:checksum,origin:'isolated-local-browser'};
  }
  if(action==='assert'){
   const expression=String(body.expression||'').trim();
