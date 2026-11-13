@@ -3,7 +3,7 @@ import {createCodexDeviceAuth} from './device-auth.mjs';
 import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
 import {createCommandExecutor} from './command-executor.mjs';
-import {createCodexThreadStore,createCodexAppExecutor,asCodexExecResult} from './codex-app-server.mjs';
+import {createCodexThreadStore,createCodexAppExecutor} from './codex-app-server.mjs';
 import {createPersistentCliExecutor} from './codex-cli-session.mjs';
 import {conversationThreadScope} from './codex-thread-scope.mjs';
 import { spawn, execFile } from 'node:child_process';
@@ -368,19 +368,13 @@ async function runJob(job,state,context){
     :instruction;
    codexTurns++;
    await auditCodexPrompt(job,'development',nextPrompt);
-   const response=await appExecutor({
+   const result=await persistentCli({
     scope:developerScope,requestId:job.id+':dev:'+codexTurns,prompt:nextPrompt,
-    model:job.model,effort:job.reasoning,cwd:dir,
-    timeout:remaining,configArgs:[...globalCodexSettings(policy.execArgs),...context.args],
-    envOverrides:context.env,
-    sandboxPolicy:{type:'workspaceWrite',writableRoots:[dir,join(workdir,'scratch')],networkAccess:false},
-    onChild:child=>{if(child)jobChildren.set(job.id,child);else jobChildren.delete(job.id);},
-    onStarted:async({threadId,turnId})=>{
-     state.threadId=threadId;state.turnId=turnId;saveJob(job,state);
-    }
+    model:job.model,reasoning:job.reasoning,cwd:dir,
+    timeout:remaining,policyArgs:policy.execArgs,mcpArgs:context.args,
+    env:{...cliEnv,...context.env},jobId:job.id,maxOutputChars:500000
    });
-   if(!response.message)throw Error('Codex App Server завершил turn без итогового сообщения');
-   const result=asCodexExecResult(response);
+   state.threadId=result.threadId;
    const parsed=codexJsonResult(result.stdout);
    cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
    state.usage=cumulativeUsage;
