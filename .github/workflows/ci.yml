@@ -58,6 +58,7 @@ jobs:
           node --test apps/api/tests/agent-task-reader.test.mjs
           node --test apps/api/tests/runner-http-client.test.mjs
           node --test apps/api/tests/database-bootstrap.test.mjs
+          node --test apps/api/tests/idle-pr-recovery.test.mjs
           node --test apps/api/tests/schema-migrations.test.mjs
           node --test apps/api/tests/legacy-schema-upgrade.test.mjs
           node --test apps/api/tests/agent-schema-migrations.test.mjs
