@@ -1,4 +1,3 @@
-import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {composeAgentPrompt,recordAgentPrompt} from '../../../agent-prompt.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from '../../../agent-tools.js';
@@ -6,6 +5,8 @@ import {readChatImages} from '../../../chat-images.js';
 import {conversationInstructions,resolveRoleAiSettings} from '../../../project-team.js';
 import type {PmWatchReport} from './pm-watch-report.js';
 
+// Derive infrastructure-provided DB port without coupling application code to pg.
+type Pool=Parameters<typeof recordAgentPrompt>[0];
 type ProjectManagerWatch=PmWatchReport;
 type PmToolEvent={tool:string;result?:unknown};
 type ActionOrder={
