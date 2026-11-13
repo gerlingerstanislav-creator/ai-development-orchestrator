@@ -769,6 +769,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    // The owner's source must already exist before the PM creates a durable rule.
    const userMessageId=await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
    await saveChatImages(pool,{projectId:id,actorId:uid(req),messageId:userMessageId,scope:'assistant'},validatedImages);
+   await pool.query('UPDATE agent_sessions SET process_id=$2 WHERE id=$1 AND role=$3',[sessionId,userMessageId,role]);
    const prompt=composeAgentPrompt({
     role:documentationMode?'Бизнес-аналитик (БА) AI Development Orchestrator':'Менеджер проекта (ПМ) AI Development Orchestrator',
     objective:message,
