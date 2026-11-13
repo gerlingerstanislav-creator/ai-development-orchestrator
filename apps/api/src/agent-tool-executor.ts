@@ -613,8 +613,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(data.document_id&&!await parentExists(pool,projectId,data.document_id))throw rejected('Документ не найден',404);
   const jobId=randomUUID(),sourceUrl=data.source_url||null;
   const input={location,attachments:[],mode:'documentation',documentId:data.document_id??null,
-   structureOnly:name==='documentation.organize',rebuildSpec:name==='documentation.rebuild',
-   requireChanges:false,readProjectSource:false,autonomous:name==='documentation.prepare_spec'};
+   // All agent-triggered documentation operations share one autonomous MCP
+   // workflow. The legacy imported-topic organizer remains available only
+   // to explicit legacy jobs, never as the PM's default route.
+   structureOnly:false,rebuildSpec:false,
+   requireChanges:false,readProjectSource:false,autonomous:name!=='documentation.import'};
   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:name+':'+jobId;
   const competing=await pool.query(
    "SELECT id FROM document_import_jobs WHERE project_id=$1 AND status IN ('running','queued','waiting_input') LIMIT 1 FOR UPDATE",
