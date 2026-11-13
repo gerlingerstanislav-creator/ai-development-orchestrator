@@ -1,3 +1,5 @@
+import {createPrEvidenceReader} from './modules/integrations/github/infrastructure/pr-evidence.js';
+import {decryptConnectionSecret} from './modules/integrations/connections/secret-cipher.js';
 import {createQaPlanActivity} from './modules/quality/application/prepare-qa-plan.js';
 import {createTaskStageAnalysisActivity} from './modules/execution/application/task-stage-analysis.js';
 import {updateCurrentSpecification} from './requirements.js';
@@ -19,7 +21,7 @@ import {runQualityGates} from './quality-gates.js';
 import {deploymentDecision} from './deployment-stage.js';
 import pg from 'pg';
 import type {PoolClient} from 'pg';
-import {randomUUID,createDecipheriv,createHash} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {createMergeService} from './merge-service.js';
 import {finishMergeBatch,loadMergeBatch,saveMergeResult,setMergeProgress,type MergeResult} from './merge-batch.js';
 import {ApplicationFailure} from '@temporalio/common';
@@ -56,10 +58,7 @@ const runnerKey=process.env.RUNNER_SHARED_SECRET||'';
 function decrypt(packed:string):string{
  const key=Buffer.from(process.env.CREDENTIALS_KEY||'','hex');
  if(key.length!==32)throw Error('CREDENTIALS_KEY must contain 32 bytes');
- const bytes=Buffer.from(packed,'base64');
- const d=createDecipheriv('aes-256-gcm',key,bytes.subarray(0,12));
- d.setAuthTag(bytes.subarray(12,28));
- return Buffer.concat([d.update(bytes.subarray(28)),d.final()]).toString('utf8');
+ return decryptConnectionSecret(packed,key);
 }
 // Keep the existing caller-facing shape until activities adopt typed job DTOs.
 const runnerRequest=createRunnerHttpClient({baseUrl:codexUrl,secret:runnerKey});
@@ -188,25 +187,7 @@ export async function failIterationPlanDraft(runId:string,message:string){
   RETURNING i.project_id`,[runId,message.slice(0,700)]);
  if(result.rowCount)await event(result.rows[0].project_id,runId,'analysis','failed',message,'error');
 }
-async function prEvidence(projectId:string,taskId:string):Promise<{commitSha:string;patch:string;summary:string}>{
- const task=await pool.query('SELECT pr_number,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
- if(!task.rowCount)throw Error('Задача не найдена');
- if(!task.rows[0].pr_number)return {commitSha:'',patch:'PR ещё не создан',summary:''};
- const gh=await pool.query("SELECT g.repository,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.provider='github_token'",[projectId]);
- if(!gh.rowCount)throw Error('GitHub-подключение для анализа PR не найдено');
- const repository=gh.rows[0].repository,token=decrypt(gh.rows[0].secret_encrypted);
- const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
- const base='https://api.github.com/repos/'+repository+'/pulls/'+task.rows[0].pr_number;
- const [prResponse,filesResponse]=await Promise.all([
-  fetch(base,{headers,signal:AbortSignal.timeout(20000)}),
-  fetch(base+'/files?per_page=65',{headers,signal:AbortSignal.timeout(20000)})
- ]);
- if(!prResponse.ok||!filesResponse.ok)throw Error('Не удалось прочитать актуальные изменения PR в GitHub для сверки требований');
- const pr=await prResponse.json() as any,files=await filesResponse.json() as any[];
- if(!Array.isArray(files))throw Error('Некорректный ответ GitHub о файлах PR');
- const patch=files.map(file=>file.filename+' ('+file.status+')\n'+String(file.patch||'[diff недоступен]').slice(0,3800)).join('\n\n').slice(0,16500);
- return {commitSha:String(pr.head?.sha||''),patch:patch||'Нет текстовых изменений',summary:String(pr.body||'').slice(0,2000)};
-}
+const prEvidence=createPrEvidenceReader(pool,decrypt);
 
 export async function reconcileRequirements(args:{projectId:string;taskId:string;runId:string;mode:'handoff'|'edit'}):Promise<'current'|'pending'|'needs_approval'|'rejected'>{
  const {projectId,taskId,runId,mode}=args;
