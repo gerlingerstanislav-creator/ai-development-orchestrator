@@ -6,8 +6,8 @@ export const hashSecret=(text:string)=>createHash('sha256').update(text).digest(
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
  'pm.decisions.list','pm.orders.list','iterations.preview_plan','approvals.list','discussions.list',
- 'tasks.list','tasks.read','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','blockers.list','memory.list','documentation.request_reset',
- 'history.search','discussions.read','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
+ 'tasks.list','tasks.read','tasks.history','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','blockers.list','memory.list','documentation.request_reset',
+ 'history.search','discussions.read','capabilities.list','capabilities.describe','instructions.reconcile','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
  annotations:readOnlyTools.has(name)
@@ -18,6 +18,10 @@ const id=field('string','UUID'),str=field('string','Произвольный т�
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
+ tool('capabilities.list','Краткий каталог разрешённых действий с категориями и побочными эффектами.',{category:field('string','Необязательный префикс категории')}),
+ tool('capabilities.describe','Подробный контракт разрешённого инструмента, его параметры и ограничения.',{name:str},['name']),
+ tool('instructions.reconcile','Проверить новое правило на дубли и возможные конфликты с правилами адресатов. Не меняет инструкции.',{target_roles:{type:'array',items:{type:'string',enum:['manager','analyst','analysis','development','testing','documentation','devops','architect']}},text:str,applicability:{type:'object',properties:{technology:str,repository:str,task_type:str},additionalProperties:false}},['target_roles','text']),
+ tool('instructions.propose','ПМ: распределить постоянное правило по ролям. При дословном подтверждённом указании владельца без пересечений правило применяется сразу; иначе отправляется на согласование в Команду.',{target_roles:{type:'array',items:{type:'string',enum:['manager','analyst','analysis','development','testing','documentation','devops','architect']}},text:str,source_message_id:id,applicability:{type:'object',properties:{technology:str,repository:str,task_type:str},additionalProperties:false},reason:str,supersedes_id:id,idempotency_key:idem},['target_roles','text']),
  tool('pm.decisions.list','Прочитать структурированные решения владельца, чтобы не задавать повторных вопросов.',{}),
  tool('pm.decisions.record','Зафиксировать ответ владельца в реестре решений. Укажи ID его исходного сообщения. При наличии итерации решение передаётся СА.',{source_message_id:id,question:str,answer:str,iteration_id:id,order_id:id},['source_message_id','question','answer']),
  tool('pm.orders.list','Просмотреть активные поручения ПМ и их статусы.',{}),
@@ -50,6 +54,7 @@ export const agentToolCatalog=[
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('project.agents.start','Запустить специалистов выбранного проекта после остановки или новой выкладки по прямому поручению владельца; запланированные задачи продолжат обработку.',{}),
  tool('tasks.list','Получить все задачи и этапы; product_owner_questions_only=true показывает задачи с ожидаемыми ответами владельца, не перемещая их между этапами.',{product_owner_questions_only:field('boolean','Показать задачи с открытыми вопросами владельцу')}),
+ tool('tasks.history','Постраничная полная история сообщений, событий и заметок задачи. Передавай cursor следующей страницы при необходимости.',{task_id:id,cursor:field('string','Курсор next_cursor из предыдущего ответа'),limit:field('integer','10–80 записей')},['task_id']),
  tool('tasks.dependency_graph','Проверить реальные технические зависимости, блокировки и этапы задач, прежде чем снимать или менять связи.',{}),
  tool('tasks.update_dependency','Самостоятельно исправить ошибочную техническую зависимость с аудитом. Меняй связь только при доказанном отсутствии реальной кодовой зависимости; не меняй зависимости для уже созданных веток.',{task_id:id,depends_on_task_id:{type:['string','null'],description:'UUID задачи-основания или null для удаления',format:'uuid'},reason:field('string','Обоснование изменения связи'),idempotency_key:idem},['task_id','depends_on_task_id','reason']),
  tool('tasks.read','Прочитать актуальное состояние задачи, GitHub-ветку и PR, открытые вопросы, сохранённые ответы и историю. Перед работой по задаче прочитай её; дополнительные знания запрашивай адресно. Не считай прежнюю сводку актуальной без проверки.',{task_id:id},['task_id']),
@@ -91,7 +96,7 @@ export const agentToolCatalog=[
 ];
 // Orders track successful mutations, not reads or routine agent telemetry.
 // Catalog metadata keeps future tools classified without keyword heuristics.
-const pmNonOrderTools=new Set(['pm.orders.update','processes.report','memory.record']);
+const pmNonOrderTools=new Set(['pm.orders.update','processes.report','memory.record','instructions.propose']);
 export function isProjectManagerOrderAction(name:string){
  const tool=agentToolCatalog.find(entry=>entry.name===name);
  return !!tool&&!tool.annotations.readOnlyHint&&!pmNonOrderTools.has(name);
@@ -103,7 +108,7 @@ export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;pro
 
 const readerTools=new Set([
  'project.context','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
- 'tasks.list','tasks.read','processes.list','blockers.list'
+ 'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','capabilities.list','capabilities.describe'
 ]);
 
 const autonomousSpecialistRoles=new Set<AgentRole>(['analysis','development','testing','documentation','devops','architect']);
@@ -112,11 +117,21 @@ const specialistTools=new Set([...readerTools,'agents.consult','blockers.report'
  * requires an explicit authenticated user action outside the model tool catalog. */
 const BA_DENIED=new Set(['project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
 const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
+const BA_DENIED_GOVERNANCE=new Set(['instructions.propose','instructions.reconcile']);
+/** The MCP catalog is the authoritative schema; capability views are derived, never maintained separately. */
+export function capabilitiesForRole(role:AgentRole,readOnly=false,category?:string){
+ return toolsForRole(role,readOnly).filter(t=>!category||t.name.startsWith(category+'.')).map(t=>({
+  name:t.name,category:t.name.split('.')[0],description:t.description,
+  inputSchema:t.inputSchema,readOnly:t.annotations.readOnlyHint,
+  effects:t.annotations.readOnlyHint?'read':'write',
+  requiresConfirmation:['tasks.delete','tasks.cancel','tasks.close','workflow.approve_development','workflow.release_task','iterations.approve','iterations.launch'].includes(t.name)
+ }));
+}
 export function toolsForRole(role:AgentRole,readOnly=false){
  if(readOnly)return agentToolCatalog.filter(tool=>readerTools.has(tool.name));
  if(autonomousSpecialistRoles.has(role))
   return agentToolCatalog.filter(tool=>specialistTools.has(tool.name));
- return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.')&&!t.name.startsWith('qa.'));
+ return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!BA_DENIED_GOVERNANCE.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.')&&!t.name.startsWith('qa.'));
 }
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);
