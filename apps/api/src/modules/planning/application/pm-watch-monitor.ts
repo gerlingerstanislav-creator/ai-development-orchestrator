@@ -1,7 +1,10 @@
-import type {Pool} from 'pg';
 import {reportPmWatchCompletion,type PmWatchReport} from './pm-watch-report.js';
 
 type ProjectManagerWatch=PmWatchReport;
+/** The watch application needs only scoped reads and a transactional writer. */
+type Pool=Parameters<typeof reportPmWatchCompletion>[0] & {
+ query:(sql:string,values?:any[])=>Promise<{rows:any[];rowCount:number|null}>;
+};
 
 /** Project-scoped, read-only process projection followed by an exactly-once
  * transactional PM report. Temporal owns the durable poll/wait lifecycle.
