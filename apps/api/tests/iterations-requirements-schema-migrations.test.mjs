@@ -8,7 +8,8 @@ import {initProjectIterations} from '../dist/project-iterations.js';
 import {initRequirementsSchema} from '../dist/requirements.js';
 import {reconcileLegacyAgentWorkQueue} from '../dist/agent-work-scheduler.js';
 
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+// Historical v8 adoption tests must remain pinned when later migrations are appended.
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=8);
 async function isolated(fn){
  const schema='ado_iteration_v8_'+randomUUID().replaceAll('-','');
  const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});

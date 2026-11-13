@@ -19,6 +19,7 @@ import {initCloudDiagnosticsSchema} from '../cloud-diagnostics.js';
 import {installProjectIterationsSchema} from '../project-iterations.js';
 import {installAgentWorkQueueSchema} from '../agent-work-scheduler.js';
 import {initRequirementsSchema} from '../requirements.js';
+import {initAutomaticDeployment} from '../deployment-automation.js';
 
 /**
  * Append-only, transactional schema history.
@@ -100,6 +101,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
     // The one-time task specification backfill belongs with this migration.
     await initRequirementsSchema(database);
    }
+  },
+  {
+   version:9,name:'deployment-automation-storage',
+   checksum:'ado-deployment-automation-storage-v9',
+   up:database=>initAutomaticDeployment(database)
   }
  ];
 }
