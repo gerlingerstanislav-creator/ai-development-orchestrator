@@ -15,6 +15,8 @@ import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
+import {delegateWork,listWork,reportWork,reviewWork,workRoles} from './modules/agents/application/work-assignments.js';
+import {responsibilityFor} from './role-responsibilities.js';
 import {createDoc,updateDoc,deleteDoc,documentRevision as revision,parentExists,createPage,updatePage,deleteEmptyPage} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
 
@@ -108,6 +110,44 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
     [randomUUID(),item.task_id,session.role+': '+resolution_evidence.slice(0,1200)]);
   }
   return {id:blocker_id,status:'resolved',already_resolved:!result.rowCount};
+ }
+ case 'agents.capabilities':{
+  const {role}=z.object({role:z.enum(workRoles)}).parse(params);
+  return {role,responsibility:responsibilityFor(role),
+   tools:capabilitiesForRole(role,false).map(t=>({name:t.name,description:t.description,readOnly:t.readOnly})),
+   note:'Возможность роли не означает наличие настроенной среды; реальные эффекты подтверждают инструменты.'};
+ }
+ case 'work.list':{
+  const {task_id}=z.object({task_id:uuid}).parse(params);
+  if(session.task_id&&session.task_id!==task_id)throw rejected('Нельзя читать поручения другой задачи',403);
+  return listWork(pool,projectId,task_id);
+ }
+ case 'work.delegate':{
+  const {task_id,role,objective,acceptance}=z.object({
+   task_id:uuid,role:z.enum(workRoles),objective:z.string().trim().min(12).max(2000),
+   acceptance:z.string().trim().min(12).max(2000)
+  }).parse(params);
+  if(session.role!=='manager'&&session.task_id!==task_id)throw rejected('Нельзя делегировать работу для чужой задачи',403);
+  if(session.role!=='manager'&&!session.process_id)throw rejected('Нет активного поручения',403);
+  return delegateWork(pool,{projectId,taskId:task_id,role,objective,acceptance,sourceRole:session.role,
+   parentId:session.role==='manager'?null:session.process_id});
+ }
+ case 'work.report':{
+  if(!session.task_id||!session.process_id)throw rejected('Нет активного поручения с привязкой к задаче',403);
+  const {result,evidence,status}=z.object({
+   result:z.string().trim().min(20).max(3000),evidence:z.string().trim().min(12).max(3000),
+   status:z.enum(['submitted','blocked'])
+  }).parse(params);
+  return reportWork(pool,{projectId,taskId:session.task_id,assignmentId:session.process_id,
+   role:session.role,status,result,evidence});
+ }
+ case 'work.review':{
+  if(session.role!=='manager')throw rejected('Принять результат может только ПМ',403);
+  const {assignment_id,action,reason}=z.object({
+   assignment_id:uuid,action:z.enum(['accept','retry','cancel']),
+   reason:z.string().trim().min(12).max(2000)
+  }).parse(params);
+  return reviewWork(pool,{projectId,assignmentId:assignment_id,action,reason});
  }
  case 'agents.consult':{
   const {task_id,target_role,question,idempotency_key}=z.object({
