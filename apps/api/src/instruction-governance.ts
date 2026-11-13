@@ -15,7 +15,8 @@ export const instructionProposal=z.object({
  applicability:applicabilitySchema.default({}),
  source_message_id:z.string().uuid().optional(),
  reason:z.string().trim().max(600).default(''),
- supersedes_id:z.string().uuid().optional()
+ supersedes_id:z.string().uuid().optional(),
+ idempotency_key:z.string().trim().min(8).max(120).optional()
 }).strict();
 type Db=Pick<Pool,'query'>;
 type Rule={id:string;role:string;body:string;status:string;applicability:Applicability;source_message_id?:string|null};
