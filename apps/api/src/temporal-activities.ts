@@ -646,10 +646,19 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   const singlePass=snapshot?.singlePass===true;
   if(singlePass&&status==='completed'&&remote.executionVerified!==true)
    return failRunnerRun('testing',projectId,testId,'Runner не подтвердил исполнение проверок. Обновите Codex Runner и повторите QA.');
-  const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
-  const {adHoc,cases,checked,verdict,outcome,report}=evaluateQaRun({
+  const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit,execution_mode,evidence_source_sha FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
+  const assessed=evaluateQaRun({
    snapshot,remote,status,message,qaSpecVersion:row.rows[0].qa_spec_version,currentSpec
   });
+  const {adHoc,cases,checked,outcome,report}=assessed;
+  let verdict=assessed.verdict;
+  if(currentSpec.rows[0]?.execution_mode==='browser_evidence'&&verdict==='passed'){
+   const proof=browserEvidenceAssessment(report,String(currentSpec.rows[0].evidence_source_sha||''));
+   if(!proof.passed){
+    verdict='blocked';
+    report.summary=String(report.summary||'').slice(0,1200)+' · Артефакты не подтверждены: '+proof.reason;
+   }
+  }
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -711,13 +720,27 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
- const verified=await pool.query(`SELECT t.implementation_kind,t.implementation_commit,r.report
+ const verified=await pool.query(`SELECT t.implementation_kind,t.implementation_commit,t.execution_mode,t.evidence_source_sha,r.report
   FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id
   WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed'
    AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL
    AND r.qa_spec_version=t.spec_version`,[testId,projectId,taskId]);
  if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного независимого QA для текущей версии требований');
  const result=verified.rows[0];
+ if(result.execution_mode==='browser_evidence'&&result.implementation_kind==='artifact'){
+  const proof=browserEvidenceAssessment(result.report,result.evidence_source_sha);
+  if(!proof.passed)throw ApplicationFailure.nonRetryable('Отсутствуют подлинные артефакты: '+proof.reason);
+  const updated=await pool.query(`UPDATE tasks SET stage='done',test_feedback='',updated_at=now()
+   WHERE id=$1 AND project_id=$2 AND stage='testing'
+    AND execution_mode='browser_evidence' AND implementation_kind='artifact'
+    AND evidence_source_sha=$3 AND spec_version=$4 RETURNING id`,
+   [taskId,projectId,result.evidence_source_sha,result.report.spec_version]);
+  if(!updated.rowCount)throw ApplicationFailure.nonRetryable('Задача или исходный SHA изменились после проверки');
+  await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'evidence_verified',$3)",
+   [randomUUID(),taskId,'Фактические desktop/mobile скриншоты получены и проверены на SHA '+result.evidence_source_sha+'. PR, merge и деплой пропущены как неприменимые.']);
+  await event(projectId,testId,'testing','evidence_verified','Сохранены и проверены реальные артефакты без изменения кода');
+  return;
+ }
  if(result.implementation_kind==='already_implemented'){
   const sha=String(result.implementation_commit||'');
   const report=result.report||{};
@@ -1076,6 +1099,11 @@ export async function failProjectSpecification(jobId:string):Promise<void>{
  if(result.rowCount)await event(result.rows[0].project_id,jobId,'document_import','failed','Процесс аналитика прерван','error');
 }
 
+export async function finishEvidenceTask(args:{
+ projectId:string;taskId:string;runId:string;status:'completed'|'blocked'|'failed';message:string
+ }){
+ return finishTaskEvidenceRun(pool,args);
+}
 export async function runSelfHostedQualityGates(args:{projectId:string;taskId:string;runId:string}){
  const timer=setInterval(()=>heartbeat(),12000);
  try{
