@@ -21,15 +21,15 @@ export function qaOutcomeLabel(run:QaExecution|null):string{
   run.verdict==='blocked'?'Ожидает решения':'Завершено';
 }
 
-export function latestTaskQa(
+export function latestTaskQa<T extends QaExecution>(
  taskId:string,openTaskId:string|null,
- taskRuns:readonly QaExecution[],projectRuns:readonly QaExecution[]
-):QaExecution|null{
+ taskRuns:readonly T[],projectRuns:readonly T[]
+):T|null{
  // Task-scoped activity is authoritative once loaded. In particular, an
  // older project-wide "running" entry must not revive a failed QA spinner.
  const scoped=openTaskId===taskId?taskRuns.filter(run=>run.task_id===taskId):[];
  const candidates=scoped.length?scoped:projectRuns.filter(run=>run.task_id===taskId);
- return candidates.reduce<QaExecution|null>((latest,run)=>!latest||
+ return candidates.reduce<T|null>((latest,run)=>!latest||
   Date.parse(run.created_at)>Date.parse(latest.created_at)||
   (run.created_at===latest.created_at&&run.id>latest.id)?run:latest,null);
 }
