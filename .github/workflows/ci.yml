@@ -37,7 +37,7 @@ jobs:
         run: npm run check:architecture && npm run lint
       - name: Build frontend and backend
         run: npm run build
-      - name: Project-scoped scheduling and queue integration tests
+      - name: Full backend, Runner and web regression tests
         run: |
           node --check apps/codex-runner/server.mjs
           node --check apps/codex-runner/ci-test-discovery.mjs
@@ -59,54 +59,13 @@ jobs:
           node --check apps/qa-browser/server.mjs
           node --check apps/qa-browser/browser-smoke.mjs
           node --test apps/codex-runner/job-scheduler.test.mjs apps/codex-runner/agent-context.test.mjs apps/codex-runner/browser-gateway.test.mjs apps/codex-runner/development-outcome.test.mjs apps/codex-runner/qa-run-evidence.test.mjs apps/codex-runner/qa-completion.test.mjs apps/codex-runner/prompt-assembler.test.mjs apps/codex-runner/task-branch-history.test.mjs
-          node --test apps/api/tests/instruction-governance.test.mjs
-          node --test apps/api/tests/task-history-tools.test.mjs
-          node --test apps/api/tests/agent-task-reader.test.mjs
-          node --test apps/api/tests/runner-http-client.test.mjs
-          node --test apps/api/tests/database-bootstrap.test.mjs
-          node --test apps/api/tests/idle-pr-recovery.test.mjs
-          node --test apps/api/tests/schema-migrations.test.mjs
-          node --test apps/api/tests/legacy-schema-upgrade.test.mjs
-          node --test apps/api/tests/agent-schema-migrations.test.mjs
-          node --test apps/api/tests/operational-schema-migrations.test.mjs
-          node --test apps/api/tests/auth-routes.test.mjs
-          node --test apps/api/tests/auth-service.test.mjs
-          node --test apps/api/tests/codex-admin-api.test.mjs
-          node --test apps/api/tests/ai-settings-api.test.mjs
-          node --test apps/api/tests/project-git-binding.test.mjs
-          node --test apps/api/tests/pr-evidence-reader.test.mjs
-          node --test apps/api/tests/connections-api.test.mjs
-          node --test apps/api/tests/connection-settings.test.mjs
-          node --test apps/api/tests/merge-operations-api.test.mjs
-          node --test apps/api/tests/merge-schema-migrations.test.mjs
-          node --test apps/api/tests/pm-chat-schema-migrations.test.mjs
-          node --test apps/api/tests/durable-merge.test.mjs
-          node --test apps/api/tests/project-lifecycle-api.test.mjs
-          node --test apps/api/tests/workflow-settings-api.test.mjs
-          node --test apps/api/tests/task-http-boundary.test.mjs
-          node --test apps/api/tests/project-agent-availability.test.mjs
-          node --test apps/api/tests/runner-recovery.test.mjs
-          node --test apps/api/tests/queue-reconciler.test.mjs
-          node --test apps/api/tests/qa-verdict-policy.test.mjs
-          node --test apps/api/tests/prepare-qa-plan.test.mjs
-          node --test apps/api/tests/quality-operations-api.test.mjs
-          node --test apps/api/tests/background-processes.test.mjs apps/api/tests/legacy-development-reconciler.test.mjs
-          node --test apps/api/tests/development-run-status-api.test.mjs
-          node --test apps/api/tests/agent-work-continuation.test.mjs
-          node --test apps/api/tests/task-stage-analysis.test.mjs
-          node --test apps/api/tests/project-process-controller.test.mjs
-          node --test apps/api/tests/documentation-module.test.mjs
-          node --test apps/api/tests/documentation-preparation.test.mjs
-          node --test apps/api/tests/autonomous-documentation-delegation.test.mjs
-          node --test apps/api/tests/autonomous-documentation-execution.test.mjs
-          node --test apps/api/tests/project-manager-inbox.test.mjs
-          node --test apps/api/tests/pm-watch-report.test.mjs
+          # All API suites, including newly added ones, run sequentially to prevent PostgreSQL fixture races.
+          node --test --test-concurrency=1 apps/api/tests/*.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
           node --import tsx --test apps/web/tests/feature-boundaries.test.mjs
           node --import tsx --test apps/web/tests/kanban-board.test.mjs
           node --import tsx --test apps/web/tests/task-live-state.test.mjs
           node --import tsx --test apps/web/tests/process-center.test.mjs
-          node --test --test-concurrency=1 apps/api/tests/development-queue.test.mjs apps/api/tests/project-agent-parallelism.test.mjs apps/api/tests/autonomous-agent-tools.test.mjs apps/api/tests/task-analysis-question-gates.test.mjs apps/api/tests/analysis-handoff-regression.test.mjs
 
   codex-runner-image:
     runs-on: ubuntu-latest

@@ -16,7 +16,7 @@ test('current iteration and cards update in place while explicit preview remains
  t.after(async()=>{await app.close();await db.query('DROP SCHEMA '+schema+' CASCADE');await db.end();});
  await db.query(`
   CREATE TABLE users(id uuid PRIMARY KEY);
-  CREATE TABLE projects(id uuid PRIMARY KEY);
+  CREATE TABLE projects(id uuid PRIMARY KEY,agents_running boolean NOT NULL DEFAULT false);
   CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,body text DEFAULT '',system_key text,updated_at timestamptz DEFAULT now(),knowledge_status text DEFAULT 'approved');
   CREATE TABLE tasks(
    id uuid PRIMARY KEY,project_id uuid REFERENCES projects(id),title text,description text,type text,stage text,analysis_state text,
@@ -40,7 +40,7 @@ test('current iteration and cards update in place while explicit preview remains
  await initProjectIterations(db);
  const actor=randomUUID(),project=randomUUID(),other=randomUUID(),source=randomUUID(),foreignSource=randomUUID();
  await db.query('INSERT INTO users VALUES($1)',[actor]);
- await db.query('INSERT INTO projects VALUES($1),($2)',[project,other]);
+ await db.query('INSERT INTO projects(id) VALUES($1),($2)',[project,other]);
  await db.query('INSERT INTO project_ai_settings VALUES($1,true)',[project]);
  await db.query("INSERT INTO documents(id,project_id,title) VALUES($1,$2,'ТЗ'),($3,$4,'Чужое ТЗ')",[source,project,foreignSource,other]);
  await db.query('UPDATE documents SET body=$2 WHERE id=$1',[source,'Согласованные требования и детали реализации. '.repeat(1500)]);
@@ -154,6 +154,7 @@ test('current iteration and cards update in place while explicit preview remains
  assert.equal((await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[epic.id]})).statusCode,409);
  const start=await request('POST',url+'/launch',{confirm:true,expected_revision:1,task_ids:[form.id]});
  assert.equal(start.statusCode,200,start.body);
+  assert.equal((await db.query('SELECT agents_running FROM projects WHERE id=$1',[project])).rows[0].agents_running,true,'launch must wake project specialists');
  assert.deepEqual(start.json().results.map(item=>[item.id,item.status]),[[form.id,'queued']]);
  const pending=(await db.query('SELECT task_id,approved_revision,run_id FROM iteration_execution_queue WHERE iteration_id=$1',[id])).rows;
  assert.equal(pending.length,1);

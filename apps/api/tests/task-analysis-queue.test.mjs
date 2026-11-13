@@ -12,7 +12,7 @@ test('system analyst automatically owns analysis tasks, hands off completed work
  const db=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
  t.after(async()=>{await db.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
  await db.query(`
-  CREATE TABLE projects(id uuid PRIMARY KEY);
+  CREATE TABLE projects(id uuid PRIMARY KEY,agents_running boolean NOT NULL DEFAULT true);
   CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid NOT NULL,iteration_id uuid,display_number int DEFAULT 1,
    type text NOT NULL DEFAULT 'task',stage text NOT NULL DEFAULT 'analysis',
    analysis_state text NOT NULL DEFAULT 'new',spec_version int NOT NULL DEFAULT 1,
@@ -31,7 +31,7 @@ test('system analyst automatically owns analysis tasks, hands off completed work
  `);
  await initTaskAnalysisQueue(db);
  const project=randomUUID(),ready=randomUUID(),blocked=randomUUID(),newTask=randomUUID();
- await db.query('INSERT INTO projects VALUES($1)',[project]);
+ await db.query('INSERT INTO projects(id) VALUES($1)',[project]);
  await db.query('INSERT INTO project_ai_settings VALUES($1,true)',[project]);
  await db.query("INSERT INTO project_role_capacity VALUES($1,'analysis',1)",[project]);
  await db.query("INSERT INTO tasks(id,project_id,analysis_state) VALUES($1,$2,'ready_for_development'),($3,$2,'ready_for_development'),($4,$2,'new')",

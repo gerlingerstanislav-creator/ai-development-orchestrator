@@ -164,7 +164,14 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   const headers={'x-agent-token':secret};
   const callReader=(name,args)=>app.inject({method:'POST',url:'/internal/agent-tools/call',headers,payload:{name,arguments:args}});
   const readerCatalog=(await app.inject({url:'/internal/agent-tools/catalog',headers})).json().tools;
-  assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint));
+  const specialist=['analysis','development','testing','devops'].includes(role);
+   if(specialist){
+    assert.ok(readerCatalog.some(tool=>tool.name==='blockers.report'&&!tool.annotations.readOnlyHint),
+     'Task-scoped specialists can record verified blockers');
+    assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint||
+     ['agents.consult','blockers.report','blockers.resolve','processes.report'].includes(tool.name)),
+     'Scoped specialists may mutate only consultation, blockers and process reports');
+   }else assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint),'Reader session must be read-only');
   assert.ok(readerCatalog.some(tool=>tool.name==='knowledge.section'));
   assert.equal((await callReader('documents.update',{document_id:docId,body:'Чужое изменение'})).statusCode,403);
   assert.equal((await callReader('knowledge.read',{document_id:foreign,mode:'full'})).statusCode,404);
