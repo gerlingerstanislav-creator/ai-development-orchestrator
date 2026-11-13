@@ -15,7 +15,7 @@ import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
-import {delegateWork,listWork,reportWork,reviewWork,workRoles} from './modules/agents/application/work-assignments.js';
+import {delegateWork,listWork,reportWork,reviewWork,workRoles} from './modules/agents/infrastructure/work-assignments.js';
 import {responsibilityFor} from './role-responsibilities.js';
 import {createDoc,updateDoc,deleteDoc,documentRevision as revision,parentExists,createPage,updatePage,deleteEmptyPage} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
