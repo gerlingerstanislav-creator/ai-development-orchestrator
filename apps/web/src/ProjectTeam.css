@@ -60,3 +60,16 @@
 .team-execution-options label{display:flex;flex-direction:column;gap:6px;margin:0;font-size:12px}
 .team-execution-options select{width:100%;min-width:0}
 @media(max-width:600px){.team-execution-options{grid-template-columns:1fr}}
+
+.team-audit,.team-refactor-preview{border:1px solid #e7eaf0;border-radius:9px;background:#f8f9fc;padding:12px}
+.team-audit p{font-size:12px;line-height:1.55;overflow-wrap:anywhere}
+.team-capabilities{border:1px solid #e7eaf0;border-radius:8px;max-height:360px;overflow:auto}
+.team-capabilities details{padding:9px 11px;border-bottom:1px solid #e7eaf0;font-size:12px}
+.team-capabilities details:last-child{border-bottom:0}
+.team-capabilities summary{cursor:pointer;overflow-wrap:anywhere}
+.team-capabilities .team-instruction-text{max-height:240px;overflow:auto;font:11px/1.5 monospace}
+.team-scope-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.team-refactor-preview{margin:10px 0}
+.team-refactor-preview article{padding:10px 0;border-top:1px solid #e7eaf0;overflow-wrap:anywhere}
+.team-refactor-preview p{font-size:12px}
+@media(max-width:760px){.team-scope-fields{grid-template-columns:1fr}}
