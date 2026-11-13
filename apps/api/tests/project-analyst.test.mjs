@@ -26,7 +26,7 @@ test('analyst writes topic drafts, resolves PO questions, resumes and preserves 
   CREATE TEMP TABLE workflow_stages (project_id uuid,stage text,agent_name text,agent_instructions text);
   CREATE TEMP TABLE project_conversation_agents (project_id uuid,role text,agent_name text,agent_instructions text);
   CREATE TEMP TABLE knowledge_instruction_modules (id uuid,project_id uuid,stage text,title text,body text,mandatory boolean,priority int,status text);
-  CREATE TEMP TABLE agent_memory (id uuid,project_id uuid,role text,kind text,body text,evidence text,status text,created_at timestamptz DEFAULT now());
+  CREATE TEMP TABLE agent_memory (id uuid,project_id uuid,role text,kind text,body text,evidence text,status text,applicability jsonb NOT NULL DEFAULT '{}'::jsonb,created_at timestamptz DEFAULT now());
   CREATE TEMP TABLE project_rules (project_id uuid,body text,created_at timestamptz);
   CREATE TEMP TABLE process_instructions (project_id uuid,process_id uuid,body text,created_at timestamptz);
   CREATE TEMP TABLE process_events (id uuid,project_id uuid,process_id uuid,process_kind text,level text,stage text,detail text);
