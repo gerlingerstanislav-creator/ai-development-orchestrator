@@ -37,7 +37,7 @@ export async function installWorkAssignmentsSchema(db:Db){
 
 /** v14: immutable per-plan dependency edges, enforced to the same task by composite foreign keys. */
 export async function installWorkPlanSchema(db:Db){
- await db.query(\`ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS plan_id uuid;
+ await db.query(`ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS plan_id uuid;
  ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS plan_key text;
  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_identity
   ON agent_work_assignments(project_id,task_id,id);
@@ -56,7 +56,7 @@ export async function installWorkPlanSchema(db:Db){
     REFERENCES agent_work_assignments(project_id,task_id,id) ON DELETE CASCADE
  );
  CREATE INDEX IF NOT EXISTS idx_agent_work_dependency_predecessor
-  ON agent_work_plan_dependencies(requires_id);\`);
+  ON agent_work_plan_dependencies(requires_id);`);
 }
 
 /** Planning is one transaction: either all steps and edges exist, or none. */
@@ -81,13 +81,13 @@ export async function planWork(db:Db,input:{
  for(const step of steps){
   const id=ids.get(step.key)!;
   const row={id,project_id:input.projectId,task_id:input.taskId};
-  await db.query(\`INSERT INTO agent_work_assignments
+  await db.query(`INSERT INTO agent_work_assignments
    (id,project_id,task_id,plan_id,plan_key,source_role,role,objective,acceptance,spec_version)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)\`,
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
    [id,input.projectId,input.taskId,planId,step.key,input.sourceRole,
     step.role,step.objective,step.acceptance,task.spec_version]);
-  for(const need of step.needs)await db.query(\`INSERT INTO agent_work_plan_dependencies
-   (project_id,task_id,assignment_id,requires_id) VALUES($1,$2,$3,$4)\`,
+  for(const need of step.needs)await db.query(`INSERT INTO agent_work_plan_dependencies
+   (project_id,task_id,assignment_id,requires_id) VALUES($1,$2,$3,$4)`,
    [input.projectId,input.taskId,id,ids.get(need)!]);
   assignments.push({id,key:step.key,role:step.role,depends_on:step.needs.map(need=>ids.get(need)!)});
   await event(db,row,'queued',input.sourceRole+' → '+step.role+': '+step.objective+
