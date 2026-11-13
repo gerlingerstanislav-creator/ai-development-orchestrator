@@ -71,10 +71,12 @@ const conversationScope=(data,fallbackRole)=>{
  const projectId=String(data.project_id||data.context?.projectId||'unknown');
  // PM has a persistent owner/project chat, while each delegated job is a
  // separate Temporal process. Never key a thread by an ephemeral MCP token.
- const owner=typeof data.actor_id==='string'&&/^[a-f0-9-]{36}$/i.test(data.actor_id)?data.actor_id:'owner';
- const processId=role==='manager'?'owner-chat:'+owner:
-  String(data.process_id||data.context?.processId||'project-chat:'+owner);
- return {projectId,role,taskId:data.task_id||data.context?.taskId||undefined,processId};
+ const owner=typeof data.actor_id==='string'&&/^[a-f0-9-]{36}$/i.test(data.actor_id)?data.actor_id:null;
+ const taskId=data.task_id||data.context?.taskId||undefined;
+ // No shared anonymous fallback: unrelated users must never share history.
+ const processId=role==='manager'&&!taskId&&owner?'owner-chat:'+owner:
+  String(data.process_id||data.context?.processId||(owner?'project-chat:'+owner:randomUUID()));
+ return {projectId,role,taskId,processId};
 };
 
 journal.recover();
