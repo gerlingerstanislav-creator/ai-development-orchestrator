@@ -311,6 +311,6 @@ export async function ensureLegacyAdministrator(pool:Pool,adminEmail:string){
 /** Compatibility wrapper for callers relying on the original bootstrap contract. */
 export async function initializeLegacyDatabase(pool:Pool,workflowStageDescriptions:Record<string,string>,adminEmail:string){
  await applyLegacySchema(pool,workflowStageDescriptions);
- await pauseAllProjectAgents(pool);
+ // Preserve the explicit project agents_running value through normal restarts.
  await ensureLegacyAdministrator(pool,adminEmail);
 }
