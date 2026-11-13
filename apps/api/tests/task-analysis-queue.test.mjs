@@ -25,6 +25,8 @@ test('system analyst automatically owns analysis tasks, hands off completed work
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,author_stage text,author_name text,
    target_stage text,kind text,body text,source_kind text,source_key text,status text,UNIQUE(task_id,source_key));
   CREATE TABLE task_events(id uuid,task_id uuid,event text,detail text);
+  CREATE TABLE ai_task_runs(id uuid,project_id uuid,task_id uuid,status text,runner_spec_version int);
+  CREATE TABLE task_orchestration_owners(task_id uuid,state text);
   CREATE TABLE process_events(id uuid,project_id uuid,process_id uuid,process_kind text,stage text,detail text);
  `);
  await initTaskAnalysisQueue(db);
