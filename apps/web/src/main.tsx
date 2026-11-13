@@ -1113,6 +1113,19 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){setManagerFeedback(e instanceof Error?e.message:'Не удалось запустить проверку');}finally{setAiBusy(false);}
  }
+ async function retryBrowserEvidence(){
+  if(!selected||!activeTask||aiBusy||activeTask.execution_mode!=='browser_evidence')return;
+  setAiBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/retry-evidence',{
+    method:'POST',body:JSON.stringify({reason:'Повторное получение реальных скриншотов после устранения блокировки'})
+   });
+   setManagerFeedback('Повторный сбор браузерных доказательств поставлен в очередь Temporal.');
+   await loadProject(selected.id);
+   await refreshTaskActivity(selected.id,activeTask.id);
+  }catch(e){setManagerFeedback(e instanceof Error?e.message:'Не удалось повторить сбор артефактов');}
+  finally{setAiBusy(false);}
+ }
  async function runAiTask(){if(!selected||!activeTask)return;setAiBusy(true);setAiMessage('');try{
    const response=await api<AiRun>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/run-ai',{method:'POST'});
    setAiRuns(old=>[response,...old.filter(run=>run.id!==response.id)]);
@@ -2305,6 +2318,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      <details className="task-advanced"><summary>Дополнительные параметры задачи</summary><div className="task-metadata">
       {activeTask.execution_mode==='browser_evidence'&&<span>Исполнение: <strong>Браузерные доказательства · без разработки и PR</strong>{activeTask.evidence_source_sha&&<> · SHA <code>{activeTask.evidence_source_sha.slice(0,12)}</code></>}</span>}
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
+      {activeTask.execution_mode==='browser_evidence'&&activeTask.stage==='testing'&&
+       (newestTaskTest?.status==='failed'||newestTaskTest?.status==='completed'&&newestTaskTest.verdict!=='passed')&&
+       <button type="button" className="textbtn" disabled={aiBusy||taskQaIsRunning(activeTask.id,activeTask.id,taskTestRuns,testRuns,taskOrchestration)}
+        onClick={()=>void retryBrowserEvidence()}>Повторить сбор скриншотов</button>}
       {['testing','merge_queue'].includes(activeTask.stage)&&activeTask.pr_url&&activeTask.git_branch&&
        <button type="button" className="textbtn" disabled={aiBusy||!aiSettings.enabled}
         onClick={()=>void startTaskTesting()}>Повторить сверку ТЗ и QA</button>}
@@ -2330,7 +2347,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      {activeTask.pr_url&&<div className="task-git-ref"><span>Pull Request</span><a href={activeTask.pr_url} target="_blank" rel="noreferrer">Открыть PR в GitHub</a></div>}
 
      {newestTaskTest?.status==='completed'&&<QaRunEvidence run={newestTaskTest}/>}
-     {activeTask.stage==='merge_queue'&&newestTaskTest?.verdict==='blocked'&&<div className="qa-waiver-panel" role="status"><strong>Тестирование завершено частично</strong><p>{activeTask.test_feedback||'Некоторые сценарии остались без проверки. Подробности есть в отчёте QA.'}</p></div>}
+     {activeTask.execution_mode!=='browser_evidence'&&activeTask.stage==='merge_queue'&&newestTaskTest?.verdict==='blocked'&&<div className="qa-waiver-panel" role="status"><strong>Тестирование завершено частично</strong><p>{activeTask.test_feedback||'Некоторые сценарии остались без проверки. Подробности есть в отчёте QA.'}</p></div>}
      {activeTask.stage==='testing'&&newestTaskTest?.status==='failed'&&
       <div className="qa-waiver-panel" role="status">
        <strong>Тестировщик не смог завершить работу</strong>
