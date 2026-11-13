@@ -24,8 +24,8 @@ import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-st
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
 import Fastify from 'fastify';
-import {createMergeService} from './merge-service.js';
-import {createMergeBatch,initMergeBatches,readMergeBatch,recoverMergeBatches} from './merge-batch.js';
+import {initMergeBatches,recoverMergeBatches} from './merge-batch.js';
+import {registerMergeOperationsRoutes} from './modules/execution/api/merge-operations.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initChatImages,registerChatImageRoutes} from './chat-images.js';
@@ -210,34 +210,8 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
 
 
 
-const {mergeTaskPr}=createMergeService(pool,decryptToken);
-app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
- const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- try{return await mergeTaskPr(id,taskId,uid(req));}
- catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message});}
-});
-
+const {mergeTaskPr,startMergeBatch}=registerMergeOperationsRoutes({app,pool,uid,access,requireAdmin,temporal,decryptToken});
 registerBackgroundProcessRoutes(app,pool,uid);
-
-async function startMergeBatch(batchId:string){
- const client=await temporal();
- await client.withDeadline(Date.now()+5000,()=>client.workflow.start('mergeReadyBatch',{
-  workflowId:'merge-ready-'+batchId,workflowIdReusePolicy:'REJECT_DUPLICATE',taskQueue:'agent-pipeline',args:[batchId]
- }));
-}
-app.post('/api/projects/:id/merge-ready',async(req:any,reply)=>{
- const {id}=parse(z.object({id:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const batch=await createMergeBatch(pool,id,uid(req));
- return reply.code(202).send(batch);
-});
-app.get('/api/projects/:id/merge-ready/:batchId',async(req:any,reply)=>{
- const {id,batchId}=parse(z.object({id:z.string().uuid(),batchId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id))return;
- const batch=await readMergeBatch(pool,id,batchId);
- return batch??reply.code(404).send({error:'Очередь слияния не найдена'});
-});
 
 registerProjectCoreRoutes(app,{pool,uid,access,requireAdmin});
 registerWorkflowSettingsRoutes(app,{pool,uid,access,requireAdmin});
