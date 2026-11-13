@@ -223,7 +223,7 @@ test('the team excludes platform stages and keeps configured AI agents',async t=
   CREATE TEMP TABLE project_agent_models(project_id uuid,role text,model text,updated_at timestamptz DEFAULT now(),UNIQUE(project_id,role));
   CREATE TEMP TABLE project_role_capacity(project_id uuid,role text,capacity int,updated_at timestamptz DEFAULT now(),UNIQUE(project_id,role));
   CREATE TEMP TABLE users(id uuid,email text);
-  CREATE TEMP TABLE agent_memory(id uuid,project_id uuid,role text,kind text,body text,evidence text,status text,origin text,author_id uuid,applicability jsonb NOT NULL DEFAULT '{}'::jsonb,created_at timestamptz,reviewed_at timestamptz);
+  CREATE TEMP TABLE agent_memory(id uuid,project_id uuid,role text,kind text,body text,evidence text,status text,origin text,author_id uuid,applicability jsonb NOT NULL DEFAULT '{}'::jsonb,source_message_id uuid,instruction_group_id uuid,supersedes_id uuid,created_at timestamptz,reviewed_at timestamptz);
  `);
  const project=randomUUID(),actor=randomUUID();
  await db.query(`
