@@ -10,6 +10,9 @@ function fixture({member=true,admin=true,query,temporal}={}){
  const pool={
   query:async(sql,args)=>{
    calls.push({sql,args});
+   // The real note guard always yields one count row, including no questions.
+   if(sql.includes('SELECT count(*)::int AS count FROM task_agent_notes'))
+    return {rows:[{count:0}],rowCount:1};
    return (await query?.(sql,args))??{rows:[],rowCount:0};
   },
   connect:async()=>{throw Error('No transaction should be started in this scenario')}
