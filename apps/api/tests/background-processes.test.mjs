@@ -22,7 +22,7 @@ test('process center reads are scoped to the user and never write task or job st
   status:'running',createdAt:'2026-11-12T10:00:00Z',
   url:'/projects/project-1/processes?process=dev-1'
  });
- assert.equal(queries.length,8);
+ assert.equal(queries.length,9,'Generic role assignments add one user-scoped, read-only process query');
  for(const {sql,args} of queries){
   assert.match(sql.trim(),/^SELECT /i);
   assert.match(sql,/m\.user_id=\$1/);
