@@ -141,7 +141,7 @@ export function createCodexAppExecutor({store,spawnImpl=spawn,env={},command='co
     const thread=saved
      ?await call('thread/resume',{threadId:saved.threadId,excludeTurns:true})
      :await call('thread/start',{model,cwd,approvalPolicy:'never',
-       sandbox:sandboxPolicy?.type==='readOnly'?'readOnly':'workspaceWrite',ephemeral:false,serviceName:'ai-development-orchestrator'});
+       sandbox:sandboxPolicy?.type==='readOnly'?'read-only':'workspace-write',ephemeral:false,serviceName:'ai-development-orchestrator'});
     threadId=thread?.thread?.id;
     if(!validId.test(threadId||''))throw Error('Codex App Server не вернул thread_id');
     // Persist the ID before issuing a model turn: even a crash during work
