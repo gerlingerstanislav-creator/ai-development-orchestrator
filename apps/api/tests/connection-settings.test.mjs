@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import Fastify from 'fastify';
+import {ZodError} from 'zod';
 import {registerConnectionRoutes} from '../dist/modules/integrations/connections/api.js';
 
 const owner='123e4567-e89b-42d3-a456-426614174001';
@@ -9,6 +10,10 @@ const project='123e4567-e89b-42d3-a456-426614174003';
 const id='123e4567-e89b-42d3-a456-426614174004';
 async function fixture(){
  const app=Fastify();
+ app.setErrorHandler((error,_req,reply)=>{
+  if(error instanceof ZodError)return reply.code(400).send({error:'Некорректные данные'});
+  return reply.code(500).send({error:'Ошибка сервера'});
+ });
  const state=new Map([[id,{id,owner_id:owner,name:'Рабочий GitHub',provider:'github_token',secret_encrypted:'encrypted:old',project_count:1}]]);
  let actor=owner;
  const sql=[];
