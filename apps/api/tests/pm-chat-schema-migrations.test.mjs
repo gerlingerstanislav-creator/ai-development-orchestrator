@@ -7,7 +7,7 @@ import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {initProjectManagerSchema} from '../dist/project-manager.js';
 import {initChatImages} from '../dist/chat-images.js';
 
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=5);
 async function withSchema(fn){
  const schema='ado_pm_chat_v5_'+randomUUID().replaceAll('-','');
  const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});
