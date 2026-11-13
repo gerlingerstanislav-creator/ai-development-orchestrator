@@ -180,7 +180,7 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  // Only documentation-write sessions need the documentation job table.
  // Task-only/reader tests and migrations may run without that table.
  const docJob=role==='documentation'&&!!processId;
- const docGuard=docJob?` AND EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running')`:'';
+ const docGuard=docJob?` AND (EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running') OR EXISTS (SELECT 1 FROM agent_work_assignments a WHERE a.id=$4 AND a.project_id=p.id AND a.task_id=$3 AND a.role='documentation' AND a.status='running'))`:'';
  const result=await pool.query(`SELECT COALESCE($2::uuid,p.owner_id) AS actor_id FROM projects p
   WHERE p.id=$1 AND p.deleted_at IS NULL
    AND ($2::uuid IS NULL OR p.owner_id=$2 OR EXISTS(SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=$2))
@@ -190,7 +190,7 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
  await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
   VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',$8,$6,$7)`,
- [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!(processId&&!taskId):!autonomousSpecialistRoles.has(role)||!taskId]);
+ [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!processId:!autonomousSpecialistRoles.has(role)||!taskId]);
  return {id,secret};
 }
 export async function finishAgentSession(pool:Pick<Pool,'query'>,id:string){
