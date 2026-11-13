@@ -30,7 +30,7 @@ export function agentPromptZones(input:AgentPromptParts){
   identity,
   objective:input.objective.trim(),
   scope:String(input.scope||'').slice(0,900),
-  tools:'MCP: tasks.read, knowledge.search/sections/section, documents.search/read и другие инструменты роли. '+String(input.tools||'').slice(0,650),
+  tools:'Точные параметры доступных операций раскрывает MCP-каталог роли. '+String(input.tools||'').slice(0,650),
   protocol:String(input.continuation||'').slice(0,1200),
   output:[
    input.output?.trim()||'Предъяви доказательства достижения цели и оставшиеся блокеры.',
