@@ -2,7 +2,8 @@ import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {hashSecret,type AgentSession} from './agent-tools.js';
+import {hashSecret,capabilitiesForRole,type AgentSession} from './agent-tools.js';
+import {instructionProposal,applicabilitySchema,reconcileInstructions,proposeInstruction} from './instruction-governance.js';
 import {readTaskWorkBrief} from './task-work-brief.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
 import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
@@ -54,7 +55,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  _startWorkflow:(jobId:string)=>Promise<void>):Promise<unknown>{
  const projectId=session.project_id,actorId=session.actor_id;
  const params={...(args&&typeof args==='object'&&!Array.isArray(args)?args:{})} as Record<string,unknown>;
- if(session.task_id&&['knowledge.read','knowledge.section','knowledge.context','tasks.read','processes.list'].includes(name)){
+ if(session.task_id&&['knowledge.read','knowledge.section','knowledge.context','tasks.read','tasks.history','processes.list'].includes(name)){
   if(params.task_id!==undefined&&params.task_id!==session.task_id)throw rejected('Сессия агента привязана к другой задаче',403);
   params.task_id=session.task_id;
  }
@@ -275,6 +276,26 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
     ?'Задачи есть на доске и поставлены в очередь, но разработка ждёт подключения GitHub. Проверь подключение репозитория и права токена.'
     :'Очередь разработки создана. Выполняются только готовые задачи без блокировок.'};
  }
+ case 'capabilities.list':{
+  const {category}=z.object({category:z.string().trim().max(60).optional()}).parse(params);
+  return {capabilities:capabilitiesForRole(session.role,session.read_only,category).map(({name,category,description,effects,requiresConfirmation})=>({name,category,description,effects,requiresConfirmation}))};
+ }
+ case 'capabilities.describe':{
+  const {name:target}=z.object({name:z.string().min(2).max(90)}).parse(params);
+  const item=capabilitiesForRole(session.role,session.read_only).find(t=>t.name===target);
+  if(!item)throw rejected('Возможность недоступна для текущей роли',403);
+  return {capability:item};
+ }
+ case 'instructions.reconcile':{
+  if(session.role!=='manager')throw rejected('Управление правилами доступно ПМ',403);
+  const data=instructionProposal.pick({target_roles:true,text:true,applicability:true}).parse(params);
+  return {matches:await reconcileInstructions(pool,projectId,data.target_roles,data.text,data.applicability)};
+ }
+ case 'instructions.propose':{
+  if(session.role!=='manager')throw rejected('Распределять правила команды может только ПМ',403);
+  const data=instructionProposal.parse(params);
+  return proposeInstruction(pool,projectId,data);
+ }
  case 'project.context':{
   const [p,stages,rules,github]=await Promise.all([
    pool.query('SELECT id,name,description,agents_running FROM projects WHERE id=$1',[projectId]),
@@ -413,6 +434,40 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    reviewed_commit:task.spec_reviewed_commit||null
   }:null;
   return {task,git,conversation,work_brief,open_questions:open.rows,answered_questions:questions.rows,owner_answers:answers.rows};
+ }
+ case 'tasks.history':{
+  const {task_id,cursor,limit}=z.object({
+   task_id:uuid,cursor:z.string().max(180).optional(),limit:z.number().int().min(10).max(80).default(40)
+  }).parse(params);
+  if(session.task_id&&session.task_id!==task_id)throw rejected('Сессия привязана к другой задаче',403);
+  const task=await pool.query('SELECT id FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]);
+  if(!task.rowCount)throw rejected('Задача не найдена',404);
+  let beforeTime:string|null=null,beforeId:string|null=null;
+  if(cursor){
+   const parts=Buffer.from(cursor,'base64url').toString('utf8').split('|');
+   if(parts.length!==2||!z.string().datetime({offset:true}).safeParse(parts[0]).success||!uuid.safeParse(parts[1]).success)
+    throw rejected('Некорректный курсор истории',400);
+   [beforeTime,beforeId]=parts;
+  }
+  const events=await pool.query(`
+   SELECT h.id,h.created_at,h.kind,h.data FROM (
+    SELECT m.id,m.created_at,'message' AS kind,
+     jsonb_build_object('role',m.role,'body',left(m.body,2500),'channel',m.channel) AS data
+     FROM assistant_messages m WHERE m.project_id=$1 AND m.task_id=$2
+    UNION ALL
+    SELECT n.id,n.created_at,'agent_note' AS kind,
+     jsonb_build_object('stage',n.author_stage,'kind',n.kind,'body',left(n.body,2500),'target',n.target_stage) AS data
+     FROM task_agent_notes n WHERE n.project_id=$1 AND n.task_id=$2
+    UNION ALL
+    SELECT e.id,e.created_at,'task_event' AS kind,
+     jsonb_build_object('event',e.event,'detail',left(e.detail,2000)) AS data
+     FROM task_events e JOIN tasks t ON t.id=e.task_id WHERE t.project_id=$1 AND t.id=$2
+   ) h WHERE ($3::timestamptz IS NULL OR (h.created_at,h.id)<($3::timestamptz,$4::uuid))
+   ORDER BY h.created_at DESC,h.id DESC LIMIT $5`,[projectId,task_id,beforeTime,beforeId,limit+1]);
+  const page=events.rows.slice(0,limit);
+  const last=page.at(-1);
+  return {task_id,events:page,next_cursor:events.rows.length>limit&&last
+   ?Buffer.from(new Date(last.created_at).toISOString()+'|'+last.id).toString('base64url'):null};
  }
  case 'tasks.create':{
   const {title,description}=z.object({title:z.string().trim().min(3).max(180),description:z.string().trim().min(10).max(12000)}).parse(params);
