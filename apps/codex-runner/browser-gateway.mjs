@@ -37,6 +37,9 @@ export function startQaBrowserGateway(){
    for await(const part of req){raw+=part.toString();if(raw.length>12000)throw Error('Request too large');}
    const body=JSON.parse(raw),session=sessions.get(body.session);
    if(!session||!equal(session.token,body.token))return reply(res,403,{ok:false,error:'Session expired'});
+   // This must run through the actual Codex sandbox. A healthy Chromium host
+   // is insufficient if the sandbox cannot reach the Runner loopback bridge.
+   if(body.action==='ping')return reply(res,200,{ok:true,bridge:'connected'});
    if(!['start','close','restart','goto','viewport','click','fill','count','text','inspect','screenshot','assert'].includes(body.action))
     return reply(res,400,{ok:false,error:'Unsupported browser operation'});
    const kind=String(body.qaKind||''),id=String(body.qaId||'');
@@ -45,7 +48,7 @@ export function startQaBrowserGateway(){
      return reply(res,400,{ok:false,error:'Invalid QA assertion identity'});
    }
    const remote=await fetch(upstream+'/action',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(body),signal:AbortSignal.timeout(body.action==='start'?85000:35000)});
+    body:JSON.stringify(body),signal:AbortSignal.timeout(body.action==='start'?80000:30000)});
    const data=await remote.json();
    if(body.action==='assert'&&kind&&['passed','failed'].includes(data.assertion)&&session.assertions.length<200){
     session.assertions.push({kind,id,result:data.assertion,expression:String(body.expression||'').slice(0,1800),
@@ -53,7 +56,11 @@ export function startQaBrowserGateway(){
    }
    if(body.action==='close')sessions.delete(body.session);
    return reply(res,remote.status,data);
-  }catch(error){return reply(res,503,{ok:false,error:String(error.message||error).slice(0,800)});}
+  }catch(error){
+   const detail=String(error.message||error).slice(0,600);
+   process.stderr.write('QA browser gateway request failed: '+detail+'\n');
+   return reply(res,503,{ok:false,error:'Chromium service request failed: '+detail});
+  }
  });
  server.listen(4311,'127.0.0.1');
  return server;

@@ -28,6 +28,8 @@ COPY apps/codex-runner/agent-context.mjs apps/codex-runner/agent-mcp.mjs apps/co
 # Run exactly the import+HTTP smoke check used in CI against the image
 # rather than just checking server.mjs syntax on the GitHub host.
 COPY apps/codex-runner/startup-smoke.mjs ./startup-smoke.mjs
+# Exercise actual Codex sandbox -> loopback gateway -> isolated Chromium in CI.
+COPY apps/codex-runner/browser-smoke.mjs ./browser-smoke.mjs
 USER node
 EXPOSE 4300
 CMD ["node","server.mjs"]

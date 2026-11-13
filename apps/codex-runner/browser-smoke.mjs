@@ -25,13 +25,30 @@ try{
  assert.equal(started.ok,true,'Browser start failed: '+JSON.stringify(started));
  await writeFile(join(repo,'.ado-browser-session.json'),JSON.stringify(session));
  const policy=await createTaskPolicy(root,{qa:true});
- const command=spawn('codex',[...policy.sandboxArgs,'--','node','/opt/codex-runner/browser-client.mjs','assert','--case',caseIds[0],'document.querySelectorAll(".circle").length === 10'],{
-  cwd:repo,env:{...runnerEnvironment(),HOME:'/home/node',CODEX_HOME:process.env.CODEX_HOME||'/home/node/.codex'},stdio:['ignore','pipe','pipe']
+ // Test the complete path with the real production Codex permission profile.
+ // Enforce a hard deadline: CI must fail instead of hanging if loopback is blocked.
+ const sandboxClient=(...args)=>new Promise((resolve,reject)=>{
+  const child=spawn('codex',[...policy.sandboxArgs,'--','node','/opt/codex-runner/browser-client.mjs',...args],{
+   cwd:repo,env:{...runnerEnvironment(),HOME:'/home/node',CODEX_HOME:process.env.CODEX_HOME||'/home/node/.codex'},
+   stdio:['ignore','pipe','pipe']
+  });
+  let output='',errors='',done=false;
+  const timer=setTimeout(()=>{child.kill('SIGKILL');finish(new Error('Codex sandbox browser client timed out: '+args[0]));},20000);
+  const finish=(error,code)=>{
+   if(done)return;done=true;clearTimeout(timer);
+   if(error)reject(error);else resolve({code,output,errors});
+  };
+  child.stdout.on('data',x=>output+=x.toString());
+  child.stderr.on('data',x=>errors+=x.toString());
+  child.once('error',error=>finish(error));
+  child.once('close',code=>finish(undefined,code));
  });
- let output='',errors='';command.stdout.on('data',x=>output+=x.toString());command.stderr.on('data',x=>errors+=x.toString());
- const code=await new Promise((ok,fail)=>{command.once('error',fail);command.once('close',ok);});
- assert.equal(code,0,'Codex QA sandbox must reach the loopback browser client: '+output+' '+errors);
- assert.match(output,/"assertion":"passed"/);
+ const ping=await sandboxClient('ping');
+ assert.equal(ping.code,0,'Codex sandbox must reach its authenticated browser bridge: '+ping.output+' '+ping.errors);
+ assert.match(ping.output,/"bridge":"connected"/);
+ const checked=await sandboxClient('assert','--case',caseIds[0],'document.querySelectorAll(".circle").length === 10');
+ assert.equal(checked.code,0,'Codex QA sandbox must execute Chromium assertions: '+checked.output+' '+checked.errors);
+ assert.match(checked.output,/"assertion":"passed"/);
  const exact=await call(session,'assert',{expression:'document.querySelectorAll(".circle").length === 10'});
  assert.equal(exact.ok,true);
  const unique=await call(session,'assert',{qaKind:'case',qaId:caseIds[3],expression:'new Set([...document.querySelectorAll(".circle")].map(e=>getComputedStyle(e).backgroundColor)).size === 10 && new Set([...document.querySelectorAll(".circle")].map(e=>getComputedStyle(e).width)).size === 10'});
