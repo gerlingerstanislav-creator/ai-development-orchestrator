@@ -12,6 +12,7 @@ import {pendingAgentQuestions,taskConversationEvidence,taskNotesContext} from '.
 import {updateCurrentSpecification} from './requirements.js';
 import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
+import {assertDocumentationWasPrepared,readGitHubProjectSource} from './documentation-preparation.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole,type AgentReaderScope} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
@@ -48,6 +49,8 @@ type AnalystInput=Pick<z.infer<typeof analystRequest>,'mode'|'attachments'|'docu
  questionId?:string;
  structureOnly?:boolean;
  rebuildSpec?:boolean;
+ requireChanges?:boolean;
+ readProjectSource?:boolean;
 };
 type AssistantRuntime=Pick<Dependencies,'pool'|'codexUrl'|'runnerKey'|'decryptToken'>;
 
@@ -203,7 +206,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
   const job=(await pool.query("SELECT * FROM document_import_jobs WHERE id=$1 AND status='running' AND analyst_input IS NOT NULL",[jobId])).rows[0];
   if(!job)return;
   const {project_id:id,actor_id:actorId,request_text:message,source_key:sourceKey}=job;
-  const {location,attachments,mode,documentId,questionId,structureOnly,rebuildSpec}=job.analyst_input as AnalystInput;
+  const {location,attachments,mode,documentId,questionId,structureOnly,rebuildSpec,requireChanges,readProjectSource}=job.analyst_input as AnalystInput;
   const input={actorId,message:message+(attachments.length?'\n\nМатериалы: '+attachments.map(file=>file.name).join(', '):''),mode};
   // All AI calls see the latest owner guidance, including instructions submitted while a call was running.
   // A stale model response is discarded and regenerated rather than silently overriding a correction.
@@ -295,8 +298,9 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     await updateProgress('analyzing','Аналитик уточняет требования');
     await applyDocumentationEdit(config);
    }
-   const finalStatus=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0]?.status;
-   if(finalStatus==='completed')await processEvent(id,jobId,'completed','Работа аналитика завершена').catch(()=>{});
+   const final=(await pool.query('SELECT status,saved_documents FROM document_import_jobs WHERE id=$1',[jobId])).rows[0];
+   if(final?.status==='completed')await processEvent(id,jobId,'completed',
+    Number(final.saved_documents||0)>0?'Работа аналитика завершена: сохранено '+final.saved_documents+' страниц':'Аналитик завершил ответ без изменений ТЗ').catch(()=>{});
   }catch(error){
    const state=(await pool.query('SELECT status FROM document_import_jobs WHERE id=$1',[jobId])).rows[0]?.status;
    if(state==='cancelled')return; // Intentional user stop is not an agent failure.
