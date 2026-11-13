@@ -344,16 +344,38 @@ async function runJob(job,state,context){
   state.message='Изменяет код';
   const prompt=buildDeveloperPrompt(job);
   const policy=await isolatedTaskPolicy(workdir,dir,job.id);
+  const developerScope={projectId:job.projectId,taskId:job.taskId,role:'development'};
+  let codexTurns=0;
   const runCodex=async(instruction)=>{
    assertJobActive(job.id);
    const remaining=timeLeft();
-   if(remaining<15000)throw new Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
-   await auditCodexPrompt(job,'development',instruction);
-   const result=await command('codex',[
-    'exec','-m',job.model,'-c','model_reasoning_effort="'+job.reasoning+'"',
-    '--json','--ephemeral','--skip-git-repo-check',...policy.execArgs,...context.args,instruction
-   ],{cwd:dir,env:{...cliEnv,...context.env},timeout:remaining,jobId:job.id});
-   // Codex emits tool-use and sandbox diagnostics on stderr.
+   if(remaining<15000)throw Error('Исчерпано общее время разработки. Последняя попытка не запускается.');
+   const previous=await threadStore.read(developerScope);
+   // Initial handoff includes full instructions once. QA rework is a new turn
+   // in the SAME thread, with only fresh feedback and the current task state.
+   const nextPrompt=previous&&codexTurns===0
+    ?'Продолжи разработку ранее назначенной задачи. Не повторяй завершённую работу. '+
+     'Проверь текущие файлы и PR, учитывай изменения требований и следующие замечания:\n'+
+     ('Задача: '+job.title+'\n'+String(job.description||'').slice(0,4800)+
+      '\nЗамечания QA/CI: '+String(job.reworkFeedback||'нет новых замечаний').slice(0,4800))
+    :previous&&codexTurns>0
+    ?'Продолжи текущую попытку и устрани блокер. '+String(instruction).slice(-2400)
+    :instruction;
+   codexTurns++;
+   await auditCodexPrompt(job,'development',nextPrompt);
+   const response=await appExecutor({
+    scope:developerScope,requestId:job.id+':dev:'+codexTurns,prompt:nextPrompt,
+    model:job.model,effort:job.reasoning,cwd:dir,
+    timeout:remaining,configArgs:[...globalCodexSettings(policy.execArgs),...context.args],
+    envOverrides:context.env,
+    sandboxPolicy:{type:'workspaceWrite',writableRoots:[dir,join(workdir,'scratch')],networkAccess:false},
+    onChild:child=>{if(child)jobChildren.set(job.id,child);else jobChildren.delete(job.id);},
+    onStarted:async({threadId,turnId})=>{
+     state.threadId=threadId;state.turnId=turnId;saveJob(job,state);
+    }
+   });
+   if(!response.message)throw Error('Codex App Server завершил turn без итогового сообщения');
+   const result=asCodexExecResult(response);
    const parsed=codexJsonResult(result.stdout);
    cumulativeUsage=addUsage(cumulativeUsage,parsed.usage);
    state.usage=cumulativeUsage;
