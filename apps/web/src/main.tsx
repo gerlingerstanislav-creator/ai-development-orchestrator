@@ -27,7 +27,7 @@ import {GitHubCredentials} from './GitHubCredentials.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean;agents_running?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={execution_mode?:'code'|'browser_evidence';evidence_source_sha?:string|null;document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -2264,7 +2264,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="task-modal-top">
     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
     <div className="task-modal-actions">
-     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}{qaOutcome?' · '+qaOutcome:''}</span>
+     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}{activeTask.execution_mode==='browser_evidence'?' · Артефакты без PR':''}{qaOutcome?' · '+qaOutcome:''}</span>
      {['backlog','analysis'].includes(activeTask.stage)&&<button type="button" className="secondary" title="Удалить ненужную задачу без результатов разработки" onClick={()=>void deleteUnstartedTask()}><Trash2 size={14}/> Удалить</button>}
      {activeTask.type!=='question'&&!['documentation','done'].includes(activeTask.stage)&&
       <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
@@ -2303,6 +2303,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         <button className="pencil" title="Изменить описание" onClick={()=>setEditingField('description')}><Pencil size={15}/></button></>}
      </div>
      <details className="task-advanced"><summary>Дополнительные параметры задачи</summary><div className="task-metadata">
+      {activeTask.execution_mode==='browser_evidence'&&<span>Исполнение: <strong>Браузерные доказательства · без разработки и PR</strong>{activeTask.evidence_source_sha&&<> · SHA <code>{activeTask.evidence_source_sha.slice(0,12)}</code></>}</span>}
       {selected&&<a href={projectUrl(selected.id,'qa')} onClick={e=>followLink(e,projectUrl(selected.id,'qa'))}>Тест-кейсы и сценарии проекта</a>}
       {['testing','merge_queue'].includes(activeTask.stage)&&activeTask.pr_url&&activeTask.git_branch&&
        <button type="button" className="textbtn" disabled={aiBusy||!aiSettings.enabled}
