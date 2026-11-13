@@ -127,8 +127,8 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   if(mutating&&session.role==='documentation'){
    if(!session.process_id)return reply.code(403).send({error:'Нет поручения аналитика'});
    const running=await pool.query(
-    "SELECT id FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='running'",
-    [session.process_id,session.project_id]);
+    "SELECT id FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='running' UNION ALL SELECT id FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id=$3 AND role='documentation' AND status='running'",
+    [session.process_id,session.project_id,session.task_id||null]);
    if(!running.rowCount)return reply.code(409).send({error:'Поручение аналитика уже не выполняется'});
   }
   // All PostgreSQL changes and their success evidence use the SAME
@@ -183,7 +183,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    // A successful PM delegation is explicit authorization to wake the
    // project's specialists. Informational tools and chat leave Stop intact.
    if(session.role==='manager'&&(result as any)?.status!=='blocked'&&(result as any)?.ok!==false&&(result as any)?.recorded!==false&&new Set([
-    'tasks.create','tasks.route_execution','tasks.retry_evidence','iterations.prepare_plan','iterations.launch',
+    'tasks.create','tasks.route_execution','tasks.retry_evidence','work.delegate','work.review','iterations.prepare_plan','iterations.launch',
     'workflow.approve_development','workflow.move_task','workflow.release_task',
     'qa.retry','documentation.import','documentation.prepare_spec',
     'documentation.rebuild','documentation.organize',
