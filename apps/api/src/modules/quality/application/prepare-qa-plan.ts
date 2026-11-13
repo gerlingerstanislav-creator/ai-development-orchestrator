@@ -13,7 +13,7 @@ export type QaPlanPorts={
  pool:Database;
  failNonRetryable:(message:string)=>Error;
  event:(projectId:string,runId:string,kind:string,stage:string,detail:string,level?:string)=>Promise<void>;
- recordActivity:(projectId:string,taskIds:string[],runId:string,kind:string,status:string,message:string)=>Promise<unknown>;
+ recordActivity:(projectId:string,taskIds:string[],runId:string,kind:'qa_design',status:'running'|'completed'|'failed',message:string)=>Promise<unknown>;
  pendingQuestions:(projectId:string,taskId:string)=>Promise<boolean>;
  prEvidence:(projectId:string,taskId:string)=>Promise<QaPlanEvidence>;
  loadKnowledge:(projectId:string,taskId:string,runId:string)=>Promise<{documents:string;modules:string}>;
