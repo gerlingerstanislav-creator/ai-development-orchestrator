@@ -30,6 +30,7 @@ export function runnerJobRequestError(job){
   typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
   typeof job.repository!=='string'|| !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(job.repository)||hasTraversalSegments(job.repository) ||
   (['ci','review'].includes(job.kind)&&(!/^[a-f0-9]{40}$/i.test(job.expectedCommit)||job.baseCommit!==undefined&&!/^[a-f0-9]{40}$/i.test(job.baseCommit)))||
+  (job.checkoutCommit!==undefined&&(job.kind!=='test'||! /^[a-f0-9]{40}$/i.test(job.checkoutCommit)||job.expectedCommit!==job.checkoutCommit))||
   (job.branch!==undefined&&(typeof job.branch!=='string'||!/^[a-zA-Z0-9_.\/-]+$/.test(job.branch)||job.branch.startsWith('-')||hasTraversalSegments(job.branch)))||
   typeof job.baseBranch!=='string'|| !/^[a-zA-Z0-9_.\/-]+$/.test(job.baseBranch)||hasTraversalSegments(job.baseBranch) ||
   !allowedModels.has(job.model)||!allowedReasoning.has(job.reasoning)||
