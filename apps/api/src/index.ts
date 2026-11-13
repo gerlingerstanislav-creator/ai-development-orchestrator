@@ -12,7 +12,7 @@ import {registerProjectGitRoutes} from './modules/integrations/github/api.js';
 import {registerCodexAdminRoutes} from './modules/codex/api.js';
 import {registerAuthRoutes} from './modules/auth/api.js';
 import {issueAccessToken} from './modules/auth/application/tokens.js';
-import {pauseAllProjectAgents,ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
+import {ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
 import {runSchemaMigrations} from './database/schema-migrations.js';
 import {initEpicStageSync} from './epic-stage-sync.js';
 import {initAnalysisFirstGate} from './analysis-first-gate.js';
