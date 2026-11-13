@@ -2353,7 +2353,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <strong>Тестировщик не смог завершить работу</strong>
        <p>Это сбой исполнителя, а не подтверждённая нехватка средств тестирования. Пропуск недоступен: необходимо исправить причину и повторить QA.</p>
       </div>}
-     {activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver&&
+     {activeTask.execution_mode!=='browser_evidence'&&activeTask.stage==='testing'&&newestTaskTest?.status==='completed'&&newestTaskTest.verdict==='blocked'&&qaWaiver&&
       <section className="qa-waiver-panel" aria-label="Решение по недоступным тестам">
        <strong>Часть тестирования не выполнена</strong>
        <p className="qa-waiver-counts">Проверено: {qaWaiver.assessment.passed} из {qaWaiver.assessment.total}. Не проверено: {qaWaiver.assessment.unverified.length}.</p>
