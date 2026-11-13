@@ -48,7 +48,7 @@ import {registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-n
 import {registerTaskCancellationRoutes} from './task-cancellation.js';
 import {enqueueDevelopment,reconcileAgentWorkQueue,reconcileLegacyAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
-import {reconcileAgentWorkAssignments} from './modules/agents/application/work-assignments.js';
+import {reconcileAgentWorkAssignments} from './modules/agents/infrastructure/work-assignments.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
 import {reconcileIdlePullRequests} from './idle-pr-recovery.js';
 import {reconcileTaskEvidenceQueue} from './task-evidence-queue.js';
