@@ -1,4 +1,5 @@
 import type {Pool} from 'pg';
+import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 
 /**
  * Defense-in-depth: a task cannot enter its first development stage while
@@ -27,7 +28,7 @@ export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>
     OR EXISTS (
      SELECT 1 FROM task_agent_notes n
      WHERE n.project_id=NEW.project_id AND n.task_id=NEW.id
-      AND n.kind='question' AND n.status IN ('open','processing')
+      AND ${PENDING_OWNER_QUESTION_SQL}
     ) THEN
     RAISE EXCEPTION 'Нельзя начать разработку: есть неотвеченные вопросы к владельцу' USING ERRCODE='23514';
    END IF;
