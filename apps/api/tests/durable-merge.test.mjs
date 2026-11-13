@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
-import {createMergeBatch,finishMergeBatch,initMergeBatches,loadMergeBatch,readMergeBatch,recoverMergeBatches,saveMergeResult} from '../dist/merge-batch.js';
+import {createMergeBatch,finishMergeBatch,installMergeBatchSchema,recoverInterruptedLegacyMergeBatches,loadMergeBatch,readMergeBatch,recoverMergeBatches,saveMergeResult} from '../dist/merge-batch.js';
 import {createMergeService} from '../dist/merge-service.js';
 
 test('merge batch survives lost acknowledgements and records one outcome per PR',async t=>{
@@ -37,7 +37,8 @@ test('merge batch survives lost acknowledgements and records one outcome per PR'
  await db.query("INSERT INTO tasks(id,project_id,depends_on_task_id,stage,title,pr_number,pr_url) VALUES($1,$2,$3,'merge_queue','Child',2,'child'),($3,$2,NULL,'merge_queue','Parent',1,$4)",
   [child,project,parent,prUrl]);
  await db.query("INSERT INTO merge_process_runs(id,project_id,actor_id,status) VALUES($1,$2,$3,'running')",[legacy,project,actor]);
- await initMergeBatches(db);
+ await installMergeBatchSchema(db);
+ await recoverInterruptedLegacyMergeBatches(db);
  assert.equal((await readMergeBatch(db,project,legacy)).status,'failed');
  await db.query("INSERT INTO project_git_repositories VALUES($1,$2,'example/repo','main','main')",[project,connection]);
  await db.query("INSERT INTO connections VALUES($1,$2,'fake')",[connection,actor]);

@@ -6,14 +6,20 @@ export type MergeResult={taskId:string;status:'merged'|'skipped'|'failed';reason
 type MergeTask={id:string;depends_on_task_id:string|null};
 type BatchStatus='queued'|'running'|'completed'|'partial'|'failed';
 
-export async function initMergeBatches(db:Db){
+/** Pure DDL for append-only PostgreSQL schema migration v4. */
+export async function installMergeBatchSchema(db:Db){
  await db.query(`
   ALTER TABLE merge_process_runs ADD COLUMN IF NOT EXISTS task_ids uuid[];
-  UPDATE merge_process_runs SET status='failed',message='Старый запуск прерван. Запустите слияние повторно для оставшихся PR.',finished_at=now()
-   WHERE status='running' AND task_ids IS NULL;
   CREATE UNIQUE INDEX IF NOT EXISTS idx_merge_process_active ON merge_process_runs(project_id)
    WHERE status IN ('queued','running');
  `);
+}
+
+/** Runtime policy for pre-versioned batches, never applied as a migration. */
+export async function recoverInterruptedLegacyMergeBatches(db:Db){
+ await db.query(`UPDATE merge_process_runs
+  SET status='failed',message='Старый запуск прерван. Запустите слияние повторно для оставшихся PR.',finished_at=now()
+  WHERE status='running' AND task_ids IS NULL`);
 }
 
 export function orderMergeTasks(tasks:MergeTask[]){

@@ -7,6 +7,7 @@ import {initTaskAnalysisQueue} from '../task-analysis-queue.js';
 import {initQualityGateSchema} from '../quality-gates.js';
 import {initTaskOrchestrationSchema} from '../task-orchestration.js';
 import {initProjectManagerInbox} from '../project-manager-inbox.js';
+import {installMergeBatchSchema} from '../merge-batch.js';
 
 /**
  * Append-only, transactional schema history.
@@ -43,6 +44,10 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
     await initTaskOrchestrationSchema(database);
     await initProjectManagerInbox(database);
    }
+  },
+  {
+   version:4,name:'merge-batch-schema',checksum:'ado-merge-batch-ddl-v4',
+   up:database=>installMergeBatchSchema(database)
   }
  ];
 }
