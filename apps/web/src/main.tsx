@@ -22,6 +22,7 @@ import {ProjectIterations,TaskPlanningFields,type IterationSummary,type Planning
 import {OwnerQuestionCleanup} from './OwnerQuestionCleanup.js';
 import {ChatImagePicker,ChatImageGallery,ChatImageDropZone,prepareChatImages,type ChatImageDraft,type ChatImageMeta} from './ChatImages.js';
 import {BrowserPmVoice} from './BrowserPmVoice.js';
+import {GitHubCredentials} from './GitHubCredentials.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean;agents_running?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
@@ -217,7 +218,7 @@ function App(){
  const [ruleDraft,setRuleDraft]=useState('');const [knowledgeBusy,setKnowledgeBusy]=useState(false);
  const [documentVersions,setDocumentVersions]=useState<DocVersion[]>([]);const [documentationNotice,setDocumentationNotice]=useState('');
 const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections,setConnections]=useState<Connection[]>([]);
- const [projectConnections,setProjectConnections]=useState<Connection[]>([]);
+ 
  const [aiSettings,setAiSettings]=useState<AiSettings>({model:'gpt-6-luna',reasoning:'low',enabled:false});
  const [aiBusy,setAiBusy]=useState(false);const [aiRuns,setAiRuns]=useState<AiRun[]>([]);const [testRuns,setTestRuns]=useState<TestRun[]>([]);const [aiMessage,setAiMessage]=useState('');
  const [targetBranch,setTargetBranch]=useState('');const [mergeBusy,setMergeBusy]=useState(false);const [mergeReport,setMergeReport]=useState('');
@@ -263,7 +264,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [selectedDocId,setSelectedDocId]=useState<string|null>(null);
  const [editingDoc,setEditingDoc]=useState<Doc|null>(null);
  const [docBusy,setDocBusy]=useState(false);
- const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);const [showConnection,setShowConnection]=useState(false);
+ const [showProject,setShowProject]=useState(false);const [showTask,setShowTask]=useState(false);
  // Escape dismisses only the topmost UI layer. Leave in-progress operations intact.
  useEffect(()=>{
   const onEscape=(event:KeyboardEvent)=>{
@@ -271,8 +272,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    if(workflowModal){
     if(workflowEditing){setWorkflowEditing(null);}
     else if(!workflowSaving){setWorkflowModal(null);}
-   }else if(showConnection){setShowConnection(false);}
-   else if(showTask){setShowTask(false);}
+   }else if(showTask){setShowTask(false);}
    else if(showProject){setShowProject(false);}
    else if(activeTask){
     if(cancelPreview||cancelError){if(!cancelBusy){setCancelPreview(null);setCancelError('');}}
@@ -285,14 +285,14 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   };
   document.addEventListener('keydown',onEscape);
   return()=>document.removeEventListener('keydown',onEscape);
- },[workflowModal,workflowEditing,workflowSaving,showConnection,showTask,showProject,activeTask,editingField,selected,backgroundProcessMenuOpen,projectMenuOpen,cancelPreview,cancelError,cancelBusy]);
+ },[workflowModal,workflowEditing,workflowSaving,showTask,showProject,activeTask,editingField,selected,backgroundProcessMenuOpen,projectMenuOpen,cancelPreview,cancelError,cancelBusy]);
  useEffect(()=>{
-  const modalOpen=!!(activeTask||showProject||showTask||showConnection);
+  const modalOpen=!!(activeTask||showProject||showTask);
   if(!modalOpen)return;
   const previous=document.body.style.overflow;
   document.body.style.overflow='hidden';
   return()=>{document.body.style.overflow=previous;};
- },[activeTask,showProject,showTask,showConnection]);
+ },[activeTask,showProject,showTask]);
  useEffect(()=>{
   if(!aiRuns.some(r=>r.status==='running'||r.status==='queued')&&!testRuns.some(r=>r.status==='running'||r.status==='queued'))return;
   const interval=window.setInterval(()=>setElapsedNow(Date.now()),1000);
@@ -304,7 +304,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  useEffect(()=>{if(!error)return;const timeout=window.setTimeout(()=>setError(''),9500);return()=>window.clearTimeout(timeout);},[error]);
  const [busy,setBusy]=useState(false);const [search,setSearch]=useState('');
  const [form,setForm]=useState({name:'',description:'',title:'',type:'task',parent_id:''});
- const [cred,setCred]=useState({name:'',provider:'openai_api',secret:''});
+ 
  const [codex,setCodex]=useState<CodexState|null>(null);const [codexBusy,setCodexBusy]=useState(false);const [codexTest,setCodexTest]=useState('');
  const [events,setEvents]=useState<{id:string;event:string;detail:string;created_at:string}[]>([]);
  const [taskProcessEvents,setTaskProcessEvents]=useState<TaskProcessEvent[]>([]);
@@ -599,8 +599,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setDeploymentEnvironment(deployment.environment??'production');
    const ssh=await api<{configured:boolean;host?:string;username?:string;remote_path?:string}>('/projects/'+id+'/deployment/ssh').catch(()=>({configured:false,host:'',username:'',remote_path:''}));
    setDeploymentSsh({host:ssh.host||'',username:ssh.username||'',path:ssh.remote_path||'',privateKey:'',knownHosts:'',configured:ssh.configured});
-   const [t,s,d,c,pc,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<Connection[]>('/projects/'+id+'/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
-   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setProjectConnections(pc);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
+   const [t,s,d,c,gl,ai,runs,qa,pr,suggestions,versions,questions,proposals]=await Promise.all([api<Task[]>('/projects/'+id+'/tasks'),api<Stage[]>('/projects/'+id+'/workflow'),api<Doc[]>('/projects/'+id+'/docs'),api<Connection[]>('/connections'),api<GitLink|null>('/projects/'+id+'/git'),api<AiSettings>('/projects/'+id+'/ai-settings'),api<AiRun[]>('/projects/'+id+'/ai-runs'),api<TestRun[]>('/projects/'+id+'/test-runs'),api<ProjectRule[]>('/projects/'+id+'/rules'),api<RuleSuggestion[]>('/projects/'+id+'/rule-suggestions'),api<DocVersion[]>('/projects/'+id+'/documentation/versions'),api<DocumentationQuestion[]>('/projects/'+id+'/documentation/questions'),api<DocumentationProposal[]>('/projects/'+id+'/documentation/proposals')]);
+   setLoadedProjectId(id);setTasks(t);setStages(s);setDocs(d);setConnections(c);setGitLink(gl);setGitRepository(gl?.repository||'');setTargetBranch(gl?.target_branch||gl?.default_branch||'');setGitTokenId(gl?.connection_id||'');setGitMessage('');setAiSettings(ai);setAiRuns(runs);setTestRuns(qa);setAiMessage('');setRules(pr);setRuleSuggestions(suggestions);setDocumentVersions(versions);setDocQuestions(questions);setDocProposals(proposals);
   }catch(e){fail(e);}
  }
  useEffect(()=>{if(token)void loadProjects();},[token]);
@@ -1019,8 +1019,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(selected)navigate(projectUrl(selected.id,'docs')+'/'+doc.id);
   setEditingDoc(null);
  }
- async function addConnection(e:React.FormEvent){e.preventDefault();setBusy(true);try{const saved=await api<Connection>('/connections',{method:'POST',body:JSON.stringify(cred)});setCred({name:'',provider:'github_token',secret:''});setShowConnection(false);if(selected)await loadProject(selected.id);if(saved.provider==='github_token')setGitTokenId(saved.id);}catch(e){fail(e);}finally{setBusy(false);}}
- async function attachConnection(connectionId:string){if(!selected)return;try{await api('/projects/'+selected.id+'/connections',{method:'POST',body:JSON.stringify({connectionId})});await loadProject(selected.id);}catch(e){fail(e);}}
  async function saveGitLink(){if(!selected)return;setGitBusy(true);setGitMessage('');try{const r=await api<GitLink>('/projects/'+selected.id+'/git',{method:'PUT',body:JSON.stringify({repository:gitRepository.trim(),connectionId:gitTokenId,targetBranch:targetBranch.trim()||undefined})});setGitLink(r);setTargetBranch(r.target_branch||r.default_branch);setGitMessage('Доступ проверен. Репозиторий привязан.');}catch(e){fail(e);}finally{setGitBusy(false);}}
  async function removeGitLink(){if(!selected)return;setGitBusy(true);try{await api('/projects/'+selected.id+'/git',{method:'DELETE'});setGitLink(null);setGitMessage('Привязка удалена.');}catch(e){fail(e);}finally{setGitBusy(false);}}
  async function updateDocumentation(){if(!selected||knowledgeBusy)return;
@@ -1737,11 +1735,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <div className="sidebar-bottom">
    <span className="avatar">AD</span><span className="account-name">Администратор</span>
-   <a href="/account/settings" className={'account-settings-button '+(accountSettings?'active':'')} onClick={e=>followLink(e,'/account/settings')} title="Настройки аккаунта" aria-label="Настройки аккаунта"><Settings2 size={18}/></a>
+   <a href="/account/settings" className={'account-settings-button '+(accountSettings?'active':'')} onClick={e=>followLink(e,'/account/settings')} title="Настройки профиля" aria-label="Настройки профиля"><Settings2 size={18}/></a>
    <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
   </div>
  </aside>
- <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки аккаунта</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='plan'?'План разработки':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':section==='workflow'?'Workflow':'Настройки'}</strong></>}<div className="top-right">
+ <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки профиля</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='plan'?'План разработки':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':section==='workflow'?'Workflow':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
     <div className="quota-popover" role="tooltip">
@@ -1776,43 +1774,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
 </header>
  
- {accountSettings?<div className="page compact-project-page">
-  <section className="panel codex-panel">
-   <h3>Режим разработки</h3>
-   <label style={{display:"flex",alignItems:"center",gap:10}}>
-    <input type="checkbox" checked={developmentMode} disabled={developmentModeBusy} onChange={e=>void updateDevelopmentMode(e.target.checked)} style={{width:18,height:18}}/>
-    Отправлять диагностические логи в облако
-   </label>
-   <p className="muted">Включён по умолчанию. При выключении отправка в Supabase прекращается; локальные журналы и работа агентов сохраняются.</p>
-   {developmentModeError&&<p className="error">{developmentModeError}</p>}
-  </section>
- <section className="panel codex-panel">
-  <div className="row-line"><h3>Использованные токены Codex</h3><button className="secondary" onClick={()=>void refreshTokenUsage()}>Обновить</button></div>
-  <p className="muted">Фактический расход токенов, сообщённый Codex CLI в JSON-событиях. Учёт начнётся с новых запросов после обновления; прошлые запуски без сохранённой статистики не включены.</p>
-  {tokenUsage?<div className="token-usage-grid">
-   <div><small>Входящие</small><strong>{Number(tokenUsage.totals.input_tokens).toLocaleString('ru-RU')}</strong></div>
-   <div><small>Из кеша</small><strong>{Number(tokenUsage.totals.cached_input_tokens).toLocaleString('ru-RU')}</strong></div>
-   <div><small>Исходящие</small><strong>{Number(tokenUsage.totals.output_tokens).toLocaleString('ru-RU')}</strong></div>
-   <div><small>Запросов с учётом</small><strong>{tokenUsage.totals.requests}</strong></div>
-  </div>:<p className="muted">Пока нет данных об использовании.</p>}
- </section>
-  <section className="panel codex-panel">
-  <div className="row-line"><h3>Лимиты Codex · ChatGPT</h3><button className="secondary" disabled={rateLimitsBusy} onClick={()=>void refreshRateLimits()}>{rateLimitsBusy?'Обновление…':'Обновить'}</button></div>
-  <p className="muted">Данные текущего подключённого аккаунта Codex: использованная доля лимита и время его сброса. Это не лимит сообщений обычного ChatGPT и не ручные ограничения сервиса.</p>
-
-  {rateLimits&&!rateLimits.windows.length&&<p className="muted">Codex не предоставил доступных окон лимитов для этого аккаунта.</p>}
-  {rateLimits?.windows.map(bucket=><div className="codex-limit-bucket" key={bucket.id}>
-   <strong>{bucket.name||bucket.id}{bucket.planType?' · '+bucket.planType:''}</strong>
-   {[bucket.primary,bucket.secondary].map((win,i)=>win&&<div key={i} className="codex-limit-window">
-    <div className="row-line"><span>{win.windowDurationMins?win.windowDurationMins>=1440?Math.round(win.windowDurationMins/1440)+' дн.':win.windowDurationMins>=60?(win.windowDurationMins/60).toFixed(1)+' ч.':win.windowDurationMins+' мин.':'Окно'}</span>
-     <strong>{Math.round(100-win.usedPercent)}% доступно</strong></div>
-    <div className="codex-limit-track"><div style={{width:Math.min(100,Math.max(0,100-win.usedPercent))+'%'}}/></div>
-    <small>{win.resetsAt?'Обновится: '+new Date(win.resetsAt*1000).toLocaleString('ru-RU'):'Время сброса не указано'}</small>
-   </div>)}
-  </div>)}
-  {rateLimits&&<p className="muted">{rateLimits.stale?'Последние полученные данные: ':'Обновлено: '}{new Date(rateLimits.checkedAt).toLocaleString('ru-RU')}{rateLimits.resetCredits!==null?' · Доступно сбросов лимита: '+rateLimits.resetCredits:''}{rateLimits.stale?' · Обновление не удалось':''}</p>}
- </section>
- <section className="panel codex-panel">
+ {accountSettings?<div className="page compact-project-page profile-settings-page">
+ <div className="profile-page-heading"><h2>Настройки профиля</h2><p className="muted">Здесь находятся личные подключения. Настройки отдельных проектов изменяются в разделе проекта.</p></div>
+ <section className="panel profile-connections-panel">
+  <h3>Подключения</h3>
+  <GitHubCredentials/>
+  <div className="profile-subsection">
+   <div className="profile-codex">
  <div className="codex-heading"><div><h3>Codex CLI · ChatGPT Plus</h3><p className="muted">Отдельный Docker-контейнер. Вход через браузер, без API-ключа и пароля ChatGPT в нашем сервисе.</p></div><span className={'codex-state '+(codex?.connected?'online':'offline')}>{codex?.connected?'Подключён':codex?.error?'Недоступен':'Не подключён'}</span></div>
  {codex?.error&&<p className="error">{codex.error}</p>}
  {codex?.connected?<p className="muted">{codex.detail||'Авторизация ChatGPT активна.'}</p>:<p className="muted">Для входа может потребоваться включить вход по коду устройства в настройках безопасности ChatGPT.</p>}
@@ -1830,6 +1798,52 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   {codex?.connected&&<><button className="secondary" disabled={codexBusy} onClick={()=>void codexAction('test')}>Проверить запросом</button><button className="secondary" disabled={codexBusy} onClick={()=>void codexAction('logout')}>Отключить</button></>}
  </div>
  {codexTest&&<div className="codex-test">{codexTest}</div>}
+ </div>
+  </div>
+ </section>
+ <section className="panel profile-advanced-panel">
+  <h3>Дополнительно</h3>
+  <details className="profile-details">
+   <summary>Лимиты и использование Codex</summary>
+   <div className="profile-advanced-part">
+  <div className="row-line"><h3>Лимиты Codex · ChatGPT</h3><button className="secondary" disabled={rateLimitsBusy} onClick={()=>void refreshRateLimits()}>{rateLimitsBusy?'Обновление…':'Обновить'}</button></div>
+  <p className="muted">Данные текущего подключённого аккаунта Codex: использованная доля лимита и время его сброса. Это не лимит сообщений обычного ChatGPT и не ручные ограничения сервиса.</p>
+
+  {rateLimits&&!rateLimits.windows.length&&<p className="muted">Codex не предоставил доступных окон лимитов для этого аккаунта.</p>}
+  {rateLimits?.windows.map(bucket=><div className="codex-limit-bucket" key={bucket.id}>
+   <strong>{bucket.name||bucket.id}{bucket.planType?' · '+bucket.planType:''}</strong>
+   {[bucket.primary,bucket.secondary].map((win,i)=>win&&<div key={i} className="codex-limit-window">
+    <div className="row-line"><span>{win.windowDurationMins?win.windowDurationMins>=1440?Math.round(win.windowDurationMins/1440)+' дн.':win.windowDurationMins>=60?(win.windowDurationMins/60).toFixed(1)+' ч.':win.windowDurationMins+' мин.':'Окно'}</span>
+     <strong>{Math.round(100-win.usedPercent)}% доступно</strong></div>
+    <div className="codex-limit-track"><div style={{width:Math.min(100,Math.max(0,100-win.usedPercent))+'%'}}/></div>
+    <small>{win.resetsAt?'Обновится: '+new Date(win.resetsAt*1000).toLocaleString('ru-RU'):'Время сброса не указано'}</small>
+   </div>)}
+  </div>)}
+  {rateLimits&&<p className="muted">{rateLimits.stale?'Последние полученные данные: ':'Обновлено: '}{new Date(rateLimits.checkedAt).toLocaleString('ru-RU')}{rateLimits.resetCredits!==null?' · Доступно сбросов лимита: '+rateLimits.resetCredits:''}{rateLimits.stale?' · Обновление не удалось':''}</p>}
+ </div>
+   <div className="profile-advanced-part">
+  <div className="row-line"><h3>Использованные токены Codex</h3><button className="secondary" onClick={()=>void refreshTokenUsage()}>Обновить</button></div>
+  <p className="muted">Фактический расход токенов, сообщённый Codex CLI в JSON-событиях. Учёт начнётся с новых запросов после обновления; прошлые запуски без сохранённой статистики не включены.</p>
+  {tokenUsage?<div className="token-usage-grid">
+   <div><small>Входящие</small><strong>{Number(tokenUsage.totals.input_tokens).toLocaleString('ru-RU')}</strong></div>
+   <div><small>Из кеша</small><strong>{Number(tokenUsage.totals.cached_input_tokens).toLocaleString('ru-RU')}</strong></div>
+   <div><small>Исходящие</small><strong>{Number(tokenUsage.totals.output_tokens).toLocaleString('ru-RU')}</strong></div>
+   <div><small>Запросов с учётом</small><strong>{tokenUsage.totals.requests}</strong></div>
+  </div>:<p className="muted">Пока нет данных об использовании.</p>}
+ </div>
+  </details>
+  <details className="profile-details">
+   <summary>Диагностика</summary>
+   <div className="profile-advanced-part">
+   <h3>Режим разработки</h3>
+   <label style={{display:"flex",alignItems:"center",gap:10}}>
+    <input type="checkbox" checked={developmentMode} disabled={developmentModeBusy} onChange={e=>void updateDevelopmentMode(e.target.checked)} style={{width:18,height:18}}/>
+    Отправлять диагностические логи в облако
+   </label>
+   <p className="muted">Включён по умолчанию. При выключении отправка в Supabase прекращается; локальные журналы и работа агентов сохраняются.</p>
+   {developmentModeError&&<p className="error">{developmentModeError}</p>}
+  </div>
+  </details>
  </section>
  </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>{showTrash?'Корзина проектов':'Мои проекты'}</h1><p>{showTrash?'Проекты можно восстановить или удалить безвозвратно. Репозитории GitHub не затрагиваются.':'Создавайте проекты и управляйте разработкой в одном месте.'}</p></div><div className="project-page-actions"><button className="secondary" type="button" onClick={()=>setShowTrash(v=>!v)}>{showTrash?<><ArrowLeft size={16}/> Мои проекты</>:<><Trash2 size={16}/> Корзина ({trashedProjects.length})</>}</button>{!showTrash&&<button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button>}</div></div>
  {showTrash?<div className="project-grid">{trashedProjects.map(p=><div key={p.id} className="project-card project-card-trashed"><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><small className="muted">В корзине с {new Date(p.deleted_at).toLocaleString('ru-RU')}</small><div className="project-card-actions"><button type="button" className="secondary" disabled={projectDeleteBusy} onClick={()=>void restoreProject(p)}><RotateCcw size={15}/> Восстановить</button><button type="button" className="secondary project-danger-button" disabled={projectDeleteBusy} onClick={()=>void permanentlyDeleteProject(p)}><Trash2 size={15}/> Удалить навсегда</button></div></div>)}{trashedProjects.length===0&&<div className="empty">Корзина пуста.</div>}</div>
@@ -2041,9 +2055,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
 
  </section>}
- {section==='settings'&&<section className="panel">
-  <h3>AI · Настройки выполнения</h3>
-  <p className="muted">Модель задаётся для проекта. Агент запускается только вручную из карточки задачи. Одновременно выполняется не более одной задачи.</p>
+ {section==='settings'&&<section className="panel project-settings-panel">
+  <h3>AI-агенты</h3>
+  <p className="muted">Модель и режим работы AI-агентов этого проекта. Запуском управляют задачи и процесс разработки.</p>
   <div className="settings-grid">
    <label>Модель по умолчанию<select value={aiSettings.model} onChange={e=>setAiSettings({...aiSettings,model:e.target.value as AiSettings['model']})}>
     <option value="gpt-6-luna">GPT-6 Luna — экономный вариант</option>
@@ -2056,21 +2070,20 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   <label style={{display:'flex',flexDirection:'row',alignItems:'center',gap:10}}>
    <input type="checkbox" checked={aiSettings.enabled} onChange={e=>setAiSettings({...aiSettings,enabled:e.target.checked})} style={{width:18,height:18}}/>
-   Разрешить ручной запуск AI-задач
+   Разрешить работу AI-агентов
   </label>
-  <p className="muted">Лимиты использования общие для сервиса и настраиваются в разделе «Настройки сервиса». Здесь выбирается модель для этого проекта.</p>
+  <p className="muted">Подключение ChatGPT и сведения о лимитах доступны в настройках профиля.</p>
   <button className="primary" disabled={aiBusy} onClick={()=>void saveAiSettings()}>Сохранить настройки AI</button>
   {aiMessage&&<p>{aiMessage}</p>}
- </section>}
- {section==='settings'&&<section className="panel">
-  <div className="row-line"><h3>GitHub · Репозиторий проекта</h3><button className="secondary" onClick={()=>{setCred({name:'',provider:'github_token',secret:''});setShowConnection(true);}}><KeyRound size={15}/> Добавить GitHub token</button></div>
-  <p className="muted">Подключи репозиторий и токен с правами Contents: Read and write и Pull requests: Read and write. Codex создаёт отдельную ветку и черновик PR после ручного запуска задачи.</p>
+ <div className="project-settings-divider"/>
+  <div className="row-line"><h3>Репозиторий GitHub</h3><a className="secondary profile-settings-link" href="/account/settings" onClick={e=>followLink(e,'/account/settings')}><KeyRound size={15}/> Управлять токенами</a></div>
+  <p className="muted">Выбери репозиторий, целевую ветку PR и одно из личных подключений GitHub. Токены создаются и редактируются в профиле.</p>
   <div className="settings-grid">
    <label>Репозиторий (owner/name)<input value={gitRepository} placeholder="gerlingerstanislav-creator/ai-development-orchestrator" onChange={e=>setGitRepository(e.target.value)} /></label>
    <label>Целевая ветка PR<input value={targetBranch} placeholder={gitLink?.default_branch||'main'} onChange={e=>setTargetBranch(e.target.value)} /></label>
-   <label>GitHub token<select value={gitTokenId} onChange={e=>setGitTokenId(e.target.value)}><option value="">Выбери подключение</option>{connections.filter(c=>c.provider==='github_token').map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>
+   <label>Подключение GitHub<select value={gitTokenId} onChange={e=>setGitTokenId(e.target.value)}><option value="">Выбери подключение</option>{connections.filter(c=>c.provider==='github_token').map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>
   </div>
-  {connections.every(c=>c.provider!=='github_token')&&<p className="muted">Добавь GitHub token кнопкой выше, затем выбери его здесь.</p>}
+  {connections.every(c=>c.provider!=='github_token')&&<p className="muted">Нет сохранённых токенов. <a href="/account/settings" onClick={e=>followLink(e,'/account/settings')}>Добавить токен в профиле</a>, затем вернись к настройкам проекта.</p>}
   {gitLink&&<p className="muted">Привязан: <strong>{gitLink.repository}</strong> · целевая ветка PR: <strong>{gitLink.target_branch||gitLink.default_branch}</strong></p>}
   {gitMessage&&<p>{gitMessage}</p>}
   <div className="codex-actions">
@@ -2082,7 +2095,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  
  </div>}
  </main>
- {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&!showConnection&&<>
+ {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&<>
   {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>{aiAgentName(projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)')}</strong><small>{aiSettings.model}</small></div>
     <div className="docs-actions">{projectChatMode==='documentation'&&projectImportJobId&&<button className="secondary" type="button" disabled={processActionBusy} onClick={()=>void stopActiveAnalystJob()}>Прервать</button>}
@@ -2489,19 +2502,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    </div>}
   </div>
  </div>}
- {showConnection&&<div className="overlay" onMouseDown={()=>setShowConnection(false)}><form className="dialog" onMouseDown={e=>e.stopPropagation()} onSubmit={addConnection}><div className="modal-heading"><h2>Новое подключение</h2><button type="button" onClick={()=>setShowConnection(false)}><X/></button></div><p className="muted">{cred.provider==='github_token'?'Подключение GitHub для выбранного проекта. Токен создаётся в GitHub и хранится в сервисе зашифрованным.':'Подключение по API-ключу. ChatGPT Plus / Codex CLI настраивается отдельно в разделе «Настройки аккаунта».'}</p>
- {cred.provider==='github_token'&&<div className="panel" style={{marginBottom:16,padding:16}}>
-  <strong>Как получить GitHub token</strong>
-  <ol style={{paddingLeft:20,marginBottom:8,lineHeight:1.65}}>
-   <li>Открой <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">создание Fine-grained token в GitHub</a>.</li>
-   <li>Выбери владельца и <b>Only select repositories</b> — только нужный репозиторий.</li>
-   <li>В Repository permissions установи <b>Contents: Read and write</b>, <b>Pull requests: Read and write</b> и <b>Checks: Read</b> (Metadata: Read — автоматически).</li>
-   <li>Создай токен, скопируй его и вставь в поле «Секрет» ниже.</li>
-   <li>После сохранения выбери токен в блоке «GitHub · Репозиторий проекта» и нажми «Проверить и сохранить».</li>
-  </ol>
-  <small className="muted">Не отправляй токен в чат, не добавляй его в Git и не выдавай доступ ко всем репозиториям.</small>
- </div>}
- <label>Название подключения<input required placeholder={cred.provider==='github_token'?'GitHub — мой репозиторий':'OpenAI API — основной'} value={cred.name} onChange={e=>setCred({...cred,name:e.target.value})}/></label><label>Тип<select value={cred.provider} onChange={e=>setCred({...cred,provider:e.target.value})}><option value="openai_api">OpenAI API</option><option value="github_token">GitHub token</option></select></label><label>{cred.provider==='github_token'?'Секрет — GitHub personal access token':'Секрет — API-ключ'}<input required type="password" autoComplete="off" placeholder={cred.provider==='github_token'?'github_pat_...':'Вставь ключ'} value={cred.secret} onChange={e=>setCred({...cred,secret:e.target.value})}/></label><footer><button type="button" className="secondary" onClick={()=>setShowConnection(false)}>Отмена</button><button className="primary" disabled={busy}>Сохранить</button></footer></form></div>}
  {error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}
  </div>;
 }
