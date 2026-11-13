@@ -12,6 +12,7 @@ import {createLegacyDevelopmentReconciler} from './modules/processes/infrastruct
 import {registerBackgroundProcessRoutes} from './modules/processes/api.js';
 import {registerProjectGitRoutes} from './modules/integrations/github/api.js';
 import {registerConnectionRoutes} from './modules/integrations/connections/api.js';
+import {encryptConnectionSecret,decryptConnectionSecret} from './modules/integrations/connections/secret-cipher.js';
 import {registerCodexAdminRoutes} from './modules/codex/api.js';
 import {registerAuthRoutes} from './modules/auth/api.js';
 import {issueAccessToken} from './modules/auth/application/tokens.js';
@@ -23,8 +24,8 @@ import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-st
 import {initDiagnosticSchema,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
 import Fastify from 'fastify';
-import {createMergeService} from './merge-service.js';
-import {createMergeBatch,initMergeBatches,readMergeBatch,recoverMergeBatches} from './merge-batch.js';
+import {initMergeBatches,recoverMergeBatches} from './merge-batch.js';
+import {registerMergeOperationsRoutes} from './modules/execution/api/merge-operations.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initChatImages,registerChatImageRoutes} from './chat-images.js';
@@ -54,7 +55,7 @@ import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,regist
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
 import { SignJWT } from 'jose';
-import { randomUUID, randomBytes, createCipheriv, createDecipheriv } from 'node:crypto';
+import {randomUUID} from 'node:crypto';
 import { z } from 'zod';
 
 const app = Fastify({ logger: true, bodyLimit: 1024 * 1024 });
@@ -126,17 +127,7 @@ async function requireAdmin(req:any,reply:any){
  return true;
 }
 registerCloudDiagnosticsSettings(app,{pool,requireAdmin});
-function encryptToken(secret:string){
- const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',encryptionKey,iv);
- const encrypted=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);
- return Buffer.concat([iv,cipher.getAuthTag(),encrypted]).toString('base64');
-}
-function decryptToken(packedText:string){
- const bytes=Buffer.from(packedText,'base64');
- const d=createDecipheriv('aes-256-gcm',encryptionKey,bytes.subarray(0,12));
- d.setAuthTag(bytes.subarray(12,28));
- return Buffer.concat([d.update(bytes.subarray(28)),d.final()]).toString('utf8');
-}
+function decryptToken(packedText:string){return decryptConnectionSecret(packedText,encryptionKey);}
 registerAiSettingsRoutes(app,{pool,access,requireAdmin});
 app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
@@ -219,41 +210,15 @@ app.get('/api/projects/:id/ai-runs/:runId',async(req:any,reply)=>{
 
 
 
-const {mergeTaskPr}=createMergeService(pool,decryptToken);
-app.post('/api/projects/:id/tasks/:taskId/merge',async(req:any,reply)=>{
- const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- try{return await mergeTaskPr(id,taskId,uid(req));}
- catch(e){const err=e as Error&{statusCode?:number};return reply.code(err.statusCode||502).send({error:err.message});}
-});
-
+const {mergeTaskPr,startMergeBatch}=registerMergeOperationsRoutes({app,pool,uid,access,requireAdmin,temporal,decryptToken});
 registerBackgroundProcessRoutes(app,pool,uid);
-
-async function startMergeBatch(batchId:string){
- const client=await temporal();
- await client.withDeadline(Date.now()+5000,()=>client.workflow.start('mergeReadyBatch',{
-  workflowId:'merge-ready-'+batchId,workflowIdReusePolicy:'REJECT_DUPLICATE',taskQueue:'agent-pipeline',args:[batchId]
- }));
-}
-app.post('/api/projects/:id/merge-ready',async(req:any,reply)=>{
- const {id}=parse(z.object({id:z.string().uuid()}),req.params);
- if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const batch=await createMergeBatch(pool,id,uid(req));
- return reply.code(202).send(batch);
-});
-app.get('/api/projects/:id/merge-ready/:batchId',async(req:any,reply)=>{
- const {id,batchId}=parse(z.object({id:z.string().uuid(),batchId:z.string().uuid()}),req.params);
- if(!await access(req,reply,id))return;
- const batch=await readMergeBatch(pool,id,batchId);
- return batch??reply.code(404).send({error:'Очередь слияния не найдена'});
-});
 
 registerProjectCoreRoutes(app,{pool,uid,access,requireAdmin});
 registerWorkflowSettingsRoutes(app,{pool,uid,access,requireAdmin});
 const {updateDependency,startRequirementsReview}=registerProjectTaskRoutes(app,{pool,uid,access,requireAdmin,temporal});
 registerProjectProcessRoutes(app,{pool,uid,access,requireAdmin,temporal});
 registerDocumentationRoutes(app,{pool,access,requireAdmin});
-registerConnectionRoutes({app,pool,uid,access,encryptToken});
+registerConnectionRoutes({app,pool,uid,access,encryptionKey});
 async function startIterationPlanning(runId:string){
  try{
   const client=await temporal();
@@ -526,8 +491,7 @@ registerDocumentationResetRoutes(app,{pool,uid,access,requireAdmin});
 registerSafeTaskDeletion(app,{pool,uid,access,requireAdmin});
 registerProjectIterationRoutes(app,{pool,uid,access,requireAdmin,startPlanning:startIterationPlanning});
 registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decryptToken,
- encrypt:(secret:string)=>{const iv=randomBytes(12);const cipher=createCipheriv('aes-256-gcm',encryptionKey,iv);
-  const encrypted=Buffer.concat([cipher.update(secret,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),encrypted]).toString('base64');},
+ encrypt:(secret:string)=>encryptConnectionSecret(secret,encryptionKey),
  start:async runId=>{
  const client=await temporal();
  await client.workflow.start('automaticDeployment',{taskQueue:'agent-pipeline',workflowId:'deployment-'+runId,

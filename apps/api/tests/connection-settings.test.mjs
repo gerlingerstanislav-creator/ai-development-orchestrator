@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import Fastify from 'fastify';
 import {ZodError} from 'zod';
 import {registerConnectionRoutes} from '../dist/modules/integrations/connections/api.js';
+import {decryptConnectionSecret} from '../dist/modules/integrations/connections/secret-cipher.js';
 
 const owner='123e4567-e89b-42d3-a456-426614174001';
 const stranger='123e4567-e89b-42d3-a456-426614174002';
@@ -47,9 +48,10 @@ async function fixture(){
   if(query.startsWith('INSERT INTO project_connections('))return {rows:[],rowCount:0};
   throw Error('Unexpected SQL '+query);
  }};
+ const encryptionKey=Buffer.alloc(32,7);
  registerConnectionRoutes({app,pool,uid:()=>actor,
   access:async(_req,reply,projectId)=>{if(projectId!==project){reply.code(403).send({error:'Forbidden'});return false;}return true;},
-  encryptToken:secret=>'encrypted:'+secret});
+  encryptionKey});
  await app.ready();
  return {app,state,sql,setActor:value=>{actor=value;}};
 }
@@ -71,13 +73,13 @@ test('create and rotate a token in place without exposing the new secret',async(
    payload:{name:' Новый ',provider:'github_token',secret:'github_pat_secret'}});
   assert.equal(created.statusCode,201);
   const newId=created.json().id;
-  assert.equal(f.state.get(newId).secret_encrypted,'encrypted:github_pat_secret');
+  assert.equal(decryptConnectionSecret(f.state.get(newId).secret_encrypted,Buffer.alloc(32,7)),'github_pat_secret');
   assert.equal(created.body.includes('secret'),false);
   const patch=await f.app.inject({method:'PATCH',url:'/api/connections/'+id,
    payload:{name:'Переименован',secret:'rotated-secret'}});
   assert.equal(patch.statusCode,200);
   assert.equal(f.state.get(id).name,'Переименован');
-  assert.equal(f.state.get(id).secret_encrypted,'encrypted:rotated-secret');
+  assert.equal(decryptConnectionSecret(f.state.get(id).secret_encrypted,Buffer.alloc(32,7)),'rotated-secret');
   assert.equal(patch.body.includes('rotated-secret'),false);
   const renamed=await f.app.inject({method:'PATCH',url:'/api/connections/'+id,payload:{name:'Ещё раз'}});
   assert.equal(renamed.statusCode,200);
