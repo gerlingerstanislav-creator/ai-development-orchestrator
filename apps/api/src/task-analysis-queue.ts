@@ -47,7 +47,6 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
     END,updated_at=now()
    WHERE t.stage='analysis' AND t.analysis_state='waiting_questions'
     AND t.type IN ('task','bug','improvement')
-    AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND COALESCE(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id
       AND n.project_id=t.project_id AND ${PENDING_OWNER_QUESTION_SQL})
