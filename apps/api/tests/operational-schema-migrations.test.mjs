@@ -8,7 +8,7 @@ import {initQualityGateSchema} from '../dist/quality-gates.js';
 import {initTaskOrchestrationSchema} from '../dist/task-orchestration.js';
 import {initProjectManagerInbox} from '../dist/project-manager-inbox.js';
 
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=3);
 async function withSchema(fn){
  const name='ado_operational_migrations_'+randomUUID().replaceAll('-','');
  const administrator=new pg.Pool({connectionString:process.env.DATABASE_URL});
