@@ -52,7 +52,7 @@ export async function readQaPlan(pool:Pool,projectId:string,taskId:string):Promi
  return {summary:plan.rows[0].summary,spec_version:plan.rows[0].spec_version,spec_hash:plan.rows[0].spec_hash,cases:cases.rows};
 }
 
-export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;taskId:string;runId:string;implementationEvidence?:string},ask:(prompt:string)=>Promise<string>):Promise<number>{
+export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;taskId:string;runId:string;implementationEvidence?:string;contextSupplement?:string},ask:(prompt:string)=>Promise<string>):Promise<number>{
  const {projectId,taskId}=args;
  const [task,stage,rules,docs,existing]=await Promise.all([
   pool.query('SELECT title,description,analysis_state,spec_version,spec_reviewed_version,spec_review_status FROM tasks WHERE project_id=$1 AND id=$2',[projectId,taskId]),
@@ -80,6 +80,7 @@ export async function prepareQaDocumentation(pool:Pool,args:{projectId:string;ta
   scope:'Проект '+projectId+', задача '+taskId+', версия ТЗ '+row.spec_version,
   tools:'Это составление тест-плана, а не выполнение тестов. Не утверждай, что тесты запускались.',
   context:[
+   args.contextSupplement?'Свежие подтверждённые знания и ответы: '+args.contextSupplement.slice(0,700):'',
    'Критерии приёмки текущей задачи: '+JSON.stringify(acceptanceCriteria(String(row.description||''))).slice(0,3500),
     'Правила проекта: '+rulesText.slice(0,800),
    'Комментарии специалистов: '+(await taskNotesContext(pool,projectId,taskId,'testing')).slice(0,850),

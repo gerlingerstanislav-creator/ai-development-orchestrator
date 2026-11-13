@@ -442,7 +442,7 @@ registerAutomaticDeploymentRoutes(app,{pool,uid,access,requireAdmin,decrypt:decr
   workflowIdReusePolicy:'REJECT_DUPLICATE',args:[runId]});
 }});
 registerBusinessAnalystHandoff(app,{pool,uid,access});
-registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid});
+registerProjectTeamRoutes(app,{pool,access,requireAdmin,uid,codexUrl,runnerKey});
 registerKnowledgeWorkflowRoutes(app,{pool,access,requireAdmin});
 registerKnowledgeDocumentUpdateRoutes(app,{pool,uid,access,requireAdmin});
 registerQaRoutes(app,{pool,uid,access,requireAdmin});

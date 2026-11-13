@@ -1,4 +1,7 @@
 import {agentInstructions} from './agent-instructions.js';
+import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
+import {capabilitiesForRole,type AgentRole} from './agent-tools.js';
+import {applicabilitySchema,inspectInstruction,reconcileInstructions} from './instruction-governance.js';
 import {responsibilityFor} from './role-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
@@ -81,6 +84,13 @@ export async function initProjectTeamSchema(pool:Pool){
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS author_id uuid REFERENCES users(id) ON DELETE SET NULL;
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent';
  ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source_run_id uuid;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS applicability jsonb NOT NULL DEFAULT '{}'::jsonb;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS source_message_id uuid;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS instruction_group_id uuid;
+ ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS supersedes_id uuid REFERENCES agent_memory(id);
+ CREATE INDEX IF NOT EXISTS idx_agent_memory_source_message ON agent_memory(project_id,source_message_id) WHERE source_message_id IS NOT NULL;
+ CREATE TABLE IF NOT EXISTS agent_memory_events(id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,memory_id uuid NOT NULL REFERENCES agent_memory(id) ON DELETE CASCADE,action text NOT NULL,actor_id uuid REFERENCES users(id) ON DELETE SET NULL,details jsonb NOT NULL DEFAULT '{}'::jsonb,created_at timestamptz NOT NULL DEFAULT now());
+ CREATE INDEX IF NOT EXISTS idx_agent_memory_events ON agent_memory_events(project_id,memory_id,created_at DESC);
  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_memory_run_learning ON agent_memory(project_id,role,source_run_id) WHERE source_run_id IS NOT NULL;
  CREATE INDEX IF NOT EXISTS idx_agent_memory_role_status ON agent_memory(project_id,role,status,created_at DESC);
  ALTER TABLE project_specialist_agents DROP CONSTRAINT IF EXISTS project_specialist_agents_role_check;
@@ -185,22 +195,7 @@ export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId
  }
  return 'Роль: '+row.agent_name+'\nПроектные инструкции:\n'+row.agent_instructions;
 }
-/** Only explicitly approved instruction proposals and observations are used at runtime. */
-export async function agentMemoryContext(pool:Pick<Pool,'query'>,projectId:string,role:string){
- const rows=(await pool.query(`SELECT body,evidence,kind FROM agent_memory
- WHERE project_id=$1 AND role=$2 AND ((kind='observation' AND status IN ('recorded','approved')) OR (kind='instruction_suggestion' AND status='approved'))
- ORDER BY created_at DESC,id DESC LIMIT 20`,[projectId,role])).rows;
- return rows.reverse().map(r=>'- '+String(r.body).slice(0,800)+(r.evidence?' (основание: '+String(r.evidence).slice(0,160)+')':'')).join('\n').slice(0,12500);
-}
-/** One suggested reusable lesson per completed execution, never auto-approved. */
-export async function recordAgentLearning(pool:Pool,args:{projectId:string;role:string;runId:string;body:unknown;evidence:string}){
- if(typeof args.body!=='string')return;
- const clean=args.body.trim().replace(/(?:gh[pousr]_|github_pat_|sk-[A-Za-z0-9_-]{10,})[A-Za-z0-9_-]{8,}/g,'[REDACTED]');
- if(clean.length<20||clean.length>1600||/^(none|нет|отсутствует|не выявлено)[.!]?$/i.test(clean))return;
- await pool.query(`INSERT INTO agent_memory(id,project_id,role,kind,body,evidence,status,origin,source_run_id)
-  VALUES($1,$2,$3,'instruction_suggestion',$4,$5,'proposed','agent',$6)
-  ON CONFLICT DO NOTHING`,[randomUUID(),args.projectId,args.role,clean,args.evidence.slice(0,600),args.runId]);
-}
+export {agentMemoryContext,recordAgentLearning} from './agent-memory.js';
 async function roleExists(pool:Pool,projectId:string,role:string){
  if(conversationalRoles.includes(role as typeof conversationalRoles[number]))return !!(await pool.query('SELECT 1 FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role])).rowCount;
  if(specialistRoles.includes(role as typeof specialistRoles[number]))return !!(await pool.query('SELECT 1 FROM project_specialist_agents WHERE project_id=$1 AND role=$2',[projectId,role])).rowCount;
@@ -214,7 +209,7 @@ export async function roleCapacity(pool:Pick<Pool,'query'>,projectId:string,role
 }
 export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
- requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string
+ requireAdmin:(req:any,reply:any)=>Promise<boolean>;uid:(req:any)=>string;codexUrl?:string;runnerKey?:string
 }){
  const {pool,access,requireAdmin,uid}=deps;
  const param=z.object({id:uuid});
@@ -227,7 +222,7 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
    pool.query('SELECT role,agent_name,agent_instructions FROM project_specialist_agents WHERE project_id=$1 ORDER BY role',[id]),
    pool.query('SELECT role,agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 ORDER BY CASE role WHEN \'manager\' THEN 0 ELSE 1 END',[id]),
    pool.query('SELECT role,model FROM project_agent_models WHERE project_id=$1',[id]),
-   pool.query(`SELECT m.id,m.role,m.kind,m.body,m.evidence,m.status,m.origin,m.author_id,m.created_at,m.reviewed_at,
+   pool.query(`SELECT m.id,m.role,m.kind,m.body,m.evidence,m.status,m.origin,m.author_id,m.created_at,m.reviewed_at,m.applicability,m.source_message_id,m.instruction_group_id,m.supersedes_id,
     u.email AS author_email FROM agent_memory m LEFT JOIN users u ON u.id=m.author_id
     WHERE m.project_id=$1 ORDER BY m.created_at DESC,m.id DESC LIMIT 1000`,[id]),
     pool.query('SELECT role,capacity FROM project_role_capacity WHERE project_id=$1',[id])
@@ -286,30 +281,144 @@ export function registerProjectTeamRoutes(app:FastifyInstance,deps:{
   const {id,role}=changeParam.parse(req.params);if(!await access(req,reply,id))return;
   return {history:(await pool.query('SELECT id,previous_name,previous_instructions,next_name,next_instructions,created_at FROM agent_instruction_history WHERE project_id=$1 AND role=$2 ORDER BY created_at DESC LIMIT 50',[id,role])).rows};
  });
+ app.get('/api/projects/:id/team/instruction-audit',async(req:any,reply)=>{
+  const {id}=param.parse(req.params);if(!await access(req,reply,id))return;
+  const rows=(await pool.query(`SELECT id,role,body,status,applicability,source_message_id FROM agent_memory
+   WHERE project_id=$1 AND kind='instruction_suggestion' AND status IN ('approved','proposed')
+   ORDER BY created_at DESC LIMIT 400`,[id])).rows;
+  const findings=[];
+  for(let i=0;i<rows.length;i++){
+   const candidates=rows.slice(i+1).filter((r:any)=>r.role===rows[i].role);
+   for(const match of inspectInstruction(rows[i].body,rows[i].applicability||{},candidates)){
+    findings.push({role:rows[i].role,id:rows[i].id,other_id:match.id,relation:match.relation,
+     text:rows[i].body,other_text:match.body});
+   }
+  }
+  return {findings:findings.slice(0,100),checked:rows.length};
+ });
+ app.get('/api/projects/:id/team/:role/capabilities',async(req:any,reply)=>{
+  const {id,role}=changeParam.parse(req.params);
+  if(!await access(req,reply,id))return;
+  if(!await roleExists(pool,id,role))return reply.code(404).send({error:'Роль не найдена'});
+  return {capabilities:capabilitiesForRole(role as AgentRole)};
+ });
+ const refactorShape=z.object({
+  source_ids:z.array(uuid).min(1).max(12).refine(ids=>new Set(ids).size===ids.length),
+  text:z.string().trim().min(5).max(1600),
+  applicability:applicabilitySchema.default({}),
+  reason:z.string().trim().max(600).default('')
+ });
+ app.post('/api/projects/:id/team/:role/refactor-preview',async(req:any,reply)=>{
+  const {id,role}=changeParam.parse(req.params);
+  if(!await canWrite(req,reply,id))return;
+  if(!await roleExists(pool,id,role))return reply.code(404).send({error:'Роль не найдена'});
+  if(!deps.codexUrl||!deps.runnerKey)return reply.code(503).send({error:'Codex Runner не подключён'});
+  const entries=(await pool.query(`SELECT id,body,evidence,applicability FROM agent_memory
+   WHERE project_id=$1 AND role=$2 AND kind='instruction_suggestion' AND status='approved'
+   ORDER BY created_at DESC LIMIT 40`,[id,role])).rows;
+  if(!entries.length)return {suggestions:[],message:'Нет утверждённых правил для рефакторинга'};
+  const config=await resolveRoleAiSettings(pool,id,'manager');
+  if(!config.enabled)return reply.code(409).send({error:'AI отключён в проекте'});
+  const prompt=composeAgentPrompt({
+   role:'Менеджер проекта: аудит инструкций команды',
+   objective:'Проанализируй утверждённые инструкции роли '+role+'. Найди только доказанные дубликаты, противоречия и избыточность. Если нельзя сократить без потери смысла, верни пустой список.',
+   tools:'Без использования инструментов и изменения данных; только подготовка предпросмотра для владельца.',
+   context:JSON.stringify(entries.map((r:any)=>({id:r.id,text:r.body,applicability:r.applicability}))).slice(0,3400),
+   output:'Верни только JSON: {"suggestions":[{"source_ids":["uuid"],"text":"полная предлагаемая инструкция","applicability":{"technology":"..."},"reason":"почему безопасно объединить или уточнить"}]}. Объединяй только источники одной области применения. Максимум 6 предложений. Не вводи новых правил и не отменяй ограничения.'
+  });
+  const processId=randomUUID();
+  await recordAgentPrompt(pool,{projectId:id,processId,role:'manager',operation:'team_instruction_refactor',prompt}).catch(()=>{});
+  let response:Response;
+  try{
+   response=await fetch(deps.codexUrl+'/assistant',{method:'POST',
+    headers:{'X-Runner-Secret':deps.runnerKey,'Content-Type':'application/json'},
+    body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt}),
+    signal:AbortSignal.timeout(105000)});
+  }catch(error){return reply.code(503).send({error:'ПМ недоступен: '+String(error).slice(0,200)});}
+  const data=await response.json().catch(()=>({})) as {message?:string;error?:string};
+  if(!response.ok||!data.message)return reply.code(503).send({error:String(data.error||'ПМ не вернул аудит').slice(0,220)});
+  let parsed:unknown;
+  try{const s=data.message;parsed=JSON.parse(s.slice(s.indexOf('{'),s.lastIndexOf('}')+1));}
+  catch{return reply.code(502).send({error:'ПМ вернул некорректный формат аудита'});}
+  const result=z.object({suggestions:z.array(refactorShape).max(6)}).safeParse(parsed);
+  if(!result.success)return reply.code(502).send({error:'ПМ вернул некорректные предложения рефакторинга'});
+  const validIds=new Set(entries.map((x:any)=>x.id));
+  const suggestions=result.data.suggestions.filter(s=>s.source_ids.every(id=>validIds.has(id))
+   &&s.source_ids.some(id=>entries.find((x:any)=>x.id===id)?.body.trim()!==s.text));
+  return {suggestions,message:suggestions.length?'Предложения ПМ готовы к просмотру':'Значимых улучшений без изменения смысла не найдено'};
+ });
+ app.post('/api/projects/:id/team/:role/refactor-apply',async(req:any,reply)=>{
+  const {id,role}=changeParam.parse(req.params);
+  if(!await canWrite(req,reply,id))return;
+  const proposal=refactorShape.parse(req.body);
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const existing=await client.query(`SELECT id,body FROM agent_memory
+    WHERE project_id=$1 AND role=$2 AND id=ANY($3::uuid[])
+     AND kind='instruction_suggestion' AND status='approved' FOR UPDATE`,[id,role,proposal.source_ids]);
+   if(existing.rows.length!==proposal.source_ids.length){
+    await client.query('ROLLBACK');
+    return reply.code(409).send({error:'Исходные инструкции изменились — обнови предпросмотр'});
+   }
+   const others=await reconcileInstructions(client,id,[role],proposal.text,proposal.applicability);
+   if(others.some(match=>match.relation==='duplicate'&&!proposal.source_ids.includes(match.id))){
+    await client.query('ROLLBACK');return reply.code(409).send({error:'Такая инструкция уже существует'});
+   }
+   const newId=randomUUID();
+   await client.query(`INSERT INTO agent_memory(id,project_id,role,kind,body,evidence,status,origin,author_id,reviewed_at,applicability,supersedes_id)
+    VALUES($1,$2,$3,'instruction_suggestion',$4,$5,'approved','user',$6,now(),$7::jsonb,$8)`,
+    [newId,id,role,proposal.text,'Рефакторинг ПМ: '+proposal.reason,uid(req),JSON.stringify(proposal.applicability),proposal.source_ids[0]]);
+   await client.query(`UPDATE agent_memory SET status='rejected',reviewed_at=now()
+    WHERE project_id=$1 AND role=$2 AND id=ANY($3::uuid[])`,[id,role,proposal.source_ids]);
+   await client.query(`INSERT INTO agent_memory_events(id,project_id,memory_id,action,actor_id,details)
+    VALUES($1,$2,$3,'refactor_apply',$4,$5::jsonb)`,[randomUUID(),id,newId,uid(req),
+    JSON.stringify({superseded:proposal.source_ids,reason:proposal.reason})]);
+   await client.query('COMMIT');
+   return {id:newId,archived:proposal.source_ids};
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+ });
  app.post('/api/projects/:id/team/:role/memory',async(req:any,reply)=>{
   const {id,role}=changeParam.parse(req.params);if(!await canWrite(req,reply,id))return;
   if(!await roleExists(pool,id,role))return reply.code(404).send({error:'Роль не найдена'});
-  const data=z.object({body:z.string().trim().min(5).max(1600),evidence:z.string().max(600).default('')}).parse(req.body);
+  const data=z.object({body:z.string().trim().min(5).max(1600),evidence:z.string().max(600).default(''),applicability:applicabilitySchema.default({})}).parse(req.body);
+  const existing=await reconcileInstructions(pool,id,[role],data.body,data.applicability);
+  if(existing.some(v=>v.relation==='duplicate'))return reply.code(409).send({error:'Такая инструкция уже сохранена для выбранной роли и области применения'});
   const newId=randomUUID();
-  const row=(await pool.query(`INSERT INTO agent_memory(id,project_id,role,kind,body,evidence,status,origin,author_id,reviewed_at)
-   VALUES($1,$2,$3,'instruction_suggestion',$4,$5,'approved','user',$6,now())
-   RETURNING id`,[newId,id,role,data.body,data.evidence,uid(req)])).rows[0];
+  const row=(await pool.query(`INSERT INTO agent_memory(id,project_id,role,kind,body,evidence,status,origin,author_id,reviewed_at,applicability)
+   VALUES($1,$2,$3,'instruction_suggestion',$4,$5,'approved','user',$6,now(),$7::jsonb)
+   RETURNING id`,[newId,id,role,data.body,data.evidence,uid(req),JSON.stringify(data.applicability)])).rows[0];
   return reply.code(201).send({id:row.id});
  });
  app.patch('/api/projects/:id/team/:role/memory/:memoryId',async(req:any,reply)=>{
   const {id,role,memoryId}=changeParam.extend({memoryId:uuid}).parse(req.params);
   if(!await canWrite(req,reply,id))return;
   const {status}=z.object({status:memoryStatus}).parse(req.body);
-  const row=(await pool.query(`UPDATE agent_memory SET status=$4,reviewed_at=now() WHERE project_id=$1 AND role=$2 AND id=$3
-   AND kind='instruction_suggestion' AND origin='agent' RETURNING id`,[id,role,memoryId,status])).rows[0];
-  if(!row)return reply.code(404).send({error:'Предложение не найдено'});
-  return {ok:true};
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const old=(await client.query(`SELECT id,status,supersedes_id FROM agent_memory
+    WHERE project_id=$1 AND role=$2 AND id=$3 AND kind='instruction_suggestion' AND origin='agent' FOR UPDATE`,[id,role,memoryId])).rows[0];
+   if(!old){await client.query('ROLLBACK');return reply.code(404).send({error:'Предложение не найдено'});}
+   if(old.status===status){await client.query('COMMIT');return {ok:true};}
+   if(status==='approved'&&old.supersedes_id){
+    await client.query("UPDATE agent_memory SET status='rejected',reviewed_at=now() WHERE id=$1 AND project_id=$2 AND role=$3 AND status='approved'",[old.supersedes_id,id,role]);
+   }
+   await client.query('UPDATE agent_memory SET status=$4,reviewed_at=now() WHERE project_id=$1 AND role=$2 AND id=$3',[id,role,memoryId,status]);
+   await client.query(`INSERT INTO agent_memory_events(id,project_id,memory_id,action,actor_id,details)
+    VALUES($1,$2,$3,$4,$5,$6::jsonb)`,[randomUUID(),id,memoryId,'review',uid(req),JSON.stringify({before:old.status,after:status,supersedes_id:old.supersedes_id})]);
+   await client.query('COMMIT');
+   return {ok:true};
+  }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
  });
  app.delete('/api/projects/:id/team/:role/memory/:memoryId',async(req:any,reply)=>{
   const {id,role,memoryId}=changeParam.extend({memoryId:uuid}).parse(req.params);
   if(!await canWrite(req,reply,id))return;
-  const row=(await pool.query(`DELETE FROM agent_memory WHERE project_id=$1 AND role=$2 AND id=$3 AND origin='user' RETURNING id`,[id,role,memoryId])).rows[0];
-  if(!row)return reply.code(404).send({error:'Пользовательская инструкция не найдена'});
+  const result=await pool.query(`UPDATE agent_memory SET status='rejected',reviewed_at=now()
+   WHERE project_id=$1 AND role=$2 AND id=$3 AND origin='user' AND status<>'rejected' RETURNING id`,[id,role,memoryId]);
+  if(!result.rowCount)return reply.code(404).send({error:'Активная пользовательская инструкция не найдена'});
+  await pool.query(`INSERT INTO agent_memory_events(id,project_id,memory_id,action,actor_id)
+   VALUES($1,$2,$3,'deactivate',$4)`,[randomUUID(),id,memoryId,uid(req)]);
   return {ok:true};
  });
 }

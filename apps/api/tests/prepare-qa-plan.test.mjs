@@ -55,12 +55,14 @@ test('successful QA design preserves evidence, prompts, project linkage and audi
  assert.equal(n,3);
  assert.deepEqual(statuses(f),['running','completed']);
  assert.equal(f.prepared.length,1);
- assert.deepEqual(f.prepared[0],{...ids,implementationEvidence:'diff for QA evidence'});
+ const {contextSupplement,...originalArgs}=f.prepared[0];
+ assert.deepEqual(originalArgs,{...ids,implementationEvidence:'diff for QA evidence'});
+ assert.match(contextSupplement,/Approved specification/);
+ assert.match(contextSupplement,/Owner approved tests/);
  assert.equal(f.prompts.length,1);
  assert.deepEqual(f.prompts[0].role,'testing');
  assert.deepEqual(f.prompts[0].operation,'qa_plan');
- assert.match(f.prompts[0].prompt,/Approved specification/);
- assert.match(f.prompts[0].prompt,/Owner approved tests/);
+ assert.match(f.prompts[0].prompt,/Generate reproducible test cases for current PR/);
  assert.equal(f.agentCalls.length,1);
  assert.equal(f.agentCalls[0][1],ids.projectId);
  assert.equal(f.agentCalls[0][2],ids.taskId);

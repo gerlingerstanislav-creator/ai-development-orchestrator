@@ -82,7 +82,7 @@ async function jobSettings(projectId:string,taskId:string){
  if(!task.rowCount||!repo.rowCount||!settings.rowCount||!settings.rows[0].enabled)
   throw ApplicationFailure.nonRetryable('Задача, подключение GitHub или настройки AI недоступны');
  const t=task.rows[0],g=repo.rows[0],ai=settings.rows[0];
- const agentSettings=await Promise.all(workflow.rows.map(async row=>({...row,agent_instructions:String(row.agent_instructions||'')+'\n\nНакопленный опыт и утверждённые дополнения:\n'+await agentMemoryContext(pool,projectId,row.stage)})));
+ const agentSettings=await Promise.all(workflow.rows.map(async row=>({...row,agent_instructions:String(row.agent_instructions||'')+'\n\nНакопленный опыт и утверждённые дополнения:\n'+await agentMemoryContext(pool,projectId,row.stage,String(t.title||'')+' '+String(t.description||'')+' '+String(g.repository||''))})));
   return {task:t,repo:g,ai,token:decrypt(g.secret_encrypted),rules:rules.rows.map(x=>x.body).join('\n').slice(0,1800),agentSettings};
 }
 async function dispatch(job:any,beforeStart?:()=>Promise<boolean>){
@@ -853,8 +853,9 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
-    tools:'MCP orchestrator: tasks.read (включая историю и комментарии), processes.list, workflow.move_task, qa.retry, tasks.delete, tasks.cancel, tasks.close, approvals.list, approvals.answer_question, approvals.deliver_task_answer, workflow.release_task и остальные разрешённые инструменты ПМ. Если владелец уточнил требования, передай его текущее исходное сообщение аналитику через approvals.deliver_task_answer с task_id и source_message_id. Даже старую карточку без ID вопросов можно вернуть на повторный анализ. При просьбе слить PR используй workflow.release_task. Не утверждай, что доступно лишь чтение, пока не проверил реально доступные инструменты.',
-    instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
+    tools:'Открывай capabilities.list/describe для поиска разрешённых операций; tasks.read/history и processes.list — для фактов. При постоянных указаниях владельца управляй инструкциями через instructions.reconcile/propose с source_message_id. Не обходи QA, CI, слияние или согласования.',
+    instructions:[(await conversationInstructions(pool,projectId,'manager')).slice(0,1600),
+     (await agentMemoryContext(pool,projectId,'manager',String(snapshot.task.title||'')+' '+String(snapshot.task.description||''))).slice(0,1600)].filter(Boolean).join('\n\n'),
     scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
     continuation:replyTarget?'Ответ на сообщение: '+String(replyTarget.body).slice(0,1000):'',
