@@ -49,7 +49,7 @@ import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-
 import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
-import {reconcileTaskAnalysisQueue} from './task-analysis-queue.js';
+import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
 import {acceptAnalysisAnswer,initProjectManagerSchema,isPrEvidenceRequest,registerProjectManagerRoutes,tasksWithCustomerQuestions,type ManagerDeps} from './project-manager.js';
 import { Client, Connection } from '@temporalio/client';
 import pg from 'pg';
@@ -142,6 +142,7 @@ app.post('/api/projects/:id/tasks/:taskId/run-ai',async(req:any,reply)=>{
  const client=await pool.connect();
  try{
   await client.query('BEGIN');
+  if(approveAnalysis)await reuseExistingAnalysisForDevelopment(client,id,taskId,uid(req));
   const scope=iterationApproval
    ?{iterationId:iterationApproval.id,revision:iterationApproval.revision,taskIds:[taskId]}
    :{taskId,approveAnalysis};
@@ -747,12 +748,8 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,sta
    if(move.operation==='blocked')return {status:'blocked',stage:row.stage,reason:move.reason};
    if(move.operation==='same')return {status:'already_on_stage',stage:row.stage,message:move.reason};
    if(move.operation==='patch')return await call('PATCH','',{stage:target});
-   if(move.operation==='approve_development'){
-    if(row.analysis_state!=='ready_for_development')
-     return {status:'blocked',stage:row.stage,
-      reason:'Аналитик ещё не подтвердил готовность требований. Готовая постановка автоматически перейдёт в разработку после анализа; технические консультации не блокируют передачу.'};
+   if(move.operation==='approve_development')
     return await call('POST','/run-ai',{approveAnalysis:true});
-   }
    if(move.operation==='resume_development'){
     const state=await recoverTask({projectId,taskId,auth:'Bearer '+token,cookie:''});
     return state.ok?{status:'queued',stage:target,message:state.message}:{status:'blocked',stage:row.stage,reason:state.message};
