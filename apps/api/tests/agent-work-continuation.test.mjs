@@ -24,7 +24,7 @@ test('only PM can mutate workflow, cancel work or rerun QA; specialists have sco
 
 test('PM transitions never bypass owner questions, QA, deployment or post-merge constraints',()=>{
  const cases=[
-  ['backlog','analysis',false,'patch'],['analysis','development',false,'blocked'],
+  ['backlog','analysis',false,'patch'],['analysis','development',false,'approve_development'],
   ['analysis','analysis',false,'reanalyze'],['testing','analysis',true,'reanalyze'],
   ['merge_queue','analysis',true,'reanalyze'],['testing','development',true,'developer_rework'],
   ['merge_queue','development',true,'developer_rework'],['testing','development',false,'blocked'],

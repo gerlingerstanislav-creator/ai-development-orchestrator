@@ -18,6 +18,38 @@ export async function initTaskAnalysisQueue(pool:Pool){
  CREATE INDEX IF NOT EXISTS idx_agent_analysis_runs_project ON agent_analysis_runs(project_id,status,created_at);
  CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_analysis_runs_active ON agent_analysis_runs(task_id) WHERE status IN ('queued','running');`);
 }
+/**
+ * An explicit owner-approved development launch can reuse a previously built PR
+ * without rerunning analysis for an unchanged, reviewed specification. This is
+ * not a shortcut for new work: a durable development attempt and PR are required.
+ * The caller owns the transaction, so the audit event rolls back with the launch.
+ */
+export async function reuseExistingAnalysisForDevelopment(
+ db:Pick<Pool,'query'>,projectId:string,taskId:string,actorId:string
+):Promise<boolean>{
+ const updated=await db.query(`UPDATE tasks t SET analysis_state='ready_for_development',updated_at=now()
+  WHERE t.project_id=$1 AND t.id=$2 AND t.stage='analysis'
+   AND t.type IN ('task','bug','improvement')
+   AND t.analysis_state NOT IN ('ready_for_development','processing')
+   AND t.spec_review_status='current' AND t.spec_reviewed_version=t.spec_version
+   AND NULLIF(BTRIM(t.pr_url),'') IS NOT NULL
+   AND NULLIF(BTRIM(t.git_branch),'') IS NOT NULL
+   AND COALESCE(jsonb_array_length(t.clarification_questions),0)=0
+   AND EXISTS(SELECT 1 FROM ai_task_runs r WHERE r.project_id=t.project_id
+    AND r.task_id=t.id AND r.status IN ('completed','failed'))
+   AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.project_id=t.project_id
+    AND n.task_id=t.id AND ${PENDING_OWNER_QUESTION_SQL})
+   AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id
+    AND a.status IN ('queued','running'))
+   AND NOT EXISTS(SELECT 1 FROM task_orchestration_owners o WHERE o.task_id=t.id
+    AND o.state='active')
+  RETURNING t.id`,[projectId,taskId]);
+ if(!updated.rowCount)return false;
+ await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'analysis_reused_by_owner',$4)",
+  [randomUUID(),taskId,actorId,'Владелец подтвердил продолжение ранее начатой разработки по существующему PR без изменения согласованного ТЗ.']);
+ return true;
+}
+
 export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<TemporalClient>){
  const db=await pool.connect();
  let locked=false;
@@ -38,10 +70,15 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   // Older code marked an otherwise ready analysis as waiting_questions when
   // any technical consultation remained open. Those non-owner consultations
   // still live in the task history; they no longer deadlock analysis.
-  await db.query(`UPDATE tasks t SET analysis_state='new',updated_at=now()
+  await db.query(`UPDATE tasks t SET analysis_state=CASE
+     WHEN EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event='analysis_completed')
+      AND EXISTS(SELECT 1 FROM agent_analysis_runs r WHERE r.task_id=t.id
+       AND r.spec_version=t.spec_version AND r.status='completed')
+       THEN 'ready_for_development'
+     ELSE 'new'
+    END,updated_at=now()
    WHERE t.stage='analysis' AND t.analysis_state='waiting_questions'
     AND t.type IN ('task','bug','improvement')
-    AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND COALESCE(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id
       AND n.project_id=t.project_id AND ${PENDING_OWNER_QUESTION_SQL})
@@ -50,7 +87,6 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   // Ready means the analyst finalized this task's requirements, independent of epic siblings.
   const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
    WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'
-    AND EXISTS(SELECT 1 FROM projects p WHERE p.id=t.project_id AND p.agents_running)
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND ${PENDING_OWNER_QUESTION_SQL})
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))

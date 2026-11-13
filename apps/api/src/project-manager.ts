@@ -274,7 +274,7 @@ export function registerProjectManagerRoutes(app:FastifyInstance,deps:ManagerDep
    }
    if(!startRequested)return {message:''};
    if(!await isTurnActive())return {message:'',handled:true};
-   const started=await call('/approve-development',{});
+   const started=await call('/run-ai',{approveAnalysis:true});
    const result=started.json();
    if(started.statusCode>=400)return handled(String(result.error||'Не удалось запустить разработку.'));
    return handled([result.recovered?result.message:'Задача передана в разработку. Запуск принят в очередь Temporal.'].join('\n\n'));
