@@ -6,7 +6,11 @@ import './ProjectTeam.css';
 
 type Responsibility={mission:string;inputs:string[];outcomes:string[];maxConcurrent:number};
 type Agent={id:string;role:string;name:string;stage:string;type:'workflow'|'specialist'|'conversation';instructions:string;model:string|null;responsibility:Responsibility|null;capacity:number};
-type Memory={id:string;role:string;kind:string;body:string;evidence:string;status:string;origin:'agent'|'user';author_email?:string|null;created_at:string;reviewed_at:string|null};
+type RuleScope={technology?:string;repository?:string;task_type?:string};
+type Memory={id:string;role:string;kind:string;body:string;evidence:string;status:string;origin:'agent'|'user';author_email?:string|null;created_at:string;reviewed_at:string|null;applicability?:RuleScope;source_message_id?:string|null};
+type Capability={name:string;category:string;description:string;inputSchema:unknown;effects:string;requiresConfirmation:boolean};
+type Finding={role:string;id:string;other_id:string;relation:string;text:string;other_text:string};
+type RefactorSuggestion={source_ids:string[];text:string;applicability:RuleScope;reason:string};
 type Snapshot={agents:Agent[];memory:Memory[]};
 type Revision={id:string;previous_name:string;previous_instructions:string;next_name:string;next_instructions:string;created_at:string};
 type Request=<T>(path:string,options?:RequestInit)=>Promise<T>;
@@ -25,10 +29,16 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
  const [adding,setAdding]=useState(false);
  const [memoryText,setMemoryText]=useState('');
  const [memoryEvidence,setMemoryEvidence]=useState('');
+ const [scope,setScope]=useState<RuleScope>({});
+ const [audit,setAudit]=useState<{findings:Finding[];checked:number}|null>(null);
+ const [capabilities,setCapabilities]=useState<Capability[]|null>(null);
+ const [refactor,setRefactor]=useState<RefactorSuggestion[]|null>(null);
+ const [refactorMessage,setRefactorMessage]=useState('');
+ const [refactoring,setRefactoring]=useState(false);
  const [historyOpen,setHistoryOpen]=useState(false);
  const [history,setHistory]=useState<Revision[]>([]);
  const refresh=async()=>{setLoading(true);setError('');try{setSnapshot(await request<Snapshot>('/projects/'+projectId+'/team'));}catch(e){setError(e instanceof Error?e.message:'Не удалось получить данные команды');}finally{setLoading(false);}};
- useEffect(()=>{setSnapshot(null);setSelectedId('conversation:manager');setEditing(false);setAdding(false);setHistoryOpen(false);void refresh();},[projectId]);
+ useEffect(()=>{setSnapshot(null);setSelectedId('conversation:manager');setEditing(false);setAdding(false);setHistoryOpen(false);setAudit(null);setCapabilities(null);setRefactor(null);void refresh();},[projectId]);
  const agents=snapshot?.agents||[];
  const selected=agents.find(a=>a.id===selectedId)||agents[0];
  const memories=useMemo(()=>snapshot?.memory.filter(m=>selected?.role===m.role)||[],[snapshot,selected]);
@@ -40,14 +50,18 @@ export function ProjectTeam({projectId,request}:{projectId:string;request:Reques
  function beginEdit(){if(!selected)return;setDraft({name:selected.name,instructions:selected.instructions});setEditing(true);}
  async function mutate(action:()=>Promise<unknown>){if(saving)return;setSaving(true);setError('');try{await action();await refresh();}catch(e){setError(e instanceof Error?e.message:'Не удалось сохранить изменения');}finally{setSaving(false);}}
  async function saveProfile(){if(!selected)return;await mutate(async()=>{await request(base,options('PATCH',draft));setEditing(false);});}
- async function addMemory(){if(!selected||!memoryText.trim())return;await mutate(async()=>{await request(base+'/memory',options('POST',{body:memoryText.trim(),evidence:memoryEvidence.trim()}));setAdding(false);setMemoryText('');setMemoryEvidence('');});}
+ async function addMemory(){if(!selected||!memoryText.trim())return;await mutate(async()=>{await request(base+'/memory',options('POST',{body:memoryText.trim(),evidence:memoryEvidence.trim(),applicability:Object.fromEntries(Object.entries(scope).filter(([,v])=>v?.trim()))}));setAdding(false);setMemoryText('');setMemoryEvidence('');setScope({});setAudit(null);});}
  async function reviewMemory(id:string,status:'approved'|'rejected'){await mutate(()=>request(base+'/memory/'+id,options('PATCH',{status})));}
- async function removeMemory(id:string){if(!window.confirm('Удалить пользовательскую инструкцию?'))return;await mutate(()=>request(base+'/memory/'+id,options('DELETE')));}
+ async function removeMemory(id:string){if(!window.confirm('Отключить инструкцию? История будет сохранена.'))return;await mutate(()=>request(base+'/memory/'+id,options('DELETE')));}
  async function changeModel(value:string){
   if(!selected)return;
   await mutate(()=>request(base+'/model',options('PATCH',{model:value||null})));
  }
  async function changeCapacity(capacity:number){if(!selected)return;await mutate(()=>request(base+'/capacity',options('PATCH',{capacity})));}
+ async function showAudit(){setError('');try{setAudit(await request<{findings:Finding[];checked:number}>('/projects/'+projectId+'/team/instruction-audit'));}catch(e){setError(e instanceof Error?e.message:'Не удалось выполнить аудит правил');}}
+ async function showCapabilities(){if(!selected)return;setError('');try{setCapabilities(await request<{capabilities:Capability[]}>(base+'/capabilities').then(r=>r.capabilities));}catch(e){setError(e instanceof Error?e.message:'Не удалось загрузить инструменты');}}
+ async function previewRefactor(){if(!selected||refactoring)return;setRefactoring(true);setError('');try{const result=await request<{suggestions:RefactorSuggestion[];message:string}>(base+'/refactor-preview',options('POST',{}));setRefactor(result.suggestions);setRefactorMessage(result.message);}catch(e){setError(e instanceof Error?e.message:'Не удалось получить предложения ПМ');}finally{setRefactoring(false);}}
+ async function applyRefactor(proposal:RefactorSuggestion){await mutate(async()=>{await request(base+'/refactor-apply',options('POST',proposal));setRefactor(null);setAudit(null);});}
  async function showHistory(){if(!selected)return;setHistoryOpen(true);setError('');try{const result=await request<{history:Revision[]}>(base+'/history');setHistory(result.history);}catch(e){setError(e instanceof Error?e.message:'Не удалось загрузить историю');}}
  return <div className="team-page">
   <div className="team-heading"><div><h2><Users size={20}/> Команда</h2><p className="muted">Настройки ролей, рабочие инструкции и накопленные знания. Утверждённые записи становятся частью контекста агента при следующем запуске.</p></div><button className="secondary" type="button" onClick={()=>void refresh()} disabled={loading}><RefreshCcw size={15}/>{loading?'Обновление…':'Обновить'}</button></div>
