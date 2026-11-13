@@ -7,7 +7,7 @@ const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
  'pm.decisions.list','pm.orders.list','iterations.preview_plan','approvals.list','discussions.list',
  'tasks.list','tasks.read','tasks.history','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','blockers.list','memory.list','documentation.request_reset',
- 'history.search','discussions.read','capabilities.list','capabilities.describe','instructions.reconcile','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections']);
+ 'history.search','discussions.read','capabilities.list','capabilities.describe','instructions.reconcile','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections','project.source']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
  name,description,inputSchema:{type:'object',properties,required,additionalProperties:false},
  annotations:readOnlyTools.has(name)
@@ -18,6 +18,7 @@ const id=field('string','UUID'),str=field('string','Произвольный т�
 const idem=field('string','Необязательный стабильный ключ идемпотентности для безопасных повторов');
 export const agentToolCatalog=[
  tool('project.context','Получить информацию о проекте, правила, workflow, GitHub и инструкции.',{}),
+ tool('project.source','Исследовать исходники подключённого GitHub-репозитория. Без path вернуть список файлов и закреплённый SHA; с path прочитать выбранный файл с того же SHA. Выбирай файлы самостоятельно по цели исследования.',{path:str,commit:str}),
  tool('capabilities.list','Краткий каталог разрешённых действий с категориями и побочными эффектами.',{category:field('string','Необязательный префикс категории')}),
  tool('capabilities.describe','Подробный контракт разрешённого инструмента, его параметры и ограничения.',{name:str},['name']),
  tool('instructions.reconcile','Проверить новое правило на дубли и возможные конфликты с правилами адресатов. Не меняет инструкции.',{target_roles:{type:'array',items:{type:'string',enum:['manager','analyst','analysis','development','testing','documentation','devops','architect']}},text:str,applicability:{type:'object',properties:{technology:str,repository:str,task_type:str},additionalProperties:false}},['target_roles','text']),
@@ -64,7 +65,10 @@ export const agentToolCatalog=[
  tool('tasks.cancel','Отменить невыполненную или ненужную задачу с работой/PR по явному поручению владельца (это удаление с аудитом): сперва предпросмотр и проверка безопасной отмены/очистки GitHub. Если процесс ещё активен или PR слит, не обходи блокировки.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
  tool('questions.list','Посмотреть вопросы по документации (задачи типа question), включая их статус и привязку к документу.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
- tool('documentation.prepare_spec','Передать аналитику вводные владельца для подготовки или изменения текущего ТЗ и документации. Вызывай по просьбе владельца, для обсуждения отвечай в чате.',{instructions:str,document_id:id,idempotency_key:idem},['instructions']),
+ tool('documentation.prepare_spec','Передать аналитику автономное поручение изучить проект и подготовить ТЗ. Агент сам выбирает источники и инструменты. Завершение допустимо только с проверяемыми документами; при нехватке сведений агент задаёт вопрос ПМ.',{instructions:str,document_id:id,idempotency_key:idem},['instructions']),
+ tool('documentation.resume_spec','Продолжить ранее приостановленное поручение аналитика после получения недостающей информации. Сохраняет исходную цель и документы; не запускай новую работу с нуля.',{job_id:id,answer:str,idempotency_key:idem},['job_id','answer']),
+ tool('documentation.complete','Завершить собственное поручение после проверки существующих или новых страниц. Передай ID документов и реальное описание результата; backend подтвердит их существование и содержимое.',{document_ids:{type:'array',items:id},summary:str},['document_ids','summary']),
+ tool('documentation.request_input','Приостановить поручение и задать ПМ конкретный вопрос, когда необходимой информации нет в доступных источниках. Не заявлять о выполнении.',{question:str,context:str},['question']),
  tool('documentation.answer_question','Сохранить явный ответ владельца на вопрос по ТЗ и поручить аналитику обновить связанную страницу.',{question_id:id,answer:str,idempotency_key:idem},['question_id','answer']),
  tool('documentation.import','Запустить через Temporal импорт Markdown из GitHub. Источники будут закреплены на SHA.',{source_url:str,instructions:str,idempotency_key:idem},['source_url']),
  tool('documentation.request_reset','Предложить пользователю открыть подтверждение полной очистки документации проекта. Вызывай только по явной просьбе пользователя удалить всю документацию. Вызов показывает кнопку и не изменяет документы.',{}),
@@ -108,15 +112,16 @@ export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;pro
 
 const readerTools=new Set([
  'project.context','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
- 'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','capabilities.list','capabilities.describe'
+ 'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','project.source','capabilities.list','capabilities.describe'
 ]);
 
 const autonomousSpecialistRoles=new Set<AgentRole>(['analysis','development','testing','documentation','devops','architect']);
 const specialistTools=new Set([...readerTools,'agents.consult','blockers.report','blockers.resolve','processes.report']);
+const documentationTools=new Set([...readerTools,'documents.list','documents.create','documents.update','documents.changeset','documentation.complete','documentation.request_input']);
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
-const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
+const BA_DENIED=new Set(['documentation.complete','documentation.request_input','documentation.resume_spec','project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
+const PM_DENIED=new Set(['documentation.complete','documentation.request_input','documents.create','documents.update','documents.changeset','questions.create']);
 const BA_DENIED_GOVERNANCE=new Set(['instructions.propose','instructions.reconcile']);
 /** The MCP catalog is the authoritative schema; capability views are derived, never maintained separately. */
 export function capabilitiesForRole(role:AgentRole,readOnly=false,category?:string){
@@ -129,6 +134,7 @@ export function capabilitiesForRole(role:AgentRole,readOnly=false,category?:stri
 }
 export function toolsForRole(role:AgentRole,readOnly=false){
  if(readOnly)return agentToolCatalog.filter(tool=>readerTools.has(tool.name));
+ if(role==='documentation')return agentToolCatalog.filter(tool=>documentationTools.has(tool.name));
  if(autonomousSpecialistRoles.has(role))
   return agentToolCatalog.filter(tool=>specialistTools.has(tool.name));
  return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!BA_DENIED_GOVERNANCE.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.')&&!t.name.startsWith('qa.'));
@@ -162,16 +168,20 @@ export async function createAgentSession(pool:Pick<Pool,'query'>,projectId:strin
 }
 export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:AgentReaderScope){
  const {projectId,role,taskId,processId,actorId}=scope;
+ // Only documentation-write sessions need the documentation job table.
+ // Task-only/reader tests and migrations may run without that table.
+ const docJob=role==='documentation'&&!!processId;
+ const docGuard=docJob?` AND EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running')`:'';
  const result=await pool.query(`SELECT COALESCE($2::uuid,p.owner_id) AS actor_id FROM projects p
   WHERE p.id=$1 AND p.deleted_at IS NULL
    AND ($2::uuid IS NULL OR p.owner_id=$2 OR EXISTS(SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=$2))
-   AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM tasks t WHERE t.project_id=p.id AND t.id=$3))`,
- [projectId,actorId??null,taskId??null]);
+   AND ($3::uuid IS NULL OR EXISTS(SELECT 1 FROM tasks t WHERE t.project_id=p.id AND t.id=$3))`+docGuard,
+ docJob?[projectId,actorId??null,taskId??null,processId]:[projectId,actorId??null,taskId??null]);
  if(!result.rowCount)return null;
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
  await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
   VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',$8,$6,$7)`,
- [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,!autonomousSpecialistRoles.has(role)||!taskId]);
+ [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!(processId&&!taskId):!autonomousSpecialistRoles.has(role)||!taskId]);
  return {id,secret};
 }
 export async function finishAgentSession(pool:Pick<Pool,'query'>,id:string){

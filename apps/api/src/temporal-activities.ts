@@ -1,3 +1,6 @@
+import {createPrEvidenceReader} from './modules/integrations/github/infrastructure/pr-evidence.js';
+import {decryptConnectionSecret} from './modules/integrations/connections/secret-cipher.js';
+import {createQaPlanActivity} from './modules/quality/application/prepare-qa-plan.js';
 import {createTaskStageAnalysisActivity} from './modules/execution/application/task-stage-analysis.js';
 import {updateCurrentSpecification} from './requirements.js';
 import {createRunnerRecovery,runnerUnavailable} from './modules/execution/application/runner-recovery.js';
@@ -18,7 +21,7 @@ import {runQualityGates} from './quality-gates.js';
 import {deploymentDecision} from './deployment-stage.js';
 import pg from 'pg';
 import type {PoolClient} from 'pg';
-import {randomUUID,createDecipheriv,createHash} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {createMergeService} from './merge-service.js';
 import {finishMergeBatch,loadMergeBatch,saveMergeResult,setMergeProgress,type MergeResult} from './merge-batch.js';
 import {ApplicationFailure} from '@temporalio/common';
@@ -55,10 +58,7 @@ const runnerKey=process.env.RUNNER_SHARED_SECRET||'';
 function decrypt(packed:string):string{
  const key=Buffer.from(process.env.CREDENTIALS_KEY||'','hex');
  if(key.length!==32)throw Error('CREDENTIALS_KEY must contain 32 bytes');
- const bytes=Buffer.from(packed,'base64');
- const d=createDecipheriv('aes-256-gcm',key,bytes.subarray(0,12));
- d.setAuthTag(bytes.subarray(12,28));
- return Buffer.concat([d.update(bytes.subarray(28)),d.final()]).toString('utf8');
+ return decryptConnectionSecret(packed,key);
 }
 // Keep the existing caller-facing shape until activities adopt typed job DTOs.
 const runnerRequest=createRunnerHttpClient({baseUrl:codexUrl,secret:runnerKey});
@@ -187,25 +187,7 @@ export async function failIterationPlanDraft(runId:string,message:string){
   RETURNING i.project_id`,[runId,message.slice(0,700)]);
  if(result.rowCount)await event(result.rows[0].project_id,runId,'analysis','failed',message,'error');
 }
-async function prEvidence(projectId:string,taskId:string):Promise<{commitSha:string;patch:string;summary:string}>{
- const task=await pool.query('SELECT pr_number,git_branch FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
- if(!task.rowCount)throw Error('Задача не найдена');
- if(!task.rows[0].pr_number)return {commitSha:'',patch:'PR ещё не создан',summary:''};
- const gh=await pool.query("SELECT g.repository,c.secret_encrypted FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id WHERE g.project_id=$1 AND c.provider='github_token'",[projectId]);
- if(!gh.rowCount)throw Error('GitHub-подключение для анализа PR не найдено');
- const repository=gh.rows[0].repository,token=decrypt(gh.rows[0].secret_encrypted);
- const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
- const base='https://api.github.com/repos/'+repository+'/pulls/'+task.rows[0].pr_number;
- const [prResponse,filesResponse]=await Promise.all([
-  fetch(base,{headers,signal:AbortSignal.timeout(20000)}),
-  fetch(base+'/files?per_page=65',{headers,signal:AbortSignal.timeout(20000)})
- ]);
- if(!prResponse.ok||!filesResponse.ok)throw Error('Не удалось прочитать актуальные изменения PR в GitHub для сверки требований');
- const pr=await prResponse.json() as any,files=await filesResponse.json() as any[];
- if(!Array.isArray(files))throw Error('Некорректный ответ GitHub о файлах PR');
- const patch=files.map(file=>file.filename+' ('+file.status+')\n'+String(file.patch||'[diff недоступен]').slice(0,3800)).join('\n\n').slice(0,16500);
- return {commitSha:String(pr.head?.sha||''),patch:patch||'Нет текстовых изменений',summary:String(pr.body||'').slice(0,2000)};
-}
+const prEvidence=createPrEvidenceReader(pool,decrypt);
 
 export async function reconcileRequirements(args:{projectId:string;taskId:string;runId:string;mode:'handoff'|'edit'}):Promise<'current'|'pending'|'needs_approval'|'rejected'>{
  const {projectId,taskId,runId,mode}=args;
@@ -264,46 +246,22 @@ export async function noteReviewFailure(args:{projectId:string;taskId:string;run
  await event(args.projectId,args.runId,'analysis','failed',message,'error');
 }
 
-export async function prepareQaPlan(args:{projectId:string;taskId:string;runId:string;simplified?:boolean}):Promise<number>{
- const {projectId,taskId,runId}=args;
- const settings=await pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]);
- const ai=settings.rows[0];
- if(!ai?.enabled)throw ApplicationFailure.nonRetryable('AI отключён для проекта');
- await pool.query("UPDATE requirement_review_runs SET status='running',message='QA-агент формирует тест-кейсы',completed_at=NULL WHERE id=$1 AND project_id=$2",[runId,projectId]);
- await event(projectId,runId,'testing','test_design_started','AI-тестировщик формирует тесты по актуализированному ТЗ перед проверкой PR');
- await recordAgentActivity(pool,projectId,[taskId],runId,'qa_design','running','Тестировщик готовит сценарии проверки.');
- try{
-  if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw new Error('Нельзя готовить тестирование: вопросы участников процесса остались без ответа');
-  const evidence=await prEvidence(projectId,taskId);
-  if(!evidence.commitSha)throw new Error('Нет коммита PR для тестирования');
-  if(args.simplified){
-   await pool.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing'",[taskId,projectId,evidence.commitSha]);
-  }else{
-   const current=await pool.query("SELECT spec_reviewed_commit,spec_review_status FROM tasks WHERE id=$1 AND project_id=$2",[taskId,projectId]);
-   if(current.rows[0]?.spec_review_status!=='current'||current.rows[0].spec_reviewed_commit!==evidence.commitSha)
-    throw new Error('Код PR изменился после сверки аналитиком. Требуется повторная проверка требований.');
-  }
-  const count=await prepareQaDocumentation(pool,{...args,implementationEvidence:evidence.patch},async(prompt)=>{
-   // qa-plan already assembles the versioned prompt. Do not nest an ADO prompt in an objective.
-   const bounded=prompt;
-   await recordAgentPrompt(pool,{projectId,processId:runId,role:'testing',operation:'qa_plan',prompt:bounded}).catch(()=>{});
-   return askRunnerAssistant(bounded,projectId,taskId,'qa_plan',
-    await resolveRoleAiSettings(pool,projectId,'testing',ai),105000,[],{role:'testing',processId:runId});
-  });
-  // Derived links attach the actual current QA plan to the requirements governing the task.
-  await pool.query("INSERT INTO knowledge_artifact_links(id,project_id,document_id,artifact_kind,artifact_ref,relation) SELECT gen_random_uuid(),$1,l.document_id,'qa_case',pc.case_id::text,'tested_by' FROM knowledge_task_links l JOIN qa_test_plans p ON p.project_id=l.project_id AND p.task_id=l.task_id JOIN qa_plan_cases pc ON pc.plan_id=p.id WHERE l.project_id=$1 AND l.task_id=$2 AND l.relation IN ('requires','implements','tests') ON CONFLICT DO NOTHING",[projectId,taskId]);
-  await pool.query("UPDATE requirement_review_runs SET status='completed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,'QA-документация подготовлена: '+count+' проверок',projectId]);
-  await recordTaskAgentNote(pool,{projectId,taskId,authorStage:'testing',authorName:'AI-тестировщик',targetStage:'all',kind:'observation',body:'Подготовлен план тестирования по актуальному ТЗ: '+count+' проверок. Фактические результаты будут записаны после выполнения, это не подтверждение прохождения тестов.',sourceKey:'test-plan:'+runId,sourceRunId:runId});
-  await event(projectId,runId,'testing','test_design_ready','QA-документация подготовлена: '+count+' проверок');
-  await recordAgentActivity(pool,projectId,[taskId],runId,'qa_design','completed','Подготовлено проверок: '+count+'.');
-  return count;
- }catch(e){
-  await pool.query("UPDATE requirement_review_runs SET status='failed',message=$2,completed_at=now() WHERE id=$1 AND project_id=$3",[runId,String(e).slice(0,1800),projectId]);
-  await event(projectId,runId,'testing','test_design_failed',String(e).slice(0,1900),'error');
-  await recordAgentActivity(pool,projectId,[taskId],runId,'qa_design','failed',String(e));
-  throw e;
- }
-}
+/** Keep the existing Temporal Activity name and signature for in-flight workflows. */
+export const prepareQaPlan=createQaPlanActivity({
+ pool,
+ failNonRetryable:message=>ApplicationFailure.nonRetryable(message),
+ event,
+ recordActivity:(projectId,taskIds,runId,kind,status,message)=>recordAgentActivity(pool,projectId,taskIds,runId,kind,status,message),
+ pendingQuestions:async(projectId,taskId)=>(await pendingAgentQuestions(pool,projectId,taskId))>0,
+ prEvidence,
+ loadKnowledge:async(projectId,taskId,runId)=>formatWorkflowKnowledge(await stageContext(projectId,taskId,'testing',runId)),
+ taskHandoffContext,
+ prepareDocumentation:(args,ask)=>prepareQaDocumentation(pool,args,ask),
+ recordPrompt:entry=>recordAgentPrompt(pool,entry),
+ askQaAgent:async(prompt,projectId,taskId,ai,runId)=>askRunnerAssistant(prompt,projectId,taskId,'qa_plan',
+  await resolveRoleAiSettings(pool,projectId,'testing',ai),105000,[],{role:'testing',processId:runId}),
+ recordNote:entry=>recordTaskAgentNote(pool,entry)
+});
 
 async function finishExistingTaskBranch(args:TaskRef,git:{repository:string;baseBranch:string;token:string;title:string},actorId:string):Promise<boolean>{
  const {projectId,taskId,runId}=args;
@@ -895,7 +853,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
    const prompt=composeAgentPrompt({
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
-    tools:'Открывай capabilities.list/describe для поиска разрешённых операций; tasks.read/history и processes.list — для фактов. При постоянных указаниях владельца управляй инструкциями через instructions.reconcile/propose, используя source_message_id. Не обходи QA, CI, слияние или согласования.',
+    tools:'Открывай capabilities.list/describe для поиска разрешённых операций; tasks.read/history и processes.list — для фактов. При постоянных указаниях владельца управляй инструкциями через instructions.reconcile/propose с source_message_id. Не обходи QA, CI, слияние или согласования.',
     instructions:(await conversationInstructions(pool,projectId,'manager')).slice(0,2200),
     scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,

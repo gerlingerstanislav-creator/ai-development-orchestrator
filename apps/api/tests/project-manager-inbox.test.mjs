@@ -266,3 +266,32 @@ test('PM tracks real tool actions without creating orders for chat reads',async 
  assert.ok(await ensureProjectManagerActionOrder(pool,{...base,messageId:second,events:[],delegated:true}),
   'delegated work is visible as an order');
 });
+
+test('PM reports zero saved pages as unfinished work and real saves with the count, once each',async t=>{
+ const db=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await db.connect();
+ const schema='pm_document_noop_'+randomUUID().replaceAll('-','');
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await pool.end();await db.query('DROP SCHEMA IF EXISTS '+schema+' CASCADE');await db.end();});
+ await db.query('CREATE SCHEMA '+schema);
+ await db.query('SET search_path TO '+schema+',public');
+ await db.query(`
+  CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid,status text,message text,saved_documents int,result jsonb);
+  CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id));
+  CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,role text,body text,channel text,status text,topic_id uuid,pm_order_id uuid);
+ `);
+ const project=randomUUID(),empty=randomUUID(),real=randomUUID();
+ await db.query("INSERT INTO document_import_jobs VALUES($1,$2,'completed','Анализ завершён',0,'{\"changed_documents\":0}'::jsonb)",[empty,project]);
+ const emptyWatch={projectId:project,processId:empty,kind:'document_import'};
+ assert.equal(await checkProjectManagerWatch(pool,emptyWatch),'completed');
+ assert.equal(await checkProjectManagerWatch(pool,emptyWatch),'completed');
+ const first=(await db.query('SELECT body FROM assistant_messages')).rows.map(x=>x.body);
+ assert.equal(first.length,1);
+ assert.match(first[0],/Поручение НЕ выполнено/);
+ assert.doesNotMatch(first[0],/Документация обновлена/);
+ await db.query("INSERT INTO document_import_jobs VALUES($1,$2,'completed','Анализ завершён',2,'{\"changed_documents\":2}'::jsonb)",[real,project]);
+ assert.equal(await checkProjectManagerWatch(pool,{projectId:project,processId:real,kind:'document_import'}),'completed');
+ const messages=(await db.query('SELECT body FROM assistant_messages')).rows.map(x=>x.body);
+ assert.ok(messages.some(message=>message.includes('Сохранено страниц: 2')));
+ assert.equal(messages.length,2);
+});

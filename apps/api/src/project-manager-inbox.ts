@@ -294,6 +294,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
     'Если запрос просто вопрос — отвечай без побочных изменений. При неизвестном факте используй адресное чтение.',
     'Если владелец явно просит удалить ошибочную карточку, используй tasks.delete с подтверждёнными task_id и source_message_id его сообщения. Действуй только после серверного разрешения. Не утверждай, что удаление в принципе невозможно, пока не проверил соответствующий инструмент.',
     'Если поступило событие завершения, продолжи соответствующее поручение; новые вопросы ПМ оформляй через discussions.open, после ответа закрывай тему.',
+    'Если аналитик попросил данные, сначала попробуй найти их в контексте проекта и документах. При наличии подтверждённых сведений вызови documentation.resume_spec с его job_id и ответом. Иначе спроси владельца в обсуждении; после ответа продолжи именно то же поручение через documentation.resume_spec, не запускай повторную подготовку с нуля.',
     orderId?'Текущее поручение: '+orderId+'.':'Новый ход чата: order_id отсутствует. При успешном действии поручение создаст backend. Не вызывай pm.orders.update без существующего order_id.',
     'Для повторного QA используй qa.retry после проверки текущих процессов. При неполном QA укажи, что не проверено. Для подробностей используй processes.list с process_id.',
     'Для возврата на анализ, адресного исправления существующего PR или повторного QA используй workflow.move_task с target_stage, source_message_id владельца и причиной. Не запускай работу с нуля, учитывай сохранённые результаты и новые комментарии. Статус merge_queue и последующие этапы устанавливают штатные проверки, а не ПМ вручную.',
@@ -503,12 +504,22 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
   [watch.projectId,watch.processId,watch.kind]);
  if(!mark.rowCount){await client.query('ROLLBACK');return 'completed';}
  const title=watch.kind==='iteration_plan'?'Подготовка задач итерации «'+process.name+'»':watch.kind==='development'?'Разработка задачи «'+process.name+'»':'Работа с документацией';
- const message=process.status==='completed'
+ const docsWritten=Number(process.saved_documents||process.result?.changed_documents||process.result?.generated_documents||0);
+ const verifiedCount=Array.isArray(process.result?.document_ids)?process.result.document_ids.length:0;
+ const needsContext=watch.kind==='document_import'&&process.status==='waiting_input';
+ const emptyDocumentation=watch.kind==='document_import'&&process.status==='completed'&&docsWritten===0&&verifiedCount===0;
+ const message=needsContext
+  ?'Аналитик запросил сведения для выполнения поручения. Вопрос: '+String(process.result?.question||process.message||'Не уточнён')+
+   '. Контекст: '+String(process.result?.context||'')+'. ID поручения: '+watch.processId+
+   '. ПМ должен найти подтверждённые данные и вызвать documentation.resume_spec, либо задать вопрос владельцу. Повторять подготовку с нуля не нужно.'
+  :emptyDocumentation
+  ?'Аналитик завершил ответ, но не создал и не изменил ни одной страницы ТЗ. Поручение НЕ выполнено. Проверь доступность источников проекта; не запускай повтор без новых данных или устранения причины.'
+  :process.status==='completed'
   ?watch.kind==='iteration_plan'
    ?title+' завершена. '+String(process.message||'')+' План разработки: '+String(process.plan_id||'не указан')+'. Карточки готовы. Задачи без открытых вопросов передаются в разработку.'
    :watch.kind==='development'
    ?title+' завершена. '+String(process.message||'')+(process.pr_url?' PR: '+process.pr_url:'')
-   :title+' завершена. '+String(process.message||'Документация обновлена')
+   :title+' завершена. Сохранено страниц: '+docsWritten+'. Подтверждено страниц: '+verifiedCount+'. '+String(process.result?.summary||process.message||'Документация обновлена')
   :title+' завершилась со статусом «'+process.status+'». '+String(process.message||'Посмотри детали в Центре процессов');
  await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5)",
   [randomUUID(),watch.projectId,message.slice(0,3500),watch.topicId||null,watch.orderId||null]);

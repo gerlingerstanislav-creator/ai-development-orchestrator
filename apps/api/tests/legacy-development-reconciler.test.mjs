@@ -101,3 +101,66 @@ test('unexpected database errors roll back the run transition and are reported',
  assert.equal(statements.includes('COMMIT'),false);
  assert.deepEqual(failures,[['database unavailable','run-1']]);
 });
+
+
+test('Runner job permanently lost after restart is failed once by scheduler, not by a GET',async()=>{
+ let status='running',message='Working',released=0;
+ const calls=[];
+ const pool={
+  query:async()=>({rows:status==='running'?[{...run,status,message,branch:null}]:[]}),
+  connect:async()=>({
+   query:async(sql,args)=>{
+    calls.push({sql,args});
+    if(sql.includes('UPDATE ai_task_runs')){
+     status=args[1];message=args[2];return {rowCount:1};
+    }
+    return {rowCount:1};
+   },
+   release:()=>released++
+  })
+ };
+ const errors=[];
+ const reconcile=createLegacyDevelopmentReconciler(pool,async()=>{
+  throw Error('Задача не найдена (возможно, исполнитель перезапущен)');
+ },(error,id)=>errors.push([error,id]));
+ await reconcile();
+ await reconcile();
+ assert.equal(status,'failed');
+ assert.equal(message,'Исполнитель перезапустился; повтори запуск задачи');
+ assert.equal(released,1);
+ assert.equal(calls.filter(x=>x.sql.includes('UPDATE ai_task_runs')).length,1);
+ assert.ok(calls.some(x=>x.sql.includes('INSERT INTO task_events')&&x.args[2]==='ai_failed'));
+ assert.ok(calls.some(x=>x.sql.includes('INSERT INTO process_events')&&x.args[4]==='failed'));
+ assert.deepEqual(errors,[]);
+});
+
+test('in-progress branch changes are reconciled once with a conditional development-only write',async()=>{
+ let branch='old-branch',message='Writing code',updates=0;
+ const sql=[];
+ const pool={
+  query:async()=>({rows:[{...run,message,branch}]}),
+  connect:async()=>({
+   query:async(statement,args)=>{
+    sql.push({statement,args});
+    if(statement.includes('UPDATE ai_task_runs')){
+     updates++;branch=args[3];message=args[2];return {rowCount:1};
+    }
+    return {rowCount:1};
+   },
+   release:()=>{}
+  })
+ };
+ const reconcile=createLegacyDevelopmentReconciler(pool,async()=>({
+  status:'running',message:'Writing code',branch:'feature/correct-branch'
+ }),()=>{});
+ await reconcile();
+ await reconcile();
+ assert.equal(updates,1,'matching branch and message must not create a second write');
+ assert.equal(branch,'feature/correct-branch');
+ const taskWrite=sql.find(x=>x.statement.startsWith('UPDATE tasks SET git_branch='));
+ assert.ok(taskWrite);
+ assert.match(taskWrite.statement,/stage='development'/);
+ assert.deepEqual(taskWrite.args,['task-1','feature/correct-branch','project-1']);
+ assert.equal(sql.filter(x=>x.statement.startsWith('INSERT INTO task_events')).length,0);
+ assert.equal(sql.filter(x=>x.statement.startsWith('INSERT INTO process_events')).length,1);
+});

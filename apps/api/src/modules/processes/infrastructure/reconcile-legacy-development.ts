@@ -6,7 +6,7 @@ type RunnerJob={
  status?:string;message?:string;branch?:string|null;prUrl?:string|null;baseBranch?:string|null;
  usage?:{input_tokens?:number;cached_input_tokens?:number;output_tokens?:number};
 };
-type LegacyRun={id:string;project_id:string;task_id:string;status:string;message:string|null};
+type LegacyRun={id:string;project_id:string;task_id:string;status:string;message:string|null;branch?:string|null};
 
 /**
  * Older runs without a Temporal cycle still require polling after a deployment.
@@ -32,14 +32,22 @@ export function createLegacyDevelopmentReconciler(
    detail=developmentProcessDetail(String(remote.message||detail)).slice(0,250);
   }catch(error){
    const message=error instanceof Error?error.message:String(error);
-   if(message.includes('Задача не найдена'))return;
-   const outage='Связь с исполнителем временно недоступна · ';
-   if(!detail.startsWith(outage))detail=outage+detail;
+   if(message.includes('Задача не найдена (возможно, исполнитель перезапущен)')){
+    // The legacy Runner has lost this job. This is a terminal result, not a
+    // transient outage. The CAS update below records it once for all readers.
+    status='failed';
+    detail='Исполнитель перезапустился; повтори запуск задачи';
+   }else{
+    const outage='Связь с исполнителем временно недоступна · ';
+    if(!detail.startsWith(outage))detail=outage+detail;
+   }
    remote=undefined;
   }
   if(!['queued','running','completed','failed'].includes(status))return;
   const terminal=status==='completed'||status==='failed';
-  if(!terminal&&status===row.status&&detail===row.message)return;
+  const branch=remote?.branch||null;
+  const branchChanged=!!branch&&branch!==row.branch;
+  if(!terminal&&status===row.status&&detail===row.message&&!branchChanged)return;
   let tx:PoolClient|undefined;
   try{
    tx=await db.connect();
@@ -49,11 +57,18 @@ export function createLegacyDevelopmentReconciler(
       pr_url=COALESCE($5,pr_url),completed_at=now()
       WHERE id=$1 AND cycle_id IS NULL AND status IN ('running','queued') RETURNING id`,
       [row.id,status,detail,remote?.branch||null,remote?.prUrl||null])
-    :await tx.query(`UPDATE ai_task_runs SET status=$2,message=$3
+    :await tx.query(`UPDATE ai_task_runs SET status=$2,message=$3,branch=COALESCE($4,branch)
       WHERE id=$1 AND cycle_id IS NULL AND status IN ('running','queued')
-      AND (status IS DISTINCT FROM $2 OR message IS DISTINCT FROM $3) RETURNING id`,
-      [row.id,status,detail]);
+      AND (status IS DISTINCT FROM $2 OR message IS DISTINCT FROM $3
+       OR ($4 IS NOT NULL AND branch IS DISTINCT FROM $4)) RETURNING id`,
+      [row.id,status,detail,branch]);
    if(updated.rowCount){
+    // Synchronize an in-progress branch only while the task still belongs to
+    // development; never overwrite a later Temporal/QA transition.
+    if(branch&&(!terminal||status!=='completed'||!remote?.prUrl)){
+     await tx.query("UPDATE tasks SET git_branch=$2 WHERE id=$1 AND project_id=$3 AND stage='development' AND git_branch IS DISTINCT FROM $2",
+      [row.task_id,branch,row.project_id]);
+    }
     if(terminal&&status==='completed'&&remote?.prUrl){
      const match=/\/pull\/(\d+)$/.exec(remote.prUrl);
      // A later workflow may already have advanced this task; never move it
@@ -68,6 +83,9 @@ export function createLegacyDevelopmentReconciler(
     }
     await tx.query("INSERT INTO process_events(id,project_id,process_id,process_kind,level,stage,detail) VALUES($1,$2,$3,'development',$4,$5,$6)",
      [randomUUID(),row.project_id,row.id,status==='failed'?'error':'info',status,detail]);
+    if(status!==row.status||detail!==row.message)
+     await tx.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,$3,$4)",
+      [randomUUID(),row.task_id,status==='failed'?'ai_failed':status==='completed'?'ai_completed':'ai_progress',detail]);
    }
    await tx.query('COMMIT');
   }catch(error){
@@ -79,7 +97,7 @@ export function createLegacyDevelopmentReconciler(
  }
 
  async function runOnce(){
-  const result=await db.query(`SELECT id,project_id,task_id,status,message FROM ai_task_runs
+  const result=await db.query(`SELECT id,project_id,task_id,status,message,branch FROM ai_task_runs
     WHERE cycle_id IS NULL AND status IN ('queued','running')
     ORDER BY created_at ASC LIMIT 50`);
   const rows=result.rows as LegacyRun[];
