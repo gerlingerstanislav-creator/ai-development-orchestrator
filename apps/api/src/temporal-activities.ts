@@ -36,6 +36,8 @@ import {resolveAgentMention,AGENT_MENTION_HINT} from './agent-mentions.js';
 import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
 import {evaluateQaRun} from './modules/quality/domain/qa-verdict.js';
+import {browserEvidenceAssessment,validEvidenceSha} from './task-evidence.js';
+import {finishTaskEvidenceRun} from './task-evidence-queue.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
@@ -521,8 +523,10 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
+ const evidence=task.execution_mode==='browser_evidence'&&task.implementation_kind==='artifact';
  const reusedBase=task.implementation_kind==='already_implemented'&&!!task.implementation_commit;
- if(!reusedBase&&(!task.pr_url||!task.git_branch))throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
+ if(evidence&&!validEvidenceSha(task.evidence_source_sha))throw ApplicationFailure.nonRetryable('Нет закреплённого SHA для получения артефактов');
+ if(!reusedBase&&!evidence&&(!task.pr_url||!task.git_branch))throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  if(!existing.rowCount){
   const storedPlan=await readQaPlan(pool,projectId,taskId);
@@ -536,16 +540,20 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   }
   const snapshot={...(testPlan??{cases:[]}),...(args.simplified?{simplified:true}:{}),...(args.singlePass?{singlePass:true,adHoc:!testPlan}:{})};
   let commit=task.spec_reviewed_commit;
-  if(args.singlePass||reusedBase){
+  if(args.singlePass||reusedBase||evidence){
    const branch=task.pr_base_branch||repo.target_branch||repo.default_branch;
-   const url=reusedBase?'/branches/'+encodeURIComponent(branch):'/pulls/'+task.pr_number;
+   const url=evidence?'/commits/'+encodeURIComponent(task.evidence_source_sha):reusedBase?'/branches/'+encodeURIComponent(branch):'/pulls/'+task.pr_number;
    const response=await fetch('https://api.github.com/repos/'+repo.repository+url,{
     headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
     signal:AbortSignal.timeout(20000)
    });
    if(!response.ok)throw Error('GitHub не подтвердил исходный код перед QA: HTTP '+response.status);
    const source=await response.json() as any;
-   if(reusedBase){
+   if(evidence){
+    commit=String(source.sha||'');
+    if(!validEvidenceSha(commit)||commit!==task.evidence_source_sha)
+     throw ApplicationFailure.nonRetryable('Исходный SHA не подтверждён GitHub. Нельзя делать скриншоты другого состояния.');
+   }else if(reusedBase){
     commit=String(source.commit?.sha||'');
     if(!/^[0-9a-f]{40}$/i.test(commit)||commit!==task.implementation_commit)
      throw ApplicationFailure.nonRetryable('Целевая ветка изменилась после подтверждения реализации; требуется повторный анализ');
@@ -561,7 +569,10 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   try{
    await client.query('BEGIN');
    if(args.singlePass||reusedBase){
-    const pinned=reusedBase
+    const pinned=evidence
+     ?await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND execution_mode='browser_evidence' AND implementation_kind='artifact' AND evidence_source_sha=$3",
+      [taskId,projectId,commit,task.spec_version])
+     :reusedBase
      ?await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND implementation_kind='already_implemented' AND implementation_commit=$3",
       [taskId,projectId,commit,task.spec_version])
      :await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND git_branch=$5 AND pr_number=$6",
@@ -585,9 +596,11 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   role:String(agentSettings.find((s:any)=>s.stage==='testing')?.agent_name||'AI-тестировщик'),
   objective:'Независимо проверь задачу: '+task.title+'\n'+String(task.description||'').slice(0,6500),
   tools:'Изолированная копия репозитория, команды npm/pytest/API, локальный HTTP-сервер и разрешённые MCP-инструменты.',
-  instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
+  instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules+
+   (evidence?'\nЗАДАЧА ПО ПОЛУЧЕНИЮ АРТЕФАКТОВ: не изменяй код, не создавай PR. Запусти именно зафиксированный SHA. Через browser-client.mjs сделай настоящие viewport 1440x900 и 390x844, каждый раз вызови screenshot. Проверь фактический интерфейс и доступные сценарии через browser asserts. Укажи подтверждённый URL/локальный путь и источник среды в отчёте. Не подменяй внешний production URL локальной страницей; если пользователь требует продакшен, а доступен только изолированный локальный браузер, выстави blocked и сообщи нужный доступ. Сохранение скриншотов обязательно, текстовый отчёт не является заменой.':'') ,
   scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||'')+
-   (reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
+   (evidence?'; режим: только фактические артефакты браузера, PR и изменение кода запрещены':
+    reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
   context:'История, новая обратная связь, предыдущие QA:\n'+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
   output:'Полный независимый отчёт QA по утверждённым критериям, с реальными доказательствами, дефектами и непроверенными сценариями.'
  };
@@ -595,7 +608,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
   title:task.title,description:task.description,agentPrompt:qaPrompt,agentPromptZones:agentPromptZones(qaPromptParts),projectRules:'',testPlan:record.qa_plan_snapshot,
-  expectedCommit:record.runner_commit_sha,branch:reusedBase?task.pr_base_branch||repo.target_branch||repo.default_branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
+  expectedCommit:record.runner_commit_sha,checkoutCommit:evidence?task.evidence_source_sha:undefined,branch:reusedBase||evidence?task.pr_base_branch||repo.target_branch||repo.default_branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1 AND status IN ('queued','running')",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
