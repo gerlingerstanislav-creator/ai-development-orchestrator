@@ -158,7 +158,10 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
  assert.equal((await createReader({'x-runner-secret':runnerSecret},{taskId:otherTaskId})).statusCode,404);
  const newReaders=[];
  for(const role of ['manager','analyst','business_analyst','analysis','development','testing','documentation','devops']){
-  const started=await createReader({'x-runner-secret':runnerSecret},{role});
+  // Documentation readers without an active documentation job are read-only.
+  // Running documentation jobs have their own scoped write authority and tests.
+  const started=await createReader({'x-runner-secret':runnerSecret},
+   {role,...(role==='documentation'?{processId:undefined}:{})});
   assert.equal(started.statusCode,201,started.body);
   const {id,secret}=started.json();
   const headers={'x-agent-token':secret};
@@ -190,7 +193,7 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
   assert.equal((await app.inject({method:'DELETE',url:readerUrl,headers:{...headers,'x-runner-secret':runnerSecret}})).statusCode,204);
   assert.equal((await callReader('knowledge.sections',{document_id:docId})).statusCode,403);
  }
- const reads=(await db.query('SELECT task_id,document_id,agent_stage,agent_session_id,section_id,section_title,process_id FROM knowledge_context_reads WHERE process_id=$1',[processId])).rows;
+ const reads=(await db.query('SELECT task_id,document_id,agent_stage,agent_session_id,section_id,section_title,process_id FROM knowledge_context_reads WHERE agent_session_id=ANY($1::uuid[])',[newReaders.map(x=>x.id)])).rows;
  assert.equal(reads.length,newReaders.length);
  for(const reader of newReaders){
   const row=reads.find(read=>read.agent_session_id===reader.id);
