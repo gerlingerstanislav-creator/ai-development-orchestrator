@@ -12,7 +12,7 @@ export async function readPmTaskGoal(db:Db,projectId:string,taskId:string):Promi
   status:'missing',reason:'Задача отсутствует: проверь, не была ли отменена'};
  if(task.stage==='done')return {task_id:taskId,title:task.title,display_number:task.display_number,
   stage:task.stage,analysis_state:task.analysis_state,status:'done',reason:'Этап done подтверждён в БД'};
- if(task.type!=='task')return {task_id:taskId,title:task.title,display_number:task.display_number,
+ if(!['task','bug','improvement'].includes(task.type))return {task_id:taskId,title:task.title,display_number:task.display_number,
   stage:task.stage,analysis_state:task.analysis_state,status:'needs_action',
   reason:'Эпик/вопрос не проходит отдельный workflow: контролируй дочерние задачи'};
  const activity=(await db.query(`SELECT
