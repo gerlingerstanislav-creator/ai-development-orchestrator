@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import pg from 'pg';
 import Fastify from 'fastify';
 import {initAnalysisFirstGate} from '../dist/analysis-first-gate.js';
-import {initTaskAnalysisQueue,reconcileTaskAnalysisQueue} from '../dist/task-analysis-queue.js';
+import {initTaskAnalysisQueue,reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from '../dist/task-analysis-queue.js';
 import {registerProjectManagerRoutes} from '../dist/project-manager.js';
 
 test('completed, clearly specified analysis passes technical consultations, even when agents are paused',async t=>{
@@ -21,9 +21,13 @@ test('completed, clearly specified analysis passes technical consultations, even
    priority int NOT NULL DEFAULT 3,created_at timestamptz NOT NULL DEFAULT now(),
    type text NOT NULL DEFAULT 'task',stage text NOT NULL DEFAULT 'analysis',
    analysis_state text NOT NULL DEFAULT 'new',spec_version int NOT NULL DEFAULT 1,
+   spec_review_status text NOT NULL DEFAULT 'current',spec_reviewed_version int NOT NULL DEFAULT 1,
+   pr_url text,git_branch text,
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,
    updated_at timestamptz NOT NULL DEFAULT now());
-  CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,event text,detail text);
+  CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,event text,detail text,actor_id uuid);
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text);
+  CREATE TABLE task_orchestration_owners(task_id uuid,state text);
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,
    kind text,status text,target_stage text DEFAULT 'all',requires_customer boolean NOT NULL DEFAULT false,
    author_stage text DEFAULT 'analysis',author_name text DEFAULT 'Agent',
@@ -35,13 +39,17 @@ test('completed, clearly specified analysis passes technical consultations, even
  `);
  await initTaskAnalysisQueue(db);
  const project=randomUUID();
- const [readyTech,readyOwner,waitingRecovered,unverified]=Array.from({length:4},randomUUID);
+ const [readyTech,readyOwner,waitingRecovered,unverified,resumePrevious,resumeOwner,actorId]=Array.from({length:7},randomUUID);
  await db.query('INSERT INTO projects(id,agents_running) VALUES($1,false)',[project]);
  await db.query('INSERT INTO project_ai_settings VALUES($1,true)',[project]);
  await db.query("INSERT INTO tasks(id,project_id,analysis_state) VALUES($1,$5,'ready_for_development'),($2,$5,'ready_for_development'),($3,$5,'waiting_questions'),($4,$5,'ready_for_development')",
   [readyTech,readyOwner,waitingRecovered,unverified,project]);
  for(const id of [readyTech,readyOwner,waitingRecovered])
-  await db.query("INSERT INTO task_events VALUES($1,$2,'analysis_completed','Requirements confirmed')",[randomUUID(),id]);
+  await db.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed','Requirements confirmed')",[randomUUID(),id]);
+ await db.query("INSERT INTO tasks(id,project_id,analysis_state,pr_url,git_branch) VALUES($1,$3,'new','https://github.com/example/repo/pull/2','fix/prior-work'),($2,$3,'new','https://github.com/example/repo/pull/3','fix/prior-owner')",
+  [resumePrevious,resumeOwner,project]);
+ for(const taskId of [resumePrevious,resumeOwner])
+  await db.query("INSERT INTO ai_task_runs VALUES($1,$2,$3,'failed')",[randomUUID(),project,taskId]);
  await db.query("INSERT INTO agent_analysis_runs(id,project_id,task_id,spec_version,status) VALUES($1,$2,$3,1,'completed')",
   [randomUUID(),project,waitingRecovered]);
  const addNote=(id,target,requiresCustomer)=>db.query("INSERT INTO task_agent_notes(id,project_id,task_id,kind,status,target_stage,requires_customer,source_key) VALUES($1,$2,$3,'question','open',$4,$5,$6)",
@@ -49,13 +57,21 @@ test('completed, clearly specified analysis passes technical consultations, even
  await addNote(readyTech,'devops',false);
  await addNote(waitingRecovered,'architect',false);
  await addNote(readyOwner,'analysis',true);
+ await addNote(resumeOwner,'analysis',true);
  await initAnalysisFirstGate(db);
+ assert.equal(await reuseExistingAnalysisForDevelopment(db,project,resumePrevious,actorId),true);
+ assert.equal(await reuseExistingAnalysisForDevelopment(db,project,resumeOwner,actorId),false,
+  'unanswered owner questions cannot be waived by resuming a PR');
  assert.equal((await db.query('SELECT analysis_state FROM tasks WHERE id=$1',[unverified])).rows[0].analysis_state,'new',
   'unverified legacy ready state must not bypass analyst approval');
  const temporal=async()=>({workflow:{start:async()=>{throw Error('Paused project must not run agents');}}});
  await reconcileTaskAnalysisQueue(db,temporal);
  const state=async id=>(await db.query('SELECT stage,analysis_state FROM tasks WHERE id=$1',[id])).rows[0];
  assert.deepEqual(await state(readyTech),{stage:'development',analysis_state:'approved'});
+ assert.deepEqual(await state(resumePrevious),{stage:'development',analysis_state:'approved'},
+  'previous PR can resume on explicit owner approval without repeated analysis');
+ assert.deepEqual(await state(resumeOwner),{stage:'analysis',analysis_state:'new'});
+ assert.equal((await db.query("SELECT count(*)::int AS n FROM task_events WHERE task_id=$1 AND event='analysis_reused_by_owner'",[resumePrevious])).rows[0].n,1);
  assert.deepEqual(await state(waitingRecovered),{stage:'development',analysis_state:'approved'},
   'prior completed analysis is reused rather than repeated over technical questions');
  assert.deepEqual(await state(readyOwner),{stage:'analysis',analysis_state:'ready_for_development'});
@@ -66,7 +82,7 @@ test('completed, clearly specified analysis passes technical consultations, even
  await assert.rejects(
   db.query("UPDATE tasks SET stage='development',analysis_state='approved' WHERE id=$1",[unverified]),
   {code:'23514'},'manual edits cannot bypass a missing analyst outcome');
- assert.equal((await db.query("SELECT count(*)::int AS n FROM task_agent_notes WHERE status='open'")).rows[0].n,3,
+ assert.equal((await db.query("SELECT count(*)::int AS n FROM task_agent_notes WHERE status='open'")).rows[0].n,4,
   'technical and owner questions are retained for visibility');
 });
 
