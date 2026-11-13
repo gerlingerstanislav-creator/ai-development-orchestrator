@@ -17,6 +17,7 @@ import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFail
 import {runQualityGates} from './quality-gates.js';
 import {deploymentDecision} from './deployment-stage.js';
 import pg from 'pg';
+import type {PoolClient} from 'pg';
 import {randomUUID,createDecipheriv,createHash} from 'node:crypto';
 import {createMergeService} from './merge-service.js';
 import {finishMergeBatch,loadMergeBatch,saveMergeResult,setMergeProgress,type MergeResult} from './merge-batch.js';
@@ -168,7 +169,7 @@ async function askRunnerAssistant(prompt:string,projectId:string,taskId:string|n
  return data.message;
 }
 /** Preserve the Temporal Activity export and workflow contract across refactors. */
-export const runTaskStageAnalysis=createTaskStageAnalysisActivity({
+export const runTaskStageAnalysis=createTaskStageAnalysisActivity<PoolClient>({
  pool,updateSpecification:updateCurrentSpecification,taskHandoffContext,assistantCompletion,event
 });
 
