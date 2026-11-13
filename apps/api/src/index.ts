@@ -179,6 +179,21 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
  const user=(await pool.query('SELECT email FROM users WHERE id=$1',[session.actor_id])).rows[0];
  if(!user)throw Object.assign(Error('Пользователь не найден'),{statusCode:403});
  const id=z.string().uuid();
+ // Message provenance is a capability gate, not a keyword-based intent router.
+ // The owner message must belong to the PM turn being executed (or its durable order).
+ const authorizeDestructiveSource=async(sourceId:string)=>{
+  if(!session.process_id)throw Object.assign(Error('Нет текущего сообщения для опасного действия'),{statusCode:403});
+  const allowed=await pool.query(`SELECT 1 FROM assistant_messages current
+   WHERE current.id=$1 AND current.project_id=$3 AND current.actor_id=$4 AND current.role='user'
+    AND (current.channel='project' AND current.id=$2 OR current.channel='pm-internal' AND EXISTS(
+     SELECT 1 FROM assistant_messages source JOIN project_pm_orders o ON o.id=current.pm_order_id
+      WHERE source.id=$2 AND source.project_id=$3 AND source.actor_id=$4 AND source.role='user'
+       AND source.channel='project' AND (source.pm_order_id=o.id OR source.id=o.source_message_id)))
+   UNION ALL SELECT 1 FROM manager_messages current
+    WHERE current.id=$1 AND current.id=$2 AND current.project_id=$3 AND current.actor_id=$4 AND current.role='user'
+   LIMIT 1`,[session.process_id,sourceId,projectId,session.actor_id]);
+  if(!allowed.rowCount)throw Object.assign(Error('Опасное действие требует исходного сообщения владельца из текущего поручения'),{statusCode:403});
+ };
  if(name==='tasks.update_dependency'){
    const taskId=id.parse(args.task_id);
    const parentId=z.string().uuid().nullable().parse(args.depends_on_task_id);
@@ -211,6 +226,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
   }
   if(name==='tasks.delete'){
    const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
+   await authorizeDestructiveSource(sourceMessageId);
    const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
    const source=await pool.query(`
     SELECT body,task_id FROM manager_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
@@ -220,18 +236,17 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
    if(!owner.rowCount||source.rows.length!==1)throw Object.assign(Error('Для удаления требуется реальное поручение владельца проекта'),{statusCode:403});
    if(source.rows[0].task_id&&source.rows[0].task_id!==taskId)
     throw Object.assign(Error('Нельзя удалять другую задачу по сообщению из этой карточки'),{statusCode:403});
-   const text=String(source.rows[0].body||'').trim();
-   if(!/(?:удал(?:и|ить|ите|яй)|delete|remove)/i.test(text)||/(?:не|нельзя|запрещено)\s+удал/i.test(text))
-    throw Object.assign(Error('В сообщении владельца нет явного поручения удалить задачу'),{statusCode:409});
    const token=await accessToken(session.actor_id,user.email);
    const response=await app.inject({method:'DELETE',url:'/api/projects/'+projectId+'/tasks/'+taskId,
     headers:{authorization:'Bearer '+token},payload:{confirm_task_id:taskId}});
    const body=response.json() as {error?:string;ok?:boolean;display_number?:number};
+   if(response.statusCode===409)return {status:'blocked',task_id:taskId,reason:String(body.error||'Задачу нельзя удалить обычным способом'),blocked_tool:'tasks.delete'};
    if(response.statusCode>=400)throw Object.assign(Error(String(body.error||'Не удалось удалить задачу')),{statusCode:response.statusCode});
    return {...body,status:'deleted',task_id:taskId};
   }
   if(name==='tasks.cancel'||name==='tasks.close'||name==='workflow.move_task'){
    const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
+   if(name==='tasks.cancel'||name==='tasks.close')await authorizeDestructiveSource(sourceMessageId);
    const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
    const message=await pool.query(`
     SELECT body,task_id FROM manager_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
@@ -250,9 +265,6 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
     return data;
    };
    if(name==='tasks.close'){
-    const body=String(message.rows[0].body||'');
-    if(!/(?:закр(?:ой|ыть|ойте)|заверш(?:и|ить|ите)|отметь[^\n]{0,70}(?:готов|выполн)|пометь[^\n]{0,70}(?:готов|выполн)|mark[^\n]{0,70}done|close[^\n]{0,70}task)/i.test(body))
-     return {status:'blocked',reason:'В исходном сообщении владельца нет поручения завершить задачу'};
     const db=await pool.connect();
     try{
      await db.query('BEGIN');
@@ -276,8 +288,8 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
     }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
    }
    if(name==='tasks.cancel'){
-    if(!/(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||''))||/(?:не|не надо|не нужно)\s+(?:отмен|удал|cancel|remove)/i.test(String(message.rows[0].body||'')))
-     throw Object.assign(Error('В исходном сообщении нет явного поручения закрыть/отменить задачу'),{statusCode:409});
+    // Explicitly authenticated owner message, task scope and preview are the safeguards.
+    // Word matching would misroute synonyms and penalize follow-up instructions.
     const preview=await call('GET','/cancel-preview');
     if(preview.status==='blocked')return preview;
     if(Array.isArray(preview.blocked)&&preview.blocked.length)return {status:'blocked',reason:'Отмена не разрешена: есть связанные данные или активные процессы',blockers:preview.blocked};
