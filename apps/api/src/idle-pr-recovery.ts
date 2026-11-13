@@ -3,7 +3,8 @@ import type {Pool} from 'pg';
 
 /** Continue an already completed developer handoff using the existing, evidence-
  * checking recovery API. Moving the card never marks QA or CI successful.
- * A durable process attempt throttles unavailable GitHub/Runner integrations. */
+ * A durable process attempt throttles unavailable GitHub/Runner integrations.
+ * Paused projects and completed QA work are intentionally excluded. */
 export async function reconcileIdlePullRequests(
  db:Pick<Pool,'query'>,
  recover:(input:{projectId:string;taskId:string;auth:string;cookie:string})=>Promise<{ok:boolean;status:number;message:string}>,
