@@ -16,6 +16,9 @@ import {initAgentToolsSchema} from '../agent-tools.js';
 import {initQaSchema} from '../qa.js';
 import {initQaWaiverSchema} from '../qa-waiver.js';
 import {initCloudDiagnosticsSchema} from '../cloud-diagnostics.js';
+import {installProjectIterationsSchema} from '../project-iterations.js';
+import {installAgentWorkQueueSchema} from '../agent-work-scheduler.js';
+import {initRequirementsSchema} from '../requirements.js';
 
 /**
  * Append-only, transactional schema history.
@@ -85,6 +88,17 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
     await initQaSchema(database);
     await initQaWaiverSchema(database);
     await initCloudDiagnosticsSchema(database);
+   }
+  },
+  {
+   version:8,name:'iterations-development-queue-and-requirements',
+   checksum:'ado-iterations-development-queue-requirements-v8',
+   up:async database=>{
+    // v7 installs QA plans; the baseline installs task and project foundations.
+    await installProjectIterationsSchema(database);
+    await installAgentWorkQueueSchema(database);
+    // The one-time task specification backfill belongs with this migration.
+    await initRequirementsSchema(database);
    }
   }
  ];

@@ -30,7 +30,7 @@ import {registerMergeOperationsRoutes} from './modules/execution/api/merge-opera
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {registerChatImageRoutes} from './chat-images.js';
-import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
+import {registerProjectIterationRoutes} from './project-iterations.js';
 import {resolveRoleAiSettings} from './project-team.js';
 import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
@@ -46,10 +46,9 @@ import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
 import {registerKnowledgeDocumentUpdateRoutes} from './knowledge-document-updates.js';
 import { initQaSchema,registerQaRoutes } from './qa.js';
 import {initQaWaiverSchema,registerQaWaiverRoutes} from './qa-waiver.js';
-import {initRequirementsSchema} from './requirements.js';
 import {registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {registerTaskCancellationRoutes} from './task-cancellation.js';
-import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
+import {enqueueDevelopment,reconcileAgentWorkQueue,reconcileLegacyAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {reconcileTaskAnalysisQueue,reuseExistingAnalysisForDevelopment} from './task-analysis-queue.js';
 import {reconcileIdlePullRequests} from './idle-pr-recovery.js';
@@ -558,7 +557,7 @@ async function main(){
  // These are runtime policies, not schema migrations: run on every restart.
  // Preserve the project's durable agents_running choice across deployments.
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
-await initEpicStageSync(pool);await startDiagnosticRetention(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+await initEpicStageSync(pool);await startDiagnosticRetention(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await reconcileLegacyAgentWorkQueue(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
   pool,path=>agentCall(path),

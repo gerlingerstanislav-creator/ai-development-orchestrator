@@ -8,7 +8,8 @@ import {resolveRoleAiSettings} from './project-team.js';
 type Db=Pick<Pool,'query'>;
 type LaunchScope={iterationId:string;revision:number;taskIds?:string[]}|{taskId:string;approveAnalysis:boolean};
 
-export async function initAgentWorkQueue(db:Db){
+/** One-time DDL, installed by the schema migration. */
+export async function installAgentWorkQueueSchema(db:Db){
  await db.query(`CREATE TABLE IF NOT EXISTS iteration_execution_queue (
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   iteration_id uuid REFERENCES project_iterations(id) ON DELETE CASCADE,
@@ -28,9 +29,19 @@ export async function initAgentWorkQueue(db:Db){
  ALTER TABLE iteration_execution_queue DROP CONSTRAINT IF EXISTS iteration_execution_queue_status_check;
  ALTER TABLE iteration_execution_queue ADD CONSTRAINT iteration_execution_queue_status_check
   CHECK(status IN ('queued','dispatching','dispatched','cancelled','stale'));
- UPDATE iteration_execution_queue SET status='stale',detail='У запуска нет сохранённой ревизии. Подтвердите запуск повторно.',updated_at=now()
-  WHERE status='queued' AND NOT automatic AND iteration_id IS NOT NULL AND approved_revision IS NULL;
  CREATE INDEX IF NOT EXISTS idx_iteration_execution_queue_pending ON iteration_execution_queue(status,created_at);`);
+}
+
+/** Runtime policy: re-check invalid legacy launch requests after every restart. */
+export async function reconcileLegacyAgentWorkQueue(db:Db){
+ await db.query(`UPDATE iteration_execution_queue SET status='stale',detail='У запуска нет сохранённой ревизии. Подтвердите запуск повторно.',updated_at=now()
+  WHERE status='queued' AND NOT automatic AND iteration_id IS NOT NULL AND approved_revision IS NULL`);
+}
+
+/** Compatibility bootstrap for explicit isolated schema consumers. */
+export async function initAgentWorkQueue(db:Db){
+ await installAgentWorkQueueSchema(db);
+ await reconcileLegacyAgentWorkQueue(db);
 }
 
 /** The caller holds a transaction, including for tool calls made by the PM. */
