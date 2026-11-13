@@ -1,4 +1,3 @@
-import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {composeAgentPrompt} from '../../../agent-prompt.js';
 import {agentMemoryContext,resolveRoleAiSettings} from '../../../project-team.js';
@@ -6,6 +5,10 @@ import {taskNotesContext,taskConversationEvidence,pendingAgentQuestions,resolveA
 import type {AgentReaderScope} from '../../../agent-tools.js';
 import type {RunnerImage} from '../../../chat-images.js';
 import type {PullRequestEvidence} from '../../integrations/github/infrastructure/pr-evidence.js';
+
+type PeerDatabase=Parameters<typeof taskNotesContext>[0]&{
+ connect:()=>Promise<Parameters<typeof resolveAgentQuestionsForReview>[0]>;
+};
 
 /** A peer answer is accepted only with an exact quote from trusted task evidence,
  * and never when the quoted text merely repeats the question being answered. */
@@ -25,7 +28,7 @@ export function isGroundedPeerAnswer(
 export function createPeerQuestionResolution({
  pool,prEvidence,askRunnerAssistant,event
 }:{
- pool:Pool;
+ pool:PeerDatabase;
  prEvidence:(projectId:string,taskId:string)=>Promise<PullRequestEvidence>;
  askRunnerAssistant:(prompt:string,projectId:string,taskId:string|null,operation:string,
   ai:{model:string;reasoning:string},timeoutMs:number,images:RunnerImage[],
