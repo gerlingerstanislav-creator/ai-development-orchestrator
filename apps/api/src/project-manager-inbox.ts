@@ -1,4 +1,5 @@
 import {reportPmWatchCompletion,type PmWatchReport} from './modules/planning/application/pm-watch-report.js';
+import {PM_GOAL_POLICY,pmOrderStateFromResults} from './pm-goal-policy.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import type {FastifyInstance} from 'fastify';
@@ -273,7 +274,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    turn.topic_id?pool.query('SELECT title,status FROM project_chat_topics WHERE project_id=$1 AND id=$2',[projectId,turn.topic_id]):Promise.resolve({rows:[]}),
    orderId?pool.query('SELECT summary,status,topic_id FROM project_pm_orders WHERE project_id=$1 AND id=$2',[projectId,orderId]):Promise.resolve({rows:[]}),
    orderId?pool.query('SELECT kind,detail,process_id FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 3',[orderId]):Promise.resolve({rows:[]}),
-   !turn.reply_to?pool.query("SELECT role,left(body,450) AS body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND id<>$2 AND ((topic_id=$3) OR ($3::uuid IS NULL AND topic_id IS NULL)) ORDER BY created_at DESC,id DESC LIMIT 3",[projectId,messageId,turn.topic_id||null]):Promise.resolve({rows:[]})
+   !turn.reply_to?pool.query("SELECT role,left(body,450) AS body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND id<>$2 AND ((topic_id=$3) OR ($3::uuid IS NULL AND topic_id IS NULL)) ORDER BY created_at DESC,id DESC LIMIT 6",[projectId,messageId,turn.topic_id||null]):Promise.resolve({rows:[]})
   ]);
   const config=await resolveRoleAiSettings(pool,projectId,'manager',configResult.rows[0]);
   if(!config?.enabled)throw Error('AI выключен в настройках проекта');
@@ -287,19 +288,20 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const prompt=composeAgentPrompt({
    role:'Менеджер проекта AI Development Orchestrator. Один логический ПМ, независимые поручения.',
    objective:String(turn.body||'Изучи приложенные изображения'),
-   tools:'MCP orchestrator. Получай задачи через tasks.list/read, процессы через processes.list, решения через pm.decisions.list, историю по необходимости через discussions.read/history.search, итерации через iterations.list/read. Вызывай инструмент только когда информация нужна для текущего сообщения; не читай весь проект автоматически.',
+   tools:'MCP orchestrator: capabilities.list/describe для выбора инструментов, tasks.list/read/history и processes.list для фактов, pm.orders.list для состояния поручений. При конкретной цели запрашивай только относящиеся к ней данные, не загружай весь проект.',
    instructions:[
-    instructions.slice(0,3200),
+    instructions.slice(0,2800),
+    PM_GOAL_POLICY,
     'Координируй работу специалистов; не подменяй аналитика, разработчика, QA или DevOps.',
     'При просьбе подготовить или уточнить ТЗ передай вводные аналитику через documentation.prepare_spec. Для плана используй iterations.prepare_plan: аналитик обновляет текущие карточки и создаёт недостающие. Готовые задачи автоматически идут в разработку.',
     'Если запрос просто вопрос — отвечай без побочных изменений. При неизвестном факте используй адресное чтение.',
-    'Если владелец явно просит удалить ошибочную карточку, используй tasks.delete с подтверждёнными task_id и source_message_id его сообщения. Действуй только после серверного разрешения. Не утверждай, что удаление в принципе невозможно, пока не проверил соответствующий инструмент.',
+    'Различай удаление неисполнявшейся карточки (tasks.delete) и безопасную отмену задачи с PR (tasks.cancel). Если выбранный путь отклонён, проверяй альтернативы и блокировки, а не прекращай поручение.',
     'Если поступило событие завершения, продолжи соответствующее поручение; новые вопросы ПМ оформляй через discussions.open, после ответа закрывай тему.',
     'Если аналитик попросил данные, сначала попробуй найти их в контексте проекта и документах. При наличии подтверждённых сведений вызови documentation.resume_spec с его job_id и ответом. Иначе спроси владельца в обсуждении; после ответа продолжи именно то же поручение через documentation.resume_spec, не запускай повторную подготовку с нуля.',
     orderId?'Текущее поручение: '+orderId+'.':'Новый ход чата: order_id отсутствует. При успешном действии поручение создаст backend. Не вызывай pm.orders.update без существующего order_id.',
     'Для повторного QA используй qa.retry после проверки текущих процессов. При неполном QA укажи, что не проверено. Для подробностей используй processes.list с process_id.',
     'Для возврата на анализ, адресного исправления существующего PR или повторного QA используй workflow.move_task с target_stage, source_message_id владельца и причиной. Не запускай работу с нуля, учитывай сохранённые результаты и новые комментарии. Статус merge_queue и последующие этапы устанавливают штатные проверки, а не ПМ вручную.',
-    'Для завершения готовой задачи вызывай tasks.close: операция подтвердит слияние, выкладку и документацию. Для ОТМЕНЫ ненужной начатой задачи есть tasks.cancel (это удаление с аудитом), для удаления ошибочной неисполненной карточки tasks.delete. Не путай закрытие успешно сделанной задачи с отменой, не выставляй done без проверки.',
+    'При долговременной цели отслеживай полное выполнение, а не только запуск. Для отмены старой работы с PR используй tasks.cancel и затем создавай новую задачу лишь если владелец всё ещё этого хочет. При блокировках сначала ищи безопасный путь в рамках workflow, не отменяй обязательный QA/CI.',
     'На каждый новый комментарий, который меняет требования или исправляет результат, проверь tasks.read и инициируй уточнение, доработку или повторное тестирование только затронутой части. Если действие не требуется, не ставь фиктивных процессов и не сообщай, что всё переделано.',
     'Для вопросов по существующей задаче сначала прочитай tasks.read или approvals.list: там есть реальные ID открытых вопросов. Если владелец уже ответил в общем чате, найди сохранённое сообщение через history.search и вызови approvals.deliver_task_answer с task_id и source_message_id — это переносит дословный ответ в карточку и возвращает её аналитику. Не говори, что инструментов передачи ответа нет, не проси переписать ранее данный ответ и не создавай отдельную задачу для уточнения. Для вопросов документации используй documentation.answer_question. Прочие решения — pm.decisions.record.',
     'Не запускай несколько одинаковых процессов и не ожидай другие поручения синхронно.',
@@ -310,10 +312,10 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
     ownerQuestion?'Вопрос, на который отвечает пользователь: '+JSON.stringify(ownerQuestion):'',
     replyResult.rows[0]?'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]).slice(0,1600):'',
     eventResult.rows.length?'Последние события этого поручения: '+JSON.stringify(eventResult.rows).slice(0,1000):'',
-    recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,950):'',
+    recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,2200):'',
      images.length?'Приложены изображения: '+images.map(image=>image.name).join(', ')+'. Рассмотри их визуальное содержимое.':''
    ].filter(Boolean).join('\n\n'),
-    output:'Ответь по-русски. При действиях назови подтверждённый результат. При ожидании объясни конкретную причину. Для запроса подробностей получи относящиеся к нему факты через доступные инструменты.'
+    output:'Ответь по-русски. Укажи достигнутый результат и дальнейший шаг по исходной цели. При блокировке сообщи конкретный вариант устранения и кто за него отвечает. Не выдавай запуск за завершение. Если требуется решение владельца — предложи конкретные варианты.'
   });
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   const response=await fetch(runnerUrl+'/agent',{
@@ -324,7 +326,7 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
   const data=await response.json().catch(()=>({})) as any;
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
-  const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true',[projectId,session.id]);
+  const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true ORDER BY created_at,id',[projectId,session.id]);
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
@@ -357,8 +359,8 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
     const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question'||row.tool==='discussions.open'&&row.result?.awaiting_reply===true);
     const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===confirmedOrderId);
     const questionOpen=ownerQuestion&&!!(await client.query("SELECT 1 FROM task_agent_notes WHERE id=$1 AND status IN ('open','processing')",[ownerQuestion.id])).rowCount;
-    const status=questionOpen||hasOpenQuestion?'waiting_user':watchers.length?'waiting_agents':'completed';
-    if(!explicitlySet||watchers.length||ownerQuestion||hasOpenQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,status,effectiveTopic]);
+    const status=pmOrderStateFromResults(toolEvents.rows,watchers.length,Boolean(questionOpen||hasOpenQuestion));
+    if(!explicitlySet||status!=='completed'||ownerQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,status,effectiveTopic]);
     else await client.query('UPDATE project_pm_orders SET topic_id=COALESCE($2,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,effectiveTopic]);
     if(effectiveTopic)await client.query(`UPDATE project_chat_topics t SET status='closed',closed_at=now()
      WHERE t.id=$1 AND t.project_id=$2 AND t.status='open'

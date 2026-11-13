@@ -1,4 +1,5 @@
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
+import {PM_GOAL_POLICY} from './pm-goal-policy.js';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import {recordAgentActivity} from './task-agent-activity.js';
@@ -774,6 +775,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
     tools:'Открывай capabilities.list/describe по мере необходимости. Постоянные указания владельца распределяй через instructions.reconcile/propose с source_message_id. Учитывай область действия; опыт агентов и разовые просьбы не являются обязательными правилами.',
     instructions:[
      conversationRole.slice(0,2000),
+     !documentationMode?PM_GOAL_POLICY:'',
      governedRules.slice(0,1600),
      instructions.slice(0,1400),
      documentationMode

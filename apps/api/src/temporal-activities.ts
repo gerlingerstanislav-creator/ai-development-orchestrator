@@ -8,6 +8,7 @@ import {readProjectAgentAvailability,ProjectAgentAvailabilityError,type ProjectA
 import {createRunnerHttpClient} from './infrastructure/runner-http-client.js';
 import {type AgentReaderScope} from './agent-tools.js';
 import {composeAgentPrompt,agentPromptZones,recordAgentPrompt} from './agent-prompt.js';
+import {PM_GOAL_POLICY} from './pm-goal-policy.js';
 import {createAgentSession,finishAgentSession} from './agent-tools.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
@@ -854,7 +855,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
     tools:'Открывай capabilities.list/describe для поиска разрешённых операций; tasks.read/history и processes.list — для фактов. При постоянных указаниях владельца управляй инструкциями через instructions.reconcile/propose с source_message_id. Не обходи QA, CI, слияние или согласования.',
-    instructions:[(await conversationInstructions(pool,projectId,'manager')).slice(0,1600),
+    instructions:[PM_GOAL_POLICY,(await conversationInstructions(pool,projectId,'manager')).slice(0,1600),
      (await agentMemoryContext(pool,projectId,'manager',String(snapshot.task.title||'')+' '+String(snapshot.task.description||''))).slice(0,1600)].filter(Boolean).join('\n\n'),
     scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,
