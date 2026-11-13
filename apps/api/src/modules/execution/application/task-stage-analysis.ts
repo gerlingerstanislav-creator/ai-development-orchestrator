@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {PENDING_OWNER_QUESTION_SQL} from '../../../task-question-gates.js';
 import {preserveAcceptanceCriteria} from '../../../acceptance-criteria.js';
+import {validEvidenceSha} from '../../../task-evidence.js';
 
 type AnalysisQueryResult={rows:any[];rowCount:number|null};
 type AnalysisDatabase={query:(sql:string,values?:any[])=>Promise<AnalysisQueryResult>};
@@ -24,7 +25,9 @@ const taskAnalysisResult=z.object({
  summary:z.string().trim().min(8).max(1500),
  refined_description:z.string().trim().min(20).max(16000),
  questions:z.array(z.string().trim().min(5).max(650)).max(8).default([]),
- documentation_notes:z.array(z.string().trim().min(5).max(1000)).max(5).default([])
+ documentation_notes:z.array(z.string().trim().min(5).max(1000)).max(5).default([]),
+ execution_mode:z.enum(['code','browser_evidence']).default('code'),
+ source_sha:z.string().regex(/^[a-f0-9]{40}$/i).nullable().default(null)
 }).strict();
 function parseTaskAnalysisResult(text:string){
  const cleaned=text.trim().replace(/^\x60{3}(?:json)?\s*/i,'').replace(/\s*\x60{3}$/,'');
@@ -61,10 +64,11 @@ async function runTaskStageAnalysis(runId:string):Promise<void>{
    'Ты системный аналитик проекта. Задача находится в колонке «Анализ», и ты обязан закончить работу над ней.',
    'Уточни содержание именно задачи, используя документацию как справочный контекст. Не редактируй страницы проектного ТЗ, не ставь завершение документации условием разработки. Не придумывай продуктовые решения вместо владельца.',
    'Если обнаружено противоречие со старым ТЗ, укажи его в documentation_notes как неблокирующее замечание для будущего обновления документации. Продолжай работу по ясной задаче и решениям владельца. Вопрос задавай только когда без ответа невозможно однозначно определить реализацию.',
-   'Если описание достаточно для разработки, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description, затем коротко передай её разработчику. Сохраняй все действующие критерии приёмки из постановки; не повторяй одинаковые критерии.',
+   'Выбери execution_mode по СМЫСЛУ результата: code — необходимы изменения исходного кода, browser_evidence — только фактические браузерные снимки и проверяемые артефакты существующего сайта, без коммитов, фиктивного PR и деплоя. Не маршрутизируй по ключевым словам; учитывай весь текст и подтверждённые решения. Для browser_evidence требуется SHA из подтверждённой постановки, передай его в source_sha; не выдумывай commit. Если SHA отсутствует и его нельзя подтвердить, запроси уточнение. Для code source_sha=null.',
+   'Если описание достаточно для исполнения выбранным способом, верни outcome="ready", уточнённые требования и критерии именно этой задачи в refined_description. Сохраняй все действующие критерии приёмки из постановки; не повторяй одинаковые критерии.',
    'Для технического вопроса сначала проверь доступные факты, используй MCP agents.consult с архитектором/разработчиком и blockers.report при настоящем ограничении. Неполадки Git, CI, Chromium, discovery supported tests и отсутствие доступа к внутренней конфигурации Runner — технические вопросы, а не продуктовые требования. Если ТЗ достаточно для реализации, outcome="ready" даже при открытой технической консультации; передай ограничение через историю задачи. Только если выбор пользовательского поведения реально неоднозначен, верни needs_input с коротким вопросом владельцу. Полное уточнение сохрани в refined_description, а в summary объясни результат в 1–3 предложениях.',
    'Не создавай новый функционал за пределами согласованного объёма. Если outcome="ready", questions должен быть пустым. Если needs_input, вопросы обязательны.',
-   'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["неблокирующее расхождение или рекомендация"]}.',
+   'Ответь ТОЛЬКО JSON: {"outcome":"ready|needs_input","summary":"...","refined_description":"...","questions":["..."],"documentation_notes":["..."],"execution_mode":"code|browser_evidence","source_sha":"40-символьный SHA или null"}.',
    'Инструкции агента: '+String(instructions?.agent_instructions||'').slice(0,6000),
    'Задача: '+task.title+'\n'+task.description,
    'Последние сообщения и выполненная работа (новые вводные приоритетнее старых): '+history.slice(0,3100),
@@ -74,6 +78,9 @@ async function runTaskStageAnalysis(runId:string):Promise<void>{
   const output=parseTaskAnalysisResult(await assistantCompletion(prompt,projectId,taskId,'task_analysis',runId));
   if(output.outcome==='ready'&&output.questions.length)throw Error('Аналитик завершил задачу с неразрешёнными вопросами');
   if(output.outcome==='needs_input'&&!output.questions.length)throw Error('Аналитик запросил уточнение без вопроса');
+  if(output.outcome==='ready'&&output.execution_mode==='browser_evidence'&&
+   (!validEvidenceSha(output.source_sha)||!(task.description+'\n'+history).toLowerCase().includes(output.source_sha.toLowerCase())))
+   throw Error('Для браузерных артефактов нужен подтверждённый SHA из постановки или истории задачи. Нельзя выдумывать коммит.');
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -103,11 +110,15 @@ async function runTaskStageAnalysis(runId:string):Promise<void>{
     if(questions.rowCount||latest.clarification_questions?.length){
      await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
     }else{
-     await client.query("UPDATE tasks SET analysis_state='ready_for_development',updated_at=now() WHERE id=$1",[taskId]);
-     await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed',$3)",[randomUUID(),taskId,output.summary]);
+     await client.query("UPDATE tasks SET analysis_state=$2,execution_mode=$3,evidence_source_sha=$4,updated_at=now() WHERE id=$1",
+      [taskId,output.execution_mode==='browser_evidence'?'ready_for_evidence':'ready_for_development',output.execution_mode,
+       output.execution_mode==='browser_evidence'?output.source_sha:null]);
+     await client.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed',$3)",
+      [randomUUID(),taskId,output.summary+' · маршрут '+output.execution_mode]);
     }
-    await client.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status) VALUES($1,$2,$3,'analysis',$4,'development','handoff',$5,'agent',$6,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING",
-     [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',output.summary,'task-analysis:'+runId]);
+    await client.query("INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status) VALUES($1,$2,$3,'analysis',$4,$5,'handoff',$6,'agent',$7,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING",
+     [randomUUID(),projectId,taskId,instructions?.agent_name||'Системный аналитик',
+      output.execution_mode==='browser_evidence'?'testing':'development',output.summary,'task-analysis:'+runId]);
    }else{
     await client.query("UPDATE tasks SET analysis_state='waiting_questions',updated_at=now() WHERE id=$1",[taskId]);
     for(let index=0;index<output.questions.length;index++){

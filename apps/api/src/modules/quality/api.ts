@@ -41,10 +41,11 @@ app.get('/api/projects/:id/test-runs',async(req:any,reply)=>{
 app.post('/api/projects/:id/tasks/:taskId/apply-qa-result',async(req:any,reply)=>{
  const {id,taskId}=parse(z.object({id:z.string().uuid(),taskId:z.string().uuid()}),req.params);
  if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
- const task=await pool.query("SELECT t.id,t.stage,t.pr_number,t.spec_version,t.spec_reviewed_version,t.spec_review_status,t.spec_reviewed_commit,g.repository,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
+ const task=await pool.query("SELECT t.id,t.stage,t.execution_mode,t.pr_number,t.spec_version,t.spec_reviewed_version,t.spec_review_status,t.spec_reviewed_commit,g.repository,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2",
   [taskId,id,uid(req)]);
  if(!task.rowCount)return reply.code(404).send({error:'Задача или GitHub-подключение не найдены'});
  if(task.rows[0].stage!=='testing')return reply.code(409).send({error:'Задача уже вышла из этапа тестирования'});
+ if(task.rows[0].execution_mode==='browser_evidence')return reply.code(409).send({error:'Для задач без изменений кода применяется отдельное подтверждение скриншотов; переход в разработку или к PR запрещён'});
  if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Сначала ответь на вопросы агентов по задаче'});
  const [owner,active,latest]=await Promise.all([
   pool.query("SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND project_id=$2 AND state='active'",[taskId,id]),

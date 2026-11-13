@@ -21,12 +21,16 @@ test('QA browser bridge isolates attempts, rejects stale tokens and closes sessi
   }
   if(!old)upstreamSessions.set(body.session,body.token);
   if(body.action==='assert')return res.end(JSON.stringify({ok:true,assertion:'passed',viewport:{width:390,height:844}}));
+  if(body.action==='screenshot')return res.end(JSON.stringify({
+   ok:true,screenshot:'.ado-qa-evidence/390x844-123e4567-e89b-42d3-a456-426614174000.jpg',
+   sha256:'a'.repeat(64),viewport:{width:390,height:844},origin:'isolated-local-browser'
+  }));
   res.end(JSON.stringify({ok:true}));
  });
  upstream.listen(0,'127.0.0.1');await once(upstream,'listening');
  const originalUrl=process.env.QA_BROWSER_URL;
  process.env.QA_BROWSER_URL='http://127.0.0.1:'+upstream.address().port;
- const {startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,closeQaBrowserSession}=await import('./browser-gateway.mjs');
+ const {startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,getQaScreenshotEvidence,closeQaBrowserSession}=await import('./browser-gateway.mjs');
  const gateway=startQaBrowserGateway();await once(gateway,'listening');
  t.after(async()=>{
   await new Promise(resolve=>gateway.close(resolve));
@@ -51,6 +55,9 @@ test('QA browser bridge isolates attempts, rejects stale tokens and closes sessi
  assert.equal((await invoke({...first,token:'f'.repeat(64)},'start')).status,403);
  assert.equal((await invoke(first,'assert',{qaKind:'case',qaId:caseId,expression:'true'})).body.assertion,'passed');
  assert.equal(getQaBrowserEvidence(firstId).length,1);
+ assert.equal((await invoke(first,'screenshot')).body.ok,true);
+ assert.equal(getQaScreenshotEvidence(firstId).length,1);
+ assert.equal(getQaScreenshotEvidence(firstId)[0].viewport.width,390);
  await closeQaBrowserSession(firstId);
  assert.ok(closed.includes(firstId),'closing a QA job must close its upstream Chromium session');
  assert.equal(upstreamSessions.has(firstId),false);
@@ -61,6 +68,7 @@ test('QA browser bridge isolates attempts, rejects stale tokens and closes sessi
  assert.equal((await invoke(second,'start')).body.ok,true);
  assert.equal((await invoke({...second,token:first.token},'start')).status,403);
  assert.equal(getQaBrowserEvidence(secondId).length,0,'no evidence leaks from previous attempt');
+ assert.equal(getQaScreenshotEvidence(secondId).length,0,'screenshot attestation never leaks between attempts');
  await closeQaBrowserSession(secondId);
  assert.deepEqual(closed,[firstId,secondId]);
  assert.equal(upstreamSessions.size,0,'no browser process retained after QA attempts');

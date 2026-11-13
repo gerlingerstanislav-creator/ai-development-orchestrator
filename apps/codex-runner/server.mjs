@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
-import {startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
+import {startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,getQaScreenshotEvidence,closeQaBrowserSession,browserHealth} from './browser-gateway.mjs';
 import {jobIdentity,openJobJournal,recoveryAction,runtimeLimitResult} from './job-journal.mjs';
 import {codexFailureDetail,conversationPolicy,createTaskPolicy,gitEnvironment,runnerEnvironment} from './execution-policy.mjs';
 import {qaPrerequisiteError} from './qa-preflight.mjs';
@@ -486,7 +486,7 @@ async function auditCodexPrompt(job,role,prompt){
 const runTestJob=createQaJobRunner({
  command,assertJobActive,saveJob,isolatedTaskPolicy,cliEnv,persistentCli,
  auditCodexPrompt,codexJsonResult,addUsage,
- browser:{health:browserHealth,open:openQaBrowserSession,evidence:getQaBrowserEvidence,close:closeQaBrowserSession},
+ browser:{health:browserHealth,open:openQaBrowserSession,evidence:getQaBrowserEvidence,screenshots:getQaScreenshotEvidence,close:closeQaBrowserSession},
  isCancelled:id=>cancelledJobs.has(id)
 });
 

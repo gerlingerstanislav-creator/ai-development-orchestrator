@@ -74,7 +74,7 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
      WHEN EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event='analysis_completed')
       AND EXISTS(SELECT 1 FROM agent_analysis_runs r WHERE r.task_id=t.id
        AND r.spec_version=t.spec_version AND r.status='completed')
-       THEN 'ready_for_development'
+       THEN CASE WHEN t.execution_mode='browser_evidence' THEN 'ready_for_evidence' ELSE 'ready_for_development' END
      ELSE 'new'
     END,updated_at=now()
    WHERE t.stage='analysis' AND t.analysis_state='waiting_questions'
@@ -123,25 +123,30 @@ export async function reconcileTaskAnalysisQueue(pool:Pool,temporal:()=>Promise<
   }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}
 
   // Ready means the analyst finalized this task's requirements, independent of epic siblings.
-  const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number FROM tasks t
-   WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND t.analysis_state='ready_for_development'
+  const ready=await db.query(`SELECT t.id,t.project_id,t.iteration_id,t.display_number,t.execution_mode FROM tasks t
+   WHERE t.stage='analysis' AND t.type IN ('task','bug','improvement') AND ((t.execution_mode='browser_evidence' AND t.analysis_state='ready_for_evidence' AND t.evidence_source_sha IS NOT NULL) OR (t.execution_mode='code' AND t.analysis_state='ready_for_development'))
     AND coalesce(jsonb_array_length(t.clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND ${PENDING_OWNER_QUESTION_SQL})
     AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status IN ('queued','running'))
 
    ORDER BY t.priority,t.created_at LIMIT 10`);
   for(const t of ready.rows){
-   const updated=await db.query(`UPDATE tasks SET stage='development',analysis_state='approved',updated_at=now()
-    WHERE id=$1 AND project_id=$2 AND stage='analysis' AND analysis_state='ready_for_development'
+   const evidence=t.execution_mode==='browser_evidence';
+   const updated=await db.query(`UPDATE tasks SET stage=$3,analysis_state='approved',
+     implementation_kind=CASE WHEN $4 THEN 'artifact' ELSE implementation_kind END,
+     implementation_commit=CASE WHEN $4 THEN evidence_source_sha ELSE implementation_commit END,updated_at=now()
+    WHERE id=$1 AND project_id=$2 AND stage='analysis'
+      AND ((execution_mode='browser_evidence' AND analysis_state='ready_for_evidence' AND evidence_source_sha IS NOT NULL)
+       OR (execution_mode='code' AND analysis_state='ready_for_development'))
     AND coalesce(jsonb_array_length(clarification_questions),0)=0
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=$1 AND ${PENDING_OWNER_QUESTION_SQL})
-    RETURNING id`,[t.id,t.project_id]);
+    RETURNING id`,[t.id,t.project_id,evidence?'testing':'development',evidence]);
    if(updated.rowCount){
     await db.query(`INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'stage_changed',$3)`,
-      [randomUUID(),t.id,'Аналитик завершил анализ и передал задачу в разработку.']);
+      [randomUUID(),t.id,evidence?'Аналитик назначил браузерное исполнение и проверку артефактов без разработки.':'Аналитик завершил анализ и передал задачу в разработку.']);
     await db.query(`INSERT INTO task_agent_notes(id,project_id,task_id,author_stage,author_name,target_stage,kind,body,source_kind,source_key,status)
-     VALUES($1,$2,$3,'analysis','Системный аналитик','development','handoff',$4,'agent',$5,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING`,
-      [randomUUID(),t.project_id,t.id,'ТЗ готово. Разработчик получит задачу автоматически.','analysis-stage-ready:'+t.id]);
+     VALUES($1,$2,$3,'analysis','Системный аналитик',$6,'handoff',$4,'agent',$5,'resolved') ON CONFLICT(task_id,source_key) DO NOTHING`,
+      [randomUUID(),t.project_id,t.id,evidence?'ТЗ готово. Браузерный исполнитель проверит доступное окружение и создаст артефакты на закреплённом SHA.':'ТЗ готово. Разработчик получит задачу автоматически.','analysis-stage-ready:'+t.id,evidence?'testing':'development']);
    }
   }
   // Interleave projects before applying a bounded scan. A busy project's long

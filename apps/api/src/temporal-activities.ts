@@ -37,6 +37,8 @@ import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
 import {createPeerQuestionResolution} from './modules/agents/application/peer-question-resolution.js';
 import {evaluateQaRun} from './modules/quality/domain/qa-verdict.js';
+import {browserEvidenceAssessment,validEvidenceSha} from './task-evidence.js';
+import {finishTaskEvidenceRun} from './task-evidence-queue.js';
 import {buildKnowledgeContext,type KnowledgeStage} from './knowledge-workflow.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
 
@@ -522,8 +524,10 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  const {projectId,taskId,cycleId,attempt}=args;
  const {task,repo,ai,token,rules,agentSettings}=await jobSettings(projectId,taskId);
  if(!args.simplified&&await pendingAgentQuestions(pool,projectId,taskId))throw ApplicationFailure.nonRetryable('У задачи есть вопросы, на которые необходимо ответить перед тестированием');
+ const evidence=task.execution_mode==='browser_evidence'&&task.implementation_kind==='artifact';
  const reusedBase=task.implementation_kind==='already_implemented'&&!!task.implementation_commit;
- if(!reusedBase&&(!task.pr_url||!task.git_branch))throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
+ if(evidence&&!validEvidenceSha(task.evidence_source_sha))throw ApplicationFailure.nonRetryable('Нет закреплённого SHA для получения артефактов');
+ if(!reusedBase&&!evidence&&(!task.pr_url||!task.git_branch))throw ApplicationFailure.nonRetryable('Нет PR или ветки для тестирования');
  const existing=await pool.query('SELECT id,status FROM ai_test_runs WHERE cycle_id=$1 AND attempt=$2',[cycleId,attempt]);
  if(!existing.rowCount){
   const storedPlan=await readQaPlan(pool,projectId,taskId);
@@ -537,16 +541,20 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   }
   const snapshot={...(testPlan??{cases:[]}),...(args.simplified?{simplified:true}:{}),...(args.singlePass?{singlePass:true,adHoc:!testPlan}:{})};
   let commit=task.spec_reviewed_commit;
-  if(args.singlePass||reusedBase){
+  if(args.singlePass||reusedBase||evidence){
    const branch=task.pr_base_branch||repo.target_branch||repo.default_branch;
-   const url=reusedBase?'/branches/'+encodeURIComponent(branch):'/pulls/'+task.pr_number;
+   const url=evidence?'/commits/'+encodeURIComponent(task.evidence_source_sha):reusedBase?'/branches/'+encodeURIComponent(branch):'/pulls/'+task.pr_number;
    const response=await fetch('https://api.github.com/repos/'+repo.repository+url,{
     headers:{Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'},
     signal:AbortSignal.timeout(20000)
    });
    if(!response.ok)throw Error('GitHub не подтвердил исходный код перед QA: HTTP '+response.status);
    const source=await response.json() as any;
-   if(reusedBase){
+   if(evidence){
+    commit=String(source.sha||'');
+    if(!validEvidenceSha(commit)||commit!==task.evidence_source_sha)
+     throw ApplicationFailure.nonRetryable('Исходный SHA не подтверждён GitHub. Нельзя делать скриншоты другого состояния.');
+   }else if(reusedBase){
     commit=String(source.commit?.sha||'');
     if(!/^[0-9a-f]{40}$/i.test(commit)||commit!==task.implementation_commit)
      throw ApplicationFailure.nonRetryable('Целевая ветка изменилась после подтверждения реализации; требуется повторный анализ');
@@ -562,7 +570,10 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   try{
    await client.query('BEGIN');
    if(args.singlePass||reusedBase){
-    const pinned=reusedBase
+    const pinned=evidence
+     ?await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND execution_mode='browser_evidence' AND implementation_kind='artifact' AND evidence_source_sha=$3",
+      [taskId,projectId,commit,task.spec_version])
+     :reusedBase
      ?await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND implementation_kind='already_implemented' AND implementation_commit=$3",
       [taskId,projectId,commit,task.spec_version])
      :await client.query("UPDATE tasks SET spec_review_status='current',spec_reviewed_version=spec_version,spec_reviewed_commit=$3,spec_review_note='' WHERE id=$1 AND project_id=$2 AND stage='testing' AND spec_version=$4 AND git_branch=$5 AND pr_number=$6",
@@ -586,9 +597,11 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
   role:String(agentSettings.find((s:any)=>s.stage==='testing')?.agent_name||'AI-тестировщик'),
   objective:'Независимо проверь задачу: '+task.title+'\n'+String(task.description||'').slice(0,6500),
   tools:'Изолированная копия репозитория, команды npm/pytest/API, локальный HTTP-сервер и разрешённые MCP-инструменты.',
-  instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules,
+  instructions:(agentSettings.find((s:any)=>s.stage==='testing')?.agent_instructions||'')+'\n'+knowledge.modules+
+   (evidence?'\nЗАДАЧА ПО ПОЛУЧЕНИЮ АРТЕФАКТОВ: не изменяй код, не создавай PR. Запусти именно зафиксированный SHA. Через browser-client.mjs сделай настоящие viewport 1440x900 и 390x844, каждый раз вызови screenshot. Проверь фактический интерфейс и доступные сценарии через browser asserts. Укажи подтверждённый URL/локальный путь и источник среды в отчёте. Не подменяй внешний production URL локальной страницей; если пользователь требует продакшен, а доступен только изолированный локальный браузер, выстави blocked и сообщи нужный доступ. Сохранение скриншотов обязательно, текстовый отчёт не является заменой.':'') ,
   scope:'Репозиторий '+repo.repository+', задача '+taskId+', проверяемый commit '+String(task.spec_reviewed_commit||'')+
-   (reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
+   (evidence?'; режим: только фактические артефакты браузера, PR и изменение кода запрещены':
+    reusedBase?'; режим: уже реализовано в базовой ветке, PR отсутствует, проверяй существующее поведение по ТЗ':''),
   context:'История, новая обратная связь, предыдущие QA:\n'+(await taskHandoffContext(projectId,taskId,'testing')).slice(0,2400)+'\nПравила: '+rules.slice(0,500)+'\nДокументация: '+knowledge.documents.slice(0,650),
   output:'Полный независимый отчёт QA по утверждённым критериям, с реальными доказательствами, дефектами и непроверенными сценариями.'
  };
@@ -596,7 +609,7 @@ export async function startTesting(args:{projectId:string;taskId:string;cycleId:
  await dispatch({id,kind:'test',taskId,projectId,roleCapacity:await roleCapacity(pool,projectId,'testing'),repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,
   token,model:(await resolveRoleAiSettings(pool,projectId,'testing',ai)).model,reasoning:ai.reasoning,maxRuntimeSeconds:900,
   title:task.title,description:task.description,agentPrompt:qaPrompt,agentPromptZones:agentPromptZones(qaPromptParts),projectRules:'',testPlan:record.qa_plan_snapshot,
-  expectedCommit:record.runner_commit_sha,branch:reusedBase?task.pr_base_branch||repo.target_branch||repo.default_branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
+  expectedCommit:record.runner_commit_sha,checkoutCommit:evidence?task.evidence_source_sha:undefined,branch:reusedBase||evidence?task.pr_base_branch||repo.target_branch||repo.default_branch:task.git_branch,knowledgeContext:'',handoffContext:'',agentName:'',agentInstructions:''});
  await pool.query("UPDATE ai_test_runs SET status='running',message='AI-тестировщик проверяет изменения' WHERE id=$1 AND status IN ('queued','running')",[id]);
  await event(projectId,id,'testing','started','Тестирование в отдельной рабочей копии репозитория');
  return id;
@@ -634,10 +647,19 @@ export async function checkTesting(args:{projectId:string;taskId:string;testId:s
   const singlePass=snapshot?.singlePass===true;
   if(singlePass&&status==='completed'&&remote.executionVerified!==true)
    return failRunnerRun('testing',projectId,testId,'Runner не подтвердил исполнение проверок. Обновите Codex Runner и повторите QA.');
-  const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
-  const {adHoc,cases,checked,verdict,outcome,report}=evaluateQaRun({
+  const currentSpec=await pool.query('SELECT spec_version,spec_review_status,spec_reviewed_version,spec_reviewed_commit,execution_mode,evidence_source_sha FROM tasks WHERE id=$1 AND project_id=$2',[row.rows[0].task_id,projectId]);
+  const assessed=evaluateQaRun({
    snapshot,remote,status,message,qaSpecVersion:row.rows[0].qa_spec_version,currentSpec
   });
+  const {adHoc,cases,checked,outcome,report}=assessed;
+  let verdict=assessed.verdict;
+  if(currentSpec.rows[0]?.execution_mode==='browser_evidence'&&verdict==='passed'){
+   const proof=browserEvidenceAssessment(report,String(currentSpec.rows[0].evidence_source_sha||''));
+   if(!proof.passed){
+    verdict='blocked';
+    report.summary=String(report.summary||'').slice(0,1200)+' · Артефакты не подтверждены: '+proof.reason;
+   }
+  }
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -699,13 +721,27 @@ export async function noteBlockedTests(args:{projectId:string;taskId:string;test
 export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw ApplicationFailure.nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
- const verified=await pool.query(`SELECT t.implementation_kind,t.implementation_commit,r.report
+ const verified=await pool.query(`SELECT t.implementation_kind,t.implementation_commit,t.execution_mode,t.evidence_source_sha,r.report
   FROM ai_test_runs r JOIN tasks t ON t.id=r.task_id
   WHERE r.id=$1 AND r.project_id=$2 AND r.task_id=$3 AND r.status='completed'
    AND r.verdict='passed' AND r.report->>'commit' IS NOT NULL
    AND r.qa_spec_version=t.spec_version`,[testId,projectId,taskId]);
  if(!verified.rowCount)throw ApplicationFailure.nonRetryable('Нет успешного независимого QA для текущей версии требований');
  const result=verified.rows[0];
+ if(result.execution_mode==='browser_evidence'&&result.implementation_kind==='artifact'){
+  const proof=browserEvidenceAssessment(result.report,result.evidence_source_sha);
+  if(!proof.passed)throw ApplicationFailure.nonRetryable('Отсутствуют подлинные артефакты: '+proof.reason);
+  const updated=await pool.query(`UPDATE tasks SET stage='done',test_feedback='',updated_at=now()
+   WHERE id=$1 AND project_id=$2 AND stage='testing'
+    AND execution_mode='browser_evidence' AND implementation_kind='artifact'
+    AND evidence_source_sha=$3 AND spec_version=$4 RETURNING id`,
+   [taskId,projectId,result.evidence_source_sha,result.report.spec_version]);
+  if(!updated.rowCount)throw ApplicationFailure.nonRetryable('Задача или исходный SHA изменились после проверки');
+  await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'evidence_verified',$3)",
+   [randomUUID(),taskId,'Фактические desktop/mobile скриншоты получены и проверены на SHA '+result.evidence_source_sha+'. PR, merge и деплой пропущены как неприменимые.']);
+  await event(projectId,testId,'testing','evidence_verified','Сохранены и проверены реальные артефакты без изменения кода');
+  return;
+ }
  if(result.implementation_kind==='already_implemented'){
   const sha=String(result.implementation_commit||'');
   const report=result.report||{};
@@ -965,6 +1001,11 @@ export async function failProjectSpecification(jobId:string):Promise<void>{
  if(result.rowCount)await event(result.rows[0].project_id,jobId,'document_import','failed','Процесс аналитика прерван','error');
 }
 
+export async function finishEvidenceTask(args:{
+ projectId:string;taskId:string;runId:string;status:'completed'|'blocked'|'failed';message:string
+ }){
+ return finishTaskEvidenceRun(pool,args);
+}
 export async function runSelfHostedQualityGates(args:{projectId:string;taskId:string;runId:string}){
  const timer=setInterval(()=>heartbeat(),12000);
  try{

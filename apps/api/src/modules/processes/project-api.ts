@@ -110,6 +110,16 @@ app.post('/api/projects/:id/processes/:processId/stop',async(req:any,reply)=>{
   await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail) VALUES($1,$2,$3,'development','cancelled','Разработка остановлена пользователем')",[randomUUID(),id,processId]);
   return {ok:true,status:'cancelled'};
  }
+ const evidence=await pool.query("UPDATE task_evidence_runs SET status='cancelled',message='Прервано пользователем',updated_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','dispatching','running') RETURNING task_id",[id,processId]);
+ if(evidence.rowCount){
+  const current=await pool.query("UPDATE ai_test_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND cycle_id=$2 AND status IN ('queued','running') RETURNING id",[id,processId]);
+  for(const row of current.rows)await cancelRunner(row.id);
+  await cancelWorkflow('task-evidence-'+processId);
+  await releaseTaskOrchestration(pool,id,evidence.rows[0].task_id,processId);
+  await pool.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,task_id) VALUES($1,$2,$3,'testing','cancelled','Получение браузерных артефактов остановлено пользователем',$4)",
+   [randomUUID(),id,processId,evidence.rows[0].task_id]);
+  return {ok:true,status:'cancelled'};
+ }
  const test=await pool.query("UPDATE ai_test_runs SET status='cancelled',message='Прервано пользователем',completed_at=now() WHERE project_id=$1 AND id=$2 AND status IN ('queued','running') RETURNING task_id,cycle_id",[id,processId]);
  if(test.rowCount){
   await cancelRunner(processId);

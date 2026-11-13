@@ -23,6 +23,7 @@ import {initAutomaticDeployment} from '../deployment-automation.js';
 import {installProjectTeamSchema} from '../project-team.js';
 import {installEpicStageSync,backfillLegacyEpicStages} from '../epic-stage-sync.js';
 import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-first-gate.js';
+import {installTaskEvidenceSchema} from '../task-evidence.js';
 
 /**
  * Append-only, transactional schema history.
@@ -124,6 +125,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
     await repairLegacyAnalysisStates(database);
     await installAnalysisFirstGate(database);
    }
+  },
+  {
+   version:12,name:'non-code-task-evidence-execution',
+   checksum:'ado-task-evidence-v12',
+   up:database=>installTaskEvidenceSchema(database)
   }
  ];
 }

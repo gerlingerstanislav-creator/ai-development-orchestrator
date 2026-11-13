@@ -56,6 +56,14 @@ test('Runner jobs keep the existing accepted kinds, bounds and basic identity',(
   assert.equal(runnerJobRequestError({...validJob,model}),null);
 });
 
+test('only test jobs can pin browser evidence checkouts, with matching verified commit',()=>{
+ const sha='f'.repeat(40);
+ assert.equal(runnerJobRequestError({...validJob,kind:'test',expectedCommit:sha,checkoutCommit:sha}),null);
+ assert.equal(runnerJobRequestError({...validJob,kind:'test',expectedCommit:sha,checkoutCommit:'0'.repeat(40)}),'Некорректные параметры задачи');
+ assert.equal(runnerJobRequestError({...validJob,kind:'review',expectedCommit:sha,checkoutCommit:sha}),'Некорректные параметры задачи');
+ assert.equal(runnerJobRequestError({...validJob,kind:'test',checkoutCommit:'main'}),'Некорректные параметры задачи');
+});
+
 test('unsupported kind retains distinct 400 error, not generic malformed job error',()=>{
  assert.equal(runnerJobRequestError({...validJob,kind:'destroy-everything'}),'Недопустимый тип задания');
  assert.equal(runnerJobRequestError({...validJob,kind:'ci',expectedCommit:'wrong'}),'Некорректные параметры задачи');

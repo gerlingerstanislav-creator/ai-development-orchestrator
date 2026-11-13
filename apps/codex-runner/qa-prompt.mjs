@@ -18,6 +18,7 @@ export function buildQaPrompt(job,{singlePass=false,adHoc=false,browserAvailable
   context:limited(job.agentPrompt||job.handoffContext,2200),
   scope:job.repository+'; task '+job.taskId
  };
+ const evidenceMode=typeof job.checkoutCommit==='string';
  const tools=[
   'Репозиторий доступен для чтения и запуска тестов без записи в GitHub. MCP orchestrator: tasks.read, knowledge.search/section, agents.consult, blockers.list/report/resolve.',
   'Справочник команд и ограничений: .ado-qa-tools.md — читай только нужные разделы.',
@@ -25,12 +26,14 @@ export function buildQaPrompt(job,{singlePass=false,adHoc=false,browserAvailable
   browserAvailable
    ?'Визуальные проверки: node /opt/codex-runner/browser-client.mjs start; node /opt/codex-runner/browser-client.mjs inspect; затем node /opt/codex-runner/browser-client.mjs assert --case CASE_ID "JS-условие" для каждого визуального критерия.'
    :'Браузерный сервис недоступен. Не объявляй визуальные проверки успешными.',
+  evidenceMode?'Это получение браузерных артефактов. Обязательно выполни browser-client.mjs viewport 1440 900; browser-client.mjs screenshot; затем viewport 390 844; browser-client.mjs screenshot. Отметь в отчёте реальный локальный путь или URL и условия среды. Не создавай ложных снимков и не подменяй production локальным стендом.':'',
   'План: .ado-qa-plan.json; схема ответа проверяется самим Runner.'
  ].join('\n');
  const protocol=[
   'Сначала прочитай актуальное состояние задачи через orchestrator.tasks.read; затем выполни доступные проверки требований и предъяви реальные доказательства по каждому кейсу. Для каждого подтверждённого результата необходима запись выполнения команды или браузерный assert с тем же case_id.',
   adHoc?'Тест-план пуст: самостоятельно выбери до 20 проверок по ТЗ, используй ID qa-1, qa-2 и т.д. и понятные названия.':'Прочитай .ado-qa-plan.json и обработай каждый case_id из плана.',
   'Пройденные проверки прежнего запуска можно учитывать только если подтверждён тот же SHA, требования не изменились и есть проверяемые доказательства; иначе перепроверь.',
+  evidenceMode?'Нельзя объявлять успех без двух настоящих JPEG-скриншотов, desktop и mobile, и проверок реального интерфейса. Если сайт не запускается из текущего репозитория/окружения или требуемый production недоступен, зафиксируй конкретный блокер и необходимые условия.':'',
   'Невозможность проверки означает blocked/not_run, не passed. Ошибка инструмента или установки зависимостей не является дефектом приложения. Реально воспроизводимый дефект — failed.',
   browserAvailable?'Если Chromium не открыл страницу при подготовке, сделай одну обоснованную повторную попытку после проверки пути/сборки; затем зафиксируй заблокированные браузерные кейсы.':'Проводи невизуальные проверки, не устанавливай отдельный Chromium в sandbox.'
  ].join('\n');
