@@ -20,6 +20,8 @@ const createDoc=z.object({title:z.string().trim().min(1).max(200),body:z.string(
  idempotency_key:z.string().min(8).max(120).optional()});
 const updateDoc=z.object({document_id:uuid,expected_revision:z.string().datetime({offset:true}),title:z.string().trim().min(1).max(200).optional(),body:z.string().max(100000).optional(),parent_id:uuid.optional(),
  idempotency_key:z.string().min(8).max(120).optional()});
+const deleteDoc=z.object({document_id:uuid,expected_revision:z.string().datetime({offset:true}),
+ idempotency_key:z.string().min(8).max(120).optional()});
 const revision=(value:unknown)=>new Date(value as string).toISOString();
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
 async function parentExists(db:Pick<Pool,'query'>,projectId:string,id:string){
@@ -52,6 +54,28 @@ async function updatePage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<
   [projectId,params.document_id,title,params.body??old.body,parent]);
  return {id:params.document_id,revision:revision(updated.rows[0].updated_at)};
 }
+/** Only disposable unsourced leaf placeholders can be deleted.
+ * MCP route persists the deletion and audit in the same transaction. */
+async function deleteEmptyPage(db:Pick<Pool,'query'>,projectId:string,params:z.infer<typeof deleteDoc>){
+ const old=(await db.query(
+  'SELECT id,body,system_key,import_source,source_refs,updated_at FROM documents WHERE id=$1 AND project_id=$2 FOR UPDATE',
+  [params.document_id,projectId])).rows[0];
+ if(!old)throw rejected('Страница не найдена',404);
+ if(old.system_key)throw rejected('Системные разделы удалять нельзя');
+ if(revision(old.updated_at)!==revision(params.expected_revision))
+  throw rejected('Страница изменилась. Получи новую revision через documents.read.');
+ if(String(old.body||'').trim())throw rejected('Нельзя удалить страницу с содержимым. Сначала перенеси и проверь информацию в выбранной структуре.');
+ if(old.import_source||(Array.isArray(old.source_refs)&&old.source_refs.length))
+  throw rejected('Нельзя удалить страницу, связанную с импортированными источниками.');
+ if((await db.query('SELECT 1 FROM documents WHERE project_id=$1 AND parent_id=$2 LIMIT 1',[projectId,params.document_id])).rowCount)
+  throw rejected('Нельзя удалить страницу с дочерними документами. Сначала перенеси их.');
+ if((await db.query('SELECT 1 FROM tasks WHERE project_id=$1 AND document_id=$2 LIMIT 1',[projectId,params.document_id])).rowCount)
+  throw rejected('Страница привязана к задачам. Сначала обнови эти связи.');
+ if((await db.query('SELECT 1 FROM document_versions WHERE document_id=$1 LIMIT 1',[params.document_id])).rowCount)
+  throw rejected('У страницы есть история версий. Удаление может уничтожить данные.');
+ await db.query('DELETE FROM documents WHERE project_id=$1 AND id=$2',[projectId,params.document_id]);
+ return {id:params.document_id,deleted:true};
+}
 export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSession,name:string,args:unknown,
  _startWorkflow:(jobId:string)=>Promise<void>,
  readSource?:(projectId:string,actorId:string,path?:string,commit?:string)=>Promise<unknown>):Promise<unknown>{
@@ -79,7 +103,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    [projectId,document_ids]);
   if(records.rowCount!==document_ids.length)throw rejected('Не все документы результата существуют и содержат текст');
   const events=await pool.query(`SELECT e.tool,e.result FROM agent_tool_events e JOIN agent_sessions s ON s.id=e.session_id
-   WHERE s.project_id=$1 AND s.process_id=$2 AND e.success=true AND e.tool IN ('documents.create','documents.update','documents.changeset')`,
+   WHERE s.project_id=$1 AND s.process_id=$2 AND e.success=true AND e.tool IN ('documents.create','documents.update','documents.delete','documents.changeset')`,
    [projectId,session.process_id]);
   const writes=events.rows.reduce((n:number,row:any)=>n+(row.tool==='documents.changeset'
    ?(Array.isArray(row.result?.changed)?row.result.changed.length:0):1),0);
@@ -366,7 +390,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {project:p.rows[0],workflow:stages.rows.map(stage=>({...stage,responsibility:workflowResponsibility(stage.stage)})),rules:rules.rows.map(r=>r.body),github:github.rows[0]||null};
  }
  case 'documents.list':{
-  const r=await pool.query('SELECT id,title,parent_id,system_key,updated_at,import_source FROM documents WHERE project_id=$1 ORDER BY title LIMIT 400',[projectId]);
+  const r=await pool.query('SELECT d.id,d.title,d.parent_id,d.system_key,d.updated_at,d.import_source,length(btrim(d.body))::int AS content_length,(SELECT count(*)::int FROM documents child WHERE child.project_id=d.project_id AND child.parent_id=d.id) AS child_count FROM documents d WHERE d.project_id=$1 ORDER BY d.title LIMIT 400',[projectId]);
   return {documents:r.rows.map(d=>({...d,revision:revision(d.updated_at)}))};
  }
  case 'documents.read':{
@@ -394,15 +418,18 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const values=updateDoc.parse(params);
   return updatePage(pool,projectId,values);
  }
+ case 'documents.delete':return deleteEmptyPage(pool,projectId,deleteDoc.parse(params));
  case 'documents.changeset':{
   const {operations}=z.object({operations:z.array(z.discriminatedUnion('op',[
    createDoc.extend({op:z.literal('create')}),
-   updateDoc.extend({op:z.literal('update')})
+   updateDoc.extend({op:z.literal('update')}),
+   deleteDoc.extend({op:z.literal('delete')})
   ])).min(1).max(40)}).parse(params);
   const changed=[];
   for(const operation of operations){
    if(operation.op==='create')changed.push(await createPage(pool,projectId,operation));
-   else changed.push(await updatePage(pool,projectId,operation));
+   else if(operation.op==='update')changed.push(await updatePage(pool,projectId,operation));
+   else changed.push(await deleteEmptyPage(pool,projectId,operation));
   }
   return {changed};
  }
