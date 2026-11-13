@@ -115,8 +115,8 @@ const specialistTools=new Set([...readerTools,'agents.consult','blockers.report'
 const documentationTools=new Set([...readerTools,'documents.list','documents.create','documents.update','documents.changeset','documentation.complete','documentation.request_input']);
 /** Business analysts own product knowledge, not the executable backlog. A handoff
  * requires an explicit authenticated user action outside the model tool catalog. */
-const BA_DENIED=new Set(['project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
-const PM_DENIED=new Set(['documents.create','documents.update','documents.changeset','questions.create']);
+const BA_DENIED=new Set(['documentation.complete','documentation.request_input','documentation.resume_spec','project.agents.start','tasks.delete','tasks.cancel','tasks.close','tasks.request_owner_question_cleanup','questions.create','iterations.recommend_launch','iterations.launch','tasks.update_dependency','workflow.move_task']);
+const PM_DENIED=new Set(['documentation.complete','documentation.request_input','documents.create','documents.update','documents.changeset','questions.create']);
 export function toolsForRole(role:AgentRole,readOnly=false){
  if(readOnly)return agentToolCatalog.filter(tool=>readerTools.has(tool.name));
  if(role==='documentation')return agentToolCatalog.filter(tool=>documentationTools.has(tool.name));
