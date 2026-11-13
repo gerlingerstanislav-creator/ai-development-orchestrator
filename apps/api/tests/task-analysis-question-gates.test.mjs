@@ -20,7 +20,7 @@ test('technical consultations do not deadlock analysis, while real owner questio
    type text DEFAULT 'task',stage text DEFAULT 'analysis',
    analysis_state text DEFAULT 'new',spec_version int DEFAULT 1,
    spec_review_status text NOT NULL DEFAULT 'current',spec_reviewed_version int NOT NULL DEFAULT 1,
-   pr_url text,git_branch text,
+   pr_url text,git_branch text,execution_mode text NOT NULL DEFAULT 'code',evidence_source_sha text,implementation_kind text,implementation_commit text,
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,
    updated_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,
