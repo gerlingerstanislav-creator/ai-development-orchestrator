@@ -17,7 +17,7 @@ export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>
      RAISE EXCEPTION 'Аналитик не завершил уточнение требований до разработки' USING ERRCODE='23514';
     END IF;
     IF NOT EXISTS (
-     SELECT 1 FROM task_events e WHERE e.task_id=NEW.id AND e.event='analysis_completed'
+     SELECT 1 FROM task_events e WHERE e.task_id=NEW.id AND e.event IN ('analysis_completed','analysis_reused_by_owner')
     ) AND NOT EXISTS (
      SELECT 1 FROM agent_analysis_runs r WHERE r.task_id=NEW.id AND r.status='completed'
     ) THEN
