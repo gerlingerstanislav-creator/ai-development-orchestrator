@@ -71,6 +71,7 @@ jobs:
           node --test --test-concurrency=1 apps/api/tests/*.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
           node --import tsx --test apps/web/tests/feature-boundaries.test.mjs
+          node --import tsx --test apps/web/tests/task-timeline.test.mjs
           node --import tsx --test apps/web/tests/kanban-board.test.mjs
           node --import tsx --test apps/web/tests/task-live-state.test.mjs
           node --import tsx --test apps/web/tests/process-center.test.mjs
