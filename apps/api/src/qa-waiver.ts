@@ -88,10 +88,11 @@ export function registerQaWaiverRoutes(app:FastifyInstance,{pool,access,requireA
   const {id,taskId}=routeParams.parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
   const body=z.object({test_run_id:z.string().uuid(),justification:z.string().trim().min(20).max(3000),acknowledge_unverified:z.literal(true)}).parse(req.body);
-  const connection=await pool.query('SELECT t.stage,t.spec_version,t.spec_review_status,t.spec_reviewed_version,t.spec_reviewed_commit,t.pr_number,g.repository,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2',[taskId,id,uid(req)]);
+  const connection=await pool.query('SELECT t.stage,t.execution_mode,t.spec_version,t.spec_review_status,t.spec_reviewed_version,t.spec_reviewed_commit,t.pr_number,g.repository,c.secret_encrypted FROM tasks t JOIN project_git_repositories g ON g.project_id=t.project_id JOIN connections c ON c.id=g.connection_id AND c.owner_id=$3 WHERE t.id=$1 AND t.project_id=$2',[taskId,id,uid(req)]);
   if(!connection.rowCount)return reply.code(404).send({error:'Задача или GitHub-подключение не найдены'});
   const task=connection.rows[0];
   if(task.stage!=='testing')return reply.code(409).send({error:'Решение доступно только на этапе тестирования'});
+   if(task.execution_mode==='browser_evidence')return reply.code(409).send({error:'Нельзя заменять подтверждённые скриншоты согласованием пропущенных проверок'});
   if(await pendingAgentQuestions(pool,id,taskId))return reply.code(409).send({error:'Сначала ответь на вопросы агентов, затем согласуй исключения по тестам'});
   const latest=await latestQaWaiver(pool,id,taskId);
   if(latest.run_id!==body.test_run_id||!latest.assessment.eligible)
