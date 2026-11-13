@@ -24,16 +24,15 @@ import {initEpicStageSync} from './epic-stage-sync.js';
 import {initAnalysisFirstGate} from './analysis-first-gate.js';
 import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-stage-operations.js';
 import {startDiagnosticRetention,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
-import {initCloudDiagnosticsSchema,registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
+import {registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
 import Fastify from 'fastify';
 import {recoverInterruptedLegacyMergeBatches,recoverMergeBatches} from './merge-batch.js';
 import {registerMergeOperationsRoutes} from './modules/execution/api/merge-operations.js';
-import {initAutomaticDeployment,registerAutomaticDeploymentRoutes} from './deployment-automation.js';
+import {registerAutomaticDeploymentRoutes} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {registerChatImageRoutes} from './chat-images.js';
 import {registerProjectIterationRoutes} from './project-iterations.js';
 import {resolveRoleAiSettings} from './project-team.js';
-import {initAgentToolsSchema} from './agent-tools.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import {authorizePmDestructiveSource} from './pm-source-authorization.js';
 import {registerProjectTeamRoutes,initProjectTeamSchema} from './project-team.js';
@@ -45,8 +44,8 @@ import {failProjectManagerInbox,publishOwnerQuestionsToPmChat,pmInboxWorkflowId,
 import {registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
 import {registerKnowledgeDocumentUpdateRoutes} from './knowledge-document-updates.js';
-import { initQaSchema,registerQaRoutes } from './qa.js';
-import {initQaWaiverSchema,registerQaWaiverRoutes} from './qa-waiver.js';
+import {registerQaRoutes} from './qa.js';
+import {registerQaWaiverRoutes} from './qa-waiver.js';
 import {registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {registerTaskCancellationRoutes} from './task-cancellation.js';
 import {enqueueDevelopment,reconcileAgentWorkQueue,reconcileLegacyAgentWorkQueue} from './agent-work-scheduler.js';
@@ -558,7 +557,7 @@ async function main(){
  // These are runtime policies, not schema migrations: run on every restart.
  // Preserve the project's durable agents_running choice across deployments.
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
-await initEpicStageSync(pool);await startDiagnosticRetention(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await reconcileLegacyAgentWorkQueue(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+await initEpicStageSync(pool);await startDiagnosticRetention(pool);await reconcileLegacyAgentWorkQueue(pool);await initProjectTeamSchema(pool);await initAnalysisFirstGate(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
   pool,path=>agentCall(path),
