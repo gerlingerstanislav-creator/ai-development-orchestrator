@@ -44,8 +44,9 @@ export function mergeDevopsInstructions(specialist:string,stage:string,historica
 }
 
 /** Data migrations are additive: existing workflow and specialist instructions remain the source of truth. */
-export async function initProjectTeamSchema(pool:Pool){
- await pool.query(`
+/** Schema only; append-only v10 migration installs this once. */
+export async function installProjectTeamSchema(db:Pick<Pool,'query'>){
+ await db.query(`
  CREATE TABLE IF NOT EXISTS project_conversation_agents(
   project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   role text NOT NULL CHECK(role IN ('manager','analyst')),
@@ -99,6 +100,15 @@ export async function initProjectTeamSchema(pool:Pool){
  ALTER TABLE project_agent_models ADD CONSTRAINT project_agent_models_role_check CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops','architect'));
  ALTER TABLE project_role_capacity DROP CONSTRAINT IF EXISTS project_role_capacity_role_check;
  ALTER TABLE project_role_capacity ADD CONSTRAINT project_role_capacity_role_check CHECK(role IN ('manager','analyst','analysis','development','testing','documentation','devops','architect'));
+
+ `);
+}
+
+/** Repeatable project/profile policy: seeds new projects and migrates untouched
+ * built-in defaults without overwriting owner-edited instructions or names.
+ */
+export async function reconcileProjectTeamProfiles(pool:Pool){
+ await pool.query(`
  INSERT INTO project_specialist_agents(project_id,role,agent_name,agent_instructions)
  SELECT id,'architect','Архитектор платформы','' FROM projects ON CONFLICT(project_id,role) DO NOTHING;
  INSERT INTO project_conversation_agents(project_id,role,agent_name,agent_instructions)
@@ -183,6 +193,12 @@ export async function initProjectTeamSchema(pool:Pool){
   }catch(error){await client.query('ROLLBACK').catch(()=>{});throw error;}finally{client.release();}
  }
 }
+/** Compatibility for isolated callers migrating old instances directly. */
+export async function initProjectTeamSchema(pool:Pool){
+ await installProjectTeamSchema(pool);
+ await reconcileProjectTeamProfiles(pool);
+}
+
 export async function conversationInstructions(pool:Pick<Pool,'query'>,projectId:string,role:'manager'|'analyst'){
  const row=(await pool.query(role==='analyst'?'SELECT agent_name,agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage=$2':'SELECT agent_name,agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role=$2',[projectId,role==='analyst'?'analysis':role])).rows[0];
  if(!row)return '';
