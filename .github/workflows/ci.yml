@@ -70,6 +70,7 @@ jobs:
           node --test apps/api/tests/codex-admin-api.test.mjs
           node --test apps/api/tests/ai-settings-api.test.mjs
           node --test apps/api/tests/project-git-binding.test.mjs
+          node --test apps/api/tests/pr-evidence-reader.test.mjs
           node --test apps/api/tests/connections-api.test.mjs
           node --test apps/api/tests/connection-settings.test.mjs
           node --test apps/api/tests/merge-operations-api.test.mjs
