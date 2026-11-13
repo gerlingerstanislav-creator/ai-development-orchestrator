@@ -634,7 +634,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    if(session.task_id){
     const process=await pool.query(`SELECT id FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
      UNION ALL SELECT id FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
-     UNION ALL SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND id=$3`,[projectId,session.task_id,process_id]);
+     UNION ALL SELECT id FROM requirement_review_runs WHERE project_id=$1 AND task_id=$2 AND id=$3
+     UNION ALL SELECT id FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND id=$3`,[projectId,session.task_id,process_id]);
     if(!process.rowCount)throw rejected('Процесс не найден в задаче',404);
    }
    const test=(await pool.query('SELECT id,task_id,status,verdict,report,qa_plan_snapshot FROM ai_test_runs WHERE project_id=$1 AND id=$2',[projectId,process_id])).rows[0];
@@ -646,14 +647,15 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    const events=await pool.query('SELECT stage,detail,created_at FROM process_events WHERE project_id=$1 AND process_id=$2 ORDER BY created_at DESC LIMIT 20',[projectId,process_id]);
    return {process_id,events:events.rows};
   }
-  const [a,b,queue,testing,reviews]=await Promise.all([
+  const [a,b,queue,testing,reviews,assignments]=await Promise.all([
    pool.query('SELECT id,status,message,created_at,updated_at FROM document_import_jobs WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 30',[projectId]),
    pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM ai_task_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
    readDevelopmentQueue(pool,projectId),
    pool.query('SELECT id,task_id,status,verdict,message,created_at,completed_at FROM ai_test_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
-   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM requirement_review_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null])
+   pool.query('SELECT id,task_id,status,message,created_at,completed_at FROM requirement_review_runs WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 30',[projectId,task_id??null]),
+   pool.query('SELECT id,task_id,role,status,objective,result,evidence,created_at,updated_at FROM agent_work_assignments WHERE project_id=$1 AND ($2::uuid IS NULL OR task_id=$2) ORDER BY created_at DESC LIMIT 50',[projectId,task_id??null])
   ]);
-  return {documentation:task_id?[]:a.rows,development:b.rows,testing:testing.rows,requirements:reviews.rows,development_queue:queue.filter(row=>!task_id||row.task_id===task_id).map(({task_id,display_number,title,status,reason,detail})=>({task_id,display_number,title,status,reason,detail}))};
+  return {documentation:task_id?[]:a.rows,development:b.rows,testing:testing.rows,requirements:reviews.rows,assignments:assignments.rows,development_queue:queue.filter(row=>!task_id||row.task_id===task_id).map(({task_id,display_number,title,status,reason,detail})=>({task_id,display_number,title,status,reason,detail}))};
  }
  case 'processes.report':{
   const {stage,message}=z.object({stage:z.string().trim().min(2).max(80),message:z.string().trim().min(3).max(2000)}).parse(params);
