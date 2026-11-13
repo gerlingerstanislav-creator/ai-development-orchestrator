@@ -105,6 +105,18 @@ export async function reviewWork(db:Db,input:{
  if(input.action==='accept'){
   if(row.status!=='submitted'||!row.evidence.trim()||row.spec_version!==row.actual_version)
    throw fail('Нельзя принять непроверенное или устаревшее поручение');
+  // A parent cannot be accepted while a delegated specialist still owns work.
+  // Check the whole descendant tree, not only immediate children.
+  const pending=await db.query(`WITH RECURSIVE descendants AS (
+   SELECT id,status FROM agent_work_assignments
+    WHERE parent_id=$1 AND project_id=$2 AND task_id=$3
+   UNION ALL
+   SELECT child.id,child.status FROM agent_work_assignments child
+    JOIN descendants parent ON child.parent_id=parent.id
+    WHERE child.project_id=$2 AND child.task_id=$3
+  ) SELECT 1 FROM descendants WHERE status NOT IN ('completed','cancelled') LIMIT 1`,
+   [row.id,input.projectId,row.task_id]);
+  if(pending.rowCount)throw fail('Нельзя принять поручение, пока делегированная работа не завершена');
   target='completed';
  }else if(input.action==='retry'){
   if(!['blocked','failed','submitted'].includes(row.status)||row.attempts>=4)throw fail('Повтор пока невозможен');
