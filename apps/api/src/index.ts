@@ -24,7 +24,6 @@ import Fastify from 'fastify';
 import {createMergeService} from './merge-service.js';
 import {createMergeBatch,initMergeBatches,readMergeBatch,recoverMergeBatches} from './merge-batch.js';
 import {initAutomaticDeployment,registerAutomaticDeploymentRoutes} from './deployment-automation.js';
-import {initQualityGateSchema} from './quality-gates.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {initChatImages,registerChatImageRoutes} from './chat-images.js';
 import {initProjectIterations,registerProjectIterationRoutes} from './project-iterations.js';
@@ -36,7 +35,7 @@ import { registerKnowledgeRoutes } from './knowledge.js';
 import {registerDocumentationResetRoutes} from './documentation-reset.js';
 import {registerSafeTaskDeletion} from './task-deletion.js';
 import {registerBusinessAnalystHandoff} from './business-analyst-handoff.js';
-import {failProjectManagerInbox,initProjectManagerInbox,publishOwnerQuestionsToPmChat,pmInboxWorkflowId,registerProjectManagerInbox} from './project-manager-inbox.js';
+import {failProjectManagerInbox,publishOwnerQuestionsToPmChat,pmInboxWorkflowId,registerProjectManagerInbox} from './project-manager-inbox.js';
 import {registerKnowledgeContextRoutes} from './knowledge-context.js';
 import {registerKnowledgeWorkflowRoutes} from './knowledge-workflow-routes.js';
 import {registerKnowledgeDocumentUpdateRoutes} from './knowledge-document-updates.js';
@@ -46,7 +45,7 @@ import {initRequirementsSchema,saveSpecRevision,updateCurrentSpecification} from
 import {registerTaskAgentNotesRoutes,pendingAgentQuestions} from './task-agent-notes.js';
 import {readAgentActivity} from './task-agent-activity.js';
 import {initTaskCancellationSchema,registerTaskCancellationRoutes} from './task-cancellation.js';
-import {initTaskOrchestrationSchema,acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
+import {acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import {enqueueDevelopment,reconcileAgentWorkQueue} from './agent-work-scheduler.js';
 import {reconcileAgentPeerQueue} from './agent-peer-queue.js';
 import {reconcileTaskAnalysisQueue} from './task-analysis-queue.js';
@@ -1025,7 +1024,7 @@ async function main(){
  // These are runtime policies, not schema migrations: run on every restart.
  await pauseAllProjectAgents(pool);
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
-await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initQualityGateSchema(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initTaskOrchestrationSchema(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initProjectManagerInbox(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+await initEpicStageSync(pool);await initDiagnosticSchema(pool);await initCloudDiagnosticsSchema(pool);await initAutomaticDeployment(pool);await initProjectIterations(pool);await initAgentToolsSchema(pool);await initProjectTeamSchema(pool);await initQaSchema(pool);await initRequirementsSchema(pool);await initQaWaiverSchema(pool);await initAnalysisFirstGate(pool);await initTaskCancellationSchema(pool);await initProjectManagerSchema(pool);await initChatImages(pool);await initMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
   pool,path=>agentCall(path),
