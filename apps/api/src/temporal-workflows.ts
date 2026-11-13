@@ -62,6 +62,17 @@ export async function analyzeTaskStage(runId:string):Promise<void>{
  await waitForProjectAgents({runId,kind:'analysis'});
  await steps.runTaskStageAnalysis(runId);
 }
+/** New workflow name preserves replay of all existing cycles. */
+export async function executeDelegatedWork(assignmentId:string):Promise<void>{
+ try{
+  const {projectId}=await steps.delegatedWorkScope(assignmentId);
+  await waitForProjectAgents({projectId});
+  await steps.runDelegatedWork(assignmentId);
+ }catch(error){
+  await steps.failDelegatedWork(assignmentId,String(error));
+ }
+}
+
 export async function processPeerQuestionWork(noteId:string):Promise<void>{
  try{await waitForProjectAgents({runId:noteId,kind:'peer'});await steps.runPeerQuestionWork(noteId);}
  catch(error){await steps.failPeerQuestionWork(noteId,String(error));}
