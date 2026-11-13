@@ -210,8 +210,8 @@ test('scoped MCP agent tools: migration, auth, document writes, rollback, idempo
     assert.ok(readerCatalog.some(tool=>tool.name==='blockers.report'&&!tool.annotations.readOnlyHint),
      'Task-scoped specialists can record verified blockers');
     assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint||
-     ['agents.consult','blockers.report','blockers.resolve','processes.report'].includes(tool.name)),
-     'Scoped specialists may mutate only consultation, blockers and process reports');
+     ['agents.consult','work.delegate','work.report','blockers.report','blockers.resolve','processes.report'].includes(tool.name)),
+     'Scoped specialists may only mutate task-bound consultations, assignments, blockers and process reports');
    }else assert.ok(readerCatalog.every(tool=>tool.annotations.readOnlyHint),'Reader session must be read-only');
   assert.ok(readerCatalog.some(tool=>tool.name==='knowledge.section'));
   assert.equal((await callReader('documents.update',{document_id:docId,body:'Чужое изменение'})).statusCode,403);
