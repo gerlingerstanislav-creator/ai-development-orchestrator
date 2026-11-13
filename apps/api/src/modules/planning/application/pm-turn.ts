@@ -14,19 +14,22 @@ type ActionOrder={
  projectId:string;messageId:string;actorId:string;topicId:string|null;
  summary:string;events:readonly PmToolEvent[];delegated?:boolean
 };
+type PmDiagnosticStage='turn_started'|'runner_request'|'runner_response'|'turn_completed'|'retry_scheduled'|'turn_failed';
 type PmTurnPorts={
  ensureProjectManagerActionOrder:(db:Pick<Pool,'query'>,args:ActionOrder)=>Promise<string|null>;
  shouldCreateProjectManagerOrder:(events:readonly PmToolEvent[],delegated?:boolean)=>boolean;
  failProjectManagerInbox:(db:Pick<Pool,'query'>,projectId:string,messageId:string,attempt:number)=>Promise<void>;
+ recordDiagnostic:(db:Pick<Pool,'query'>,args:{projectId:string;messageId:string;orderId:string|null;attempt:number;stage:PmDiagnosticStage;level:'info'|'warning'|'error';error?:unknown;statusCode?:number;sessionId:string|null;elapsedMs:number})=>Promise<void>;
 };
 
 /** One model turn with durable, transactional confirmation of effects.
  * Scheduling, HTTP routes and retry ownership remain in the PM inbox adapter.
  */
 export function createProjectManagerTurnExecutor({
- ensureProjectManagerActionOrder,shouldCreateProjectManagerOrder,failProjectManagerInbox
+ ensureProjectManagerActionOrder,shouldCreateProjectManagerOrder,failProjectManagerInbox,recordDiagnostic
 }:PmTurnPorts){
 async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:string,runnerUrl:string,runnerKey:string,attempt=1):Promise<ProjectManagerWatch[]>{
+ const startedAt=Date.now();
  const claim=await pool.query("UPDATE assistant_messages SET status='processing' WHERE id=$1 AND project_id=$2 AND channel IN ('project','pm-internal') AND role='user' AND pm_dispatch_attempt=$3 AND status IN ('queued','processing') RETURNING id,actor_id,body,reply_to,topic_id,pm_order_id,channel",[messageId,projectId,attempt]);
  if(!claim.rowCount)return [];
  const turn=claim.rows[0];
@@ -34,6 +37,9 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
  if(orderId)await pool.query("UPDATE project_pm_orders SET status='working',updated_at=now() WHERE id=$1",[orderId]);
  let sessionId:string|null=null;
  let watchers:ProjectManagerWatch[]=[];
+ const audit=(stage:PmDiagnosticStage,level:'info'|'warning'|'error'='info',error?:unknown,statusCode?:number)=>
+  recordDiagnostic(pool,{projectId,messageId,orderId,attempt,stage,level,error,statusCode,sessionId,elapsedMs:Date.now()-startedAt}).catch(()=>{});
+ await audit('turn_started');
  try{
   // No project-wide task snapshots or chat history on each PM turn.
   // Current order and explicit reply are sufficient; tools provide everything else.
@@ -102,12 +108,14 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     'сохранённые фоновые поручения отслеживаются Temporal, не ожидай их синхронно.'
   ].filter(Boolean).join('\n');
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
+  await audit('runner_request');
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
    body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
+  await audit('runner_response',response.ok?'info':'warning',undefined,response.status);
   if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
   const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true ORDER BY created_at,id',[projectId,session.id]);
@@ -163,6 +171,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    await client.query('COMMIT');
    if(confirmedOrderId)watchers=watchers.map(watch=>({...watch,orderId:confirmedOrderId||undefined}));
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
+  await audit('turn_completed');
  }catch(error){
   // Codex may perform a mutation and fail before producing a final reply.
   // Keep the side effect associated with a durable order for recovery.
@@ -189,6 +198,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    ) UPDATE project_pm_orders o SET status='queued',updated_at=now() FROM waiting w WHERE o.id=w.pm_order_id`,
     [messageId,attempt]);
   }else await failProjectManagerInbox(pool,projectId,messageId,attempt);
+  await audit(retryable?'retry_scheduled':'turn_failed',retryable?'warning':'error',error);
   if(!retryable)throw Object.assign(new Error(message.slice(0,650)),{nonRetryable:true});
   throw error;
  }finally{
