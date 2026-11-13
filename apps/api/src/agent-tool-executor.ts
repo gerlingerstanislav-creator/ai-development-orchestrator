@@ -84,7 +84,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const outcome={summary,document_ids,verified_documents:records.rows,
    saved_documents:writes,source:'mcp-documents'};
   const updated=await pool.query(`UPDATE document_import_jobs SET status='completed',
-   message='Подтверждена документация: '+$3::text,result=$4::jsonb,saved_documents=$5,updated_at=now()
+   message='Подтверждена документация: '||$3::text,result=$4::jsonb,saved_documents=$5,updated_at=now()
    WHERE id=$1 AND project_id=$2 AND status='running' RETURNING id`,
    [session.process_id,projectId,String(records.rowCount),JSON.stringify(outcome),writes]);
   if(!updated.rowCount)throw rejected('Поручение уже завершено или приостановлено');
