@@ -23,7 +23,7 @@ test('system analyst automatically owns analysis tasks, hands off completed work
   CREATE TABLE project_ai_settings(project_id uuid,enabled boolean NOT NULL);
   CREATE TABLE project_role_capacity(project_id uuid,role text,capacity int);
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,author_stage text,author_name text,
-   target_stage text,kind text,body text,source_kind text,source_key text,status text,UNIQUE(task_id,source_key));
+   target_stage text,kind text,body text,source_kind text,source_key text,status text,requires_customer boolean NOT NULL DEFAULT false,UNIQUE(task_id,source_key));
   CREATE TABLE task_events(id uuid,task_id uuid,event text,detail text);
   CREATE TABLE ai_task_runs(id uuid,project_id uuid,task_id uuid,status text,runner_spec_version int);
   CREATE TABLE task_orchestration_owners(task_id uuid,state text);
