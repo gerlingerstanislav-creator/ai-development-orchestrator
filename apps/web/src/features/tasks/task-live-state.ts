@@ -48,9 +48,9 @@ export function taskQaIsRunning(
   (!current||lease.owner_id!==current.cycle_id);
 }
 
-export function activeTaskAgentExecutions(
- runs:readonly AgentExecution[],currentQa:QaExecution|null
-):AgentExecution[]{
+export function activeTaskAgentExecutions<T extends AgentExecution>(
+ runs:readonly T[],currentQa:QaExecution|null
+):T[]{
  return runs.filter(run=>ongoing(run.status)&&
   (run.kind!=='testing'||!currentQa||
    (run.id===currentQa.id&&ongoing(currentQa.status))));
