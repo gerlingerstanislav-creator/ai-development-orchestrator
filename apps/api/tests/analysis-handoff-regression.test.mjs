@@ -26,7 +26,7 @@ test('completed, clearly specified analysis passes technical consultations, even
    clarification_questions jsonb NOT NULL DEFAULT '[]'::jsonb,
    updated_at timestamptz NOT NULL DEFAULT now());
   CREATE TABLE task_events(id uuid PRIMARY KEY,task_id uuid,event text,detail text,actor_id uuid);
-  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text);
+  CREATE TABLE ai_task_runs(id uuid PRIMARY KEY,project_id uuid,task_id uuid,status text,runner_spec_version int);
   CREATE TABLE task_orchestration_owners(task_id uuid,state text);
   CREATE TABLE task_agent_notes(id uuid PRIMARY KEY,project_id uuid,task_id uuid,
    kind text,status text,target_stage text DEFAULT 'all',requires_customer boolean NOT NULL DEFAULT false,
