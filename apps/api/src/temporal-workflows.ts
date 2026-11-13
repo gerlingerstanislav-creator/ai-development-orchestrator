@@ -191,6 +191,48 @@ export async function developmentTestingCycle(input:CycleInput):Promise<string>{
  }
 }
 
+/** A separate Temporal lane for non-code deliverables. It never starts a
+ * developer, creates a PR, merges, or deploys. QA produces verifiable browser
+ * artifacts and the backend checks their recorded source SHA and viewports.
+ */
+export async function browserEvidenceCycle(input:{projectId:string;taskId:string;runId:string}):Promise<string>{
+ try{
+  await waitForProjectAgents({projectId:input.projectId});
+  const testId=await steps.startTesting({
+   projectId:input.projectId,taskId:input.taskId,cycleId:input.runId,attempt:0,
+   simplified:true,singlePass:true
+  });
+  let report;
+  while(true){
+   report=await steps.checkTesting({projectId:input.projectId,taskId:input.taskId,testId});
+   if(report.status==='completed'||report.status==='failed')break;
+   await sleep('8 seconds');
+  }
+  if(report.status==='failed'){
+   await steps.finishEvidenceTask({...input,status:'failed',message:'Исполнитель не завершил сбор доказательств: '+report.message});
+   return 'evidence_runner_failed';
+  }
+  if(report.verdict==='passed'){
+   await steps.approveTestedTask({projectId:input.projectId,taskId:input.taskId,testId,simplified:true});
+   await steps.finishEvidenceTask({...input,status:'completed',message:'Получены и независимо подтверждены артефакты браузера'});
+   return 'evidence_verified';
+  }
+  if(report.verdict==='blocked'){
+   await steps.noteBlockedTests({projectId:input.projectId,taskId:input.taskId,testId,simplified:true});
+  }
+  await steps.finishEvidenceTask({...input,status:'blocked',
+   message:report.verdict==='failed'
+    ?'Обнаружены недостатки или неполные артефакты. Это не является поводом создавать PR.'
+    :'Нет доступной подтверждённой среды или недостаточно браузерных доказательств.'});
+  return 'evidence_blocked';
+ }catch(error){
+  await steps.finishEvidenceTask({...input,status:'failed',message:'Браузерная задача заблокирована: '+String(error).slice(0,1200)});
+  return 'evidence_failed';
+ }finally{
+  await steps.finishTaskOrchestration({projectId:input.projectId,taskId:input.taskId,ownerId:input.runId});
+ }
+}
+
 export async function manualTesting(input:{projectId:string;taskId:string;cycleId:string}):Promise<string>{
  await waitForProjectAgents({projectId:input.projectId});
  try {
