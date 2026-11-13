@@ -180,7 +180,9 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  // Only documentation-write sessions need the documentation job table.
  // Task-only/reader tests and migrations may run without that table.
  const docJob=role==='documentation'&&!!processId;
- const docGuard=docJob?` AND (EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running') OR EXISTS (SELECT 1 FROM agent_work_assignments a WHERE a.id=$4 AND a.project_id=p.id AND a.task_id=$3 AND a.role='documentation' AND a.status='running'))`:'';
+ const docGuard=docJob?(taskId
+  ?` AND EXISTS (SELECT 1 FROM agent_work_assignments a WHERE a.id=$4 AND a.project_id=p.id AND a.task_id=$3 AND a.role='documentation' AND a.status='running')`
+  :` AND EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running')`):'';
  const result=await pool.query(`SELECT COALESCE($2::uuid,p.owner_id) AS actor_id FROM projects p
   WHERE p.id=$1 AND p.deleted_at IS NULL
    AND ($2::uuid IS NULL OR p.owner_id=$2 OR EXISTS(SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=$2))
