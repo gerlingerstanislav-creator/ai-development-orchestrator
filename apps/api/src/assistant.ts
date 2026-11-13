@@ -1,4 +1,5 @@
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
+import {PM_GOAL_POLICY} from './pm-goal-policy.js';
 import type { FastifyInstance } from 'fastify';
 import type { Pool } from 'pg';
 import {recordAgentActivity} from './task-agent-activity.js';
@@ -285,10 +286,6 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
        method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
        body:JSON.stringify({model:config.model,reasoning:config.reasoning,
         prompt,session_token:agent.secret,project_id:id,agent_role:'analyst',
-        process_id:jobId,request_id:jobId+':round:'+step,
-        resume_prompt:('Продолжай документирование поручения '+jobId+
-         '. Учитывай актуальные сведения и не повторяй уже подтверждённые действия.'+
-         extra+'\n'+history.slice(-2100)).slice(0,4100),
         role_capacity:await roleCapacity(pool,id,'analyst')}),
        signal:AbortSignal.timeout(265000)
       });
@@ -772,12 +769,14 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    // The owner's source must already exist before the PM creates a durable rule.
    const userMessageId=await store(id,null,uid(req),'user',message,null,null,mode,pool,{}, {replyTo,topicId});
    await saveChatImages(pool,{projectId:id,actorId:uid(req),messageId:userMessageId,scope:'assistant'},validatedImages);
+   await pool.query('UPDATE agent_sessions SET process_id=$2 WHERE id=$1 AND role=$3',[sessionId,userMessageId,role]);
    const prompt=composeAgentPrompt({
     role:documentationMode?'Бизнес-аналитик (БА) AI Development Orchestrator':'Менеджер проекта (ПМ) AI Development Orchestrator',
     objective:message,
     tools:'Открывай capabilities.list/describe по мере необходимости. Постоянные указания владельца распределяй через instructions.reconcile/propose с source_message_id. Учитывай область действия; опыт агентов и разовые просьбы не являются обязательными правилами.',
     instructions:[
      conversationRole.slice(0,2000),
+     !documentationMode?PM_GOAL_POLICY:'',
      governedRules.slice(0,1600),
      instructions.slice(0,1400),
      documentationMode

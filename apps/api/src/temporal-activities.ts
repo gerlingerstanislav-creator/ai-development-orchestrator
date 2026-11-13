@@ -8,6 +8,7 @@ import {readProjectAgentAvailability,ProjectAgentAvailabilityError,type ProjectA
 import {createRunnerHttpClient} from './infrastructure/runner-http-client.js';
 import {type AgentReaderScope} from './agent-tools.js';
 import {composeAgentPrompt,agentPromptZones,recordAgentPrompt} from './agent-prompt.js';
+import {PM_GOAL_POLICY} from './pm-goal-policy.js';
 import {createAgentSession,finishAgentSession} from './agent-tools.js';
 import {readChatImages,type RunnerImage} from './chat-images.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
@@ -132,14 +133,13 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
 }
 async function askTaskManagerAgent(prompt:string,projectId:string,taskId:string,messageId:string,actorId:string,
  ai:{model:string;reasoning:string},images:RunnerImage[]):Promise<string>{
- const session=await createAgentSession(pool,projectId,actorId,'manager');
+ const session=await createAgentSession(pool,projectId,actorId,'manager',messageId);
  try{
   await recordAgentPrompt(pool,{projectId,processId:messageId,role:'manager',operation:'task_manager',prompt}).catch(()=>{});
   const response=await fetch(codexUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
    body:JSON.stringify({prompt,model:ai.model,reasoning:ai.reasoning,session_token:session.secret,
-    agent_role:'manager',project_id:projectId,task_id:taskId,process_id:taskId,
-    actor_id:actorId,request_id:messageId,role_capacity:1,images}),
+    agent_role:'manager',project_id:projectId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
@@ -855,7 +855,7 @@ export async function completeManagerMessage(args:{projectId:string;taskId:strin
     role:'Менеджер проекта в чате конкретной задачи',
     objective:String(msg.rows[0].body||'Изучи приложенные изображения').slice(0,4000),
     tools:'Открывай capabilities.list/describe для поиска разрешённых операций; tasks.read/history и processes.list — для фактов. При постоянных указаниях владельца управляй инструкциями через instructions.reconcile/propose с source_message_id. Не обходи QA, CI, слияние или согласования.',
-    instructions:[(await conversationInstructions(pool,projectId,'manager')).slice(0,1600),
+    instructions:[PM_GOAL_POLICY,(await conversationInstructions(pool,projectId,'manager')).slice(0,1600),
      (await agentMemoryContext(pool,projectId,'manager',String(snapshot.task.title||'')+' '+String(snapshot.task.description||''))).slice(0,1600)].filter(Boolean).join('\n\n'),
     scope:JSON.stringify({task_id:taskId,source_message_id:messageId,title:snapshot.task.title,stage:snapshot.task.stage,description:String(snapshot.task.description||'').slice(0,1700),pr_url:snapshot.task.pr_url}),
     context:JSON.stringify({pending_requests:pending.slice(0,4),latest_qa:latest?{status:latest.status,verdict:latest.verdict}:null,images:images.map(image=>image.name)}).slice(0,500)+'\n'+detailContext,

@@ -26,6 +26,7 @@ export const agentToolCatalog=[
  tool('pm.decisions.list','Прочитать структурированные решения владельца, чтобы не задавать повторных вопросов.',{}),
  tool('pm.decisions.record','Зафиксировать ответ владельца в реестре решений. Укажи ID его исходного сообщения. При наличии итерации решение передаётся СА.',{source_message_id:id,question:str,answer:str,iteration_id:id,order_id:id},['source_message_id','question','answer']),
  tool('pm.orders.list','Просмотреть активные поручения ПМ и их статусы.',{}),
+ tool('pm.orders.watch_task','Отслеживать цель провести существующую задачу через все этапы до done. Регистрируй после запуска реальной работы; если работы нет, инструмент вернёт needs_action и предложит продолжить workflow, а не выдаст запуск за завершение.',{task_id:id,idempotency_key:idem},['task_id']),
  tool('pm.orders.update','Зафиксировать состояние поручения: ждать ответа владельца, ждать агента, завершить или отметить ошибку.',{order_id:id,status:{type:'string',enum:['working','waiting_agents','waiting_user','completed','failed']},summary:str},['order_id','status']),
  tool('iterations.ask_question','Добавить вопрос к итерации, требующий решения владельца. Вопрос показывается на вкладке План разработки.',{iteration_id:id,question:str},['iteration_id','question']),
  tool('iterations.record_decision','Записать ответ владельца на вопрос аналитика по итерации. Ответ попадёт в следующие попытки декомпозиции и не будет утерян.',{iteration_id:id,question:str,answer:str},['iteration_id','question','answer']),
@@ -61,8 +62,8 @@ export const agentToolCatalog=[
  tool('tasks.read','Прочитать актуальное состояние задачи, GitHub-ветку и PR, открытые вопросы, сохранённые ответы и историю. Перед работой по задаче прочитай её; дополнительные знания запрашивай адресно. Не считай прежнюю сводку актуальной без проверки.',{task_id:id},['task_id']),
  tool('tasks.request_owner_question_cleanup','По явному запросу пользователя открыть предпросмотр удаления из колонки «Вопросы к ПО». Учти задачи типа question, созданные аналитиком. Удаление — только после явного подтверждения владельца.',{}),
  tool('tasks.create','Создать задачу с конкретными требованиями в бэклоге. Запуск анализа и разработки выполняется отдельно.',{title:str,description:str,idempotency_key:idem},['title','description']),
- tool('tasks.delete','Удалить ошибочную ещё не выполнявшуюся задачу, если владелец явно поручил это. Выполненная работа не удаляется, для неё есть tasks.cancel с предпросмотром.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
- tool('tasks.cancel','Отменить невыполненную или ненужную задачу с работой/PR по явному поручению владельца (это удаление с аудитом): сперва предпросмотр и проверка безопасной отмены/очистки GitHub. Если процесс ещё активен или PR слит, не обходи блокировки.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
+ tool('tasks.delete','Удалить ошибочную ещё не выполнявшуюся задачу по прямому поручению владельца. Если сервер сообщает о начатой работе/PR, используй tasks.cancel, а не отказывайся от цели.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
+ tool('tasks.cancel','Безопасно отменить уже начатую ненужную задачу с PR/QA по явному поручению владельца (не считать её сделанной). Платформа проверяет текущий источник разрешения, зависимости, активные процессы и несоединённый PR, закрывает PR и очищает ветку с аудитом. При отказе ищи разрешимый блокер.',{task_id:id,source_message_id:id},['task_id','source_message_id']),
  tool('questions.list','Посмотреть вопросы по документации (задачи типа question), включая их статус и привязку к документу.',{}),
  tool('questions.create','Задать вопрос владельцу продукта, привязав к документу.',{document_id:id,question:str,idempotency_key:idem},['document_id','question']),
  tool('documentation.prepare_spec','Передать аналитику автономное поручение изучить проект и подготовить ТЗ. Агент сам выбирает источники и инструменты. Завершение допустимо только с проверяемыми документами; при нехватке сведений агент задаёт вопрос ПМ.',{instructions:str,document_id:id,idempotency_key:idem},['instructions']),
@@ -160,10 +161,10 @@ export async function initAgentToolsSchema(pool:Pick<Pool,'query'>){
  'CREATE INDEX IF NOT EXISTS idx_agent_blockers_task ON agent_blockers(project_id,task_id,status,created_at DESC)'
  ].join(';\n')+';');
 }
-export async function createAgentSession(pool:Pick<Pool,'query'>,projectId:string,actorId:string,role:AgentRole){
+export async function createAgentSession(pool:Pick<Pool,'query'>,projectId:string,actorId:string,role:AgentRole,sourceMessageId?:string){
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
- await pool.query("INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at) VALUES($1,$2,$3,$4,$5,now()+interval '40 minutes')",
-  [id,projectId,actorId,role,hashSecret(secret)]);
+ await pool.query("INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,process_id) VALUES($1,$2,$3,$4,$5,now()+interval '40 minutes',$6)",
+  [id,projectId,actorId,role,hashSecret(secret),sourceMessageId||null]);
  return {id,secret};
 }
 export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:AgentReaderScope){

@@ -1,4 +1,5 @@
 import {reportPmWatchCompletion,type PmWatchReport} from './pm-watch-report.js';
+import {readPmTaskGoal} from '../../../pm-task-goal.js';
 
 type ProjectManagerWatch=PmWatchReport;
 /** The watch application needs only scoped reads and a transactional writer. */
@@ -19,6 +20,18 @@ async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch
 /** Polling is a short database activity; the waiting happens in Temporal,
  * not in the PM AI session or an HTTP request. */
 export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
+ if(watch.kind==='task_goal'){
+  if(!watch.taskId)return 'completed';
+  const task=await readPmTaskGoal(pool,watch.projectId,watch.taskId);
+  if(task.status==='running')return 'pending';
+  const name=task.display_number?'#'+task.display_number+' «'+task.title+'»':'«'+task.title+'»';
+  const message=task.status==='done'?'Цель достигнута: задача '+name+' прошла все этапы и имеет подтверждённый done.':
+   task.status==='missing'?'Контролируемая задача отсутствует. Проверь историю отмены и исходное поручение.':
+   'Цель пока не достигнута: задача '+name+' остановилась на этапе '+task.stage+'. '+task.reason;
+  return reportPmWatchCompletion(pool,watch,{message,
+   resumeInstruction:task.status==='done'?' Проверь связанные поручения и заверши исходную цель.':
+    ' Это не успех. Проверь состояние и блокировки, делегируй допустимое исправление или задай владельцу конкретный вопрос. Не регистрируй тот же watch_task до изменения состояния или запуска новой работы.'});
+ }
  if(watch.kind==='testing'){
   // A QA retry is a Temporal manualTesting cycle. The workflow owner is
   // durable even if QA planning fails before ai_test_runs is created.

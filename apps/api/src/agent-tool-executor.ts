@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,capabilitiesForRole,type AgentSession} from './agent-tools.js';
 import {instructionProposal,reconcileInstructions,proposeInstruction} from './instruction-governance.js';
+import {readPmTaskGoal} from './pm-task-goal.js';
 import {readTaskWorkBrief} from './task-work-brief.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
 import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
@@ -256,6 +257,22 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    planning=await queueIterationPlanning(pool,projectId,actorId,{iteration_id,request:'Перепроверь план с новым подтверждённым решением: '+question.slice(0,250)});
   }
   return {id:saved.rows[0]?.id||null,recorded:!!saved.rowCount,iteration_id:iteration_id||null,planning_run_id:planning?.planning_run_id,status:planning?.status};
+ }
+ case 'pm.orders.watch_task':{
+  if(session.role!=='manager')throw rejected('Контроль целей доступен только ПМ',403);
+  const {task_id}=z.object({task_id:uuid}).parse(params);
+  const state=await readPmTaskGoal(pool,projectId,task_id);
+  if(state.status==='missing')throw rejected('Задача не найдена',404);
+  if(state.status==='done')return {...state,watch_registered:false};
+  if(state.status!=='running')return {...state,watch_registered:false};
+  // Only PM Inbox starts the existing Temporal watch workflow. A task-chat or
+  // legacy session must not return "watching" without actually scheduling it.
+  const inbox=!!session.process_id&&(await pool.query(`SELECT 1 FROM assistant_messages
+   WHERE id=$1 AND project_id=$2 AND role='user' AND channel IN ('project','pm-internal')
+    AND status='processing'`,[session.process_id,projectId])).rowCount;
+  if(!inbox)return {...state,status:'needs_action',watch_registered:false,
+   reason:'Долгосрочное наблюдение запускается из общего чата ПМа. В этом канале доступны только текущие действия без регистрации Temporal-watch.'};
+  return {...state,status:'watching',watch_registered:true,watch_id:randomUUID()};
  }
  case 'pm.orders.list':{
   return {orders:(await pool.query("SELECT id,summary,status,topic_id,updated_at FROM project_pm_orders WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 40",[projectId])).rows};

@@ -4,6 +4,7 @@ import {randomUUID,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
 import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,createAgentReaderSession,finishAgentSession,readerRoles,type AgentSession} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
+import {annotatePmToolResult} from './pm-goal-policy.js';
 import {inspectGitHubProjectSource} from './documentation-preparation.js';
 
 const uuid=z.string().uuid();
@@ -164,7 +165,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    }
    const delegated=['approvals.decide','approvals.answer_question','approvals.deliver_task_answer','tasks.delete','tasks.cancel','tasks.close','workflow.move_task','workflow.approve_development','workflow.release_task','tasks.update_dependency','qa.retry'].includes(name);
    if(delegated&&(!delegateManagerAction||session.role!=='manager'))throw Error('Недоступно делегированное действие ПМ');
-   const result=delegated
+   const rawResult=delegated
     ?await delegateManagerAction!(session,name,args)
     :await executeAgentTool(db as Pool,session,name,args,startDocumentationWorkflow,
       async(projectId,actorId,path,commit)=>{
@@ -178,9 +179,10 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
        return {available:true,...await inspectGitHubProjectSource(linked.repository,
         commit||linked.target_branch||linked.default_branch||'main',token,path)};
       });
+   const result=session.role==='manager'?annotatePmToolResult(name,rawResult):rawResult;
    // A successful PM delegation is explicit authorization to wake the
    // project's specialists. Informational tools and chat leave Stop intact.
-   if(session.role==='manager'&&(result as any)?.ok!==false&&(result as any)?.recorded!==false&&new Set([
+   if(session.role==='manager'&&(result as any)?.status!=='blocked'&&(result as any)?.ok!==false&&(result as any)?.recorded!==false&&new Set([
     'tasks.create','iterations.prepare_plan','iterations.launch',
     'workflow.approve_development','workflow.move_task','workflow.release_task',
     'qa.retry','documentation.import','documentation.prepare_spec',
