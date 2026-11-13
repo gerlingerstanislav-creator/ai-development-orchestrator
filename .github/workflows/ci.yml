@@ -61,6 +61,7 @@ jobs:
           node --test apps/api/tests/schema-migrations.test.mjs
           node --test apps/api/tests/legacy-schema-upgrade.test.mjs
           node --test apps/api/tests/agent-schema-migrations.test.mjs
+          node --test apps/api/tests/operational-schema-migrations.test.mjs
           node --test apps/api/tests/auth-routes.test.mjs
           node --test apps/api/tests/auth-service.test.mjs
           node --test apps/api/tests/codex-admin-api.test.mjs

@@ -21,7 +21,8 @@ async function withSchema(run){
   await admin.end();
  }
 }
-const migrations=coreSchemaMigrations({analysis:'Анализ'});
+// Pin these adoption tests to migration versions 1–2; v3 has its own suite.
+const migrations=coreSchemaMigrations({analysis:'Анализ'}).filter(m=>m.version<=2);
 test('new databases install agent audit and queues transactionally in v2',async()=>{
  await withSchema(async db=>{
   assert.deepEqual(await runSchemaMigrations(db,migrations),[1,2]);
