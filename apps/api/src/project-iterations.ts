@@ -28,7 +28,8 @@ type IterationRow={id:string;title:string;body:string;revision:number;approved_r
 type TaskPlanRow={id:string;project_id:string;title:string;description:string;type:string;stage:string;parent_id:string|null;iteration_item_key:string|null;depends_on_task_id:string|null;iteration_work_kind:string|null;tags:string[];spec_version:number;updated_at:string};
 function problem(statusCode:number,message:string){return Object.assign(Error(message),{statusCode});}
 
-export async function initProjectIterations(db:Db){
+/** One-time DDL. The legacy queue policy remains a separate startup operation. */
+export async function installProjectIterationsSchema(db:Db){
  await db.query(`
  CREATE TABLE IF NOT EXISTS project_iterations(
   id uuid PRIMARY KEY,project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -86,6 +87,11 @@ export async function initProjectIterations(db:Db){
  CREATE INDEX IF NOT EXISTS idx_tasks_iteration ON tasks(project_id,iteration_id);
  CREATE UNIQUE INDEX IF NOT EXISTS idx_iteration_task_key ON tasks(iteration_id,iteration_item_key) WHERE iteration_item_key IS NOT NULL;
  `);
+}
+
+/** Compatibility bootstrap for explicit isolated schema consumers. */
+export async function initProjectIterations(db:Db){
+ await installProjectIterationsSchema(db);
  await initAgentWorkQueue(db);
 }
 

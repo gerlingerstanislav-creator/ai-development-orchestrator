@@ -9,7 +9,8 @@ import {initQaSchema} from '../dist/qa.js';
 import {initQaWaiverSchema} from '../dist/qa-waiver.js';
 import {initCloudDiagnosticsSchema} from '../dist/cloud-diagnostics.js';
 
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+// Pin the historical QA adoption suite to v7; newer migrations have separate tests.
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=7);
 async function inIsolatedSchema(run){
  const name='ado_agent_qa_v7_'+randomUUID().replaceAll('-','');
  const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});
