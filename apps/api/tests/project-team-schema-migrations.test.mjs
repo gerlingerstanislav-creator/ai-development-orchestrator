@@ -5,7 +5,8 @@ import pg from 'pg';
 import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {initProjectTeamSchema,reconcileProjectTeamProfiles} from '../dist/project-team.js';
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+// These historical adoption assertions are intentionally scoped to v10.
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=10);
 async function isolated(fn){
  const schema='ado_team_v10_'+randomUUID().replaceAll('-','');
  const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});

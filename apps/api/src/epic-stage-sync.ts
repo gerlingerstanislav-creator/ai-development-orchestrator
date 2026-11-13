@@ -4,7 +4,8 @@ import type {Pool} from 'pg';
  * An epic follows its least advanced child. This database invariant covers
  * Temporal, manual transitions, imports and future task APIs automatically.
  */
-export async function initEpicStageSync(db:Pick<Pool,'query'>):Promise<void>{
+/** One-time database enforcement; installed by append-only migration v11. */
+export async function installEpicStageSync(db:Pick<Pool,'query'>):Promise<void>{
  await db.query(`
  CREATE OR REPLACE FUNCTION ado_sync_epic_stage() RETURNS trigger AS $$
  DECLARE old_parent uuid; new_parent uuid;
@@ -33,6 +34,13 @@ export async function initEpicStageSync(db:Pick<Pool,'query'>):Promise<void>{
  DROP TRIGGER IF EXISTS trg_ado_epic_stage_sync ON tasks;
  CREATE TRIGGER trg_ado_epic_stage_sync AFTER INSERT OR UPDATE OF stage,parent_id,type OR DELETE ON tasks
  FOR EACH ROW EXECUTE FUNCTION ado_sync_epic_stage();
+
+ `);
+}
+
+/** Idempotent migration of legacy rows, executed only during schema adoption. */
+export async function backfillLegacyEpicStages(db:Pick<Pool,'query'>):Promise<void>{
+ await db.query(`
  -- Align existing data, including nested epics, with real child progress.
  WITH slowest AS (
   SELECT c.parent_id,
@@ -48,3 +56,10 @@ export async function initEpicStageSync(db:Pick<Pool,'query'>):Promise<void>{
  AND p.stage IS DISTINCT FROM s.stage;
  `);
 }
+
+/** Compatibility helper for isolated old tests, not invoked during API startup. */
+export async function initEpicStageSync(db:Pick<Pool,'query'>):Promise<void>{
+ await installEpicStageSync(db);
+ await backfillLegacyEpicStages(db);
+}
+

@@ -21,6 +21,8 @@ import {installAgentWorkQueueSchema} from '../agent-work-scheduler.js';
 import {initRequirementsSchema} from '../requirements.js';
 import {initAutomaticDeployment} from '../deployment-automation.js';
 import {installProjectTeamSchema} from '../project-team.js';
+import {installEpicStageSync,backfillLegacyEpicStages} from '../epic-stage-sync.js';
+import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-first-gate.js';
 
 /**
  * Append-only, transactional schema history.
@@ -112,6 +114,16 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:10,name:'project-team-profile-and-memory-schema',
    checksum:'ado-project-team-profile-memory-v10',
    up:database=>installProjectTeamSchema(database)
+  },
+  {
+   version:11,name:'workflow-stage-guards-and-legacy-repair',
+   checksum:'ado-workflow-epic-analysis-guards-v11',
+   up:async database=>{
+    await installEpicStageSync(database);
+    await backfillLegacyEpicStages(database);
+    await repairLegacyAnalysisStates(database);
+    await installAnalysisFirstGate(database);
+   }
   }
  ];
 }
