@@ -86,6 +86,7 @@ test('manager can accept submitted evidence without moving the Kanban card',asyn
   if(sql.startsWith('SELECT a.*'))return {rows:[{
    id:assignmentId,project_id:projectId,task_id:taskId,status:'submitted',
    evidence:'Ссылка на реальный отчёт',spec_version:3,actual_version:3}],rowCount:1};
+  if(sql.includes('WITH RECURSIVE descendants'))return {rows:[],rowCount:0};
   return {rows:[],rowCount:1};
  }};
  const reviewed=await reviewWork(db,{projectId,assignmentId,action:'accept',
@@ -155,4 +156,22 @@ test('PM watch reports blocked work once and requests corrective action',async()
  assert.ok(queries.some(sql=>sql.includes('project_pm_process_reports')));
  assert.ok(queries.some(sql=>sql.includes('assistant_messages')));
  assert.ok(!queries.some(sql=>sql.includes('UPDATE tasks SET stage')));
+});
+
+
+test('manager cannot accept parent while a delegated child remains active',async()=>{
+ const statements=[];
+ const db={query:async(sql,args)=>{
+  statements.push({sql,args});
+  if(sql.startsWith('SELECT a.*'))return {rows:[{
+   id:assignmentId,project_id:projectId,task_id:taskId,status:'submitted',
+   evidence:'Verified report reference',spec_version:3,actual_version:3
+  }],rowCount:1};
+  if(sql.includes('WITH RECURSIVE descendants'))return {rows:[{one:1}],rowCount:1};
+  throw Error('Unexpected mutation of assignment state');
+ }};
+ await assert.rejects(reviewWork(db,{projectId,assignmentId,action:'accept',
+  reason:'Проверка независимого результата дочернего поручения'}),/делегированная работа не завершена/);
+ assert.ok(statements[1].sql.includes("status NOT IN ('completed','cancelled')"));
+ assert.deepEqual(statements[1].args,[assignmentId,projectId,taskId]);
 });
