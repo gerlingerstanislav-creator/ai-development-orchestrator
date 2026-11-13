@@ -133,7 +133,7 @@ async function assistantCompletion(prompt:string,projectId:string,taskId:string,
 }
 async function askTaskManagerAgent(prompt:string,projectId:string,taskId:string,messageId:string,actorId:string,
  ai:{model:string;reasoning:string},images:RunnerImage[]):Promise<string>{
- const session=await createAgentSession(pool,projectId,actorId,'manager');
+ const session=await createAgentSession(pool,projectId,actorId,'manager',messageId);
  try{
   await recordAgentPrompt(pool,{projectId,processId:messageId,role:'manager',operation:'task_manager',prompt}).catch(()=>{});
   const response=await fetch(codexUrl+'/agent',{
