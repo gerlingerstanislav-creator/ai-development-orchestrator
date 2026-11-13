@@ -1,6 +1,6 @@
 import type {Pool} from 'pg';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
-import {agentMemoryContext} from './project-team.js';
+import {agentMemoryContext} from './agent-memory.js';
 
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
