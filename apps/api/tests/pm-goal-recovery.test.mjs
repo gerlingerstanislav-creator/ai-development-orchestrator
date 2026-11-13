@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {PM_GOAL_POLICY,annotatePmToolResult,pmOrderStateFromResults} from '../dist/pm-goal-policy.js';
 import {readPmTaskGoal} from '../dist/pm-task-goal.js';
+import {authorizePmDestructiveSource} from '../dist/pm-source-authorization.js';
 import {checkProjectManagerWatch} from '../dist/project-manager-inbox.js';
 import {executeAgentTool} from '../dist/agent-tool-executor.js';
 import {toolsForRole} from '../dist/agent-tools.js';
@@ -81,4 +82,39 @@ test('task-goal watch reports stalled QA to the same PM order and resumes exactl
  const results=(await db.query("SELECT body FROM assistant_messages WHERE channel='project' ORDER BY body")).rows;
  assert.equal(results.length,2);
  assert.ok(results.some(v=>/Цель достигнута/.test(v.body)));
+});
+
+test('destructive PM action uses authenticated current owner message, not a word matcher',async t=>{
+ const admin=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await admin.connect();
+ const schema='pm_owner_'+randomUUID().replaceAll('-','');
+ await admin.query('CREATE SCHEMA '+schema);
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{await pool.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
+ await pool.query(`
+  CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,role text,channel text,pm_order_id uuid);
+  CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,project_id uuid,source_message_id uuid);
+  CREATE TABLE manager_messages(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,role text);
+ `);
+ const project=randomUUID(),otherProject=randomUUID(),owner=randomUUID(),otherActor=randomUUID();
+ const first=randomUUID(),second=randomUUID(),outsider=randomUUID(),internal=randomUUID(),order=randomUUID();
+ await pool.query("INSERT INTO assistant_messages VALUES($1,$2,$3,'user','project',NULL),($4,$2,$3,'user','project',NULL),($5,$6,$7,'user','project',NULL)",
+  [first,project,owner,second,outsider,otherProject,otherActor]);
+ const allow=async(currentMessageId,sourceMessageId,actorId=owner)=>authorizePmDestructiveSource(pool,{
+  projectId:project,actorId,currentMessageId,sourceMessageId
+ });
+ await allow(first,first);
+ await assert.rejects(allow(first,second),/текущего поручения/);
+ await assert.rejects(allow(first,outsider),/текущего поручения/);
+ await assert.rejects(allow(null,first),/Нет текущего сообщения/);
+ await pool.query('INSERT INTO project_pm_orders VALUES($1,$2,$3)',[order,project,first]);
+ await pool.query("INSERT INTO assistant_messages VALUES($1,$2,$3,'user','pm-internal',$4)",[internal,project,owner,order]);
+ await allow(internal,first);
+ await assert.rejects(allow(internal,second),/текущего поручения/);
+ await pool.query('UPDATE assistant_messages SET pm_order_id=$2 WHERE id=$1',[second,order]);
+ await allow(internal,second);
+ const taskChat=randomUUID();
+ await pool.query("INSERT INTO manager_messages VALUES($1,$2,$3,'user')",[taskChat,project,owner]);
+ await allow(taskChat,taskChat);
+ await assert.rejects(allow(taskChat,first),/текущего поручения/);
 });
