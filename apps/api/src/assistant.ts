@@ -260,7 +260,7 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      'Когда цель достигнута, вызови documentation.complete с ID реально проверенных страниц и итогом. Если подтверждённых сведений недостаточно, вызови documentation.request_input с конкретным вопросом ПМ. Не объявляй успех без documentation.complete.',
      'Не выдумывай содержание источников, не создавай фиктивный документ ради прохождения проверки, не подменяй исследование пересказом задания.',
      'Дополнительные инструкции команды: '+instructions.slice(0,2600)
-    ].join('\\n\\n');
+    ].join('\n\n');
     await advanceDocumentationAgent({
      readState:async()=>{
       const state=(await pool.query(
@@ -277,8 +277,8 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
      runRound:async(step,history)=>{
       await running();
       const latest=await liveInstructions();
-      const extra=latest.length?'\\nУточнения владельца:\\n'+latest.slice(-10).map(x=>x.body).join('\\n').slice(-3500):'';
-      const prompt=(identity+extra+(history?'\\n\\nСохранённая история действий, продолжай без повторной записи:\\n'+history:'')).slice(0,22500);
+      const extra=latest.length?'\nУточнения владельца:\n'+latest.slice(-10).map(x=>x.body).join('\n').slice(-3500):'';
+      const prompt=(identity+extra+(history?'\n\nСохранённая история действий, продолжай без повторной записи:\n'+history:'')).slice(0,22500);
       await recordAgentPrompt(pool,{projectId:id,processId:jobId,role:'analyst',operation:'autonomous_documentation',prompt}).catch(()=>{});
       await updateProgress('agent_working','Аналитик изучает проект и выполняет документирование · шаг '+step);
       const response=await fetch(codexUrl+'/agent',{
