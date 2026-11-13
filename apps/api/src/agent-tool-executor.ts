@@ -454,7 +454,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   if(data.document_id&&!await parentExists(pool,projectId,data.document_id))throw rejected('Документ не найден',404);
   const jobId=randomUUID(),sourceUrl=data.source_url||null;
   const input={location,attachments:[],mode:'documentation',documentId:data.document_id??null,
-   structureOnly:name==='documentation.organize',rebuildSpec:name==='documentation.rebuild'};
+   structureOnly:name==='documentation.organize',rebuildSpec:name==='documentation.rebuild',
+   requireChanges:name==='documentation.prepare_spec',readProjectSource:name==='documentation.prepare_spec'};
   const sourceKey=location?'github-ai:'+location.owner+'/'+location.repository+'@'+location.branch+':'+location.path:name+':'+jobId;
   const competing=await pool.query(
    "SELECT id FROM document_import_jobs WHERE project_id=$1 AND status IN ('running','queued') LIMIT 1 FOR UPDATE",
