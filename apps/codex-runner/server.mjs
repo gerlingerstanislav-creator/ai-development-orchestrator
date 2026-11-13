@@ -1087,7 +1087,7 @@ http.createServer(async(req,res)=>{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
     const result=await withReaderContext(agentApi,jobKey,data.context,context=>
      withRunnerImages(data.images,imageArgs=>appExecutor({
-      scope:conversationScope(data,'assistant'),requestId:String(data.request_id||randomUUID()),
+      scope:{...conversationScope(data,'assistant'),role:'assistant:'+String(data.context?.role||'general')},requestId:String(data.request_id||randomUUID()),
       prompt:scopedAgentPrompt(context,data.prompt),model:data.model,effort:data.reasoning,
       cwd:'/opt/codex-runner',timeout:240000,
       configArgs:[...appConversationSettings,...context.args],
