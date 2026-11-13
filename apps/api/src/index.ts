@@ -20,8 +20,6 @@ import {registerAuthRoutes} from './modules/auth/api.js';
 import {issueAccessToken} from './modules/auth/application/tokens.js';
 import {ensureLegacyAdministrator} from './database/legacy-bootstrap.js';
 import {runSchemaMigrations} from './database/schema-migrations.js';
-import {initEpicStageSync} from './epic-stage-sync.js';
-import {initAnalysisFirstGate} from './analysis-first-gate.js';
 import {canManagerCloseTask,planManagerStageMove,type WorkStage} from './task-stage-operations.js';
 import {startDiagnosticRetention,installDiagnosticHooks,registerDiagnosticRoutes} from './diagnostics.js';
 import {registerCloudDiagnosticsSettings,startCloudDiagnosticsSender} from './cloud-diagnostics.js';
@@ -557,7 +555,7 @@ async function main(){
  // These are runtime policies, not schema migrations: run on every restart.
  // Preserve the project's durable agents_running choice across deployments.
  await ensureLegacyAdministrator(pool,configuredAdminEmail());
-await initEpicStageSync(pool);await startDiagnosticRetention(pool);await reconcileLegacyAgentWorkQueue(pool);await reconcileProjectTeamProfiles(pool);await initAnalysisFirstGate(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
+await startDiagnosticRetention(pool);await reconcileLegacyAgentWorkQueue(pool);await reconcileProjectTeamProfiles(pool);await recoverInterruptedLegacyMergeBatches(pool);await app.listen({port:Number(process.env.PORT||3001),host:'0.0.0.0'});
   startCloudDiagnosticsSender(pool,{url:process.env.SUPABASE_DIAGNOSTICS_URL||'',apiKey:process.env.SUPABASE_DIAGNOSTICS_API_KEY||'',logger:message=>app.log.warn(message)});
  const reconcileLegacyDevelopmentRuns=createLegacyDevelopmentReconciler(
   pool,path=>agentCall(path),

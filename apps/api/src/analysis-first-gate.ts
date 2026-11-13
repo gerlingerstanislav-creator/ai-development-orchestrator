@@ -6,7 +6,8 @@ import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
  * analysis/owner decisions are pending. Enforced for every route, including
  * Temporal, manual actions and agent tools. QA->development rework is allowed.
  */
-export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>{
+/** One-time database enforcement; installed by append-only migration v11. */
+export async function installAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>{
  await db.query(`
  CREATE OR REPLACE FUNCTION ado_analysis_first_guard() RETURNS trigger AS $$
  BEGIN
@@ -36,15 +37,29 @@ export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>
   RETURN NEW;
  END;
  $$ LANGUAGE plpgsql;
- -- Legacy planner-ready cards without an analyst outcome must be re-analysed.
- UPDATE tasks t SET analysis_state='new',updated_at=now()
- WHERE t.type IN ('task','bug','improvement') AND t.stage='analysis'
-  AND t.analysis_state='ready_for_development'
-  AND NOT EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event IN ('analysis_completed','analysis_reused_by_owner','analysis_reused_from_existing_pr'))
-  AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status='completed');
  DROP TRIGGER IF EXISTS trg_ado_analysis_first_guard ON tasks;
  CREATE TRIGGER trg_ado_analysis_first_guard
  BEFORE INSERT OR UPDATE OF stage,analysis_state ON tasks
  FOR EACH ROW EXECUTE FUNCTION ado_analysis_first_guard();
  `);
 }
+
+/** Idempotent migration of legacy rows, executed only during schema adoption. */
+export async function repairLegacyAnalysisStates(db:Pick<Pool,'query'>):Promise<void>{
+ await db.query(`
+ -- Legacy planner-ready cards without an analyst outcome must be re-analysed.
+ UPDATE tasks t SET analysis_state='new',updated_at=now()
+ WHERE t.type IN ('task','bug','improvement') AND t.stage='analysis'
+  AND t.analysis_state='ready_for_development'
+  AND NOT EXISTS(SELECT 1 FROM task_events e WHERE e.task_id=t.id AND e.event IN ('analysis_completed','analysis_reused_by_owner','analysis_reused_from_existing_pr'))
+  AND NOT EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id AND a.status='completed');
+
+ `);
+}
+
+/** Compatibility helper for isolated old tests, not invoked during API startup. */
+export async function initAnalysisFirstGate(db:Pick<Pool,'query'>):Promise<void>{
+ await installAnalysisFirstGate(db);
+ await repairLegacyAnalysisStates(db);
+}
+
