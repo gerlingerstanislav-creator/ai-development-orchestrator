@@ -50,9 +50,10 @@ export function annotatePmToolResult(name:string,result:unknown){
 export function pmOrderStateFromResults(results:readonly {tool:string;result:unknown}[],watchCount:number,ownerQuestion=false):'waiting_agents'|'waiting_user'|'working'|'completed'{
  if(ownerQuestion)return 'waiting_user';
  if(watchCount)return 'waiting_agents';
- const unresolved=results.some(item=>{
-  const r=item.result as PmToolOutcome|null;
-  return r&&typeof r==='object'&&r.status==='blocked';
- });
+ // The last meaningful operation determines the outcome: an earlier blocked
+ // delete followed by a successful cancellation must not leave the order blocked.
+ const actionable=results.filter(item=>!['pm.orders.update','processes.report','memory.record'].includes(item.tool));
+ const last=actionable.at(-1)?.result as PmToolOutcome|null;
+ const unresolved=last&&typeof last==='object'&&['blocked','needs_action'].includes(String(last.status||''));
  return unresolved?'waiting_user':'completed';
 }
