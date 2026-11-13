@@ -14,7 +14,7 @@ import {updateCurrentSpecification} from './requirements.js';
 import {organizeImportedDocumentation} from './documentation-organization.js';
 import {rebuildProjectDocumentation} from './documentation-rebuild.js';
 import {assertDocumentationWasPrepared,readGitHubProjectSource} from './documentation-preparation.js';
-import {advanceDocumentationAgent} from './autonomous-documentation-execution.js';
+import {runAutonomousDocumentationAgent} from './modules/knowledge/application/autonomous-documentation-agent.js';
 import {createAgentSession,createAgentReaderSession,finishAgentSession,agentSessionEffects,agentLearnedContext,type AgentRole} from './agent-tools.js';
 import {agentRuntimeEnabled} from './agent-runtime-config.js';
 import {agentMemoryContext,conversationInstructions,recordAgentLearning,resolveRoleAiSettings,roleCapacity} from './project-team.js';
@@ -219,60 +219,41 @@ export function createAssistantService({pool,codexUrl,runnerKey,decryptToken}:As
    * No model-returned JSON is treated as a database change or completion.
    */
   const runAutonomousDocumentation=async(config:any)=>{
-   const agent=await createAgentReaderSession(pool,{projectId:id,role:'documentation',
-    actorId,processId:jobId});
-   if(!agent)throw Error('Не удалось выдать аналитику доступ к собственному поручению');
-   try{
-    const instructions=await businessAnalystContext(id);
-    const identity=[
-     'Ты автономный аналитик проекта. Цель: '+message.slice(0,5000),
-     'Используй каталог MCP orchestrator, выбирая необходимые инструменты и документы самостоятельно.',
-     'Исследуй доступные факты (project.context, project.source, documents.*), сохраняй результаты по мере исследования. Выбирай структуру самостоятельно: единое ТЗ на системной странице или тематические дочерние документы, исходя из объёма и удобства сопровождения.',
-      'Для изменения структуры используй documents.list/read/create/update/changeset. Переноси страницы через documents.update(parent_id); безопасно удаляй пустые лишние страницы через documents.delete с revision. Системные корни не удаляй. Не оставляй бессодержательные дубли и не теряй подтверждённые сведения.',
-     'Для большого проекта разделяй работу на короткие действия с MCP. Не откладывай запись всех документов до конца длительного анализа.',
-     'После прерывания Codex опирайся на сохранённую историю MCP; не повторяй уже выполненные изменения. Для повторяемых записей используй idempotency_key.',
-     'Когда цель достигнута, вызови documentation.complete с ID реально проверенных страниц и итогом. Если подтверждённых сведений недостаточно, вызови documentation.request_input с конкретным вопросом ПМ. Не объявляй успех без documentation.complete.',
-     'Не выдумывай содержание источников, не создавай фиктивный документ ради прохождения проверки, не подменяй исследование пересказом задания.',
-     'Дополнительные инструкции команды: '+instructions.slice(0,2600)
-    ].join('\n\n');
-    await advanceDocumentationAgent({
-     readState:async()=>{
-      const state=(await pool.query(
-       'SELECT status,message FROM document_import_jobs WHERE id=$1 AND project_id=$2',[jobId,id])).rows[0];
-      return {status:String(state?.status||'missing'),message:String(state?.message||'')};
-     },
-     // Query by process, not just this session: a resumed Temporal activity must
-     // see calls committed by earlier sessions of the same import.
-     readEvents:async()=>(await pool.query(
-      `SELECT e.id::text AS id,e.tool,e.success,e.result FROM agent_tool_events e
-       JOIN agent_sessions s ON s.id=e.session_id
-       WHERE s.project_id=$1 AND s.process_id=$2
-       ORDER BY e.created_at DESC,e.id DESC LIMIT 18`,[id,jobId])).rows,
-     runRound:async(step,history)=>{
-      await running();
-      const latest=await liveInstructions();
-      const extra=latest.length?'\nУточнения владельца:\n'+latest.slice(-10).map(x=>x.body).join('\n').slice(-3500):'';
-      const prompt=(identity+extra+(history?'\n\nСохранённая история действий, продолжай без повторной записи:\n'+history:'')).slice(0,22500);
-      await recordAgentPrompt(pool,{projectId:id,processId:jobId,role:'analyst',operation:'autonomous_documentation',prompt}).catch(()=>{});
-      await updateProgress('agent_working','Аналитик изучает проект и выполняет документирование · шаг '+step);
-      const response=await fetch(codexUrl+'/agent',{
-       method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-       body:JSON.stringify({model:config.model,reasoning:config.reasoning,
-        prompt,session_token:agent.secret,project_id:id,agent_role:'analyst',
-        role_capacity:await roleCapacity(pool,id,'analyst')}),
-       signal:AbortSignal.timeout(265000)
-      });
-      const body=await response.json().catch(()=>({})) as {message?:string;error?:string;usage?:any};
-      if(!response.ok)throw Error('Аналитик не завершил шаг: '+String(body.error||'HTTP '+response.status).slice(0,550));
-      await storeTokenUsage(id,null,config.model,body.usage);
-      return String(body.message||'');
-     },
-     onProgress:async(stage,detail)=>{
-      if(stage==='retrying'||stage==='continuation')await updateProgress(stage,detail);
-      else await processEvent(id,jobId,stage,detail);
-     }
-    });
-   }finally{await finishAgentSession(pool,agent.id).catch(()=>{});}
+   await runAutonomousDocumentationAgent({
+    projectId:id,processId:jobId,message,
+    agentInstructions:()=>businessAnalystContext(id),
+    createSession:()=>createAgentReaderSession(pool,{projectId:id,role:'documentation',actorId,processId:jobId}),
+    finishSession:sessionId=>finishAgentSession(pool,sessionId),
+    readState:async()=>{
+     const state=(await pool.query('SELECT status,message FROM document_import_jobs WHERE id=$1 AND project_id=$2',[jobId,id])).rows[0];
+     return {status:String(state?.status||'missing'),message:String(state?.message||'')};
+    },
+    readEvents:async()=>(await pool.query(
+     `SELECT e.id::text AS id,e.tool,e.success,e.result FROM agent_tool_events e
+      JOIN agent_sessions s ON s.id=e.session_id
+      WHERE s.project_id=$1 AND s.process_id=$2
+      ORDER BY e.created_at DESC,e.id DESC LIMIT 18`,[id,jobId])).rows,
+    readLiveInstructions:liveInstructions,
+    assertRunning:running,
+    recordPrompt:async prompt=>{await recordAgentPrompt(pool,{projectId:id,processId:jobId,role:'analyst',operation:'autonomous_documentation',prompt}).catch(()=>{});},
+    onWorkStart:step=>updateProgress('agent_working','Аналитик изучает проект и выполняет документирование · шаг '+step),
+    performRound:async(prompt,secret)=>{
+     const response=await fetch(codexUrl+'/agent',{
+      method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
+      body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:secret,
+       project_id:id,agent_role:'analyst',role_capacity:await roleCapacity(pool,id,'analyst')}),
+      signal:AbortSignal.timeout(265000)
+     });
+     const body=await response.json().catch(()=>({})) as {message?:string;error?:string;usage?:any};
+     if(!response.ok)throw Error('Аналитик не завершил шаг: '+String(body.error||'HTTP '+response.status).slice(0,550));
+     await storeTokenUsage(id,null,config.model,body.usage);
+     return String(body.message||'');
+    },
+    onProgress:async(stage,detail)=>{
+     if(stage==='retrying'||stage==='continuation')await updateProgress(stage,detail);
+     else await processEvent(id,jobId,stage,detail);
+    }
+   });
   };
   try{
    const config=await resolveRoleAiSettings(pool,id,'analyst',await configuration(id));
