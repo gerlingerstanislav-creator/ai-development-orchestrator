@@ -10,7 +10,6 @@ export type TaskLease={owner_id:string;state:string}|null;
 export type AgentExecution={id:string;kind:string;status:string};
 
 const ongoing=(status:string)=>status==='queued'||status==='running';
-const terminal=(status:string)=>['completed','failed','cancelled'].includes(status);
 
 /** Human-facing outcome belongs to the finished QA execution, not the stage. */
 export function qaOutcomeLabel(run:QaExecution|null):string{
