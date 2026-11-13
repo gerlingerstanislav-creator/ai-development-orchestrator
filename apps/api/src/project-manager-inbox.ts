@@ -315,10 +315,24 @@ export async function executeProjectManagerInbox(pool:Pool,projectId:string,mess
    ].filter(Boolean).join('\n\n'),
     output:'Ответь по-русски. При действиях назови подтверждённый результат. При ожидании объясни конкретную причину. Для запроса подробностей получи относящиеся к нему факты через доступные инструменты.'
   });
+  // First turn uses the complete PM role contract; subsequent turns keep that
+  // contract in the same Codex thread and supply only fresh owner input.
+  const resumePrompt=[
+   'Новое сообщение владельца. source_message_id='+messageId,
+   'Текст: '+String(turn.body||'Изучи приложенные изображения').slice(0,4000),
+   orderId?'Текущее поручение: '+orderId:'',
+   turn.reply_to?'Ответ на сообщение '+turn.reply_to+': '+JSON.stringify(replyResult.rows[0]||{}).slice(0,1000):'',
+   turn.topic_id?'Тема '+turn.topic_id+': '+JSON.stringify(topicResult.rows[0]||{}).slice(0,350):'',
+   ownerQuestion?'Решаемый вопрос: '+JSON.stringify(ownerQuestion).slice(0,850):'',
+   eventResult.rows.length?'Новые события поручения: '+JSON.stringify(eventResult.rows).slice(0,850):'',
+   images.length?'Приложены изображения: '+images.map(image=>image.name).join(', '):'',
+   'Не пересказывай всю историю. При необходимости используй адресные MCP-инструменты; '+
+    'сохранённые фоновые поручения отслеживаются Temporal, не ожидай их синхронно.'
+  ].filter(Boolean).join('\\n');
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
+   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
