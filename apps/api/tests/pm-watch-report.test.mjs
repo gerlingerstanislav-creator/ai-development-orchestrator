@@ -22,9 +22,9 @@ test('PM watch reports and Temporal retries share one transactional, durable res
   CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,status text,updated_at timestamptz DEFAULT now());
   CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text,process_id uuid,created_at timestamptz DEFAULT now());
  `);
- const project=randomUUID(),process=randomUUID(),order=randomUUID(),actor=randomUUID(),topic=randomUUID();
+ const project=randomUUID(),processId=randomUUID(),order=randomUUID(),actor=randomUUID(),topic=randomUUID();
  await db.query("INSERT INTO project_pm_orders(id,status) VALUES($1,'waiting_agents')",[order]);
- const watch={projectId:project,processId:process,orderId:order,actorId:actor,topicId:topic,kind:'testing'};
+ const watch={projectId:project,processId:processId,orderId:order,actorId:actor,topicId:topic,kind:'testing'};
  const text='Повторный QA завершился с ошибкой, исправления требуются';
  const payload={message:text,resumeInstruction:' Проверь дефекты и продолжи прежнее поручение.'};
  const statuses=await Promise.all(Array.from({length:8},()=>reportPmWatchCompletion(pool,watch,payload)));
@@ -46,7 +46,7 @@ test('PM watch reports and Temporal retries share one transactional, durable res
  assert.equal(resumed.actor_id,actor);
  assert.equal((await db.query('SELECT status FROM project_pm_orders WHERE id=$1',[order])).rows[0].status,'queued');
  const events=(await db.query("SELECT kind,detail,process_id FROM project_pm_order_events WHERE order_id=$1",[order])).rows;
- assert.deepEqual(events,[{kind:'resume',detail:resumed.id,process_id:process}]);
+ assert.deepEqual(events,[{kind:'resume',detail:resumed.id,process_id:processId}]);
  assert.equal(await reportPmWatchCompletion(pool,watch,payload),'completed');
  assert.equal((await db.query('SELECT count(*)::int AS count FROM assistant_messages')).rows[0].count,2);
 });
@@ -65,10 +65,10 @@ test('visible PM reports preserve 3500-character bound without truncating intern
   CREATE TABLE project_pm_orders(id uuid PRIMARY KEY,status text,updated_at timestamptz DEFAULT now());
   CREATE TABLE project_pm_order_events(id uuid PRIMARY KEY,order_id uuid,kind text,detail text,process_id uuid,created_at timestamptz DEFAULT now());
  `);
- const project=randomUUID(),process=randomUUID(),order=randomUUID(),actor=randomUUID();
+ const project=randomUUID(),processId=randomUUID(),order=randomUUID(),actor=randomUUID();
  await db.query("INSERT INTO project_pm_orders(id,status) VALUES($1,'waiting_agents')",[order]);
  const message='X'.repeat(3700);
- const watch={projectId:project,processId:process,kind:'document_import',orderId:order,actorId:actor};
+ const watch={projectId:project,processId:processId,kind:'document_import',orderId:order,actorId:actor};
  assert.equal(await reportPmWatchCompletion(pool,watch,{message,visibleLimit:3500,resumeInstruction:' Continue.'}),'completed');
  const msgs=(await db.query('SELECT role,body FROM assistant_messages')).rows;
  assert.equal(msgs.find(m=>m.role==='assistant').body.length,3500);
