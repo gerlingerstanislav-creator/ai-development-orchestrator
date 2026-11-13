@@ -52,11 +52,11 @@ test('PostgreSQL v14 stores atomic generic plans with same-task prerequisites an
  assert.equal((await pool.query('SELECT stage FROM tasks WHERE id=$1',[taskId])).rows[0].stage,'analysis');
  const dependencies=(await pool.query('SELECT count(*)::int AS count FROM agent_work_plan_dependencies WHERE project_id=$1 AND task_id=$2',[projectId,taskId])).rows[0];
  assert.equal(dependencies.count,2);
- const eligible=()=>pool.query(\`SELECT a.id FROM agent_work_assignments a
+ const eligible=()=>pool.query(`SELECT a.id FROM agent_work_assignments a
   WHERE a.task_id=$1 AND a.status='queued'
   AND NOT EXISTS(SELECT 1 FROM agent_work_plan_dependencies d
    JOIN agent_work_assignments requires ON requires.id=d.requires_id
-   WHERE d.assignment_id=a.id AND requires.status<>'completed') ORDER BY a.created_at,a.id\`,[taskId]);
+   WHERE d.assignment_id=a.id AND requires.status<>'completed') ORDER BY a.created_at,a.id`,[taskId]);
  assert.deepEqual((await eligible()).rows.map(x=>x.id),[plan.assignments[0].id]);
  await pool.query("UPDATE agent_work_assignments SET status='completed',evidence='Verified environment' WHERE id=$1",[plan.assignments[0].id]);
  assert.deepEqual((await eligible()).rows.map(x=>x.id),[plan.assignments[1].id]);
