@@ -15,7 +15,7 @@ import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
-import {delegateWork,listWork,reportWork,reviewWork,workRoles} from './modules/agents/infrastructure/work-assignments.js';
+import {delegateWork,listWork,planWork,reportWork,reviewWork,workRoles} from './modules/agents/infrastructure/work-assignments.js';
 import {responsibilityFor} from './role-responsibilities.js';
 import {createDoc,updateDoc,deleteDoc,documentRevision as revision,parentExists,createPage,updatePage,deleteEmptyPage} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
@@ -121,6 +121,22 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const {task_id}=z.object({task_id:uuid}).parse(params);
   if(session.task_id&&session.task_id!==task_id)throw rejected('Нельзя читать поручения другой задачи',403);
   return listWork(pool,projectId,task_id);
+ }
+ case 'work.plan':{
+  if(!['manager','analyst','business_analyst'].includes(session.role))
+   throw rejected('Составление плана принадлежит ПМ или аналитику',403);
+  const data=z.object({
+   task_id:uuid,
+   steps:z.array(z.object({
+    key:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/),
+    role:z.enum(workRoles),
+    objective:z.string().trim().min(12).max(2000),
+    acceptance:z.string().trim().min(12).max(2000),
+    needs:z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)).max(8).default([])
+   }).strict()).min(1).max(12)
+  }).parse(params);
+  if(session.task_id&&session.task_id!==data.task_id)throw rejected('Нельзя планировать чужую задачу',403);
+  return planWork(pool,{projectId,taskId:data.task_id,sourceRole:session.role,steps:data.steps});
  }
  case 'work.delegate':{
   const {task_id,role,objective,acceptance}=z.object({
