@@ -30,7 +30,7 @@ export async function routeTaskToBrowserEvidence(db:Db,args:{
   throw failure('Закреплённый SHA отсутствует в проверенных исходных требованиях или сообщениях владельца');
  if(!(await db.query("SELECT 1 FROM task_events WHERE task_id=$1 AND event='analysis_completed' LIMIT 1",[taskId])).rowCount)
   throw failure('Отсутствует подтверждённый результат аналитика');
- if((await db.query("SELECT 1 FROM task_agent_notes n WHERE n.project_id=$1 AND n.task_id=$2 AND ${PENDING_OWNER_QUESTION_SQL} LIMIT 1",[projectId,taskId])).rowCount)
+ if((await db.query(`SELECT 1 FROM task_agent_notes n WHERE n.project_id=$1 AND n.task_id=$2 AND ${PENDING_OWNER_QUESTION_SQL} LIMIT 1`,[projectId,taskId])).rowCount)
   throw failure('Есть открытые вопросы владельцу');
  if((await db.query("SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND state='active' LIMIT 1",[taskId])).rowCount||
     (await db.query("SELECT 1 FROM ai_task_runs WHERE task_id=$1 AND status IN ('queued','running') LIMIT 1",[taskId])).rowCount||
