@@ -1,3 +1,5 @@
+import {ProcessCenter} from './features/processes/ProcessCenter.js';
+import type {ProjectProcess,ProjectProcessEvent} from './features/processes/process-center-model.js';
 import {TaskBoard} from './features/tasks/TaskBoard.js';
 import type {KanbanGroupKey} from './features/tasks/board-model.js';
 import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.js';
@@ -63,17 +65,8 @@ type QaWaiverInfo={run_id:string|null;assessment:{eligible:boolean;blockers:stri
 type TestRun={qa_plan_snapshot?:{cases?:Array<{id:string;title?:string;description?:string;preconditions?:string;steps?:Array<{action:string;expected:string}>;purpose?:string}>}|null;id:string;task_id:string;cycle_id:string;attempt:number;status:string;message:string;human_report?:string|null;verdict?:'passed'|'failed'|'blocked'|null;report?:{summary?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;caseResults?:Array<{case_id:string;result:string;reason?:string;evidence:string}>;capabilities?:string;commit?:string}|null;created_at:string;completed_at?:string|null};
 type BackgroundProcess={id:string;kind:'development'|'document_import'|'merge'|'testing'|'analysis'|'ci'|'review';role:'development'|'testing'|'analysis'|'analyst'|'platform'|'devops'|'architect';projectId:string;projectName:string;taskId?:string;title:string;detail:string;status:'queued'|'running';createdAt:string;url:string};
 type BackgroundProcessResponse={count:number;processes:BackgroundProcess[];checkedAt:string};
-type ProjectProcess={id:string;iterationId?:string;kind:'document_import'|'development'|'merge'|'testing'|'analysis'|'ci'|'review';title:string;status:string;detail:string;createdAt:string;updatedAt?:string|null;sourceUrl?:string|null;requestText?:string|null;sourceFileCount?:number|null;savedDocuments?:number;hasDraft?:boolean;progress?:{completed:number;total:number|null};topicProgress?:{completed:number;total:number};result?:{message?:string;created_document_id?:string;generated_documents?:number;prUrl?:string;results?:unknown[];verdict?:string;findings?:Array<{severity:string;description:string;steps?:string;expected?:string;actual?:string}>;checks?:Array<{name:string;result:string;details:string}>;commit?:string}|null;taskId?:string};
 type DocumentationQuestion={id:string;topic_key:string;question:string;status:'open'|'answered';answer:string|null;document_id:string;document_title:string;created_at:string};
 type DocumentationProposal={id:string;job_id:string;topic_key:string;document_id:string;title:string;proposed_body:string;status:string;document_title:string};
-type ProjectProcessEvent={id:string;stage:string;detail:string;level:string;created_at:string};
-function compactProcessDescription(detail:string):string{
- const normalized=detail.replace(/\s+/g,' ').trim();
- if(!normalized)return 'Подробности доступны справа.';
- if(normalized.length<=110)return normalized;
- const boundary=normalized.lastIndexOf(' ',110);
- return normalized.slice(0,boundary>=65?boundary:110).trimEnd()+'…';
-}
 
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
@@ -1711,7 +1704,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    await loadProject(selected.id);
   }catch(e){fail(e);}finally{setProcessActionBusy(false);}
  }
- const processStatus=(status:string)=>status==='completed'?'Завершён':status==='partial'?'Частично завершён':status==='failed'?'Ошибка':status==='queued'?'В очереди':status==='running'?'Выполняется':status==='cancelled'?'Остановлен':status==='logged'?'Промпт сохранён':status==='stale'?'Нужно подтвердить заново':status;
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
  const taskTags=[...new Set(tasks.flatMap(task=>task.tags??[]))].sort((a,b)=>a.localeCompare(b,'ru'));
@@ -1871,89 +1863,31 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  processActionBusy={processActionBusy} mergeBusy={mergeBusy}
  onMerge={()=>void mergeReady()} knowledgeBusy={knowledgeBusy}
  onUpdateDocumentation={()=>void updateDocumentation()}/>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{t.awaits_product_owner&&<span className="task-owner-question-icon" title="Требуется решение владельца"><AlertTriangle size={15}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
- {section==='processes'&&<div className="process-center">
-  <div className="process-center-heading">
-    <div><h2>Центр процессов</h2><p className="muted">История работы AI и фоновых операций текущего проекта</p></div>
-    <div className="row-line" style={{gap:8,flexWrap:'wrap'}}>
-     <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13}}>Логи за
-      <select value={diagnosticHours} onChange={e=>setDiagnosticHours(Number(e.target.value))}>
-       <option value={1}>1 час</option><option value={24}>24 часа</option><option value={72}>3 дня</option><option value={168}>7 дней</option>
-      </select>
-     </label>
-     <label style={{display:'flex',alignItems:'center',gap:6,fontSize:13}} title="Добавляет тексты сообщений в чатах проекта, ПМ и задач. Перед отправкой проверь скачанный файл.">
-      <input type="checkbox" checked={diagnosticIncludeMessages} onChange={e=>setDiagnosticIncludeMessages(e.target.checked)}/>
-      Переписка
-     </label>
-     <button type="button" className="secondary" disabled={diagnosticExporting} onClick={()=>void downloadDiagnostics()}>
-      <FileDown size={15}/> {diagnosticExporting?'Подготовка…':'Скачать логи'}
-     </button>
-    </div>
-   </div>
-  <div className="process-center-filters">{([['all','Все'],['active','Активные'],['failed','Ошибки'],['completed','Завершённые']] as const).map(([value,label])=>
-   <button key={value} className={processFilter===value?'selected':''} type="button" onClick={()=>setProcessFilter(value)}>{label}</button>)}</div>
-  <div className="process-center-grid">
-   <div className="panel process-list">
-    {projectProcesses.filter(p=>processFilter==='all'||(processFilter==='active'?['queued','running'].includes(p.status):p.status===processFilter)).map(process=>
-     <button type="button" key={process.id} className={'process-list-item '+(selectedProcessId===process.id?'selected':'')} onClick={()=>setSelectedProcessId(process.id)}>
-      <span className="process-list-title">{['running','queued'].includes(process.status)&&process.kind==='testing'?
-       <span className="agent-equalizer" aria-label="Тестировщик выполняет проверку" role="status"><i/><i/><i/></span>:
-       <span className={'process-dot '+process.status}/>}<strong>{process.title}</strong></span>
-      <small>{processStatus(process.status)} · {new Date(process.updatedAt||process.createdAt).toLocaleString('ru-RU')}</small>
-      <span className="process-list-summary">{compactProcessDescription(process.detail)}</span>
-     </button>)}
-    {!projectProcesses.length&&<p className="muted process-empty">Процессов пока нет</p>}
-   </div>
-   <div className="panel process-detail">{(()=>{
-    const process=projectProcesses.find(p=>p.id===selectedProcessId)||projectProcesses.find(p=>processFilter==='all'||(processFilter==='active'?['queued','running'].includes(p.status):p.status===processFilter));
-    if(!process)return <div className="process-detail-empty"><Clock3 size={28}/><p>Выбери процесс слева, чтобы увидеть его результат и историю.</p></div>;
-    return <>
-     <div className="process-detail-header"><h3>{process.title}</h3><span className={'process-status '+process.status}>{processStatus(process.status)}</span></div>
-     <p className="muted">{process.detail}</p>
-     {['queued','running'].includes(process.status)&&(['development','testing'].includes(process.kind)||process.title.startsWith('План задач')||process.title.startsWith('Анализ задачи'))&&
-      <div className="process-actions"><button type="button" className="secondary" disabled={processActionBusy} onClick={()=>void interruptProcess(process)}>Прервать процесс</button></div>}
-     {process.kind==='document_import'&&<div className="process-metrics"><span>Файлов: {process.sourceFileCount??'—'}</span><span>Фрагментов: {process.progress?.completed??0} / {process.progress?.total??'—'}</span><span>Тем готово: {process.topicProgress?.completed??0} / {process.topicProgress?.total||'—'}</span><span>Сохранено страниц: {process.savedDocuments??0}</span></div>}
-     {process.taskId&&<p className="process-source"><a href={projectUrl(selected.id,'tasks')+'/'+process.taskId} onClick={e=>followLink(e,projectUrl(selected.id,'tasks')+'/'+process.taskId)}>Открыть задачу и чат агента</a></p>}
-     {process.sourceUrl&&<p className="process-source"><a href={process.sourceUrl} target="_blank" rel="noreferrer">Исходный репозиторий</a></p>}
-     {selectedProcessId===process.id&&processPrompts.length>0&&<details className="process-prompt-audit" style={{margin:'12px 0'}}>
-      <summary style={{cursor:'pointer',fontWeight:600}}>Промпты запусков ({processPrompts.length})</summary>
-      <p className="muted">Текст, переданный модели, с маскировкой известных секретов. Для повторных запусков показаны отдельные запросы.</p>
-      {processPrompts.map(entry=><details key={entry.id} style={{margin:'8px 0'}}>
-       <summary style={{cursor:'pointer'}}>{entry.role} · {new Date(entry.created_at).toLocaleString('ru-RU')} · {entry.original_chars} символов{entry.truncated?' · сокращённый журнал':''}</summary>
-       <pre style={{whiteSpace:'pre-wrap',overflowWrap:'anywhere',maxHeight:480,overflow:'auto',fontSize:12,padding:12,background:'var(--panel-bg, rgba(127,127,127,.06))',borderRadius:8}}>{entry.prompt}</pre>
-      </details>)}
-     </details>}
-
-     {process.result&&<div className="process-result"><strong>Результат</strong><p>{process.result.message||'Операция завершена'}</p>
-      {process.iterationId&&selected&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'plan')+'/'+process.iterationId)}>Открыть итерацию</button>}
-      {process.result.created_document_id&&<button className="secondary" onClick={()=>navigate(projectUrl(selected.id,'docs')+'/'+process.result!.created_document_id)}>Открыть документацию</button>}
-      {process.result.verdict&&<p><strong>Вердикт: {process.result.verdict==='passed'?'Проверки пройдены':process.result.verdict==='failed'?'Обнаружены ошибки':'Не удалось проверить'}</strong></p>}
-      {process.result.commit&&<small>Проверенный коммит: {process.result.commit}</small>}
-      {process.result.findings?.map((finding,i)=><p key={i}><strong>{finding.severity}:</strong> {finding.description}{finding.steps?' · '+finding.steps:''}</p>)}
-      {process.result.checks?.map((check,i)=><p key={'check-'+i}>{check.name}: {check.result} · {check.details}</p>)}
-      {process.result.prUrl&&<a href={process.result.prUrl} target="_blank" rel="noreferrer">Открыть PR</a>}
-     </div>}
-     {process.kind==='document_import'&&process.status==='failed'&&<div className="process-actions">
-      <button className="secondary" disabled={processActionBusy} onClick={()=>void restartImport(process)}>Возобновить тот же импорт</button>
-      <small>Готовые страницы сохранены; возобновление использует тот же процесс и пропускает завершённые темы.</small>
-     </div>}
-     {process.kind==='document_import'&&process.status==='running'&&<div className="process-instruction-box">
-      <strong>Диалог с аналитиком во время работы</strong>
-      <p>Новые сообщения попадут в контекст следующего шага. Если ответ уже формируется, агент пересчитает его с учётом уточнения.</p>
-      <textarea rows={3} value={processInstruction} onChange={e=>setProcessInstruction(e.target.value)} placeholder="Добавить требование или уточнить решение…"/>
-      <div className="process-actions">
-       <button className="secondary" disabled={processActionBusy||!processInstruction.trim()} onClick={()=>void sendProcessInstruction(process)}>Отправить аналитику</button>
-       <button className="secondary" disabled={processActionBusy} onClick={()=>void stopAnalystProcess(process)}>Прервать работу</button>
-      </div>
-     </div>}
-     {process.kind==='document_import'&&process.status==='cancelled'&&<p className="muted">Работа остановлена. Уже сохранённые страницы и контрольные точки остаются в проекте.</p>}
-     {selected&&process.taskId&&<KnowledgeAudit projectId={selected.id} taskId={process.taskId} processId={process.id} request={api}/>}
-     <h4>Журнал событий</h4>
-     {processEvents.length&&selectedProcessId===process.id?<div className="process-timeline">{[...processEvents].reverse().map(ev=><div className={'process-timeline-item '+ev.level} key={ev.id}><small>{new Date(ev.created_at).toLocaleString('ru-RU')} · {ev.stage}</small><div>{ev.detail}</div></div>)}</div>:
-      <p className="muted">Для этого процесса подробный журнал пока отсутствует или загружается.</p>}
-    </>;
-   })()}</div>
-  </div>
- </div>}
+ {section==='processes'&&<ProcessCenter
+ projectId={selected.id}
+ processes={projectProcesses}
+ events={processEvents}
+ prompts={processPrompts}
+ selectedProcessId={selectedProcessId}
+ onSelectProcess={setSelectedProcessId}
+ filter={processFilter}
+ onFilterChange={setProcessFilter}
+ diagnosticHours={diagnosticHours}
+ onDiagnosticHoursChange={setDiagnosticHours}
+ includeMessages={diagnosticIncludeMessages}
+ onIncludeMessagesChange={setDiagnosticIncludeMessages}
+ exporting={diagnosticExporting}
+ onDownloadDiagnostics={downloadDiagnostics}
+ actionBusy={processActionBusy}
+ instruction={processInstruction}
+ onInstructionChange={setProcessInstruction}
+ onInterrupt={interruptProcess}
+ onRestartImport={restartImport}
+ onSendInstruction={sendProcessInstruction}
+ onStopAnalyst={stopAnalystProcess}
+ onFollowLink={followLink}
+ onNavigate={navigate}
+/>}
  {section==='plan'&&<section className="panel project-plan-page">
  <ProjectIterations key={selected.id+':'+(route.iterationId??'list')} projectId={selected.id}
     iterationId={route.iterationId??null} summaries={iterations} documents={docs} request={api}
