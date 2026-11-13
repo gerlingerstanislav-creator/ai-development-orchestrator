@@ -269,7 +269,10 @@ async function runJob(job,state,context){
  const deadline=Date.now()+job.maxRuntimeSeconds*1000;
  const timeLeft=()=>Math.max(0,deadline-Date.now());
  let cumulativeUsage={input_tokens:0,cached_input_tokens:0,output_tokens:0};
- const workdir=await mkdtemp(join(tmpdir(),'ado-run-'));
+ // The workspace is task-owned, not run-owned: QA rework must see the same
+ // files and the same Codex thread. Secrets are never stored in Git config.
+ const workdir=join(runnerStateDir,'workspaces',job.taskId);
+ await mkdir(workdir,{recursive:true,mode:0o700});
  const dir=join(workdir,'repo');
  const gitEnv=gitEnvironment(job.token);
  const git=(...args)=>command('git',args,{cwd:dir,env:gitEnv,timeout:45000,jobId:job.id});
@@ -278,8 +281,17 @@ async function runJob(job,state,context){
  const branch=taskBranchName(job.taskId);
  try{
   state.message='Клонирование репозитория';
-  await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
+  let existingWorkspace=false;
+  try{await access(join(dir,'.git'));existingWorkspace=true;}catch{}
+  if(!existingWorkspace)await command('git',['clone','--depth','1','--branch',job.baseBranch,'https://github.com/'+job.repository+'.git',dir],
    {cwd:workdir,env:gitEnv,timeout:75000,jobId:job.id});
+  else {
+   const origin=(await git('remote','get-url','origin')).stdout.trim();
+   if(origin!=='https://github.com/'+job.repository+'.git')
+    throw Error('Сохранённая рабочая копия относится к другому репозиторию');
+   // Never hard reset, checkout -f or clean: a killed Codex turn may leave
+   // valuable uncommitted work on disk.
+  }
   if(await resumePublishedCommit(job,state,git)){
    state.prUrl=await ensureTaskPullRequest(job,branch,state.checkpoint.commit,'Изменения восстановлены после перезапуска.');
    state.branch=branch;
@@ -295,7 +307,12 @@ async function runJob(job,state,context){
   if(remoteBranch.ok){
    state.message='Продолжение существующей ветки '+branch;
    await git('fetch','--depth','1','origin','refs/heads/'+branch+':refs/remotes/origin/'+branch);
-   await git('checkout','-b',branch,'refs/remotes/origin/'+branch);
+   const currentBranch=(await git('branch','--show-current')).stdout.trim();
+   if(currentBranch!==branch){
+    const local=(await command('git',['show-ref','--verify','--quiet','refs/heads/'+branch],
+     {cwd:dir,env:gitEnv,timeout:10000,jobId:job.id,allowNonzero:true})).exitCode===0;
+    await git('checkout',...(local?[branch]:['-b',branch,'refs/remotes/origin/'+branch]));
+   }
    // A depth-1 clone of main plus a depth-1 fetch of the task branch often
    // has no merge-base, even when GitHub does. Repair ancestry *before* the
    // model runs, so a 50-second Codex attempt is not wasted on git 128.
@@ -311,7 +328,12 @@ async function runJob(job,state,context){
     await git('push','origin','HEAD:refs/heads/'+branch);
    }
   }else if(remoteBranch.status===404){
-   await git('checkout','-b',branch);
+   const currentBranch=(await git('branch','--show-current')).stdout.trim();
+   if(currentBranch!==branch){
+    const local=(await command('git',['show-ref','--verify','--quiet','refs/heads/'+branch],
+     {cwd:dir,env:gitEnv,timeout:10000,jobId:job.id,allowNonzero:true})).exitCode===0;
+    await git('checkout',...(local?[branch]:['-b',branch]));
+   }
    state.message='Создание ветки задачи в GitHub';
    // Publish even before Codex edits, so failures retain a stable task branch.
    await git('push','-u','origin','HEAD:refs/heads/'+branch);
@@ -416,7 +438,7 @@ async function runJob(job,state,context){
  }catch(e){
   if(!cancelledJobs.has(job.id)){state.status='failed';state.message=String(e?.message||e).replaceAll(job.token,'[REDACTED]').slice(0,3500);}
  }finally{
-  await rm(workdir,{recursive:true,force:true}).catch(()=>{});
+  // Workspace is retained until the task is closed and explicitly archived.
  }
 }
 
