@@ -96,7 +96,7 @@ export function browserEvidenceAssessment(report:any,sourceSha:string){
  const desktop=dimensions.some((size:any)=>size&&size.width>=1000);
  const mobile=dimensions.some((size:any)=>size&&size.width<=500);
  if(!desktop||!mobile)return {passed:false,reason:'Нет подлинных desktop и mobile скриншотов, сохранённых Chromium'};
- if(dimensions.some(size=>size===null))
+ if(dimensions.some((size:any)=>size===null))
   return {passed:false,reason:'Повреждён или не сохранён файл доказательства'};
  return {passed:true,reason:'Подтверждены проверки и изображения desktop/mobile на закреплённом SHA'};
 }
