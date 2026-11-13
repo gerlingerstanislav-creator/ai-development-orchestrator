@@ -1,3 +1,4 @@
+import {validAgentRequest,assistantRequestError,runnerJobRequestError} from './request-contracts.mjs';
 import {createCodexDeviceAuth} from './device-auth.mjs';
 import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
@@ -976,11 +977,7 @@ http.createServer(async(req,res)=>{
   if(req.url==='/agent'&&req.method==='POST'){
    if(activeChatRequests>=20)return reply(res,429,{error:'Очередь агентных диалогов заполнена'});
    const data=await readJson(req,9*1024*1024);
-   if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
-      !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
-      !['low','medium'].includes(data.reasoning)||
-      typeof data.session_token!=='string'||!/^[a-f0-9]{64}$/.test(data.session_token))
-     return reply(res,400,{error:'Неверный агентный запрос'});
+   if(!validAgentRequest(data))return reply(res,400,{error:'Неверный агентный запрос'});
    const roleKey=['manager','analyst','business_analyst'].includes(data.agent_role)&&/^[a-f0-9-]{36}$/.test(data.project_id||'')?data.project_id+':'+(data.agent_role==='business_analyst'?'analyst':data.agent_role):null;
     if(roleKey&&(activeAgentRoles.get(roleKey)||0)>=(data.role_capacity||1))return reply(res,429,{error:'Исполнитель этой роли занят'});
     if(roleKey)activeAgentRoles.set(roleKey,(activeAgentRoles.get(roleKey)||0)+1);
@@ -1005,12 +1002,8 @@ http.createServer(async(req,res)=>{
   if(req.url==='/assistant'&&req.method==='POST'){
    if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});
    const data=await readJson(req,9*1024*1024);
-   if(typeof data.prompt!=='string'||data.prompt.length<1||data.prompt.length>24000||
-      !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(data.model)||
-      !['low','medium'].includes(data.reasoning))
-     return reply(res,400,{error:typeof data.prompt==='string'&&data.prompt.length>24000
-      ?'AI-запрос слишком большой: '+data.prompt.length+' символов при лимите 24000'
-      :'Некорректные параметры AI-запроса'});
+   const invalidAssistant=assistantRequestError(data);
+   if(invalidAssistant)return reply(res,400,{error:invalidAssistant});
    activeChatRequests++;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI в настройках аккаунта'});
@@ -1030,20 +1023,8 @@ http.createServer(async(req,res)=>{
   }
   if(req.url==='/jobs'&&req.method==='POST'){
    const job=await readJson(req);
-   if(job.kind && !['resolve-conflict','test','review','ci'].includes(job.kind))return reply(res,400,{error:'Недопустимый тип задания'});
-   if(typeof job.id!=='string'||! /^[a-f0-9-]{36}$/.test(job.id) ||
-    typeof job.taskId!=='string'|| !/^[a-f0-9-]{36}$/.test(job.taskId) ||
-    typeof job.repository!=='string'|| !/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(job.repository) ||
-    (['ci','review'].includes(job.kind)&&(!/^[a-f0-9]{40}$/i.test(job.expectedCommit)||job.baseCommit!==undefined&&!/^[a-f0-9]{40}$/i.test(job.baseCommit)))||
-    (job.branch!==undefined&&(typeof job.branch!=='string'||!/^[a-zA-Z0-9_.\/-]+$/.test(job.branch)||job.branch.startsWith('-')))||
-    typeof job.baseBranch!=='string'|| !/^[a-zA-Z0-9_.\/-]+$/.test(job.baseBranch) ||
-    !['gpt-6-luna','gpt-6-sol','gpt-6.1-sol'].includes(job.model)||
-    !['low','medium'].includes(job.reasoning)||
-    !Number.isInteger(job.maxRuntimeSeconds)||job.maxRuntimeSeconds<90||job.maxRuntimeSeconds>7200||
-    typeof job.token!=='string'||job.token.length<20||
-    (job.roleCapacity!==undefined&&(!Number.isInteger(job.roleCapacity)||job.roleCapacity<1||job.roleCapacity>10))||
-     typeof job.title!=='string'||job.title.length>300||typeof job.description!=='string')
-    return reply(res,400,{error:'Некорректные параметры задачи'});
+   const invalidJob=runnerJobRequestError(job);
+   if(invalidJob)return reply(res,400,{error:invalidJob});
    const previous=readJob(job.id);
    const identity=jobIdentity(job);
    if(previous&&JSON.stringify(previous.identity)!==JSON.stringify(identity))

@@ -46,6 +46,8 @@ jobs:
           node --test apps/codex-runner/codex-proxy.test.mjs
           node --check apps/codex-runner/device-auth.mjs
           node --test apps/codex-runner/device-auth.test.mjs
+          node --check apps/codex-runner/request-contracts.mjs
+          node --test apps/codex-runner/request-contracts.test.mjs
           node --test apps/codex-runner/command-executor.test.mjs
           node --test apps/codex-runner/ci-test-discovery.test.mjs
           node --check apps/codex-runner/browser-client.mjs
