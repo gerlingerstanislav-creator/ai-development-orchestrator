@@ -10,6 +10,12 @@ import {initProjectManagerInbox} from '../project-manager-inbox.js';
 import {installMergeBatchSchema} from '../merge-batch.js';
 import {initProjectManagerSchema} from '../project-manager.js';
 import {initChatImages} from '../chat-images.js';
+import {initTaskCancellationSchema} from '../task-cancellation.js';
+import {installDiagnosticStorageSchema} from '../diagnostics.js';
+import {initAgentToolsSchema} from '../agent-tools.js';
+import {initQaSchema} from '../qa.js';
+import {initQaWaiverSchema} from '../qa-waiver.js';
+import {initCloudDiagnosticsSchema} from '../cloud-diagnostics.js';
 
 /**
  * Append-only, transactional schema history.
@@ -57,6 +63,28 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
     // then manager_messages/manager_requests, then chat_images with both FKs.
     await initProjectManagerSchema(database);
     await initChatImages(database);
+   }
+  },
+  {
+   version:6,name:'task-cancellation-and-diagnostic-storage',checksum:'ado-task-cancellation-diagnostics-v6',
+   up:async database=>{
+    // Dependency order: baseline projects, users, tasks and documents already exist.
+    // Retention timers and cleanup remain runtime policies, never migrations.
+    await initTaskCancellationSchema(database);
+    await installDiagnosticStorageSchema(database);
+   }
+  },
+  {
+   version:7,name:'agent-sessions-qa-and-diagnostics-settings',
+   checksum:'ado-agent-qa-diagnostics-settings-v7',
+   up:async database=>{
+    // All are idempotent schema initializers; preserve existing session, QA
+    // evidence, owner waivers and persisted diagnostics opt-in/out settings.
+    // The base tables users/projects/tasks/ai_test_runs exist since v1.
+    await initAgentToolsSchema(database);
+    await initQaSchema(database);
+    await initQaWaiverSchema(database);
+    await initCloudDiagnosticsSchema(database);
    }
   }
  ];
