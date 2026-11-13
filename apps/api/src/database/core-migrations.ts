@@ -24,7 +24,7 @@ import {installProjectTeamSchema} from '../project-team.js';
 import {installEpicStageSync,backfillLegacyEpicStages} from '../epic-stage-sync.js';
 import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-first-gate.js';
 import {installTaskEvidenceSchema} from '../task-evidence.js';
-import {installWorkAssignmentsSchema} from '../modules/agents/application/work-assignments.js';
+import {installWorkAssignmentsSchema} from '../modules/agents/infrastructure/work-assignments.js';
 
 /**
  * Append-only, transactional schema history.
