@@ -99,6 +99,7 @@ export function registerTaskBoardRoutes(app:FastifyInstance,{pool,uid,access,req
      const busy=await client.query(`SELECT
        EXISTS(SELECT 1 FROM task_orchestration_owners WHERE project_id=$1 AND task_id=$2 AND state='active')
        OR EXISTS(SELECT 1 FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted'))
+       OR EXISTS(SELECT 1 FROM assistant_messages WHERE project_id=$1 AND task_id=$2 AND channel='pm-internal' AND pm_request_id=$2 AND status IN ('queued','processing'))
        OR EXISTS(SELECT 1 FROM agent_analysis_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running'))
        OR EXISTS(SELECT 1 FROM ai_task_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running'))
        OR EXISTS(SELECT 1 FROM ai_test_runs WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running')) AS active`,[id,taskId]);
