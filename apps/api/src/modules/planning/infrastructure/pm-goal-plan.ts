@@ -19,7 +19,7 @@ export async function planPmGoalWork(db:Db,input:{
  if(!goal.rowCount)throw denied('Цель не найдена в проекте',404);
  if(goal.rows[0].status==='completed')throw denied('Завершённую цель нельзя перепланировать');
  const plan=await planWork(db,{
-  projectId:input.projectId,taskId:input.taskId,sourceRole:'manager',steps:input.steps
+  projectId:input.projectId,taskId:input.taskId,goalId:input.taskId?undefined:input.goalId,sourceRole:'manager',steps:input.steps
  });
  // Every deliverable is linked before the transaction commits. The goal
  // cannot be marked complete until each assignment has been reviewed.
