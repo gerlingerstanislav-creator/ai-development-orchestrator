@@ -69,19 +69,28 @@ async function application(session){
  // Prefer an already built application; standalone HTML projects need no index.html.
  const folder=built||root;
  const {pages,entry}=await htmlEntry(folder);
+ const needsBundler=!!pkg?.scripts?.dev&&/\b(vite|next|nuxt|astro|webpack|parcel)\b/i.test(pkg.scripts.dev);
+ if(!built&&needsBundler&&!await exists(join(root,'node_modules')))
+  throw Error('Не установлены зависимости приложения (node_modules). Установи зависимости в рабочей копии и повтори browser-client.mjs start; раздавать сырой index.html вместо Vue/React нельзя.');
  if(!built&&pkg?.scripts?.dev&&await exists(join(root,'node_modules'))){
   const port=await portNumber();
   const vite=/\bvite\b/.test(pkg.scripts.dev);
   const argv=['run','dev',...(vite?['--','--host','127.0.0.1','--port',String(port),'--strictPort']:[])];
-  const proc=spawn('npm',argv,{cwd:root,stdio:'ignore',env:{PATH:process.env.PATH,HOME:'/tmp',PORT:String(port),HOST:'127.0.0.1',NODE_ENV:'test'},detached:false});
+  const proc=spawn('npm',argv,{cwd:root,stdio:['ignore','pipe','pipe'],
+   env:{PATH:process.env.PATH,HOME:'/tmp',PORT:String(port),HOST:'127.0.0.1',NODE_ENV:'test'},detached:false});
+  // The application server runs in the browser container, NOT in the Codex
+  // shell. Preserve a bounded diagnostic tail instead of hiding compiler errors.
+  session.devOutput='';
+  for(const stream of [proc.stdout,proc.stderr])
+   stream.on('data',chunk=>{session.devOutput=(session.devOutput+String(chunk)).slice(-2000);});
   session.proc=proc;
   for(let i=0;i<60;i++){
    if(proc.exitCode!==null)break;
-   try{const r=await fetch('http://127.0.0.1:'+port+entry,{signal:AbortSignal.timeout(750)});if(r.status<500)return {port,entry,pages};}catch{}
+   try{const r=await fetch('http://127.0.0.1:'+port+entry,{signal:AbortSignal.timeout(750)});if(r.ok)return {port,entry,pages};}catch{}
    await new Promise(r=>setTimeout(r,250));
   }
   proc.kill('SIGTERM');session.proc=null;
-  if(!built)throw Error('Dev server did not start; run npm install and npm run build in QA workspace');
+  if(!built)throw Error('Сервер приложения не запустился. '+(session.devOutput||'Проверь установку зависимостей и команду npm run dev.').slice(-1200));
  }
  if(!pages.length)throw Error('No browser-ready HTML entry point found; build the application or provide an HTML page');
  const app=await staticServer(folder);
@@ -99,7 +108,7 @@ async function prepare(id,token){
  const root=join(workspaceRoot,'ado-qa-'+id,'repo');
  const canonical=await realpath(root);
  if(canonical!==root||!(await stat(root)).isDirectory())throw Error('QA workspace is unavailable');
- const session={id,token,root,createdAt:Date.now(),lastActivity:Date.now(),page:null,browser:null,server:null,proc:null};
+ const session={id,token,root,createdAt:Date.now(),lastActivity:Date.now(),page:null,browser:null,server:null,proc:null,devOutput:'',pageErrors:[]};
  sessions.set(id,session);
  return session;
 }
@@ -119,6 +128,27 @@ async function stop(s){
   }finally{sessions.delete(s.id);}
  })();
  return s.stopping;
+}
+/** A successful HTTP 200 and HTML title do not prove that a SPA rendered.
+ * Reject empty Vue/React mounts instead of silently capturing blank images.
+ * Keep the original JS/HTTP diagnostic bounded and attached to the result.
+ */
+async function requireRenderedApplication(s){
+ const root=await s.page.evaluate(()=>{
+  if(!document.querySelector('script[type="module"]'))return null;
+  return document.getElementById('app')?'app':document.getElementById('root')?'root':null;
+ });
+ if(!root)return;
+ const ready=await s.page.waitForFunction(id=>{
+  const node=document.getElementById(id);
+  return !!node&&(node.childElementCount>0||!!node.textContent?.trim());
+ },root,{timeout:5000}).then(()=>true).catch(()=>false);
+ if(ready)return;
+ const diagnostics=[...(s.pageErrors||[]).slice(-3),(s.devOutput||'').slice(-750)]
+  .map(value=>String(value||'').replace(/[\\r\\n]+/g,' ').trim()).filter(Boolean).join(' · ').slice(0,1250);
+ throw Error('Сайт открылся, но интерфейс не отрисовался: #'+root+
+  ' пуст. Это ошибка запуска JavaScript-приложения, а не отсутствие Chromium или разрешения на URL.'+
+  (diagnostics?' Детали: '+diagnostics:' Проверь ошибки сборки/импорта Vue, React или Vite.'));
 }
 // Keep the browser host self-healing even when its Runner is restarted while
 // a session is active. Active sessions refresh their lease on each request.
@@ -152,6 +182,13 @@ async function run(s,body){
    s.browser=browser;
    s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
    s.page=await s.context.newPage();
+   s.pageErrors=[];
+   const browserError=value=>{s.pageErrors.push(String(value).slice(0,320));s.pageErrors=s.pageErrors.slice(-6);};
+   s.page.on('pageerror',error=>browserError(error.message));
+   s.page.on('response',response=>{
+    if(response.status()>=400&&response.url().startsWith(s.origin+'/'))
+     browserError('HTTP '+response.status()+' '+new URL(response.url()).pathname);
+   });
    // DOMContentLoaded may be indefinitely delayed by third-party scripts
    // (Chromium is deliberately offline). A committed local navigation is
    // sufficient to begin real DOM assertions; never fake their result.
@@ -159,6 +196,7 @@ async function run(s,body){
    // Give local DOM time to settle without blocking on offline CDN scripts.
    await s.page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
    if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
+   await requireRenderedApplication(s);
    s.path=path;
    return {ok:true,origin:'local QA application',path,availablePages:pages,
     readyState:await s.page.evaluate(()=>document.readyState),
@@ -177,6 +215,7 @@ async function run(s,body){
   const navigation=await page.goto(s.origin+path,{waitUntil:'commit',timeout:12000});
   await page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
   if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
+  await requireRenderedApplication(s);
   s.path=path;
   return {ok:true,title:await page.title(),path,readyState:await page.evaluate(()=>document.readyState)};
  }
@@ -211,6 +250,7 @@ async function run(s,body){
   return {ok:true,selector:target,count:elements.length,truncated:elements.length===80,elements,viewport:page.viewportSize()};
  }
  if(action==='screenshot'){
+  await requireRenderedApplication(s);
   const evidence=join(s.root,'.ado-qa-evidence');
   await mkdir(evidence,{recursive:true,mode:0o700});
   const viewport=page.viewportSize();
