@@ -45,6 +45,13 @@ test('existing task #36 is found by cancellation preview and active PM work is a
   await db.query("UPDATE assistant_messages SET status='completed' WHERE id=$1",[pmMessage]);
   response=await preview();
   assert.deepEqual(response.json().blocked,[],'past successful work does not prevent cancellation forever');
+  const cancelled=await app.inject({
+   method:'POST',url:'/api/projects/'+project+'/tasks/'+task+'/cancel',payload:{confirm:true}
+  });
+  assert.equal(cancelled.statusCode,200,cancelled.body);
+  assert.equal(cancelled.json().ok,true);
+  assert.equal((await db.query('SELECT 1 FROM tasks WHERE id=$1',[task])).rowCount,0);
+  assert.equal((await db.query('SELECT 1 FROM task_cancellation_audit WHERE task_id=$1',[task])).rowCount,1);
  }finally{
   await app.close();await db.end();await admin.query('DROP SCHEMA "'+schema+'" CASCADE');await admin.end();
  }
