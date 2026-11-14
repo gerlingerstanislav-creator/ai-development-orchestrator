@@ -119,6 +119,14 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {role,responsibility:responsibilityFor(role),
    tools:capabilitiesForRole(role,false).map(t=>({name:t.name,description:t.description,readOnly:t.readOnly})),
    task_grantable_tools:taskGrantableTools,
+   execution_environment:{
+    kind:'isolated_task_workspace',
+    repository:'connected project source, pinned to verified SHA',
+    shell:'sandboxed, no GitHub credentials in agent commands',
+    browser:'Chromium/Playwright through authenticated local browser bridge when healthy',
+    evidence:'work.artifacts returns immutable verified screenshots after execution',
+    note:'Рабочая среда проверяется непосредственно при запуске; доступ к production не гарантирован'
+   },
    note:'Новые безопасные права выдаются только на конкретное активное поручение через tools в work.delegate/work.plan. Проверка фактической среды обязательна.'};
  }
  case 'work.artifacts':{
