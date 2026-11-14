@@ -72,9 +72,9 @@ async function checkReference(db:Db,projectId:string,kind:LinkKind,referenceId:s
  const sql=kind==='task'
   ?`SELECT t.id,t.title,t.stage,t.type FROM tasks t WHERE t.project_id=$1 AND t.id=$2${locking}`
   :kind==='assignment'
-  ?`SELECT a.id,a.status,a.evidence,a.result,a.spec_version,t.spec_version AS current_version
-    FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
-    WHERE a.project_id=$1 AND a.id=$2${lock?' FOR SHARE OF a,t':''}`
+  ?`SELECT a.id,a.task_id,a.status,a.evidence,a.result,a.spec_version,t.spec_version AS current_version
+    FROM agent_work_assignments a LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+    WHERE a.project_id=$1 AND a.id=$2${lock?' FOR SHARE OF a':''}`
   :`SELECT id,title,body FROM documents WHERE project_id=$1 AND id=$2${locking}`;
  const result=await db.query(sql,[projectId,referenceId]);
  const row=result.rows[0];
@@ -85,7 +85,7 @@ async function checkReference(db:Db,projectId:string,kind:LinkKind,referenceId:s
   title:row.title
  };
  if(kind==='assignment'){
-  const verified=row.status==='completed'&&row.spec_version===row.current_version&&
+  const verified=row.status==='completed'&&(row.task_id===null||row.spec_version===row.current_version)&&
    typeof row.evidence==='string'&&row.evidence.trim().length>=12;
   return {verified,state:row.status,
    reason:verified?'Результат принят ПМ с доказательствами':'Поручение не принято или его ТЗ устарело'};
