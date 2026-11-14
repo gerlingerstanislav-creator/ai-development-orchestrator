@@ -2,7 +2,6 @@ import {randomUUID} from 'node:crypto';
 import {readPmTaskGoal} from '../../../pm-task-goal.js';
 
 type Db={query:(sql:string,values?:any[])=>Promise<{rows:any[];rowCount:number|null}>};
-type Status='working'|'waiting_agents'|'waiting_user'|'needs_action'|'completed';
 type LinkKind='task'|'assignment'|'document';
 type GoalLink={id:string;kind:LinkKind;reference_id:string};
 const reject=(message:string,statusCode=409)=>Object.assign(new Error(message),{statusCode});
