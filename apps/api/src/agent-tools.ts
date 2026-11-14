@@ -42,6 +42,18 @@ export const agentToolCatalog=[
    tools:{type:'array',items:{type:'string'}}
   },required:['key','role','objective','acceptance','needs'],additionalProperties:false}}
  },['goal_id','task_id','steps']),
+ tool('goals.propose_alternatives','ПМ: цель недостижима текущими возможностями. Записать проверенное ограничение и 1–3 реалистичных варианта (обход или доработка платформы), рекомендацию и необходимость согласования. Это НЕ запускает разработку и НЕ завершает цель; предложение сохраняется для следующих сообщений.',{
+  goal_id:id,
+  limitation:str,
+  observations:{type:'array',items:str},
+  options:{type:'array',items:{type:'object',properties:{
+   kind:{type:'string',enum:['workaround','platform_improvement']},
+   description:str,
+   tradeoff:str,
+   needs_approval:{type:'boolean'}
+  },required:['kind','description','tradeoff','needs_approval'],additionalProperties:false}},
+  recommended_index:{type:'integer',minimum:0,maximum:2}
+ },['goal_id','limitation','options','recommended_index']),
  tool('goals.update','ПМ: записать блокировку, ожидание владельца или дальнейший план по существующей цели. Не признаёт её завершённой.',{goal_id:id,status:{type:'string',enum:['working','waiting_user','needs_action']},reason:str},['goal_id','status','reason']),
  tool('goals.complete','ПМ: завершить цель после независимой проверки связанных результатов и предоставить фактическое доказательство. Не принимает промежуточные запуски как успех.',{goal_id:id,evidence:str},['goal_id','evidence']),
  tool('pm.orders.watch_task','Отслеживать цель провести существующую задачу через все этапы до done. Регистрируй после запуска реальной работы; если работы нет, инструмент вернёт needs_action и предложит продолжить workflow, а не выдаст запуск за завершение.',{task_id:id,idempotency_key:idem},['task_id']),
