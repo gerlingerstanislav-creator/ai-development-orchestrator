@@ -27,6 +27,7 @@ import {installTaskEvidenceSchema} from '../task-evidence.js';
 import {installWorkAssignmentsSchema,installWorkPlanSchema,installTaskCapabilityGrants,installGoalWorkScope} from '../modules/agents/infrastructure/work-assignments.js';
 import {installWorkArtifactsSchema,installGoalWorkArtifactScope} from '../modules/agents/infrastructure/work-artifacts.js';
 import {installPmGoalSchema,installPmCapabilityProposalSchema} from '../modules/planning/infrastructure/pm-goals.js';
+import {installUniversalTaskBoardSchema} from '../task-board.js';
 
 /**
  * Append-only, transactional schema history.
@@ -173,6 +174,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:20,name:'goal-scoped-browser-artifacts',
    checksum:'ado-goal-scoped-browser-artifacts-v20',
    up:database=>installGoalWorkArtifactScope(database)
+  },
+  {
+   version:21,name:'universal-task-board-and-owner-acceptance',
+   checksum:'ado-universal-task-board-owner-acceptance-v21',
+   up:database=>installUniversalTaskBoardSchema(database)
   }
  ];
 }

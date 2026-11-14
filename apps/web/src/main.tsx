@@ -1,8 +1,9 @@
 import {ProcessCenter} from './features/processes/ProcessCenter.js';
 import type {ProjectProcess,ProjectProcessEvent} from './features/processes/process-center-model.js';
 import {TaskBoard} from './features/tasks/TaskBoard.js';
+import {TaskBoardControls} from './features/tasks/TaskBoardControls.js';
 import {buildTaskTimeline,type ActivityItem} from './features/tasks/task-timeline.js';
-import type {KanbanGroupKey} from './features/tasks/board-model.js';
+import {kanbanLanes,boardLaneFor,attentionNeeded,type BoardStatus} from './features/tasks/board-model.js';
 import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
 import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.js';
 import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/AgentPromptDisclosure.js';
@@ -32,7 +33,7 @@ import {GitHubCredentials} from './GitHubCredentials.js';
 
 type Project={id:string,name:string,description:string,is_owner?:boolean;agents_running?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
-type Task={execution_mode?:'code'|'browser_evidence';evidence_source_sha?:string|null;document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
+type Task={board_status?:BoardStatus;acceptance_mode?:'manual'|'automatic'|'undecided';acceptance_feedback?:string|null;accepted_at?:string|null;postponed_at?:string|null;postponed_until?:string|null;archived_at?:string|null;execution_mode?:'code'|'browser_evidence';evidence_source_sha?:string|null;document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
 
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
@@ -230,21 +231,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [targetBranch,setTargetBranch]=useState('');const [mergeBusy,setMergeBusy]=useState(false);const [mergeReport,setMergeReport]=useState('');
  const [gitLink,setGitLink]=useState<GitLink|null>(null);const [gitRepository,setGitRepository]=useState('');const [gitTokenId,setGitTokenId]=useState('');const [gitBusy,setGitBusy]=useState(false);const [gitMessage,setGitMessage]=useState('');
  const [view,setView]=useState<'board'|'list'>('board');
- const [expandedGroups,setExpandedGroups]=useState<KanbanGroupKey[]>(()=>{
-  const all:KanbanGroupKey[]=['analytics','development','results','other'];
-  try{
-   // New layout starts fully expanded, while retaining subsequent user choices.
-   const saved=localStorage.getItem('ado-kanban-groups-expanded-v3');
-   if(!saved)return all;
-   const value:unknown=JSON.parse(saved);
-   return Array.isArray(value)?value.filter((id):id is KanbanGroupKey=>all.includes(id as KanbanGroupKey)):all;
-  }catch{return all;}
- });
- useEffect(()=>{localStorage.setItem('ado-kanban-groups-expanded-v3',JSON.stringify(expandedGroups));},[expandedGroups]);
- function toggleKanbanGroup(group:KanbanGroupKey){
-  setExpandedGroups(old=>old.includes(group)?old.filter(x=>x!==group):[...old,group]);
- }
-
+ const [taskBoardView,setTaskBoardView]=useState<'active'|'postponed'|'attention'|'archive'>('active');
+ const [boardBusy,setBoardBusy]=useState(false);
  const [activeTask,setActiveTask]=useState<Task|null>(null);
  const [qaWaiver,setQaWaiver]=useState<QaWaiverInfo|null>(null);
  const [qaWaiverBusy,setQaWaiverBusy]=useState(false);
@@ -872,11 +860,20 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    setTasks(old=>old.map(t=>t.id===taskId?{...t,[field]:value}:t));
   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Ошибка автосохранения');fail(e);}finally{setSavingField(false);}
  }
- async function moveTask(task:Task,stage:string){
-  if(!selected||stage===task.stage)return;
-  if(task.stage==='analysis'&&stage==='development'){await approveDevelopment(task);return;}
-  try{await api('/projects/'+selected.id+'/tasks/'+task.id,{method:'PATCH',body:JSON.stringify({stage})});await loadProject(selected.id);}
-  catch(e){fail(e);}
+ async function changeBoard(task:Task,action:string,data:Record<string,unknown>={}){
+  if(!selected||boardBusy)return;
+  setBoardBusy(true);
+  try{
+   await api('/projects/'+selected.id+'/tasks/'+task.id+'/board',{method:'PATCH',body:JSON.stringify({action,...data})});
+   const fresh=await api<Task[]>('/projects/'+selected.id+'/tasks');
+   setTasks(fresh);
+   setActiveTask(old=>old?fresh.find(t=>t.id===old.id)||old:null);
+  }catch(e){setTaskFeedback(e instanceof Error?e.message:'Ошибка изменения состояния задачи');fail(e);}
+  finally{setBoardBusy(false);}
+ }
+ async function moveTask(task:Task,status:BoardStatus){
+  if(status===boardLaneFor(task))return;
+  await changeBoard(task,'move',{status});
  }
  async function saveDeploymentSsh(){
   if(!selected||sshSaving)return;
@@ -1730,7 +1727,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const docKindLabel=(kind:Doc['document_kind'])=>kind==='technical'?'Техническая документация':'Функциональность';
  const implementationLabel=(status:Doc['implementation_status'])=>({unverified:'Не подтверждено',planned:'Запланировано',partial:'Реализовано частично',implemented:'Реализовано'}[status]);
  const taskTags=[...new Set(tasks.flatMap(task=>task.tags??[]))].sort((a,b)=>a.localeCompare(b,'ru'));
- const filtered=tasks.filter(t=>(!iterationFilter||(iterationFilter==='unassigned'?!t.iteration_id:t.iteration_id===iterationFilter))&&
+ const filtered=tasks.filter(t=>((taskBoardView==='archive'?!!t.archived_at:taskBoardView==='postponed'?!!t.postponed_at&&!t.archived_at:!t.archived_at&&!t.postponed_at) && (taskBoardView!=='attention'||attentionNeeded(t)))&&(!iterationFilter||(iterationFilter==='unassigned'?!t.iteration_id:t.iteration_id===iterationFilter))&&
   (!tagFilter||t.tags?.includes(tagFilter))&&(!sprintFilter||(sprintFilter==='unassigned'?!t.sprint_id:t.sprint_id===sprintFilter))&&(!versionFilter||(versionFilter==='unassigned'?!t.version_id:t.version_id===versionFilter))&&(t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,''))));
  if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
@@ -1860,8 +1857,12 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   onMoveProjectToTrash={p=>void moveProjectToTrash(p)}
   onFollowLink={followLink}/>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
- {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.type!=='question'&&t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
+ {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{kanbanLanes.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.type!=='question'&&!t.archived_at&&!t.postponed_at&&boardLaneFor(t)===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
  {section==='tasks'&&<><div className="toolbar"><div className="planning-filters"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/>
+ <select aria-label="Представление задач" value={taskBoardView} onChange={e=>setTaskBoardView(e.target.value as typeof taskBoardView)}>
+  <option value="active">Активные</option><option value="attention">Требуют внимания</option>
+  <option value="postponed">Отложенные</option><option value="archive">Архив</option>
+ </select>
  <select aria-label="Фильтр по итерации" value={iterationFilter} onChange={e=>setIterationFilter(e.target.value)}>
   <option value="">Все итерации</option><option value="unassigned">Без итерации</option>{iterations.map(item=><option key={item.id} value={item.id}>{item.title}</option>)}
  </select>
@@ -1878,7 +1879,6 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </select></div><div className="segmented"><button className={view==='board'?'chosen':''} onClick={()=>setView('board')}><Columns3 size={16}/> Канбан</button><button className={view==='list'?'chosen':''} onClick={()=>setView('list')}><List size={16}/> Список</button></div><div className="task-create-actions"><button className="primary create-task" onClick={()=>{setForm({...form,title:'',description:'',type:'task',parent_id:''});setShowTask(true);}}><Plus size={17}/> Создать задачу</button><button className="primary create-task-text" type="button" title="Создать задачу текстом через AI" aria-label="Создать задачу текстом" onClick={()=>openProjectChat('project','Создай задачу: ')}><FileText size={17}/></button></div></div>
  {mergeReport&&<div className="panel merge-report">{mergeReport}</div>}{documentationNotice&&<div className="panel merge-report">{documentationNotice}</div>}{view==='board'?<TaskBoard
  projectId={selected.id} tasks={tasks} filtered={filtered} stages={stages}
- expandedGroups={expandedGroups} onToggleGroup={toggleKanbanGroup}
  renderTaskPlanningLabels={renderTaskPlanningLabels}
  agentWorking={agentWorking} onFollowLink={followLink}
  onMoveTask={(task,stage)=>void moveTask(task,stage)}
@@ -1887,7 +1887,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  onAnswerQuestion={task=>void answerDocumentationQuestion(task)}
  processActionBusy={processActionBusy} mergeBusy={mergeBusy}
  onMerge={()=>void mergeReady()} knowledgeBusy={knowledgeBusy}
- onUpdateDocumentation={()=>void updateDocumentation()}/>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{t.awaits_product_owner&&<span className="task-owner-question-icon" title="Требуется решение владельца"><AlertTriangle size={15}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
+ onUpdateDocumentation={()=>void updateDocumentation()}/>:<div className="panel table-wrap"><table><thead><tr><th>Задача</th><th>Тип</th><th>Состояние</th><th>Рабочий этап</th><th>Создана</th></tr></thead><tbody>{filtered.map(t=><tr key={t.id} onClick={()=>void openTask(t)}><td><a className="task-list-link" href={projectUrl(selected.id,'tasks')+'/'+t.id} onClick={e=>{e.stopPropagation();followLink(e,projectUrl(selected.id,'tasks')+'/'+t.id);}}><span className="task-name-line"><b>{t.title}</b>{t.awaits_product_owner&&<span className="task-owner-question-icon" title="Требуется решение владельца"><AlertTriangle size={15}/></span>}{agentWorking(t.id)&&<span className="agent-equalizer" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}</span><small>#{t.display_number}</small></a>{renderTaskPlanningLabels(t)}</td><td>{t.type}</td><td>{kanbanLanes.find(s=>s.stage===boardLaneFor(t))?.label}{t.postponed_at?' · Отложено':''}</td><td>{stages.find(s=>s.stage===t.stage)?.label}</td><td>{new Date(t.created_at).toLocaleDateString('ru-RU')}</td></tr>)}</tbody></table></div>}</>}
  {section==='processes'&&<ProcessCenter
  projectId={selected.id}
  processes={projectProcesses}
@@ -2198,7 +2198,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="task-modal-top">
     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
     <div className="task-modal-actions">
-     <span className="task-stage-label">{stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}{activeTask.execution_mode==='browser_evidence'?' · Артефакты без PR':''}{qaOutcome?' · '+qaOutcome:''}</span>
+     <span className="task-stage-label">{kanbanLanes.find(x=>x.stage===boardLaneFor(activeTask))?.label||'В работе'} · {stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}{activeTask.execution_mode==='browser_evidence'?' · Артефакты без PR':''}{qaOutcome?' · '+qaOutcome:''}</span>
      {['backlog','analysis'].includes(activeTask.stage)&&<button type="button" className="secondary" title="Удалить ненужную задачу без результатов разработки" onClick={()=>void deleteUnstartedTask()}><Trash2 size={14}/> Удалить</button>}
      {activeTask.type!=='question'&&!['documentation','done'].includes(activeTask.stage)&&
       <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
@@ -2227,6 +2227,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <><h2>{activeTask.title}</h2><button className="pencil" title="Изменить название" onClick={()=>setEditingField('title')}><Pencil size={15}/></button></>}
      </div>
      {savingField&&<small className="muted">Сохранение…</small>}
+     {activeTask.type!=='question'&&<TaskBoardControls key={activeTask.id} task={activeTask} busy={boardBusy} onAction={(action,data)=>changeBoard(activeTask,action,data)}/>}
      <div className="task-top-meta"><span className="task-meta-heading">Теги</span>{activeTask.tags?.length?<div className="task-top-tags">{activeTask.tags.map(tag=><span key={tag}>{tag}</span>)}</div>:<small className="muted">Без тегов</small>}<label className="task-priority-select">Приоритет<select value={activeTask.priority??3} onChange={e=>void updateTaskPriority(activeTask,Number(e.target.value))}>{[1,2,3,4,5].map(n=><option value={n} key={n}>{n} · {n===1?'Критический':n===2?'Высокий':n===3?'Обычный':n===4?'Низкий':'Минимальный'}</option>)}</select></label></div>
      <div className="task-editable task-description-editable">
       <div className="task-field-label">Описание / техническое задание</div>
