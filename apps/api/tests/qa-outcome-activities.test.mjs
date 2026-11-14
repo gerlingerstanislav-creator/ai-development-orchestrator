@@ -56,7 +56,7 @@ test('normal PR is enqueued only after passed independent QA and a current testi
  assert.match(transition.sql,/stage='testing' RETURNING id/);
  assert.equal(f.events.length,1);
  assert.equal(f.events[0][3],'approved');
- assert.ok(f.calls.some(x=>x.sql.includes("'tests_passed'")));
+ assert.ok(f.calls.some(x=>x.sql.includes('INSERT INTO task_events')&&x.values.includes('tests_passed')));
 });
 test('concurrent task-stage movement cannot create a false QA approved event',async()=>{
  const f=fixture(async sql=>{
