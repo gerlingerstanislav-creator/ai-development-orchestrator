@@ -20,6 +20,7 @@ import {workRoles} from './modules/agents/infrastructure/work-assignments.js';
 import {executeAgentWorkTool,isAgentWorkTool} from './modules/agents/infrastructure/agent-work-tools.js';
 import {executePmGoalTool,isPmGoalTool} from './modules/planning/infrastructure/pm-goal-tools.js';
 import {responsibilityFor} from './role-responsibilities.js';
+import {readAgentCapabilityReadiness} from './modules/agents/infrastructure/agent-capability-readiness.js';
 import {parentExists} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
 
@@ -120,7 +121,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
  case 'agents.capabilities':{
   const {role}=z.object({role:z.enum(workRoles)}).parse(params);
-  return {role,responsibility:responsibilityFor(role),
+  const readiness=await readAgentCapabilityReadiness(pool,projectId,role);
+  return {role,responsibility:responsibilityFor(role),readiness,
    tools:capabilitiesForRole(role,false).map(t=>({name:t.name,description:t.description,readOnly:t.readOnly})),
    task_grantable_tools:taskGrantableTools,
    execution_environment:{
