@@ -1,7 +1,13 @@
-/** Kanban view policy is pure: no React state, network, or browser globals. */
-export type KanbanGroupKey='analytics'|'development'|'testing'|'merging'|'results'|'other';
+/** User-facing Kanban lifecycle is independent from Temporal/workflow stages. */
+export const kanbanLanes=[
+ {stage:'backlog',label:'Бэклог'},
+ {stage:'todo',label:'К работе'},
+ {stage:'in_progress',label:'В работе'},
+ {stage:'acceptance',label:'На приёмке'},
+ {stage:'done',label:'Готово'}
+] as const;
+export type BoardStatus=typeof kanbanLanes[number]['stage'];
 export type KanbanLane={stage:string;label:string};
-export type KanbanGroup={key:KanbanGroupKey;title:string;stages:KanbanLane[]};
 
 export type BoardTask={
  id:string;
@@ -10,6 +16,13 @@ export type BoardTask={
  description:string;
  type:string;
  stage:string;
+ board_status?:BoardStatus;
+ acceptance_mode?:'undecided'|'manual'|'automatic';
+ acceptance_feedback?:string|null;
+ postponed_at?:string|null;
+ postponed_until?:string|null;
+ archived_at?:string|null;
+ test_feedback?:string|null;
  created_at:string;
  priority?:number;
  awaits_product_owner?:boolean;
@@ -21,21 +34,16 @@ export type BoardTask={
  document_title?:string|null;
  question_status?:'open'|'answered'|'resolved';
 };
-const stageGroupDefinitions:{key:KanbanGroupKey;title:string;ids:string[]}[]=[
- {key:'analytics',title:'Аналитика',ids:['backlog','analysis']},
- {key:'development',title:'Разработка',ids:['development','testing','merge_queue']},
- {key:'results',title:'Итоги',ids:['deployment','documentation','done']}
-];
-export function groupKanbanStages(stages:readonly KanbanLane[]):KanbanGroup[]{
- const groups=stageGroupDefinitions.map(def=>({
-  key:def.key,title:def.title,
-  stages:stages.filter(stage=>def.ids.includes(stage.stage))
- })).filter(group=>group.stages.length>0);
- const others=stages.filter(stage=>!stageGroupDefinitions.some(group=>group.ids.includes(stage.stage)));
- if(others.length)groups.push({key:'other',title:'Другие этапы',stages:others});
- return groups;
+export function boardLaneFor(task:BoardTask):BoardStatus{
+ if(task.postponed_at)return 'backlog';
+ if(task.board_status&&kanbanLanes.some(lane=>lane.stage===task.board_status))return task.board_status;
+ // Transitional fallback for old API responses, never write it back to stage.
+ return task.stage==='backlog'?'backlog':task.stage==='done'?'done':'in_progress';
 }
-export function boardLaneFor(task:BoardTask){return task.stage;}
+export function attentionNeeded(task:BoardTask){
+ return !!task.awaits_product_owner||boardLaneFor(task)==='acceptance'||
+  !!task.acceptance_feedback||!!(task.test_feedback&&task.stage==='testing');
+}
 export function dependencyReady(task:BoardTask,tasks:readonly BoardTask[]){
  if(!task.depends_on_task_id)return true;
  const dep=tasks.find(t=>t.id===task.depends_on_task_id);
