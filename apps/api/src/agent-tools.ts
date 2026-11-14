@@ -6,7 +6,7 @@ import {normalizeTaskToolGrants} from './modules/agents/domain/tool-capabilities
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
 const readOnlyTools=new Set(['project.context','documents.list','documents.read','documents.search',
- 'pm.decisions.list','pm.orders.list','iterations.preview_plan','approvals.list','discussions.list',
+ 'pm.decisions.list','pm.orders.list','goals.list','goals.read','iterations.preview_plan','approvals.list','discussions.list',
  'tasks.list','tasks.read','tasks.history','tasks.dependency_graph','tasks.request_owner_question_cleanup','questions.list','processes.list','blockers.list','memory.list','documentation.request_reset',
  'history.search','discussions.read','agents.capabilities','work.list','work.artifacts','capabilities.list','capabilities.describe','instructions.reconcile','iterations.list','iterations.read','knowledge.search','knowledge.read','knowledge.related','knowledge.context','knowledge.section','knowledge.sections','project.source']);
 const tool=(name:string,description:string,properties:Record<string,unknown>,required:string[]=[])=>({
@@ -28,6 +28,12 @@ export const agentToolCatalog=[
  tool('pm.decisions.list','Прочитать структурированные решения владельца, чтобы не задавать повторных вопросов.',{}),
  tool('pm.decisions.record','Зафиксировать ответ владельца в реестре решений. Укажи ID его исходного сообщения. При наличии итерации решение передаётся СА.',{source_message_id:id,question:str,answer:str,iteration_id:id,order_id:id},['source_message_id','question','answer']),
  tool('pm.orders.list','Просмотреть активные поручения ПМ и их статусы.',{}),
+ tool('goals.list','ПМ: найти долговременные цели владельца и их реальное состояние без создания новых задач.',{}),
+ tool('goals.read','ПМ: проверить принятую цель, критерии успеха и факты по каждому связанному результату.',{goal_id:id},['goal_id']),
+ tool('goals.open','ПМ: принять текущий запрос владельца как долгосрочную цель с проверяемыми критериями. Не вызывать для простых вопросов, анализа или идей без просьбы выполнять. Источник берётся из текущего сообщения автоматически.',{objective:str,criteria:{type:'array',items:str}},['objective','criteria']),
+ tool('goals.link','ПМ: привязать к цели реально существующий результат (задачу, поручение или документ) и включить контроль выполнения. Никаких фиктивных ссылок.',{goal_id:id,kind:{type:'string',enum:['task','assignment','document']},reference_id:id},['goal_id','kind','reference_id']),
+ tool('goals.update','ПМ: записать блокировку, ожидание владельца или дальнейший план по существующей цели. Не признаёт её завершённой.',{goal_id:id,status:{type:'string',enum:['working','waiting_user','needs_action']},reason:str},['goal_id','status','reason']),
+ tool('goals.complete','ПМ: завершить цель после независимой проверки связанных результатов и предоставить фактическое доказательство. Не принимает промежуточные запуски как успех.',{goal_id:id,evidence:str},['goal_id','evidence']),
  tool('pm.orders.watch_task','Отслеживать цель провести существующую задачу через все этапы до done. Регистрируй после запуска реальной работы; если работы нет, инструмент вернёт needs_action и предложит продолжить workflow, а не выдаст запуск за завершение.',{task_id:id,idempotency_key:idem},['task_id']),
  tool('pm.orders.update','Зафиксировать состояние поручения: ждать ответа владельца, ждать агента, завершить или отметить ошибку.',{order_id:id,status:{type:'string',enum:['working','waiting_agents','waiting_user','completed','failed']},summary:str},['order_id','status']),
  tool('iterations.ask_question','Добавить вопрос к итерации, требующий решения владельца. Вопрос показывается на вкладке План разработки.',{iteration_id:id,question:str},['iteration_id','question']),
@@ -124,7 +130,7 @@ export const agentToolCatalog=[
 ];
 // Orders track successful mutations, not reads or routine agent telemetry.
 // Catalog metadata keeps future tools classified without keyword heuristics.
-const pmNonOrderTools=new Set(['pm.orders.update','processes.report','memory.record','instructions.propose']);
+const pmNonOrderTools=new Set(['pm.orders.update','processes.report','memory.record','instructions.propose','goals.link','goals.update','goals.complete']);
 export function isProjectManagerOrderAction(name:string){
  const tool=agentToolCatalog.find(entry=>entry.name===name);
  return !!tool&&!tool.annotations.readOnlyHint&&!pmNonOrderTools.has(name);
@@ -135,7 +141,7 @@ export type AgentRole=typeof readerRoles[number];
 export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;processId?:string;actorId?:string};
 
 const readerTools=new Set([
- 'project.context','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
+ 'project.context','goals.list','goals.read','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
  'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','project.source','work.list','work.artifacts','agents.capabilities','capabilities.list','capabilities.describe'
 ]);
 
