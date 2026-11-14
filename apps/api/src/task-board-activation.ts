@@ -66,17 +66,17 @@ export async function installTaskWorkBoardActivation(db:Db):Promise<void>{
   AND t.postponed_at IS NULL AND t.archived_at IS NULL
   AND (
    EXISTS(SELECT 1 FROM agent_work_assignments a WHERE a.task_id=t.id
-    AND a.project_id=t.project_id AND a.status<>'cancelled')
+    AND a.project_id=t.project_id AND a.status IN ('queued','running','submitted','blocked'))
    OR EXISTS(SELECT 1 FROM agent_analysis_runs a WHERE a.task_id=t.id
-    AND a.project_id=t.project_id AND a.status<>'cancelled')
+    AND a.project_id=t.project_id AND a.status IN ('queued','running','waiting'))
    OR EXISTS(SELECT 1 FROM ai_task_runs a WHERE a.task_id=t.id AND a.project_id=t.project_id
-    AND a.status<>'cancelled')
+    AND a.status IN ('queued','running'))
    OR EXISTS(SELECT 1 FROM ai_test_runs a WHERE a.task_id=t.id AND a.project_id=t.project_id
-    AND a.status<>'cancelled')
+    AND a.status IN ('queued','running'))
    OR EXISTS(SELECT 1 FROM task_evidence_runs a WHERE a.task_id=t.id
-    AND a.project_id=t.project_id AND a.status<>'cancelled')
+    AND a.project_id=t.project_id AND a.status IN ('queued','dispatching','running'))
    OR EXISTS(SELECT 1 FROM requirement_review_runs a WHERE a.task_id=t.id
-    AND a.project_id=t.project_id AND a.status<>'cancelled')
+    AND a.project_id=t.project_id AND a.status IN ('queued','running'))
    OR EXISTS(SELECT 1 FROM agent_peer_queue a WHERE a.task_id=t.id
     AND a.project_id=t.project_id AND a.status<>'completed')
    OR EXISTS(SELECT 1 FROM assistant_messages m WHERE m.task_id=t.id
