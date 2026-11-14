@@ -9,7 +9,8 @@ const names=new Set(['goals.open','goals.list','goals.read','goals.link','goals.
 export function isPmGoalTool(name:string){return names.has(name);}
 export async function executePmGoalTool(db:Pick<Pool,'query'>,session:AgentSession,
  name:string,args:Record<string,unknown>){
- if(session.role!=='manager'||session.read_only)throw denied('Цели может изменять только ПМ текущего проекта');
+ if(session.role!=='manager')throw denied('Цели доступны только ПМ текущего проекта');
+ if(session.read_only&&!['goals.list','goals.read'].includes(name))throw denied('Читающая сессия не может изменять цели');
  const projectId=session.project_id;
  switch(name){
  case 'goals.open':{
