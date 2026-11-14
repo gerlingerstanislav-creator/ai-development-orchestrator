@@ -17,6 +17,7 @@ ENV HOME=/home/node CODEX_HOME=/home/node/.codex
 WORKDIR /opt/codex-runner
 COPY apps/codex-runner/server.mjs ./server.mjs
 COPY apps/codex-runner/qa-job.mjs ./qa-job.mjs
+COPY apps/codex-runner/delegated-work-sandbox.mjs ./delegated-work-sandbox.mjs
 COPY apps/codex-runner/command-executor.mjs ./command-executor.mjs
 COPY apps/codex-runner/codex-app-server.mjs ./codex-app-server.mjs
 COPY apps/codex-runner/codex-cli-session.mjs ./codex-cli-session.mjs
