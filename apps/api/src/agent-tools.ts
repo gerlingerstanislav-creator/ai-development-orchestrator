@@ -168,7 +168,7 @@ export function toolsForSession(role:AgentRole,readOnly=false,grants:readonly st
  const additional=new Set(normalizeTaskToolGrants(grants));
  return agentToolCatalog.filter(tool=>additional.has(tool.name)||baseline.includes(tool));
 }
-export async function readSessionToolGrants(pool:Pick<Pool,'query'>,session:AgentSession):Promise<string[]>{
+export async function readSessionToolGrants(pool:Pick<Pool,'query'>,session:AgentSession,lock=false):Promise<string[]>{
  if(session.read_only||!session.task_id||!session.process_id||
     !autonomousSpecialistRoles.has(session.role))return [];
  // A session token alone is never sufficient: the assignment and its spec must
@@ -178,7 +178,7 @@ export async function readSessionToolGrants(pool:Pick<Pool,'query'>,session:Agen
   JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id AND t.spec_version=a.spec_version
   JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL AND p.agents_running=true
   WHERE a.id=$1 AND a.project_id=$2 AND a.task_id=$3 AND a.role=$4
-   AND a.status='running' LIMIT 1`,
+   AND a.status='running' LIMIT 1${lock?' FOR SHARE OF a,t':''}`,
   [session.process_id,session.project_id,session.task_id,session.role]);}
  catch(error){
   // Legacy isolated reader fixtures may not have run the v15 schema yet.
