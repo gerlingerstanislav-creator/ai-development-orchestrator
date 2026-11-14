@@ -25,6 +25,10 @@ function mockAppServer(record,delay=0){
      child.stdout.write(JSON.stringify({id:request.id,result})+'\n');
      if(request.method==='turn/start'){
       setTimeout(()=>{
+       child.stdout.write(JSON.stringify({method:'item/reasoning/summaryTextDelta',
+        params:{delta:'Checking the task plan'}})+'\n');
+       child.stdout.write(JSON.stringify({method:'item/started',params:{
+        item:{type:'mcpToolCall',tool:'work.list'}}})+'\n');
        child.stdout.write(JSON.stringify({method:'item/completed',params:{
         item:{type:'agentMessage',text:'Task completed '+request.params.input[0].text.slice(0,30)}}})+'\n');
        child.stdout.write(JSON.stringify({method:'thread/tokenUsage/updated',params:{
@@ -92,4 +96,23 @@ test('repeated HTTP delivery joins the running turn, not two Codex calls',async 
  const results=await Promise.all([execute(options),execute(options)]);
  assert.equal(results[0].turnId,results[1].turnId);
  assert.equal(calls.filter(call=>call.method==='turn/start').length,1);
+});
+
+test('App Server forwards notifications to progress observer without altering turn outcome',async t=>{
+ const folder=await mkdtemp(join(tmpdir(),'ado-progress-app-'));
+ t.after(async()=>rm(folder,{recursive:true,force:true}));
+ const calls=[],events=[];
+ const store=createCodexThreadStore(folder);
+ const run=createCodexAppExecutor({store,spawnImpl:mockAppServer(calls)});
+ const result=await run({
+  scope:{projectId:'project',role:'manager',processId:'owner-chat'},
+  requestId:'pm-turn-1',prompt:'Review issue',model:'gpt-6-sol',effort:'low',cwd:folder,
+  onEvent:event=>{events.push(event.method);},
+  sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}}
+ });
+ assert.match(result.message,/Task completed/);
+ assert.ok(events.includes('item/reasoning/summaryTextDelta'));
+ assert.ok(events.includes('item/started'));
+ assert.ok(events.includes('item/completed'));
+ assert.ok(events.includes('turn/completed'));
 });
