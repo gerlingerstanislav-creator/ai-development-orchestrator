@@ -194,6 +194,12 @@ test('real PostgreSQL v19: goal-only DAG is executable, reviewable and completab
    acceptance:'Independent confirmation of document structure and source',needs:['draft'],tools:[]}
  ];
  const plan=await planPmGoalWork(db,{projectId:project,goalId:goal.id,steps});
+ const replay=await planPmGoalWork(db,{projectId:project,goalId:goal.id,steps});
+ assert.equal(replay.duplicate,true,'identical instructions must not create more agents');
+ assert.equal(replay.plan_id,plan.plan_id);
+ assert.deepEqual(replay.assignments,plan.assignments);
+ assert.equal(replay.new_links,0);
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM agent_work_assignments WHERE goal_id=$1',[goal.id])).rows[0].n,2);
  assert.equal(plan.task_id,null);
  assert.equal(plan.goal_id,goal.id);
  assert.equal(plan.assignments.length,2);

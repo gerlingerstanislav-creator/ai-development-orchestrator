@@ -111,6 +111,55 @@ export async function planWork(db:Db,input:{
  if(input.taskId&&!task)throw fail('Задача не найдена',404);
  if(input.goalId&&!goal)throw fail('Цель ПМ не найдена',404);
  if(task?.stage==='done'||goal?.status==='completed')throw fail('Завершённую задачу или цель нельзя повторно планировать');
+ // A repeated PM turn must not spawn the same DAG again. The parent task/goal
+ // is locked above, so concurrent calls cannot both pass this replay check.
+ // Compare the complete plan (including dependencies and temporary grants),
+ // not just the keys or the requested agent roles.
+ const scopeColumn=input.taskId?'task_id':'goal_id';
+ const scopeId=input.taskId||input.goalId;
+ const version=task?.spec_version||0;
+ const previous=await db.query(`SELECT a.plan_id,a.id,a.plan_key,a.role,a.objective,a.acceptance,a.granted_tools,a.status,
+   COALESCE((SELECT array_agg(prerequisite.plan_key ORDER BY prerequisite.plan_key)
+    FROM agent_work_plan_dependencies dependency
+    JOIN agent_work_assignments prerequisite ON prerequisite.id=dependency.requires_id
+    WHERE dependency.assignment_id=a.id),ARRAY[]::text[]) AS needs
+   FROM agent_work_assignments a
+   WHERE a.project_id=$1 AND a.${scopeColumn}=$2 AND a.spec_version=$3
+    AND a.plan_id IN (
+     SELECT plan_id FROM agent_work_assignments
+     WHERE project_id=$1 AND ${scopeColumn}=$2 AND spec_version=$3 AND plan_id IS NOT NULL
+     GROUP BY plan_id ORDER BY max(created_at) DESC LIMIT 20
+    )
+   ORDER BY a.created_at,a.id`,[input.projectId,scopeId,version]);
+ const plans=new Map<string,typeof previous.rows>();
+ for(const row of previous.rows){
+  if(typeof row.plan_id!=='string'||typeof row.plan_key!=='string')continue;
+  if(!plans.has(row.plan_id))plans.set(row.plan_id,[]);
+  plans.get(row.plan_id)!.push(row);
+ }
+ const intended=new Map(steps.map(step=>[step.key,JSON.stringify([
+  step.role,step.objective,step.acceptance,[...step.needs].sort(),
+  normalizeTaskToolGrants(step.tools)
+ ])]));
+ for(const [planId,rows] of plans){
+  if(rows.length!==steps.length)continue;
+  // Completed/cancelled historical work is not a live duplicate: a new
+  // instruction may legitimately request another verification pass.
+  if(!rows.some(row=>['queued','running','submitted','blocked'].includes(row.status)))continue;
+  const actual=new Map(rows.map(row=>[row.plan_key,JSON.stringify([
+   row.role,row.objective,row.acceptance,[...(row.needs||[])].sort(),
+   [...(row.granted_tools||[])].sort()
+  ])]));
+  if(steps.every(step=>actual.get(step.key)===intended.get(step.key))){
+   const byKey=new Map(rows.map(row=>[row.plan_key,row]));
+   return {plan_id:planId,task_id:input.taskId||null,goal_id:input.goalId||null,
+    status:'existing',duplicate:true,
+    assignments:steps.map(step=>({
+     id:byKey.get(step.key)!.id,key:step.key,role:step.role,
+     depends_on:step.needs.map(need=>byKey.get(need)!.id)
+    }))};
+  }
+ }
  const usage=(await db.query(input.taskId?
   "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted','blocked')":
   "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND goal_id=$2 AND status IN ('queued','running','submitted','blocked')",

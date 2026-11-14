@@ -8,6 +8,32 @@ type Pool=Parameters<typeof reportPmWatchCompletion>[0] & {
  query:(sql:string,values?:any[])=>Promise<{rows:any[];rowCount:number|null}>;
 };
 
+/** A queued DAG step cannot start while an upstream step has failed.
+ * Do not wait forever in Temporal: ask the PM to retry, grant a capability,
+ * cancel or replace the dependency. These reads never mutate the work graph.
+ */
+async function blockedPrerequisites(pool:Pool,projectId:string,assignmentIds:string[]){
+ if(!assignmentIds.length)return [];
+ const result=await pool.query(`SELECT dependent.id AS assignment_id,dependent.plan_key,
+  prerequisite.id AS prerequisite_id,prerequisite.role AS prerequisite_role,
+  prerequisite.status AS prerequisite_status,
+  COALESCE(NULLIF(prerequisite.result,''),NULLIF(prerequisite.reviewer_note,''),'Причина не указана') AS detail
+ FROM agent_work_assignments dependent
+ JOIN agent_work_plan_dependencies edge ON edge.assignment_id=dependent.id
+ JOIN agent_work_assignments prerequisite ON prerequisite.id=edge.requires_id
+ WHERE dependent.project_id=$1 AND dependent.id=ANY($2::uuid[]) AND dependent.status='queued'
+  AND prerequisite.project_id=$1 AND prerequisite.status IN ('blocked','failed','cancelled')
+ ORDER BY dependent.created_at,dependent.id,prerequisite.created_at
+ LIMIT 6`,[projectId,assignmentIds]);
+ return result.rows as Array<{assignment_id:string;plan_key:string|null;prerequisite_id:string;
+  prerequisite_role:string;prerequisite_status:string;detail:string}>;
+}
+function describeBlockedPrerequisites(rows:Awaited<ReturnType<typeof blockedPrerequisites>>){
+ return rows.map(row=>'шаг '+(row.plan_key||row.assignment_id)+' ждёт '+row.prerequisite_role+
+  ' ('+row.prerequisite_status+', '+row.prerequisite_id+'): '+String(row.detail).slice(0,180))
+  .join('; ').slice(0,1200);
+}
+
 /** Project-scoped, read-only process projection followed by an exactly-once
  * transactional PM report. Temporal owns the durable poll/wait lifecycle.
  */
@@ -29,6 +55,14 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
     message:'Цель «'+String(assessed.goal.objective).slice(0,180)+'» подтверждена и завершена.',
     resumeInstruction:' Проверь, что пользователю предоставлен результат с доказательствами.'
    });
+  const queued=assessed.links.filter(link=>link.kind==='assignment'&&link.state==='queued')
+   .map(link=>link.reference_id);
+  const blocked=await blockedPrerequisites(pool,watch.projectId,queued);
+  if(blocked.length)return reportPmWatchCompletion(pool,watch,{
+   message:'Часть маршрута цели «'+String(assessed.goal.objective).slice(0,180)+
+    '» не может продолжиться: '+describeBlockedPrerequisites(blocked),
+   resumeInstruction:' Это НЕ завершение цели. Проверь work.list по цели или задаче и устрани конкретную зависимость: work.review(retry), work.grant либо пересмотр плана. Не создавай одинаковые поручения повторно.'
+  });
   let ongoing=false;
   for(const link of assessed.links){
    if(link.verified)continue;
@@ -63,13 +97,23 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
  }
  if(watch.kind==='delegated_work'){
   const assignment=(await pool.query(`SELECT a.status,a.result,a.evidence,a.role,a.objective,
-   t.title AS task_title,t.display_number
+   a.task_id,a.goal_id,t.title AS task_title,t.display_number
    FROM agent_work_assignments a LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
    WHERE a.project_id=$1 AND a.id=$2`,[watch.projectId,watch.processId])).rows[0];
   if(!assignment)return reportPmWatchCompletion(pool,watch,{
    message:'Поручение агенту больше недоступно. Проверь исходную задачу и историю.',
    resumeInstruction:' Не считать неизвестное поручение завершённым.'});
-  if(['queued','running'].includes(assignment.status))return 'pending';
+  if(assignment.status==='queued'){
+   const blocked=await blockedPrerequisites(pool,watch.projectId,[watch.processId]);
+   if(blocked.length)return reportPmWatchCompletion(pool,watch,{
+    message:'Поручение «'+String(assignment.objective).slice(0,180)+
+     '» ожидает шаг, который не может завершиться: '+describeBlockedPrerequisites(blocked),
+    resumeInstruction:' Проверь work.list('+ (assignment.goal_id?'goal_id='+assignment.goal_id:
+     'task_id='+assignment.task_id)+'), исправь зависимость через work.review/retry или work.grant. Не запускай тот же план заново.'
+   });
+   return 'pending';
+  }
+  if(assignment.status==='running')return 'pending';
   const scope=assignment.display_number?'по задаче #'+assignment.display_number+' «'+assignment.task_title+'»':'по цели ПМ';
   const message='Поручение '+assignment.role+' '+scope+' завершило попытку со статусом '+assignment.status+
    '. Цель: '+assignment.objective+'. Результат: '+String(assignment.result||'нет подтверждения').slice(0,1400)+
