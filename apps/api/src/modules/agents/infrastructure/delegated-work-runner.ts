@@ -24,7 +24,7 @@ export function createDelegatedRunner({pool,baseUrl,secret,decrypt,event,fetchIm
   // SHA is extracted from task evidence, not used to choose a workflow.
   // Runner verifies the actual git checkout.
   const candidate=String(item.evidence_source_sha||item.implementation_commit||
-   String(item.task_description||'').match(/\\b[a-f0-9]{40}\\b/i)?.[0]||'');
+   String(item.task_description||'').match(/\b[a-f0-9]{40}\b/i)?.[0]||'');
   const sourceSha=/^[a-f0-9]{40}$/i.test(candidate)?candidate.toLowerCase():undefined;
   const response=await fetchImpl(baseUrl+'/delegated-work',{
    method:'POST',
