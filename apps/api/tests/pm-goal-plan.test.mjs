@@ -15,7 +15,7 @@ function storage({goalStatus='working',taskStage='analysis'}={}){
  const statements=[];
  const db={query:async(sql,args=[])=>{
   statements.push({sql,args});
-  if(sql.includes('FROM project_pm_goals g'))
+  if(sql.includes('FROM project_pm_goals'))
    return {rows:[{id:goalId,status:goalStatus}],rowCount:1};
   if(sql.includes('FROM tasks WHERE'))
    return {rows:[{id:taskId,stage:taskStage,spec_version:1}],rowCount:1};
@@ -63,4 +63,16 @@ test('invalid dependency graph aborts before any goal link is recorded',async()=
  ]}),/Циклическая зависимость/);
  assert.ok(!statements.some(s=>s.sql.includes('INSERT INTO project_pm_goal_links')));
  assert.ok(!statements.some(s=>s.sql.includes('INSERT INTO agent_work_assignments')));
+});
+
+test('a durable PM goal can start and link DAG assignments without a Kanban task',async()=>{
+ const {db,statements}=storage();
+ const result=await planPmGoalWork(db,{projectId,goalId,steps});
+ assert.equal(result.task_id,null);
+ assert.equal(result.goal_id,goalId);
+ assert.equal(result.linked_results,steps.length);
+ assert.ok(statements.filter(s=>s.sql.startsWith('INSERT INTO agent_work_assignments'))
+  .every(s=>s.args[2]===null&&s.args[3]===goalId));
+ assert.ok(statements.some(s=>s.sql.includes('INSERT INTO agent_work_plan_dependencies')));
+ assert.ok(!statements.some(s=>s.sql.startsWith('INSERT INTO task_events')));
 });
