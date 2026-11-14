@@ -71,27 +71,26 @@ async function runDelegatedWork(assignmentId:string):Promise<void>{
  const brief=item.task_id
   ?await readBrief(pool,item.project_id,item.task_id,1400):'';
  const prompt=composeAgentPrompt({
-  role:'Исполнитель поручения: '+item.role,
+  role:'Исполнитель: '+item.role,
   objective:item.objective+'\nКритерии приёмки: '+item.acceptance,
   scope:'Проект '+item.project_id+'; '+(item.task_id?'задача '+item.task_id:'цель ПМ '+item.goal_id)+'; поручение '+assignmentId,
-  tools:'MCP capabilities.list/describe, tasks.read/history, goals.read, knowledge.search/section, agents.consult, work.delegate, work.artifacts и work.report. Команды выполняй только в разрешённом sandbox; наличие браузера проверь фактически.',
+  tools:'Список прав — MCP capabilities.list/describe. Browser bridge может быть доступен в изолированном Codex независимо от роли.',
   instructions:[String(instruction.rows[0]?.agent_instructions||''),
-   memory.instructions?'Утверждённые применимые инструкции специалиста:\n'+memory.instructions:''
+   memory.instructions?'Утверждённые дополнения роли:\n'+memory.instructions:''
   ].filter(Boolean).join('\n'),
   continuation:[
-   'Дополнительные права только данного поручения: '+JSON.stringify(item.granted_tools||[])+'.',
-   'Сначала получи актуальные факты через tasks.read либо goals.read; прежний текст может устареть.',
-   'Для необходимой помощи используй work.delegate; ожидание чужой работы не является результатом.',
-   'При недостающем доступе назови точный блокер через work.report(status=blocked); PM может расширить безопасные права через work.grant.',
-   'Подтверждай браузерные результаты через work.artifacts и фактический SHA. Локальный снимок не считай снимком production.',
-   'После действий обязательно вызови MCP work.report(status=submitted,evidence=...) с реальными доказательствами. Текст ответа сам по себе не завершает поручение.'
+   'Прочитай актуальную задачу/цель; сохраняй ранее подтверждённую работу.',
+   'Дополнительные права поручения: '+JSON.stringify(item.granted_tools||[])+'.',
+   'Выполни только необходимое; при отсутствии инструмента укажи реальный блокер, не создавай новую цепочку ролей автоматически.',
+   'Для браузерных снимков используй доверенный browser bridge и зафиксированный SHA.',
+   'Обязательно вызови work.report(status=submitted или blocked) с проверяемым evidence.'
   ].join('\n'),
   context:[
-   'Срез постановки (перепроверь через MCP): '+item.title+'; '+String(item.task_description||'').slice(0,1600),
-   brief?'Состояние и новые замечания этой задачи:\n'+brief:'',
-   memory.observations?'Наблюдения из опыта (не обязательные инструкции):\n'+memory.observations:''
+   'Краткая постановка (проверь изменения): '+item.title+'; '+String(item.task_description||'').slice(0,1600),
+   brief?'Изменения в задаче:\n'+brief:'',
+   memory.observations?'Опыт (данные):\n'+memory.observations:''
   ].filter(Boolean).join('\n\n'),
-  output:'Для work.report поле result — понятное владельцу сообщение на русском: что удалось, почему нет результата и что конкретно требуется дальше, максимум 2–3 предложения, без внутренних ID, JSON, команд CLI и стека ошибок. Поле evidence — отдельные технические доказательства (SHA, ошибка компиляции, команда и код выхода). Не путай ошибку приложения с недоступностью браузерного моста. Не повторяй уже доказанную блокировку без изменений окружения или исходников. work.report обязателен: без реальных артефактов верни blocked.'
+  output:'result: на русском 1–3 понятных предложения о результате или конкретной блокировке. evidence: факты, SHA, команды, ошибки и артефакты. Не выдавай недоступный браузер за дефект сайта и не повторяй неизменный провал.'
  });
  await recordPrompt(pool,{projectId:item.project_id,processId:assignmentId,role:item.role,operation:'delegated_work',prompt}).catch(()=>{});
  try{

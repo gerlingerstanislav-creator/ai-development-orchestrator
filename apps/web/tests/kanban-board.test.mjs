@@ -5,6 +5,7 @@ import {renderToStaticMarkup} from 'react-dom/server';
 import {TaskBoard} from '../src/features/tasks/TaskBoard.tsx';
 import {TaskBoardControls} from '../src/features/tasks/TaskBoardControls.tsx';
 import {TaskExecutionPlan} from '../src/features/tasks/TaskExecutionPlan.tsx';
+import {TaskCurrentWork,describeCurrentWork} from '../src/features/tasks/TaskCurrentWork.tsx';
 import {kanbanLanes,attentionNeeded,dependencyReady,kanbanOrder,boardLaneFor} from '../src/features/tasks/board-model.ts';
 
 const task=(id,props={})=>({
@@ -104,4 +105,19 @@ test('failed kickoff supports retry without inventing task completion',()=>{
  assert.match(html,/Планирование PM завершилось ошибкой/);
  assert.match(html,/Повторить запуск PM/);
  assert.doesNotMatch(html,/Принять результат/);
+});
+
+test('Kanban and task list reveal which specialist is actually working and what they do',()=>{
+ const work=[{role:'documentation',status:'running',detail:'Сделать desktop и mobile снимки сайта',
+  source:'assignment',updated_at:'2026-11-15T12:00:00Z'}];
+ const t=task('47',{stage:'backlog',board_status:'in_progress',current_work:work});
+ const html=renderToStaticMarkup(React.createElement(TaskBoard,props([t],[])));
+ assert.match(html,/В работе/);
+ assert.match(html,/Исполнение по плану ПМ/);
+ assert.match(html,/Документация · Работает/);
+ assert.match(html,/desktop и mobile/);
+ const compact=renderToStaticMarkup(React.createElement(TaskCurrentWork,{items:work,compact:true}));
+ assert.match(compact,/Сделать desktop и mobile/);
+ assert.match(describeCurrentWork({role:'manager',status:'processing',detail:'План',
+  source:'pm'}),/ПМ · Работает/);
 });

@@ -12,6 +12,7 @@ import {qaEventDetail,formatQaReportMessage} from '../../qa-report-message.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from '../../task-evidence-routing.js';
 import {registerTaskBoardRoutes} from '../../task-board-routes.js';
 import {listWork} from '../agents/infrastructure/work-assignments.js';
+import {readProjectTaskCurrentWork} from '../../task-current-work.js';
 
 type Deps={
  pool:Pool;
@@ -30,7 +31,14 @@ function parse<T extends z.ZodTypeAny>(schema:T,input:unknown):z.infer<T>{return
  */
 export function registerProjectTaskRoutes(app:FastifyInstance,{pool,uid,access,requireAdmin,temporal}:Deps){
 registerTaskBoardRoutes(app,{pool,uid,access,requireAdmin});
-app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return tasksWithCustomerQuestions(pool,id);});
+app.get('/api/projects/:id/tasks',async(req:any,reply)=>{
+ const {id}=parse(z.object({id:z.string().uuid()}),req.params);
+ if(!await access(req,reply,id))return;
+ const [tasks,work]=await Promise.all([
+  tasksWithCustomerQuestions(pool,id),readProjectTaskCurrentWork(pool,id)
+ ]);
+ return tasks.map(task=>({...task,current_work:work.get(task.id)||[]}));
+});
 app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
  const data=parse(z.object({title:z.string().trim().min(1).max(300),description:z.string().max(20000).default(''),type:z.enum(['task','bug','improvement','epic','question']).default('task'),parent_id:z.string().uuid().nullable().optional(),document_id:z.string().uuid().nullable().optional()}),req.body);

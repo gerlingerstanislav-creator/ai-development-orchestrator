@@ -28,6 +28,7 @@ import {installWorkAssignmentsSchema,installWorkPlanSchema,installTaskCapability
 import {installWorkArtifactsSchema,installGoalWorkArtifactScope} from '../modules/agents/infrastructure/work-artifacts.js';
 import {installPmGoalSchema,installPmCapabilityProposalSchema} from '../modules/planning/infrastructure/pm-goals.js';
 import {installUniversalTaskBoardSchema} from '../task-board.js';
+import {installTaskWorkBoardActivation} from '../task-board-activation.js';
 
 /**
  * Append-only, transactional schema history.
@@ -179,6 +180,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:21,name:'universal-task-board-and-owner-acceptance',
    checksum:'ado-universal-task-board-owner-acceptance-v21',
    up:database=>installUniversalTaskBoardSchema(database)
+  },
+  {
+   version:22,name:'task-work-activates-kanban',
+   checksum:'ado-task-work-activates-kanban-v22',
+   up:database=>installTaskWorkBoardActivation(database)
   }
  ];
 }

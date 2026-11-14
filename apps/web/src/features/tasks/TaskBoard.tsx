@@ -1,5 +1,6 @@
 import React,{useState} from 'react';
 import {AlertTriangle} from 'lucide-react';
+import {TaskCurrentWork} from './TaskCurrentWork.js';
 import {projectUrl} from '../navigation/routes.js';
 import {boardLaneFor,dependencyReady,kanbanOrder,kanbanLanes,
  type BoardStatus,type BoardTask,type KanbanLane} from './board-model.js';
@@ -62,7 +63,10 @@ export function TaskBoard<T extends BoardTask>({
     {t.awaits_product_owner&&<span className="task-owner-question-icon" title="Нужен ответ владельца для продолжения" aria-label="Необходим ответ владельца"><AlertTriangle size={16}/></span>}
     {agentWorking(t.id)&&<span className="agent-equalizer task-card-activity" role="status" aria-label="AI работает над задачей" title="AI выполняет задачу"><i/><i/><i/></span>}
    </span>
-   <small className="task-card-stage"><span className={'stage-dot '+t.stage}/>{stageLabel(t.stage)}</small>
+   <small className="task-card-stage"><span className={'stage-dot '+t.stage}/>{
+    t.stage==='backlog'&&t.current_work?.length?'Исполнение по плану ПМ':stageLabel(t.stage)
+   }</small>
+   <TaskCurrentWork items={t.current_work}/>
    {t.acceptance_feedback&&<small className="task-warning">Замечания приёмки: {t.acceptance_feedback}</small>}
    {t.postponed_at&&<small className="muted">Отложено{t.postponed_until?' до '+t.postponed_until:''}</small>}
    {!dependencyReady(t,tasks)&&<small className="task-warning">Ожидает зависимость</small>}

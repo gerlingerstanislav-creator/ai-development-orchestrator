@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import pg from 'pg';
 import Fastify from 'fastify';
 import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {completeNonCodeTask} from '../dist/task-noncode-completion.js';
 import {registerTaskBoardRoutes} from '../dist/task-board-routes.js';
+import {storeWorkArtifact} from '../dist/modules/agents/infrastructure/work-artifacts.js';
 
 async function isolated(fn){
  const name='ado_noncode_result_'+randomUUID().replaceAll('-','');
@@ -68,4 +69,48 @@ test('non-code completion refuses submitted work, code roles and Git changes ins
    assert.equal((await db.query("SELECT count(*)::int AS n FROM task_events WHERE task_id=$1 AND event='noncode_completed'",[id.task])).rows[0].n,0);
   });
  }
+});
+
+async function screenshot(db,id,width,height,sha='f'.repeat(40)){
+ const bytes=Buffer.alloc(220,width===390?123:78);
+ bytes[0]=255;bytes[1]=216;bytes[bytes.length-2]=255;bytes[bytes.length-1]=217;
+ const name=width+'x'+height+'-'+randomUUID()+'.jpg';
+ return storeWorkArtifact(db,{
+  projectId:id.project,taskId:id.task,assignmentId:id.assignment,
+  sourceSha:sha,origin:'isolated-local-browser',name,mime:'image/jpeg',
+  viewport:{width,height},sha256:createHash('sha256').update(bytes).digest('hex'),
+  data:bytes.toString('base64')
+ });
+}
+const screenshotComplete=(db,id)=>completeNonCodeTask(db,{
+ projectId:id.project,taskId:id.task,actorId:id.user,kind:'screenshots',
+ summary:'Сделаны реальные desktop и mobile скриншоты по текущей версии приложения',
+ evidence:'Оба изображения записаны доверенным браузером, PM проверил размеры и SHA'
+});
+test('one non-QA browser worker can finish screenshot-only task after two trusted images and PM review',async()=>{
+ await isolated(async db=>{
+  const id=await prepare(db,'documentation','running');
+  await assert.rejects(screenshotComplete(db,id),e=>e.statusCode===409);
+  await screenshot(db,id,1440,900);
+  await assert.rejects(screenshotComplete(db,id),e=>e.statusCode===409);
+  await screenshot(db,id,390,844);
+  await assert.rejects(screenshotComplete(db,id),e=>e.statusCode===409,'submitted or running is not PM acceptance');
+  await db.query("UPDATE agent_work_assignments SET status='completed' WHERE id=$1",[id.assignment]);
+  const result=await screenshotComplete(db,id);
+  assert.equal(result.status,'completed');
+  assert.equal(result.board_status,'acceptance');
+  assert.equal(result.verified_screenshots.length,2);
+  assert.equal((await db.query('SELECT stage FROM tasks WHERE id=$1',[id.task])).rows[0].stage,'done');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM ai_test_runs WHERE task_id=$1',[id.task])).rows[0].n,0,
+   'a screenshot deliverable must not require a redundant QA stage');
+ });
+});
+test('screenshots from different source SHAs are rejected even if both artifacts are trusted',async()=>{
+ await isolated(async db=>{
+  const id=await prepare(db,'documentation','running');
+  await screenshot(db,id,1440,900,'a'.repeat(40));
+  await screenshot(db,id,390,844,'b'.repeat(40));
+  await db.query("UPDATE agent_work_assignments SET status='completed' WHERE id=$1",[id.assignment]);
+  await assert.rejects(screenshotComplete(db,id),e=>e.statusCode===409);
+ });
 });

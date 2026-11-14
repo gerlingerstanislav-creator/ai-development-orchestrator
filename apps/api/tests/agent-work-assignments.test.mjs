@@ -36,7 +36,7 @@ test('delegate creates a work item, not a PR or Kanban stage change',async()=>{
  const sql=[];
  const db={query:async (statement)=>{
   sql.push(statement);
-  if(statement.includes('SELECT id,stage,spec_version'))return {rows:[{id:taskId,stage:'analysis',spec_version:3}],rowCount:1};
+  if(statement.includes('SELECT id,stage,board_status,postponed_at,archived_at,spec_version'))return {rows:[{id:taskId,stage:'analysis',spec_version:3}],rowCount:1};
   if(statement.includes('count(*)::int AS n'))return {rows:[{n:0}],rowCount:1};
   if(statement.includes('SELECT id,status FROM agent_work_assignments'))return {rows:[],rowCount:0};
   return {rows:[],rowCount:1};
@@ -50,7 +50,7 @@ test('delegate creates a work item, not a PR or Kanban stage change',async()=>{
 
 test('delegate refuses finished tasks and cross-role nested assignments',async()=>{
  const db={query:async sql=>{
-  if(sql.includes('SELECT id,stage,spec_version'))return {rows:[{id:taskId,stage:'done',spec_version:1}],rowCount:1};
+  if(sql.includes('SELECT id,stage,board_status,postponed_at,archived_at,spec_version'))return {rows:[{id:taskId,stage:'done',spec_version:1}],rowCount:1};
   return {rows:[],rowCount:0};
  }};
  await assert.rejects(delegateWork(db,{projectId,taskId,sourceRole:'manager',role:'development',

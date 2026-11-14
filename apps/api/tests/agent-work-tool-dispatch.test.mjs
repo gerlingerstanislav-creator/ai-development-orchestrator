@@ -60,7 +60,7 @@ test('live peer specialist can delegate in same task and cannot create unauthori
   statements.push({sql,params});
   if(sql.includes('SELECT id FROM agent_work_assignments'))return {rowCount:0,rows:[]};
   if(sql.includes('SELECT note_id AS id'))return {rowCount:1,rows:[{id:assignment}]};
-  if(sql.includes('SELECT id,stage,spec_version FROM tasks'))return {rowCount:1,rows:[{id:taskId,stage:'testing',spec_version:3}]};
+  if(sql.includes('SELECT id,stage,board_status,postponed_at,archived_at,spec_version FROM tasks'))return {rowCount:1,rows:[{id:taskId,stage:'testing',spec_version:3}]};
   if(sql.includes('count(*)::int AS n'))return {rowCount:1,rows:[{n:0}]};
   if(sql.includes('SELECT id,status,granted_tools FROM agent_work_assignments'))
    return {rowCount:0,rows:[]};

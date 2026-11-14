@@ -68,3 +68,37 @@ test('v10 upgrade preserves manager edits, role capacity, session and learning a
    {agent_name:'Owner PM',agent_instructions:'Owner-specific agent policy'});
  });
 });
+
+test('instruction audit upgrades only exact former defaults, never owner-customized team prompts',async()=>{
+ await isolated(async db=>{
+  await runSchemaMigrations(db,migrations);
+  const {agentInstructions}=await import('../dist/agent-instructions.js');
+  const {previousAgentInstructions}=await import('../dist/agent-instructions-legacy.js');
+  const user=randomUUID(),project=randomUUID();
+  await db.query("INSERT INTO users(id,email,password_hash) VALUES($1,'team-audit@example.test','hash')",[user]);
+  await db.query("INSERT INTO projects(id,name,owner_id) VALUES($1,'Audit',$2)",[project,user]);
+  await reconcileProjectTeamProfiles(db);
+  await db.query("UPDATE project_conversation_agents SET agent_instructions=$3 WHERE project_id=$1 AND role=$2",
+   [project,'manager',previousAgentInstructions.manager]);
+  await db.query("UPDATE project_conversation_agents SET agent_instructions='Индивидуальные правила аналитика' WHERE project_id=$1 AND role='analyst'",[project]);
+  await db.query("UPDATE project_specialist_agents SET agent_instructions=$2 WHERE project_id=$1 AND role='architect'",
+   [project,previousAgentInstructions.architect]);
+  await db.query(`INSERT INTO workflow_stages(
+    project_id,stage,label,mode,position,agent_name,agent_instructions)
+    VALUES($1,'development','Разработка','approval',3,'Разработчик',$2)
+    ON CONFLICT(project_id,stage) DO UPDATE SET agent_instructions=EXCLUDED.agent_instructions`,
+   [project,previousAgentInstructions.development]);
+  await reconcileProjectTeamProfiles(db);
+  const manager=(await db.query("SELECT agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role='manager'",[project])).rows[0];
+  assert.equal(manager.agent_instructions,agentInstructions.manager);
+  const analyst=(await db.query("SELECT agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role='analyst'",[project])).rows[0];
+  assert.equal(analyst.agent_instructions,'Индивидуальные правила аналитика');
+  const architect=(await db.query("SELECT agent_instructions FROM project_specialist_agents WHERE project_id=$1 AND role='architect'",[project])).rows[0];
+  assert.equal(architect.agent_instructions,agentInstructions.architect);
+  const developer=(await db.query("SELECT agent_instructions FROM workflow_stages WHERE project_id=$1 AND stage='development'",[project])).rows[0];
+  assert.equal(developer.agent_instructions,agentInstructions.development);
+  await reconcileProjectTeamProfiles(db);
+  assert.equal((await db.query("SELECT agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role='analyst'",[project])).rows[0].agent_instructions,
+   'Индивидуальные правила аналитика');
+ });
+});
