@@ -155,7 +155,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
     WHERE id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'`,[session.process_id,projectId,task_id,session.role]);
    if(active.rowCount)parentId=session.process_id!;
    else {
-    const authorized=await pool.query(`SELECT id FROM agent_peer_queue WHERE note_id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'
+    const authorized=await pool.query(`SELECT note_id AS id FROM agent_peer_queue WHERE note_id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'
      UNION ALL SELECT id FROM ai_task_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='development' AND status IN ('queued','running')
      UNION ALL SELECT id FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='testing' AND status IN ('queued','running')
      UNION ALL SELECT id FROM agent_analysis_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='analysis' AND status IN ('queued','running')`,
