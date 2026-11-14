@@ -32,7 +32,7 @@ export async function planPmGoalWork(db:Db,input:{
  await db.query(`INSERT INTO project_pm_goal_events(id,goal_id,kind,detail)
   VALUES($1,$2,'linked',$3)`,[randomUUID(),input.goalId,
   'План '+plan.plan_id+' связан с целью: '+plan.assignments.length+' поручений']);
- await db.query(`UPDATE project_pm_goals SET status='waiting_agents',
+ await db.query(`UPDATE project_pm_goals SET status='waiting_agents',capability_proposal=NULL,
   updated_at=now() WHERE id=$1 AND project_id=$2 AND status<>'completed'`,
   [input.goalId,input.projectId]);
  return {...plan,goal_id:input.goalId,goal_status:'waiting_agents',

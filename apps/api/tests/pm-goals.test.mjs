@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {installPmGoalSchema,openPmGoal,linkPmGoal,assessPmGoal,listPmGoals,
- updatePmGoalStatus,completePmGoal}
+ updatePmGoalStatus,completePmGoal,installPmCapabilityProposalSchema}
  from '../dist/modules/planning/infrastructure/pm-goals.js';
 import {executePmGoalTool,isPmGoalTool}
  from '../dist/modules/planning/infrastructure/pm-goal-tools.js';
@@ -25,6 +25,8 @@ async function isolated(fn){
   `);
   await installPmGoalSchema(db);
   await installPmGoalSchema(db);
+  await installPmCapabilityProposalSchema(db);
+  await installPmCapabilityProposalSchema(db);
   await fn(db);
  }finally{
   await db.end();
@@ -115,5 +117,50 @@ test('PM goal tools are scoped to manager and to a real processing owner message
    {goal_id:open.id,evidence:'Неверное делегирование завершения'}),/только ПМ/);
   await assert.rejects(executePmGoalTool(db,{...manager,read_only:true},'goals.update',
    {goal_id:open.id,status:'working',reason:'Запустить дополнительные проверки'}),/не может изменять/);
+ });
+});
+
+test('PM stores a capability gap with feasible alternatives, approval requirements and a recommendation',async()=>{
+ await isolated(async db=>{
+  const projectId=randomUUID(),actorId=randomUUID(),sourceMessageId=randomUUID();
+  await db.query('INSERT INTO projects VALUES($1)',[projectId]);
+  await db.query("INSERT INTO assistant_messages VALUES($1,$2,$3,'user','project','processing',NULL)",
+   [sourceMessageId,projectId,actorId]);
+  const goal=await openPmGoal(db,{projectId,actorId,sourceMessageId,objective,criteria});
+  const manager={role:'manager',read_only:false,project_id:projectId,actor_id:actorId,
+   process_id:sourceMessageId};
+  const proposal={
+   goal_id:goal.id,limitation:'У существующего агента пока отсутствует поддерживаемый инструмент для проверки пользовательского интерфейса',
+   observations:['В доступном MCP-каталоге отсутствует требуемое действие браузера'],
+   options:[
+    {kind:'workaround',description:'Воспользоваться разрешённым тестовым окружением с уже доступным QA Runner',
+     tradeoff:'Проверяется только среда с доступным исходным SHA',needs_approval:false},
+    {kind:'platform_improvement',description:'Подключить проверяемый browser tool к общему каталогу capabilities',
+     tradeoff:'Необходимо реализовать изоляцию, доступ и аудит',needs_approval:true}
+   ],
+   recommended_index:1
+  };
+  assert.equal(isPmGoalTool('goals.propose_alternatives'),true);
+  await assert.rejects(executePmGoalTool(db,{...manager,role:'development'},
+   'goals.propose_alternatives',proposal),/только ПМ/);
+  await assert.rejects(executePmGoalTool(db,{...manager,read_only:true},
+   'goals.propose_alternatives',proposal),/Читающая сессия/);
+  await assert.rejects(executePmGoalTool(db,manager,'goals.propose_alternatives',
+   {...proposal,recommended_index:2}),/Рекомендованный вариант/);
+  const result=await executePmGoalTool(db,manager,'goals.propose_alternatives',proposal);
+  assert.equal(result.status,'needs_action');
+  assert.equal(result.requires_owner_decision,true);
+  assert.equal(result.capability_proposal.recommended_index,1);
+  const assessed=await executePmGoalTool(db,manager,'goals.read',{goal_id:goal.id});
+  assert.equal(assessed.goal.status,'needs_action');
+  assert.equal(assessed.goal.capability_proposal.options[1].kind,'platform_improvement');
+  assert.equal((await listPmGoals(db,projectId)).goals[0].has_capability_proposal,true);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM project_pm_goal_events WHERE goal_id=$1',
+   [goal.id])).rows[0].n,2);
+  await assert.rejects(completePmGoal(db,{projectId,goalId:goal.id,evidence:'Без реального результата'}),/Нельзя завершить цель/);
+  await updatePmGoalStatus(db,{projectId,goalId:goal.id,status:'working',
+   reason:'Владелец согласовал допустимый обход и продолжение работы'});
+  assert.equal((await assessPmGoal(db,projectId,goal.id)).goal.capability_proposal,null);
+  assert.equal((await listPmGoals(db,projectId)).goals[0].has_capability_proposal,false);
  });
 });

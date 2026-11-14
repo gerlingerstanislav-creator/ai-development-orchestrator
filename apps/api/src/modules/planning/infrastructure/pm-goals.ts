@@ -45,6 +45,42 @@ export async function installPmGoalSchema(db:Db){
  );`);
 }
 
+/** v18: keep a structured proposed workaround / platform improvement
+ * with the original long-lived Goal. Historical events remain append-only.
+ */
+export async function installPmCapabilityProposalSchema(db:Db){
+ await db.query("ALTER TABLE project_pm_goals ADD COLUMN IF NOT EXISTS capability_proposal jsonb");
+}
+export type PmCapabilityOption={
+ kind:'workaround'|'platform_improvement';
+ description:string;
+ tradeoff:string;
+ needs_approval:boolean;
+};
+export async function proposePmCapabilityOptions(db:Db,input:{
+ projectId:string;goalId:string;limitation:string;observations:string[];
+ options:PmCapabilityOption[];recommendedIndex:number;
+}){
+ if(input.recommendedIndex<0||input.recommendedIndex>=input.options.length)
+  throw reject('Рекомендованный вариант не входит в список',400);
+ const proposal={
+  limitation:input.limitation,observations:input.observations,options:input.options,
+  recommended_index:input.recommendedIndex,proposed_at:new Date().toISOString()
+ };
+ const result=await db.query(`UPDATE project_pm_goals
+  SET status='needs_action',capability_proposal=$3::jsonb,updated_at=now()
+  WHERE project_id=$1 AND id=$2 AND status<>'completed'
+  RETURNING id,status,order_id,capability_proposal`,
+  [input.projectId,input.goalId,JSON.stringify(proposal)]);
+ if(!result.rowCount)throw reject('Цель не найдена или уже завершена',404);
+ const preferred=input.options[input.recommendedIndex];
+ await db.query(`INSERT INTO project_pm_goal_events(id,goal_id,kind,detail)
+  VALUES($1,$2,'status',$3)`,[randomUUID(),input.goalId,
+  ('Ограничение возможностей: '+input.limitation+'; предложено: '+preferred.description).slice(0,1500)]);
+ return {goal_id:input.goalId,status:'needs_action',capability_proposal:proposal,
+  requires_owner_decision:true};
+}
+
 export async function openPmGoal(db:Db,input:{
  projectId:string;sourceMessageId:string;actorId:string;objective:string;criteria:string[];
 }){
@@ -123,7 +159,7 @@ export async function linkPmGoal(db:Db,input:{
 }
 
 export async function assessPmGoal(db:Db,projectId:string,goalId:string,lock=false){
- const row=await db.query(`SELECT id,objective,criteria,status,order_id,source_message_id,completion_evidence
+ const row=await db.query(`SELECT id,objective,criteria,status,order_id,source_message_id,completion_evidence,capability_proposal
   FROM project_pm_goals WHERE id=$1 AND project_id=$2${lock?' FOR UPDATE':''}`,[goalId,projectId]);
  if(!row.rowCount)throw reject('Цель не найдена',404);
  const links=await db.query(`SELECT id,kind,reference_id FROM project_pm_goal_links
@@ -141,6 +177,7 @@ export async function assessPmGoal(db:Db,projectId:string,goalId:string,lock=fal
 
 export async function listPmGoals(db:Db,projectId:string){
  const goals=await db.query(`SELECT g.id,g.objective,g.criteria,g.status,g.order_id,g.source_message_id,
+  (g.capability_proposal IS NOT NULL) AS has_capability_proposal,
   g.updated_at,(SELECT count(*)::int FROM project_pm_goal_links l WHERE l.goal_id=g.id) AS linked_results
   FROM project_pm_goals g WHERE g.project_id=$1
   ORDER BY (g.status='completed') ASC,g.updated_at DESC LIMIT 50`,[projectId]);
@@ -150,7 +187,9 @@ export async function listPmGoals(db:Db,projectId:string){
 export async function updatePmGoalStatus(db:Db,input:{
  projectId:string;goalId:string;status:'working'|'waiting_user'|'needs_action';reason:string
 }){
- const goal=await db.query(`UPDATE project_pm_goals SET status=$3,updated_at=now()
+ const goal=await db.query(`UPDATE project_pm_goals SET status=$3,
+   capability_proposal=CASE WHEN $3='working' THEN NULL ELSE capability_proposal END,
+   updated_at=now()
   WHERE project_id=$1 AND id=$2 AND status<>'completed' RETURNING id,status,order_id`,
   [input.projectId,input.goalId,input.status]);
  if(!goal.rowCount)throw reject('Цель не найдена или уже завершена');
@@ -167,7 +206,7 @@ export async function completePmGoal(db:Db,input:{
  if(!assessment.verification.verified)
   throw reject('Нельзя завершить цель без подтверждённых связанных результатов: '+
    assessment.verification.missing.map(v=>v.kind+': '+v.reason).join('; ').slice(0,700));
- const finished=await db.query(`UPDATE project_pm_goals SET status='completed',completion_evidence=$3,updated_at=now()
+ const finished=await db.query(`UPDATE project_pm_goals SET status='completed',capability_proposal=NULL,completion_evidence=$3,updated_at=now()
   WHERE project_id=$1 AND id=$2 AND status<>'completed' RETURNING id,status,order_id`,
   [input.projectId,input.goalId,input.evidence]);
  if(!finished.rowCount)throw reject('Цель параллельно изменилась');

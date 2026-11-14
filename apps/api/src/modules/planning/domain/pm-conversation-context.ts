@@ -3,7 +3,8 @@
  * goals and owner decisions are. Never infer any task is done from text.
  */
 type Goal={
- id:string;objective:string;criteria:unknown;status:string;order_id?:string|null
+ id:string;objective:string;criteria:unknown;status:string;order_id?:string|null;
+ capability_proposal?:{limitation?:string;options?:{description?:string}[];recommended_index?:number}|null
 };
 type Decision={question:string;answer:string};
 const summary=(value:unknown,max:number)=>String(value??'').replace(/\s+/g,' ').trim().slice(0,max);
@@ -15,7 +16,10 @@ export function buildPmConversationContext(goals:readonly Goal[],decisions:reado
    .map(x=>summary(x,140)):[];
   entries.push('Цель '+summary(g.id,36)+' ('+summary(g.status,30)+'): '+summary(g.objective,220)+
    (criteria.length?'; критерии: '+criteria.join('; '):'')+
-   (g.order_id?'; исходное поручение '+summary(g.order_id,36):''));
+   (g.order_id?'; исходное поручение '+summary(g.order_id,36):'')+
+   (g.capability_proposal?'; блокировка: '+summary(g.capability_proposal.limitation,145)+
+    '; предлагаемый вариант: '+summary(g.capability_proposal.options?.[g.capability_proposal.recommended_index??0]?.description,170)+
+    ' (подробности через goals.read)':''));
  }
  for(const d of decisions.slice(0,4)){
   entries.push('Решение владельца: '+summary(d.question,120)+' → '+summary(d.answer,200));
