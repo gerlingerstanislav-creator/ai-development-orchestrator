@@ -32,6 +32,16 @@ export const agentToolCatalog=[
  tool('goals.read','ПМ: проверить принятую цель, критерии успеха и факты по каждому связанному результату.',{goal_id:id},['goal_id']),
  tool('goals.open','ПМ: принять текущий запрос владельца как долгосрочную цель с проверяемыми критериями. Не вызывать для простых вопросов, анализа или идей без просьбы выполнять. Источник берётся из текущего сообщения автоматически.',{objective:str,criteria:{type:'array',items:str}},['objective','criteria']),
  tool('goals.link','ПМ: привязать к цели реально существующий результат (задачу, поручение или документ) и включить контроль выполнения. Никаких фиктивных ссылок.',{goal_id:id,kind:{type:'string',enum:['task','assignment','document']},reference_id:id},['goal_id','kind','reference_id']),
+ tool('goals.plan','ПМ: построить план поручений с зависимостями для существующей задачи и атомарно привязать ВСЕ результаты к принятой цели. Используй вместо work.plan при выполнении цели. Задача может быть создана перед планированием, если её ещё нет.',{
+  goal_id:id,task_id:id,
+  steps:{type:'array',items:{type:'object',properties:{
+   key:field('string','Уникальный ключ шага'),
+   role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},
+   objective:str,acceptance:str,
+   needs:{type:'array',items:{type:'string'}},
+   tools:{type:'array',items:{type:'string'}}
+  },required:['key','role','objective','acceptance','needs'],additionalProperties:false}}
+ },['goal_id','task_id','steps']),
  tool('goals.update','ПМ: записать блокировку, ожидание владельца или дальнейший план по существующей цели. Не признаёт её завершённой.',{goal_id:id,status:{type:'string',enum:['working','waiting_user','needs_action']},reason:str},['goal_id','status','reason']),
  tool('goals.complete','ПМ: завершить цель после независимой проверки связанных результатов и предоставить фактическое доказательство. Не принимает промежуточные запуски как успех.',{goal_id:id,evidence:str},['goal_id','evidence']),
  tool('pm.orders.watch_task','Отслеживать цель провести существующую задачу через все этапы до done. Регистрируй после запуска реальной работы; если работы нет, инструмент вернёт needs_action и предложит продолжить workflow, а не выдаст запуск за завершение.',{task_id:id,idempotency_key:idem},['task_id']),
