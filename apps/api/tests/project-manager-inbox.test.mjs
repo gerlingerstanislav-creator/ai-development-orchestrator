@@ -83,7 +83,10 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  await db.query("UPDATE assistant_messages SET status='completed' WHERE id=$1",[replyId]);
  assert.equal((await db.query('SELECT count(*)::int AS count FROM project_pm_orders')).rows[0].count,1,'answer reuses the waiting order');
  await db.query("UPDATE project_chat_topics SET status='closed' WHERE id=$1",[topic]);
- assert.deepEqual((await send(answer)).json(),ownerAnswer.json(),'lost receipt can be recovered after the topic closes');
+ const replay=(await send(answer)).json();
+ assert.equal(replay.id,ownerAnswer.json().id,'lost receipt returns the same message');
+ assert.equal(replay.order_id,ownerAnswer.json().order_id,'original order is stable');
+ assert.equal(replay.status,'completed','idempotent response reflects current durable state');
  assert.equal((await send({message:'Ответ',replyTo:randomUUID()})).statusCode,400);
 
  let rejectDelivery;
