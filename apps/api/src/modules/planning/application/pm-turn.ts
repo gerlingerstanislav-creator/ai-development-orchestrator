@@ -107,6 +107,11 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    'Не пересказывай всю историю. При необходимости используй адресные MCP-инструменты; '+
     'сохранённые фоновые поручения отслеживаются Temporal, не ожидай их синхронно.'
   ].filter(Boolean).join('\n');
+  // Durable Codex threads retain their original policy. Rotate only if
+  // approved project instructions, role memory or PM rules actually change.
+  const promptRevision=createHash('sha256')
+   .update([instructions.slice(0,2200),approvedMemory,PM_GOAL_POLICY,PM_EXECUTION_GUIDANCE].join('\n'))
+   .digest('hex').slice(0,16);
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   await audit('runner_request');
   const response=await fetch(runnerUrl+'/agent',{
