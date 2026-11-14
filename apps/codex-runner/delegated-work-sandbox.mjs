@@ -11,6 +11,8 @@ export function validateDelegatedSandboxRequest(job){
  if(!job||!['analysis','development','testing','documentation','devops','architect'].includes(job.role)||
   ![job.assignmentId,job.projectId,job.actorId].every(x=>idPattern.test(x))||
   !(job.taskId===null||idPattern.test(job.taskId))||
+  !(job.goalId===undefined||job.goalId===null||idPattern.test(job.goalId))||
+  (!!job.taskId===!!job.goalId)||
   typeof job.prompt!=='string'||job.prompt.length<12||job.prompt.length>55000||
   typeof job.model!=='string'||job.model.length>90||
   !['minimal','low','medium','high','extra_high','xhigh'].includes(job.reasoning))
@@ -59,7 +61,7 @@ export function createDelegatedWorkSandbox({
      throw new Error('Репозиторий не находится на запрошенном закреплённом SHA');
    }
    const policy=await isolatedTaskPolicy(workspace,dir,undefined,true,true);
-   if(job.repository&&job.taskId&&await browser.health()){
+   if(job.repository&&await browser.health()){
     browserSession=browser.open(attemptId,[],{adHoc:true});
     await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
     try{
@@ -91,7 +93,7 @@ export function createDelegatedWorkSandbox({
     'Команды внутри рабочей копии допускаются только через действующую sandbox policy; не пытайся обойти сетевые ограничения.',
     'Это рабочая копия без автоматического push/PR. Запрещено выдавать локальные изменения за доставленные пользователю.',
     'Для результатов используй MCP work.report, не объявляй работу завершённой без подтверждения фактических действий.',
-    !job.taskId?'Это поручение связано с целью ПМ, а не с карточкой Kanban. Сохранение браузерных снимков в task work.artifacts для него недоступно.':'Артефакты привязаны к задаче и закреплённой ревизии.'
+    job.goalId?'Это поручение связано с целью ПМ '+job.goalId+'. Скриншоты сохраняются в work.artifacts(goal_id) с подтверждённым SHA исходников.':'Артефакты привязаны к задаче и подтверждённой ревизии; прочитай их через work.artifacts(task_id).'
    ].join('\n');
    const result=await withReaderContext(agentApi,runnerSecret,{
     projectId:job.projectId,taskId:job.taskId,processId:job.assignmentId,
@@ -123,7 +125,7 @@ export function createDelegatedWorkSandbox({
     const res=await fetch(agentApi+'/work-artifacts',{
      method:'POST',
      headers:{'X-Runner-Secret':runnerSecret,'Content-Type':'application/json'},
-     body:JSON.stringify({projectId:job.projectId,taskId:job.taskId,
+     body:JSON.stringify({projectId:job.projectId,taskId:job.taskId,goalId:job.goalId||null,
       assignmentId:job.assignmentId,sourceSha,artifacts:verified}),
      signal:AbortSignal.timeout(20000)
     });

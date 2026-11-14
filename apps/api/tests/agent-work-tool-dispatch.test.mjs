@@ -108,3 +108,35 @@ test('only project manager can review or grant, without bypassing QA or stage ch
  }),/Нельзя принять/);
  assert.equal(calls.filter(x=>x.sql.includes('UPDATE tasks SET stage')).length,0);
 });
+
+test('goal screenshot reader enforces a single scope and the active specialist assignment',async()=>{
+ const goalId='00000000-0000-4000-8000-000000000006';
+ const goalSpecialist={...specialist,task_id:null};
+ await assert.rejects(attempt(never,manager,'work.artifacts',{task_id:taskId,goal_id:goalId}),error=>error.statusCode===400);
+ await assert.rejects(attempt(never,manager,'work.artifacts',{}),error=>error.statusCode===400);
+ const denied=[];
+ const noAssignedGoal={query:async(sql,args)=>{
+  denied.push({sql,args});
+  return {rowCount:0,rows:[]};
+ }};
+ await assert.rejects(attempt(noAssignedGoal,goalSpecialist,'work.artifacts',{goal_id:goalId}),error=>error.statusCode===403);
+ assert.equal(denied.length,1);
+ assert.match(denied[0].sql,/FROM agent_work_assignments/);
+ assert.deepEqual(denied[0].args,[assignment,projectId,goalId,'testing']);
+ const calls=[];
+ const ownGoal={query:async(sql,args)=>{
+  calls.push({sql,args});
+  if(sql.includes('FROM agent_work_artifacts'))return {rowCount:1,rows:[{
+   id:'00000000-0000-4000-8000-000000000007',
+   source_sha:'a'.repeat(40),sha256:'b'.repeat(64)
+  }]};
+  return {rowCount:1,rows:[{id:goalId}]};
+ }};
+ const result=await attempt(ownGoal,goalSpecialist,'work.artifacts',{goal_id:goalId});
+ assert.equal(calls.length,3);
+ assert.deepEqual(calls[1].args,[goalId,projectId]);
+ assert.deepEqual(calls[2].args,[projectId,goalId]);
+ assert.equal(result.artifacts[0].url,
+  '/api/projects/'+projectId+'/goals/'+goalId+'/work-artifacts/00000000-0000-4000-8000-000000000007');
+ await assert.rejects(attempt(never,specialist,'work.artifacts',{goal_id:goalId}),error=>error.statusCode===403);
+});

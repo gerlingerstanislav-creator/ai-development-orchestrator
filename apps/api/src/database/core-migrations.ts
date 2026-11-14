@@ -25,7 +25,7 @@ import {installEpicStageSync,backfillLegacyEpicStages} from '../epic-stage-sync.
 import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-first-gate.js';
 import {installTaskEvidenceSchema} from '../task-evidence.js';
 import {installWorkAssignmentsSchema,installWorkPlanSchema,installTaskCapabilityGrants,installGoalWorkScope} from '../modules/agents/infrastructure/work-assignments.js';
-import {installWorkArtifactsSchema} from '../modules/agents/infrastructure/work-artifacts.js';
+import {installWorkArtifactsSchema,installGoalWorkArtifactScope} from '../modules/agents/infrastructure/work-artifacts.js';
 import {installPmGoalSchema,installPmCapabilityProposalSchema} from '../modules/planning/infrastructure/pm-goals.js';
 
 /**
@@ -168,6 +168,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:19,name:'goal-scoped-agent-work',
    checksum:'ado-goal-scoped-agent-work-v19',
    up:database=>installGoalWorkScope(database)
+  },
+  {
+   version:20,name:'goal-scoped-browser-artifacts',
+   checksum:'ado-goal-scoped-browser-artifacts-v20',
+   up:database=>installGoalWorkArtifactScope(database)
   }
  ];
 }

@@ -13,9 +13,9 @@ async function isolated(fn){
  try{await fn(db);}
  finally{await db.end();await admin.query('DROP SCHEMA "'+name+'" CASCADE');await admin.end();}
 }
-test('fresh v19 installs durable PM goals, capability proposals and goal work without altering earlier workflow migrations',async()=>{
+test('fresh v20 installs durable PM goals, goal work and private goal screenshots without altering older migrations',async()=>{
  await isolated(async db=>{
-  assert.deepEqual(await runSchemaMigrations(db,migrations),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]);
+  assert.deepEqual(await runSchemaMigrations(db,migrations),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]);
   assert.deepEqual(await runSchemaMigrations(db,migrations),[]);
   const triggers=(await db.query(`SELECT tgname FROM pg_trigger
    WHERE tgrelid='tasks'::regclass AND NOT tgisinternal
@@ -43,6 +43,17 @@ test('fresh v19 installs durable PM goals, capability proposals and goal work wi
    'ado-project-pm-capability-proposals-v18');
   const proposal=(await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='project_pm_goals' AND column_name='capability_proposal'")).rows;
   assert.equal(proposal.length,1);
+  assert.equal((await db.query("SELECT checksum FROM schema_migrations WHERE version=20")).rows[0].checksum,
+   'ado-goal-scoped-browser-artifacts-v20');
+  const goalArtifactColumn=(await db.query("SELECT is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='agent_work_artifacts' AND column_name='goal_id'")).rows[0];
+  const taskArtifactColumn=(await db.query("SELECT is_nullable FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='agent_work_artifacts' AND column_name='task_id'")).rows[0];
+  assert.equal(goalArtifactColumn?.is_nullable,'YES');
+  assert.equal(taskArtifactColumn?.is_nullable,'YES');
+  const constraints=(await db.query(`SELECT conname FROM pg_constraint
+   WHERE conrelid='agent_work_artifacts'::regclass
+   AND conname IN ('agent_work_artifact_scope_xor','agent_work_artifact_goal_project')
+   ORDER BY conname`)).rows.map(row=>row.conname);
+  assert.deepEqual(constraints,['agent_work_artifact_goal_project','agent_work_artifact_scope_xor']);
  });
 });
 test('v11 repairs legacy cards once and preserves QA rework transition and active sessions',async()=>{
@@ -56,7 +67,7 @@ test('v11 repairs legacy cards once and preserves QA rework transition and activ
   await db.query("INSERT INTO tasks(id,project_id,title,type,stage,parent_id) VALUES($1,$2,'Unapproved','task','backlog',$3)",[unapproved,project,epic]);
   await db.query("INSERT INTO tasks(id,project_id,title,type,stage) VALUES($1,$2,'QA rework','task','testing')",[qaTask,project]);
   await db.query("INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,status,expires_at,task_id) VALUES($1,$2,$3,'development','active-v11','running',now()+interval '2 hours',$4)",[session,project,user,qaTask]);
-  assert.deepEqual(await runSchemaMigrations(db,migrations),[11,12,13,14,15,16,17,18,19]);
+  assert.deepEqual(await runSchemaMigrations(db,migrations),[11,12,13,14,15,16,17,18,19,20]);
   assert.deepEqual(await runSchemaMigrations(db,migrations),[]);
   assert.equal((await db.query('SELECT stage FROM tasks WHERE id=$1',[epic])).rows[0].stage,'backlog');
   assert.equal((await db.query('SELECT analysis_state FROM tasks WHERE id=$1',[child])).rows[0].analysis_state,'new');
