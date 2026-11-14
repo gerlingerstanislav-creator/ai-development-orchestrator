@@ -24,7 +24,7 @@ async function prepare(db,role='documentation',status='completed'){
  await db.query(`INSERT INTO agent_work_assignments
   (id,project_id,task_id,source_role,role,objective,acceptance,spec_version,status,result,evidence,reviewer_note)
   VALUES($1,$2,$3,'manager',$4,'Подготовить качественное исследование',
-   'Проверить источники и приложить выводы',0,$5,$6,$7,$8)`,
+   'Проверить источники и приложить выводы',1,$5,$6,$7,$8)`,
   [id.assignment,id.project,id.task,role,status,
    'Документ создан, источники прочитаны и сравнены по заданным критериям',
    'Результат проверен по документу в проектной базе',
