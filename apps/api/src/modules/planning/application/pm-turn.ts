@@ -97,7 +97,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,2200):'',
      images.length?'Приложены изображения: '+images.map(image=>image.name).join(', ')+'. Рассмотри их визуальное содержимое.':''
    ].filter(Boolean).join('\n\n'),
-    output:'Ответь по-русски. Укажи достигнутый результат и следующий шаг по исходной цели. При блокировке сообщи конкретные варианты, рекомендацию и ответственного. Не выдавай запуск за завершение.'
+    output:'Отвечай по-русски естественно и прямо, как универсальный AI-помощник. На вопросы давай содержательный ответ без формального отчёта и без лишних действий. При поручении обозначь фактически достигнутый результат, оставшиеся шаги и ответственного; при блокировке предложи конкретные альтернативы. Никогда не выдавай запуск процесса за выполнение цели.'
   });
   // First turn uses the complete PM role contract; subsequent turns keep that
   // contract in the same Codex thread and supply only fresh owner input.
