@@ -23,6 +23,7 @@ export type BoardTask={
  postponed_until?:string|null;
  archived_at?:string|null;
  test_feedback?:string|null;
+ current_work?:import('./TaskCurrentWork.js').CurrentWork[];
  created_at:string;
  priority?:number;
  awaits_product_owner?:boolean;
