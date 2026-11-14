@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {composeAgentPrompt,recordAgentPrompt} from '../../../agent-prompt.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from '../../../agent-tools.js';
 import {readChatImages} from '../../../chat-images.js';
