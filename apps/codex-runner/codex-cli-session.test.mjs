@@ -72,3 +72,23 @@ test('a timeout after the first Codex CLI event still persists the recoverable t
  assert.equal((await store.read({projectId:'p',taskId:'t',role:'testing'}))?.threadId,
  '12345678-1234-4234-8234-123456789abc');
 });
+
+test('delegated specialist resume uses compact context instead of repeating the full role prompt',async t=>{
+ const folder=await mkdtemp(join(tmpdir(),'codex-delegated-resume-'));
+ t.after(()=>rm(folder,{recursive:true,force:true}));
+ const calls=[];
+ const execute=createPersistentCliExecutor(createCodexThreadStore(folder),async(_name,args,opts)=>{
+  calls.push(args);
+  if(calls.length===1)opts.onStdout('{"type":"thread.started","thread_id":"12345678-1234-4234-8234-123456789abc"}\\n');
+  return {stdout:'',stderr:'',exitCode:0};
+ });
+ const scope={projectId:'project',taskId:'task',role:'delegated:testing:assignment'};
+ const args={scope,model:'gpt-6-sol',reasoning:'low',cwd:folder,env:{},timeout:10000,
+  prompt:'Full role instructions and task history',resumePrompt:'Only new SHA and current task state'};
+ await execute({...args,requestId:'first'});
+ await execute({...args,requestId:'second'});
+ assert.equal(calls.length,2);
+ assert.equal(calls[0].at(-1),'Full role instructions and task history');
+ assert.equal(calls[1].at(-1),'Only new SHA and current task state');
+ assert.ok(calls[1].includes('resume'));
+});
