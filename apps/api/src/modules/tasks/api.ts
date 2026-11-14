@@ -10,6 +10,7 @@ import {pendingAgentQuestions} from '../../task-agent-notes.js';
 import {readAgentActivity} from '../../task-agent-activity.js';
 import {qaEventDetail,formatQaReportMessage} from '../../qa-report-message.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from '../../task-evidence-routing.js';
+import {registerTaskBoardRoutes} from '../../task-board-routes.js';
 
 type Deps={
  pool:Pool;
@@ -27,6 +28,7 @@ function parse<T extends z.ZodTypeAny>(schema:T,input:unknown):z.infer<T>{return
  * to avoid parallel implementations of task graph mutations.
  */
 export function registerProjectTaskRoutes(app:FastifyInstance,{pool,uid,access,requireAdmin,temporal}:Deps){
+registerTaskBoardRoutes(app,{pool,uid,access,requireAdmin});
 app.get('/api/projects/:id/tasks',async(req:any,reply)=>{const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;return tasksWithCustomerQuestions(pool,id);});
 app.post('/api/projects/:id/tasks',async(req:any,reply)=>{
  const {id}=parse(z.object({id:z.string().uuid()}),req.params);if(!await access(req,reply,id))return;
