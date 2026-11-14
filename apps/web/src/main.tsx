@@ -7,6 +7,7 @@ import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,ta
 import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.js';
 import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/AgentPromptDisclosure.js';
 import {parseAppRoute,projectUrl,uuidPattern,type ProjectSection,type AppRoute} from './features/navigation/routes.js';
+import {ProjectSidebar} from './features/navigation/ProjectSidebar.js';
 import {api,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
@@ -1698,36 +1699,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   (!tagFilter||t.tags?.includes(tagFilter))&&(!sprintFilter||(sprintFilter==='unassigned'?!t.sprint_id:t.sprint_id===sprintFilter))&&(!versionFilter||(versionFilter==='unassigned'?!t.version_id:t.version_id===versionFilter))&&(t.title.toLowerCase().includes(search.toLowerCase())||String(t.display_number).includes(search.replace(/^#/,''))));
  if(!token)return <div className="login-shell"><form className="login-card" onSubmit={signIn}><span className="logo-icon">◈</span><h1>AI Development<br/>Orchestrator</h1><p>Войдите, чтобы управлять проектами</p><label>Электронная почта<input type="text" inputMode="email" autoComplete="username" required value={login} onChange={e=>setLogin(e.target.value)} placeholder="admin@example.com"/></label><label>Пароль<input type="password" autoComplete="current-password" required value={password} onChange={e=>setPassword(e.target.value)}/></label><button className="primary">Войти</button></form>{error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}</div>;
  return <div className="shell">
- <aside className="sidebar"><div className="brand"><span className="logo-icon">◈</span><span>Orchestrator<small>WORKSPACE</small></span></div>
-  <div className="sidebar-projects">
-   <div className="project-selector-row">
-    <button type="button" className="project-selector" aria-expanded={projectMenuOpen} aria-label="Выбрать проект" onClick={()=>setProjectMenuOpen(open=>!open)}>
-     <span className="project-selector-title">{selected?.name||'Выбрать проект'}</span><ChevronDown size={17} className={projectMenuOpen?'rotate':''}/>
-    </button>
-    {selected&&<button type="button" className={'project-agent-toggle '+(projects.find(p=>p.id===selected.id)?.agents_running?'running':'stopped')}
-      aria-label={projects.find(p=>p.id===selected.id)?.agents_running?'Остановить запуск агентов проекта':'Запустить агентов проекта'}
-      title={projects.find(p=>p.id===selected.id)?.agents_running?'Остановить запуск новых задач проекта (уже исполняемые завершаются)':'Запустить агентов проекта и продолжить очередь'}
-      disabled={agentToggleBusy||!selected.is_owner} onClick={()=>void toggleProjectAgents()}>
-      {agentToggleBusy?<LoaderCircle size={15} className="spin"/>:projects.find(p=>p.id===selected.id)?.agents_running?<Square size={15} fill="currentColor"/>:<Play size={15} fill="currentColor"/>}
-    </button>}
-   </div>
-   {projectMenuOpen&&<div className="project-menu">
-    <a href="/projects" onClick={e=>{setProjectMenuOpen(false);followLink(e,'/projects');}}><LayoutGrid size={15}/> Все проекты</a>
-    {projects.map(p=><a key={p.id} href={projectUrl(p.id)} className={selected?.id===p.id?'selected':''} onClick={e=>{setProjectMenuOpen(false);followLink(e,projectUrl(p.id));}}><span className="project-menu-name">{p.name}</span>{selected?.id===p.id&&<CheckCircle2 size={15}/>}</a>)}
-    <button type="button" onClick={()=>{setProjectMenuOpen(false);setForm(current=>({...current,name:'',description:''}));setShowProject(true);}}><Plus size={15}/> Новый проект</button>
-   </div>}
-  </div>
-  <div className="sidebar-nav">
-  {selected?<><div className="sidebar-label">ПРОЕКТ</div>
-   {([['overview','Обзор',LayoutGrid],['tasks','Задачи',Columns3],['docs','Документация',BookOpen],['plan','План разработки',ClipboardList],['qa','Тестирование',CheckCircle2],['processes','Процессы',Clock3],['team','Команда',Users],['workflow','Workflow',Workflow],['settings','Настройки проекта',Settings2]] as const).map(([k,label,Icon])=><a key={k} href={projectUrl(selected.id,k)} className={'nav '+(section===k?'active':'')} onClick={e=>followLink(e,projectUrl(selected.id,k))}><Icon size={18}/>{label}</a>)}
-  </>:<a href="/projects" className="nav active" onClick={e=>followLink(e,'/projects')}><LayoutGrid size={18}/> Мои проекты</a>}
-  </div>
-  <div className="sidebar-bottom">
-   <span className="avatar">AD</span><span className="account-name">Администратор</span>
-   <a href="/account/settings" className={'account-settings-button '+(accountSettings?'active':'')} onClick={e=>followLink(e,'/account/settings')} title="Настройки профиля" aria-label="Настройки профиля"><Settings2 size={18}/></a>
-   <button className="logout-button" onClick={logout} title="Выйти" aria-label="Выйти"><ArrowRightCircle size={17}/></button>
-  </div>
- </aside>
+ <ProjectSidebar
+  selected={selected} projects={projects} section={section}
+  projectMenuOpen={projectMenuOpen}
+  onToggleProjectMenu={()=>setProjectMenuOpen(open=>!open)}
+  onCloseProjectMenu={()=>setProjectMenuOpen(false)}
+  agentToggleBusy={agentToggleBusy}
+  onToggleProjectAgents={()=>void toggleProjectAgents()}
+  onFollowLink={followLink}
+  onCreateProject={()=>{setForm(current=>({...current,name:'',description:''}));setShowProject(true);}}
+  accountSettings={accountSettings} onLogout={logout}/>
  <main className="main"><header className="topbar"><a className="crumb" href="/projects" onClick={e=>followLink(e,'/projects')}>Мои проекты</a>{accountSettings?<><span className="slash">/</span><strong>Настройки профиля</strong></>:selected&&<><span className="slash">/</span><a className="crumb project-crumb" href={projectUrl(selected.id,'overview')} onClick={e=>followLink(e,projectUrl(selected.id,'overview'))}>{selected.name}</a><span className="slash">/</span><strong>{section==='overview'?'Обзор':section==='tasks'?'Задачи':section==='docs'?'Документация':section==='plan'?'План разработки':section==='qa'?'Тестирование':section==='processes'?'Процессы':section==='team'?'Команда':section==='workflow'?'Workflow':'Настройки'}</strong></>}<div className="top-right">
    <div className="quota-widget" tabIndex={0} aria-label="Лимиты Codex: 5 часов и неделя" title="Лимиты Codex">
     <div className="quota-compact">{quotaBar(shortWindow,'5 часов',false)}{quotaBar(weekWindow,'Неделя',false)}</div>
