@@ -8,6 +8,8 @@ export type WorkPlanStep={
  objective:string;
  acceptance:string;
  needs:readonly string[];
+ /** Additional project-scoped tools granted for this assignment only. */
+ tools?:readonly string[];
 };
 
 export function orderWorkPlan(steps:readonly WorkPlanStep[]):WorkPlanStep[]{

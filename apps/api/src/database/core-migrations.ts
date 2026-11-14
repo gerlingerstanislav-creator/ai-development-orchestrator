@@ -24,7 +24,7 @@ import {installProjectTeamSchema} from '../project-team.js';
 import {installEpicStageSync,backfillLegacyEpicStages} from '../epic-stage-sync.js';
 import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-first-gate.js';
 import {installTaskEvidenceSchema} from '../task-evidence.js';
-import {installWorkAssignmentsSchema,installWorkPlanSchema} from '../modules/agents/infrastructure/work-assignments.js';
+import {installWorkAssignmentsSchema,installWorkPlanSchema,installTaskCapabilityGrants} from '../modules/agents/infrastructure/work-assignments.js';
 
 /**
  * Append-only, transactional schema history.
@@ -141,6 +141,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:14,name:'goal-driven-work-dependency-plans',
    checksum:'ado-work-plan-dag-v14',
    up:database=>installWorkPlanSchema(database)
+  },
+  {
+   version:15,name:'scoped-agent-tool-capabilities',
+   checksum:'ado-agent-tool-capability-grants-v15',
+   up:database=>installTaskCapabilityGrants(database)
   }
  ];
 }

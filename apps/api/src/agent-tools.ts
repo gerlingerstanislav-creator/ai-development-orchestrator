@@ -1,6 +1,7 @@
 import type {Pool} from 'pg';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {agentMemoryContext} from './agent-memory.js';
+import {normalizeTaskToolGrants} from './modules/agents/domain/tool-capabilities.js';
 
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 const field=(type:string,description:string)=>({type,description});
@@ -65,11 +66,12 @@ export const agentToolCatalog=[
    role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},
    objective:field('string','Конкретная цель поручения'),
    acceptance:field('string','Проверяемые критерии результата'),
-   needs:{type:'array',items:{type:'string'}}
+   needs:{type:'array',items:{type:'string'}},
+   tools:{type:'array',items:{type:'string'},description:'Дополнительные безопасные инструменты именно для этого поручения; см. agents.capabilities'}
   },required:['key','role','objective','acceptance'],additionalProperties:false}},
   idempotency_key:idem
  },['task_id','steps']),
- tool('work.delegate','Поручить специалисту конкретную работу на основе цели, критериев приёмки и его инструментов. Без фиктивных PR и переходов Kanban; результат проверяет ПМ.',{task_id:id,role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},objective:str,acceptance:str,idempotency_key:idem},['task_id','role','objective','acceptance']),
+ tool('work.delegate','Поручить специалисту конкретную работу на основе цели, критериев приёмки и его инструментов. Без фиктивных PR и переходов Kanban; результат проверяет ПМ.',{task_id:id,role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},objective:str,acceptance:str,tools:{type:'array',items:{type:'string'},description:'Дополнительные инструменты на срок активного поручения'},idempotency_key:idem},['task_id','role','objective','acceptance']),
  tool('work.report','Исполнитель: сообщить проверяемый результат или конкретную блокировку своего активного поручения. Сообщение не закрывает задачу; итог изучает ПМ.',{result:str,evidence:str,status:{type:'string',enum:['submitted','blocked']}},['result','evidence','status']),
  tool('work.review','ПМ: проверить результат или назначить повтор после блокировки. Принятие поручения не обходит QA/PR/выкладку и не переводит саму задачу в done.',{assignment_id:id,action:{type:'string',enum:['accept','retry','cancel']},reason:str,idempotency_key:idem},['assignment_id','action','reason']),
  tool('tasks.list','Получить все задачи и этапы; product_owner_questions_only=true показывает задачи с ожидаемыми ответами владельца, не перемещая их между этапами.',{product_owner_questions_only:field('boolean','Показать задачи с открытыми вопросами владельцу')}),
@@ -144,8 +146,8 @@ const BA_DENIED=new Set(['documentation.complete','documentation.request_input',
 const PM_DENIED=new Set(['documentation.complete','documentation.request_input','documents.create','documents.update','documents.delete','documents.changeset','questions.create']);
 const BA_DENIED_GOVERNANCE=new Set(['instructions.propose','instructions.reconcile']);
 /** The MCP catalog is the authoritative schema; capability views are derived, never maintained separately. */
-export function capabilitiesForRole(role:AgentRole,readOnly=false,category?:string){
- return toolsForRole(role,readOnly).filter(t=>!category||t.name.startsWith(category+'.')).map(t=>({
+export function capabilitiesForRole(role:AgentRole,readOnly=false,category?:string,grants:readonly string[]=[]){
+ return toolsForSession(role,readOnly,grants).filter(t=>!category||t.name.startsWith(category+'.')).map(t=>({
   name:t.name,category:t.name.split('.')[0],description:t.description,
   inputSchema:t.inputSchema,readOnly:t.annotations.readOnlyHint,
   effects:t.annotations.readOnlyHint?'read':'write',
@@ -159,6 +161,34 @@ export function toolsForRole(role:AgentRole,readOnly=false){
   return agentToolCatalog.filter(tool=>specialistTools.has(tool.name));
  return agentToolCatalog.filter(t=>role==='manager'?!PM_DENIED.has(t.name)&&t.name!=='documentation.request_reset':!BA_DENIED.has(t.name)&&!BA_DENIED_GOVERNANCE.has(t.name)&&!t.name.startsWith('discussions.')&&!t.name.startsWith('approvals.')&&!t.name.startsWith('workflow.')&&!t.name.startsWith('pm.')&&!t.name.startsWith('qa.'));
 }
+/** Effective tools, evaluated on every request from an active, task-bound assignment. */
+export function toolsForSession(role:AgentRole,readOnly=false,grants:readonly string[]=[]){
+ const baseline=toolsForRole(role,readOnly);
+ if(readOnly||!grants.length)return baseline;
+ const additional=new Set(normalizeTaskToolGrants(grants));
+ return agentToolCatalog.filter(tool=>additional.has(tool.name)||baseline.includes(tool));
+}
+export async function readSessionToolGrants(pool:Pick<Pool,'query'>,session:AgentSession,lock=false):Promise<string[]>{
+ if(session.read_only||!session.task_id||!session.process_id||
+    !autonomousSpecialistRoles.has(session.role))return [];
+ // A session token alone is never sufficient: the assignment and its spec must
+ // still be live in the same project and task, including after cancellation.
+ let active;
+ try{active=await pool.query(`SELECT a.granted_tools FROM agent_work_assignments a
+  JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id AND t.spec_version=a.spec_version
+  JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL AND p.agents_running=true
+  WHERE a.id=$1 AND a.project_id=$2 AND a.task_id=$3 AND a.role=$4
+   AND a.status='running' LIMIT 1${lock?' FOR SHARE OF a,t':''}`,
+  [session.process_id,session.project_id,session.task_id,session.role]);}
+ catch(error){
+  // Legacy isolated reader fixtures may not have run the v15 schema yet.
+  // No table/column means no extra privileges; never infer a grant.
+  if(['42P01','42703'].includes(String((error as {code?:string}).code||'')))return [];
+  throw error;
+ }
+ return active.rowCount?normalizeTaskToolGrants(active.rows[0].granted_tools||[]):[];
+}
+
 export function toolAllowedForRole(role:AgentRole,name:string){
  return toolsForRole(role).some(t=>t.name===name);
 }
@@ -203,7 +233,7 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
  await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
   VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',$8,$6,$7)`,
- [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!processId:!autonomousSpecialistRoles.has(role)||!taskId]);
+ [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!processId:!autonomousSpecialistRoles.has(role)||!taskId||!processId]);
  return {id,secret};
 }
 export async function finishAgentSession(pool:Pick<Pool,'query'>,id:string){
