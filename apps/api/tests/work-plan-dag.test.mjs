@@ -80,4 +80,9 @@ test('PostgreSQL v14 stores atomic generic plans with same-task prerequisites an
  await assert.rejects(planWork(pool,{projectId,taskId,sourceRole:'manager',steps:[{...devops,needs:['capture']},qa]}),/Циклическая/);
  const total=(await pool.query('SELECT count(*)::int AS n FROM agent_work_assignments WHERE task_id=$1',[taskId])).rows[0].n;
  assert.equal(total,3,'Rejected cyclic plan must not insert partial work');
+ await pool.query("UPDATE agent_work_assignments SET status='completed',evidence='Reviewed historical results' WHERE task_id=$1",[taskId]);
+ const fresh=await planWork(pool,{projectId,taskId,sourceRole:'manager',steps:[docs,qa,devops]});
+ assert.notEqual(fresh.plan_id,plan.plan_id,'new instructions may re-run an already finished plan');
+ assert.equal(fresh.duplicate,undefined);
+ assert.equal((await pool.query('SELECT count(*)::int AS n FROM agent_work_assignments WHERE task_id=$1',[taskId])).rows[0].n,6);
 });
