@@ -11,7 +11,7 @@ function store(active){
   queries,
   query:async (sql,args)=>{
    queries.push({sql,args});
-   if(sql.includes('SELECT id,title,display_number,stage,analysis_state,type'))return {
+   if(sql.includes('SELECT id,title,display_number,stage,board_status,analysis_state,type'))return {
     rows:[{id:task,title:'Проверить пользовательский интерфейс',display_number:36,stage:'development',analysis_state:'approved',type:'task'}]
    };
    return {rows:[{active}]};
