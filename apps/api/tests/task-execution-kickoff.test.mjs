@@ -6,6 +6,7 @@ import Fastify from 'fastify';
 import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {registerTaskBoardRoutes} from '../dist/task-board-routes.js';
+import {queueTaskExecutionKickoff} from '../dist/task-execution-kickoff.js';
 
 async function isolated(fn){
  const name='ado_dynamic_kickoff_'+randomUUID().replaceAll('-','');
@@ -58,6 +59,9 @@ test('owner starts one durable PM order on the transition to in_progress, not on
    assert.equal(replay.statusCode,200,replay.body);
    assert.equal(replay.json().kickoff.reused,true);
    assert.equal(replay.json().kickoff.message_id,result.message_id);
+   const anotherAdmin=await queueTaskExecutionKickoff(db,{projectId:ids.project,taskId:ids.task,actorId:randomUUID()});
+   assert.equal(anotherAdmin.reused,true,'different authorized actors reuse the same task kickoff');
+   assert.equal(anotherAdmin.message_id,result.message_id);
    assert.equal((await db.query("SELECT count(*)::int AS n FROM project_pm_orders WHERE project_id=$1",[ids.project])).rows[0].n,1);
    assert.equal((await action({action:'move',status:'todo'})).statusCode,409,'cannot disguise active PM work by reversing Kanban');
    assert.equal((await action({action:'postpone'})).statusCode,409,'cannot postpone a queued PM turn');
