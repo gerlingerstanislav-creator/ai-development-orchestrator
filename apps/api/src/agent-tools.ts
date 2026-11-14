@@ -52,7 +52,8 @@ export const agentToolCatalog=[
    tradeoff:str,
    needs_approval:{type:'boolean'}
   },required:['kind','description','tradeoff','needs_approval'],additionalProperties:false}},
-  recommended_index:{type:'integer',minimum:0,maximum:2}
+  recommended_index:{type:'integer',minimum:0,maximum:2},
+  idempotency_key:idem
  },['goal_id','limitation','options','recommended_index']),
  tool('goals.update','ПМ: записать блокировку, ожидание владельца или дальнейший план по существующей цели. Не признаёт её завершённой.',{goal_id:id,status:{type:'string',enum:['working','waiting_user','needs_action']},reason:str},['goal_id','status','reason']),
  tool('goals.complete','ПМ: завершить цель после независимой проверки связанных результатов и предоставить фактическое доказательство. Не принимает промежуточные запуски как успех.',{goal_id:id,evidence:str},['goal_id','evidence']),
