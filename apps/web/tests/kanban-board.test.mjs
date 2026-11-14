@@ -3,28 +3,36 @@ import assert from 'node:assert/strict';
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {TaskBoard} from '../src/features/tasks/TaskBoard.tsx';
-import {groupKanbanStages,dependencyReady,kanbanOrder,boardLaneFor} from '../src/features/tasks/board-model.ts';
+import {TaskBoardControls} from '../src/features/tasks/TaskBoardControls.tsx';
+import {kanbanLanes,attentionNeeded,dependencyReady,kanbanOrder,boardLaneFor} from '../src/features/tasks/board-model.ts';
 
 const task=(id,props={})=>({
  id,display_number:Number(id.replace(/\D/g,''))||1,
- title:'Задача '+id,description:'Требования',type:'task',stage:'development',
+ title:'Задача '+id,description:'Требования',type:'task',stage:'development',board_status:'in_progress',
  created_at:'2026-11-12T12:00:00Z',...props
 });
-test('stage grouping preserves horizontal workflow order and includes custom stages',()=>{
- const stages=[
-  {stage:'backlog',label:'Бэклог'},{stage:'analysis',label:'Анализ'},
-  {stage:'development',label:'Разработка'},{stage:'testing',label:'Тестирование'},
-  {stage:'merge_queue',label:'Слияние'},{stage:'deployment',label:'Выкладка'},
-  {stage:'documentation',label:'Документация'},{stage:'done',label:'Готово'},
-  {stage:'custom',label:'Дополнительно'}
- ];
- const groups=groupKanbanStages(stages);
- assert.deepEqual(groups.map(g=>g.key),['analytics','development','results','other']);
- assert.deepEqual(groups[1].stages.map(s=>s.stage),['development','testing','merge_queue']);
- assert.deepEqual(groups[3].stages.map(s=>s.stage),['custom']);
- assert.deepEqual(groupKanbanStages([]),[]);
+const props=(tasks,stages=[])=>({
+ projectId:'project-1',tasks,filtered:tasks,stages,
+ renderTaskPlanningLabels:()=>null,agentWorking:()=>false,onFollowLink:()=>{},
+ onMoveTask:()=>{},questionAnswers:{},onQuestionDraft:()=>{},
+ onAnswerQuestion:()=>{},processActionBusy:false,mergeBusy:false,
+ onMerge:()=>{},knowledgeBusy:false,onUpdateDocumentation:()=>{}
 });
-test('dependency readiness requires completed handoff or an attached merge PR',()=>{
+
+test('universal board uses exactly five product states without workflow-stage columns',()=>{
+ assert.deepEqual(kanbanLanes.map(s=>s.stage),['backlog','todo','in_progress','acceptance','done']);
+ assert.equal(boardLaneFor(task('1',{stage:'testing'})),'in_progress');
+ assert.equal(boardLaneFor(task('1',{stage:'development',board_status:'acceptance'})),'acceptance');
+ assert.equal(boardLaneFor(task('1',{stage:'done',board_status:undefined})),'done');
+ assert.equal(boardLaneFor(task('1',{stage:'analysis',board_status:undefined})),'in_progress');
+});
+test('an owner question, acceptance request and QA failure need attention, but not a new column',()=>{
+ assert.equal(attentionNeeded(task('1',{board_status:'acceptance'})),true);
+ assert.equal(attentionNeeded(task('1',{awaits_product_owner:true})),true);
+ assert.equal(attentionNeeded(task('1',{stage:'testing',test_feedback:'blocked'})),true);
+ assert.equal(attentionNeeded(task('1',{board_status:'todo'})),false);
+});
+test('dependency readiness remains tied to verified technical stage and PR',()=>{
  const merged=task('1',{stage:'merge_queue',pr_url:'https://github.com/acme/demo/pull/1',git_branch:'feature'});
  const waiting=task('2',{depends_on_task_id:'1'});
  assert.equal(dependencyReady(waiting,[merged,waiting]),true);
@@ -32,45 +40,39 @@ test('dependency readiness requires completed handoff or an attached merge PR',(
  assert.equal(dependencyReady(waiting,[{...merged,pr_url:null},waiting]),false);
  assert.equal(dependencyReady(waiting,[{...merged,stage:'documentation'},waiting]),true);
  assert.equal(dependencyReady(waiting,[waiting]),false);
- assert.equal(dependencyReady(task('3'),[]),true);
- assert.equal(boardLaneFor(merged),'merge_queue');
 });
-test('priority sorting puts unblocked work before blocked tasks and is stable',()=>{
+test('priority sorting still puts unblocked work before blocked tasks',()=>{
  const ready=task('10',{priority:3});
  const blocked=task('20',{priority:1,awaits_product_owner:true});
  const urgent=task('30',{priority:1,created_at:'2026-11-12T10:00:00Z'});
- const arr=[blocked,ready,urgent];
- arr.sort((a,b)=>kanbanOrder(a,b,arr));
+ const arr=[blocked,ready,urgent];arr.sort((a,b)=>kanbanOrder(a,b,arr));
  assert.deepEqual(arr.map(x=>x.id),['30','10','20']);
 });
-test('board renders an expandable set of lane columns without changing task links',()=>{
+test('board renders the five lanes and technical QA is a card detail',()=>{
  const stages=[{stage:'development',label:'Разработка'},{stage:'testing',label:'Тестирование'}];
- const t=task('101',{awaits_product_owner:true});
- const html=renderToStaticMarkup(React.createElement(TaskBoard,{
-  projectId:'project-1',tasks:[t],filtered:[t],stages,
-  expandedGroups:['development'],onToggleGroup:()=>{},
-  renderTaskPlanningLabels:()=>null,agentWorking:()=>false,onFollowLink:()=>{},
-  onMoveTask:()=>{},questionAnswers:{},onQuestionDraft:()=>{},
-  onAnswerQuestion:()=>{},processActionBusy:false,
-  mergeBusy:false,onMerge:()=>{},knowledgeBusy:false,onUpdateDocumentation:()=>{}
- }));
- assert.match(html,/board board-groups/);
- assert.match(html,/kanban-group-stages/);
- assert.match(html,/Разработка/);
+ const t=task('101',{stage:'testing',board_status:'in_progress',awaits_product_owner:true});
+ const html=renderToStaticMarkup(React.createElement(TaskBoard,props([t],stages)));
+ assert.match(html,/board board-lifecycle/);
+ assert.match(html,/Бэклог/);
+ assert.match(html,/К работе/);
+ assert.match(html,/В работе/);
+ assert.match(html,/На приёмке/);
+ assert.match(html,/Готово/);
  assert.match(html,/Тестирование/);
  assert.match(html,/\/projects\/project-1\/tasks\/101/);
  assert.match(html,/Нужен ответ владельца/);
+ assert.doesNotMatch(html,/kanban-group/);
 });
-test('collapsed groups show tasks together instead of rendering stage columns',()=>{
- const stages=[{stage:'development',label:'Разработка'},{stage:'testing',label:'Тестирование'}];
- const html=renderToStaticMarkup(React.createElement(TaskBoard,{
-  projectId:'project-2',tasks:[task('1')],filtered:[task('1')],stages,
-  expandedGroups:[],onToggleGroup:()=>{},renderTaskPlanningLabels:()=>null,
-  agentWorking:()=>false,onFollowLink:()=>{},onMoveTask:()=>{},
-  questionAnswers:{},onQuestionDraft:()=>{},onAnswerQuestion:()=>{},
-  processActionBusy:false,mergeBusy:false,onMerge:()=>{},
-  knowledgeBusy:false,onUpdateDocumentation:()=>{}
+test('unconfirmed and archived tasks show guarded acceptance controls',()=>{
+ const t=task('42',{stage:'done',board_status:'acceptance',acceptance_mode:'undecided'});
+ const html=renderToStaticMarkup(React.createElement(TaskBoardControls,{task:t,busy:false,onAction:async()=>{}}));
+ assert.match(html,/Решить при завершении/);
+ assert.match(html,/Принять результат/);
+ assert.match(html,/Есть замечания/);
+ assert.doesNotMatch(html,/В архив/);
+ const archived=renderToStaticMarkup(React.createElement(TaskBoardControls,{
+  task:{...t,board_status:'done',archived_at:'2026-11-15T12:00:00Z'},busy:false,onAction:async()=>{}
  }));
- assert.match(html,/kanban-group-combined/);
- assert.doesNotMatch(html,/kanban-group-stages/);
+ assert.match(archived,/Восстановить из архива/);
+ assert.doesNotMatch(archived,/Принять результат/);
 });
