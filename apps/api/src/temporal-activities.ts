@@ -25,6 +25,8 @@ import type {PoolClient} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {createMergeService} from './merge-service.js';
 import {createMergeBatchActivities} from './modules/integrations/github/application/merge-batch-activities.js';
+import {createExistingTaskPrRecovery} from './modules/integrations/github/application/existing-task-pr-recovery.js';
+import {saveRecoveredTaskPr} from './modules/integrations/github/infrastructure/recovered-task-pr-store.js';
 import {ApplicationFailure} from '@temporalio/common';
 import {prepareQaDocumentation,readQaPlan} from './qa-plan.js';
 import {reconcileTaskRequirements,requirementState} from './requirements.js';
@@ -268,76 +270,9 @@ export const prepareQaPlan=createQaPlanActivity({
  recordNote:entry=>recordTaskAgentNote(pool,entry)
 });
 
-async function finishExistingTaskBranch(args:TaskRef,git:{repository:string;baseBranch:string;token:string;title:string},actorId:string):Promise<boolean>{
- const {projectId,taskId,runId}=args;
- const {repository,baseBranch,token,title}=git;
- const branch=taskId;
- const apiBase='https://api.github.com/repos/'+repository;
- const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'ai-development-orchestrator'};
- const gh=async(endpoint:string,options:RequestInit={})=>{
-  const response=await fetch(apiBase+endpoint,{...options,headers:{...headers,...options.headers},signal:AbortSignal.timeout(20000)});
-  const data=await response.json().catch(()=>({})) as any;
-  return {response,data};
- };
- // A task's branch might not yet have been created. No changes means normal Codex development.
- const branchResult=await gh('/branches/'+encodeURIComponent(branch));
- if(branchResult.response.status===404)return false;
- if(!branchResult.response.ok)throw Object.assign(new Error('Не удалось проверить ветку задачи в GitHub: HTTP '+branchResult.response.status),{statusCode:502});
- const comparison=await gh('/compare/'+encodeURIComponent(baseBranch)+'...'+encodeURIComponent(branch));
- if(!comparison.response.ok)throw Object.assign(new Error('Не удалось сравнить ветки: GitHub HTTP '+comparison.response.status),{statusCode:502});
- if(!(Number(comparison.data.ahead_by)>0))return false;
- // Source code has already been pushed. Don't charge Codex again for the same work.
- const existing=await gh('/pulls?state=open&head='+encodeURIComponent(repository.split('/')[0]+':'+branch)+'&per_page=100');
- if(!existing.response.ok)throw Object.assign(new Error(existing.response.status===403
-  ?'GitHub HTTP 403: у подключённого токена нет доступа к Pull Requests. В GitHub выдай ему разрешение Pull requests: Read and write и сохрани подключение заново.'
-  :'Не удалось прочитать Pull Requests: GitHub HTTP '+existing.response.status),{statusCode:existing.response.status===403?409:502});
- const open=(Array.isArray(existing.data)?existing.data:[]) as any[];
- let pr=open.find(item=>item.base?.ref===baseBranch);
- // A PR on this task branch may target an older base. Repair its target
- // rather than attempting a duplicate PR (GitHub 422).
- if(!pr&&open.length){
-  const changed=await gh('/pulls/'+open[0].number,{method:'PATCH',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({base:baseBranch})});
-  if(!changed.response.ok)throw Object.assign(new Error('Не удалось обновить базовую ветку PR #'+open[0].number+
-   ': HTTP '+changed.response.status+' '+String(changed.data.message||'')),{statusCode:409});
-  pr=changed.data;
- }
- if(!pr){
-  const closed=await gh('/pulls?state=closed&head='+encodeURIComponent(repository.split('/')[0]+':'+branch)+'&per_page=100');
-  if(!closed.response.ok)throw Object.assign(new Error('Не удалось проверить закрытые PR: HTTP '+closed.response.status),{statusCode:502});
-  const recoverable=(Array.isArray(closed.data)?closed.data:[]).find((item:any)=>!item.merged_at&&item.base?.ref===baseBranch);
-  if(recoverable){
-   const reopened=await gh('/pulls/'+recoverable.number,{method:'PATCH',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({state:'open'})});
-   if(!reopened.response.ok)throw Object.assign(new Error('Не удалось переоткрыть PR #'+recoverable.number+
-    ': HTTP '+reopened.response.status+' '+String(reopened.data.message||'')),{statusCode:409});
-   pr=reopened.data;
-  }
- }
- if(!pr){
-  const created=await gh('/pulls',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({title:'AI: '+title.slice(0,180),body:'Изменения по задаче '+taskId+'\n\nПодготовлено AI Development Orchestrator. Проверь изменения перед слиянием.',head:branch,base:baseBranch,draft:false})});
-  if(!created.response.ok)throw Object.assign(new Error(created.response.status===403
-   ?'GitHub HTTP 403: создание PR запрещено. Нужны Pull requests: Read and write в разрешениях токена.'
-   :'Не удалось создать PR: GitHub HTTP '+created.response.status+' '+String(created.data.message||'').slice(0,180)),{statusCode:409});
-  pr=created.data;
- }
- const db=await pool.connect();
- try{
-  await db.query('BEGIN');
-  const saved=await db.query(`UPDATE ai_task_runs SET pr_url=$2,branch=$3,status='completed',
-   message='PR восстановлен из готовых изменений без повторного запуска Codex',completed_at=now()
-   WHERE id=$1 AND status IN ('queued','running') RETURNING id`,[runId,pr.html_url,branch]);
-  if(saved.rowCount){
-   await db.query("UPDATE tasks SET stage='testing',git_branch=$2,pr_url=$3,pr_number=$4,pr_base_branch=$5,updated_at=now() WHERE id=$1 AND project_id=$6",
-    [taskId,branch,pr.html_url,pr.number,baseBranch,projectId]);
-   await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'pr_created',$4)",
-    [randomUUID(),taskId,actorId,'PR восстановлен из готовых изменений: '+pr.html_url]);
-  }
-  await db.query('COMMIT');
- }catch(error){await db.query('ROLLBACK').catch(()=>{});throw error;}finally{db.release();}
- return true;
-}
+const finishExistingTaskBranch=createExistingTaskPrRecovery({
+ save:pr=>saveRecoveredTaskPr(pool,pr)
+});
 
 export async function startDevelopment(args:TaskRef){
  const {projectId,taskId,runId,attempt=0}=args;
@@ -367,7 +302,7 @@ export async function startDevelopment(args:TaskRef){
  // A stale project-document review is advisory. Only live owner questions and
  // task analysis gates block the initial development; rework may proceed on PR.
  const beforeStart=!args.recovery&&!attempt&&record.rows[0].status==='queued'&&record.rows[0].approved_spec!=null?async()=>{
-  if(!feedback&&await finishExistingTaskBranch(args,{repository:repo.repository,baseBranch,token,title:task.title},record.rows[0].triggered_by))return false;
+  if(!feedback&&await finishExistingTaskBranch({...args,repository:repo.repository,baseBranch,token,title:task.title,actorId:record.rows[0].triggered_by}))return false;
   const headers={Authorization:'Bearer '+token,Accept:'application/vnd.github+json','User-Agent':'ai-development-orchestrator'};
   const base='https://api.github.com/repos/'+repo.repository;
   const branch=await fetch(base+'/branches/'+encodeURIComponent(baseBranch),{headers,signal:AbortSignal.timeout(12000)});
