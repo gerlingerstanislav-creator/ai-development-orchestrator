@@ -42,6 +42,8 @@ jobs:
           node --check apps/codex-runner/server.mjs
           node --check apps/codex-runner/qa-job.mjs
           node --test apps/codex-runner/qa-job.test.mjs
+          node --check apps/codex-runner/delegated-work-sandbox.mjs
+          node --test apps/codex-runner/delegated-work-sandbox.test.mjs
           node --check apps/codex-runner/ci-test-discovery.mjs
           node --check apps/codex-runner/ci-job.mjs
           node --check apps/codex-runner/task-pull-request.mjs
