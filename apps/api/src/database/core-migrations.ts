@@ -26,7 +26,7 @@ import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-f
 import {installTaskEvidenceSchema} from '../task-evidence.js';
 import {installWorkAssignmentsSchema,installWorkPlanSchema,installTaskCapabilityGrants} from '../modules/agents/infrastructure/work-assignments.js';
 import {installWorkArtifactsSchema} from '../modules/agents/infrastructure/work-artifacts.js';
-import {installPmGoalSchema} from '../modules/planning/infrastructure/pm-goals.js';
+import {installPmGoalSchema,installPmCapabilityProposalSchema} from '../modules/planning/infrastructure/pm-goals.js';
 
 /**
  * Append-only, transactional schema history.
@@ -158,6 +158,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:17,name:'project-pm-outcome-goals',
    checksum:'ado-project-pm-outcome-goals-v17',
    up:database=>installPmGoalSchema(database)
+  },
+  {
+   version:18,name:'project-pm-capability-proposals',
+   checksum:'ado-project-pm-capability-proposals-v18',
+   up:database=>installPmCapabilityProposalSchema(database)
   }
  ];
 }
