@@ -173,7 +173,7 @@ test('manager cannot accept parent while a delegated child remains active',async
  await assert.rejects(reviewWork(db,{projectId,assignmentId,action:'accept',
   reason:'Проверка независимого результата дочернего поручения'}),/делегированная работа не завершена/);
  assert.ok(statements[1].sql.includes("status NOT IN ('completed','cancelled')"));
- assert.deepEqual(statements[1].args,[assignmentId,projectId,taskId]);
+ assert.deepEqual(statements[1].args,[assignmentId,projectId,taskId,null]);
 });
 
 test('PM can unblock an assignment by granting a safe tool without creating a new work item',async()=>{
