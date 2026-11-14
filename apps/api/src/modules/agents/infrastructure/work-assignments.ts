@@ -388,7 +388,7 @@ export async function reconcileAgentWorkAssignments(pool:Pool,temporal:()=>Promi
    LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
    LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
    WHERE (a.status='queued' OR (a.status='running' AND a.dispatched_at IS NULL)) AND a.next_attempt_at<=now() AND p.agents_running=true AND p.deleted_at IS NULL
-   AND ((a.task_id IS NOT NULL AND t.stage<>'done' AND a.spec_version=t.spec_version)
+   AND ((a.task_id IS NOT NULL AND t.stage<>'done' AND t.board_status='in_progress' AND t.postponed_at IS NULL AND t.archived_at IS NULL AND a.spec_version=t.spec_version)
      OR (a.goal_id IS NOT NULL AND g.status<>'completed'))
    AND NOT EXISTS(
     SELECT 1 FROM agent_work_plan_dependencies deps
