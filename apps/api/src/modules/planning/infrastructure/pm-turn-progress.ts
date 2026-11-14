@@ -6,9 +6,9 @@ import {z} from 'zod';
 type Db=Pick<Pool,'query'>;
 const uuid=z.string().uuid();
 export type PmProgressEvent={
- id:string;message_id:string;attempt:number;kind:'status'|'summary'|'plan'|'tool';text:string;created_at:string;
+ id:string;message_id:string;attempt:number;kind:'status'|'summary'|'plan'|'tool'|'message';text:string;created_at:string;
 };
-const progressKinds=z.enum(['status','summary','plan','tool']);
+const progressKinds=z.enum(['status','summary','plan','tool','message']);
 const eventSchema=z.object({
  projectId:uuid,messageId:uuid,attempt:z.number().int().min(1).max(100),
  sequence:z.number().int().min(1).max(300),
@@ -22,7 +22,7 @@ export async function initPmTurnProgress(db:Db){
   message_id uuid NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,
   attempt integer NOT NULL,
   sequence integer NOT NULL,
-  kind text NOT NULL CHECK (kind IN ('status','summary','plan','tool')),
+  kind text NOT NULL CHECK (kind IN ('status','summary','plan','tool','message')),
   text text NOT NULL CHECK (length(text) BETWEEN 1 AND 320),
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(message_id,attempt,sequence)
@@ -109,13 +109,10 @@ export function registerPmProgressRoutes(app:FastifyInstance,options:{
     closed=true;raw.end();
    }finally{busy=false;}
   };
-  const pulse=setInterval(()=>{
-   if(closed)return;
-   raw.write(': ping\n\n');
-   void send();
-  },1500);
-  pulse.unref?.();
-  const release=()=>{closed=true;clearInterval(pulse);};
+  const pump=setInterval(()=>{void send();},350);
+  const pulse=setInterval(()=>{if(!closed)raw.write(': ping\n\n');},15000);
+  pump.unref?.();pulse.unref?.();
+  const release=()=>{closed=true;clearInterval(pump);clearInterval(pulse);};
   raw.on('close',release);
   req.raw.on('aborted',release);
   void send();

@@ -43,7 +43,7 @@ export async function api<T=any>(path:string,options:RequestInit={}):Promise<T>{
  * Last-Event-ID is represented by the persisted bigint cursor on reconnect.
  */
 export async function streamPmProgress(projectId:string,after:number,onEvent:(event:{
- id:string;message_id:string;attempt:number;kind:'status'|'summary'|'plan'|'tool';text:string;created_at:string;
+ id:string;message_id:string;attempt:number;kind:'status'|'summary'|'plan'|'tool'|'message';text:string;created_at:string;
 })=>void,signal:AbortSignal){
  const url='/api/projects/'+encodeURIComponent(projectId)+'/manager/inbox/progress?after='+after;
  const send=(token:string|null)=>fetch(url,{credentials:'same-origin',signal,headers:{
@@ -73,7 +73,7 @@ export async function streamPmProgress(projectId:string,after:number,onEvent:(ev
      try{
       const event=JSON.parse(line.slice(6));
       if(typeof event.id==='string'&&typeof event.message_id==='string'&&
-       typeof event.text==='string'&&['status','summary','plan','tool'].includes(event.kind))
+       typeof event.text==='string'&&['status','summary','plan','tool','message'].includes(event.kind))
        onEvent(event);
      }catch{/* Ignore a malformed event without interrupting the connection. */}
     }

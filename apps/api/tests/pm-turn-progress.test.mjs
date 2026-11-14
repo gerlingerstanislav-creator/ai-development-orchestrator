@@ -65,4 +65,6 @@ test('PM progress is durable, idempotent, attempt-scoped and inaccessible across
  assert.equal((await appendPmTurnProgress(pool,{...event,sequence:3})).accepted,false,'stale progress is rejected');
  assert.equal((await appendPmTurnProgress(pool,{...event,attempt:2,sequence:1})).accepted,true);
  assert.equal((await readPmTurnProgress(pool,project,Number(events[0].id))).length,1);
+ assert.equal((await appendPmTurnProgress(pool,{...event,attempt:2,sequence:2,kind:'message',text:'Печатаю ответ'})).accepted,true);
+ assert.equal((await readPmTurnProgress(pool,project,Number(events[0].id))).length,2);
 });
