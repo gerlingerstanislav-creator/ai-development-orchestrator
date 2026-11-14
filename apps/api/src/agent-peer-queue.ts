@@ -45,6 +45,7 @@ export async function reconcileAgentPeerQueue(pool:Pool,temporal:()=>Promise<Tem
    FROM agent_peer_queue q JOIN task_agent_notes n ON n.id=q.note_id
    WHERE q.status='queued' AND q.next_attempt_at<=now() AND n.status='open' AND NOT n.requires_customer
     AND EXISTS(SELECT 1 FROM projects p WHERE p.id=q.project_id AND p.agents_running)
+     AND EXISTS(SELECT 1 FROM tasks t WHERE t.id=q.task_id AND t.project_id=q.project_id AND t.stage<>'done' AND t.board_status='in_progress' AND t.postponed_at IS NULL AND t.archived_at IS NULL)
   ) ready ORDER BY project_position,next_attempt_at,updated_at,note_id LIMIT 100`);
   for(const job of pending.rows){
    const capacity=await roleCapacity(pool,job.project_id,job.role);
