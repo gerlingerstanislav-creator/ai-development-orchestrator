@@ -89,3 +89,85 @@ test('PM inbox maintains original public execution entrypoint for Temporal Activ
  assert.equal(typeof executeProjectManagerInbox,'function');
  assert.equal(executeProjectManagerInbox.length,5,'five required arguments; last retry attempt defaults to one');
 });
+
+
+test('goal watch resumes its original PM order when a queued step depends on blocked work',async()=>{
+ const watch={...ids(),kind:'goal',goalId:randomUUID()};
+ const dependent=randomUUID(),prerequisite=randomUUID();
+ const messages=[],reads=[];
+ let reported=false;
+ const client={query:async(sql,params=[])=>{
+  if(sql.includes('INSERT INTO project_pm_process_reports')){
+   if(reported)return {rowCount:0,rows:[]};
+   reported=true;return {rowCount:1,rows:[{process_id:watch.processId}]};
+  }
+  if(sql.includes('INSERT INTO assistant_messages'))messages.push(params);
+  return {rowCount:1,rows:[]};
+ },release(){}};
+ const pool={
+  query:async(sql)=>{
+   reads.push(sql);
+   if(sql.includes('FROM project_pm_goals WHERE'))return {rowCount:1,rows:[{
+    id:watch.goalId,objective:'Review project UI through delegated specialists',
+    status:'waiting_agents'
+   }]};
+   if(sql.includes('FROM project_pm_goal_links'))return {rowCount:1,rows:[{
+    id:randomUUID(),kind:'assignment',reference_id:dependent
+   }]};
+   if(sql.includes('FROM agent_work_assignments a LEFT JOIN tasks'))return {rowCount:1,rows:[{
+    id:dependent,task_id:null,status:'queued',evidence:'',result:'',spec_version:0
+   }]};
+   if(sql.includes('FROM agent_work_assignments dependent'))return {rowCount:1,rows:[{
+    assignment_id:dependent,plan_key:'verify',prerequisite_id:prerequisite,
+    prerequisite_role:'devops',prerequisite_status:'blocked',detail:'No test environment'
+   }]};
+   throw Error('Unexpected query '+sql);
+  },
+  connect:async()=>client
+ };
+ assert.equal(await checkProjectManagerWatch(pool,watch),'completed');
+ assert.ok(reads.some(sql=>sql.includes('prerequisite.status IN')));
+ assert.equal(messages.length,2,'PM receives one visible report and one internal continuation');
+ assert.match(messages[0][2],/не может продолжиться/);
+ assert.match(messages[0][2],/devops/);
+ assert.match(messages[1][3],/work.review/);
+ assert.doesNotMatch(messages[0][2],/подтверждена и завершена/);
+ assert.equal(await checkProjectManagerWatch(pool,watch),'completed');
+ assert.equal(messages.length,2,'watch retry cannot enqueue duplicate PM messages');
+});
+
+test('task-scoped delegated watch reports broken DAG dependencies instead of remaining pending forever',async()=>{
+ const watch={...ids(),kind:'delegated_work'};
+ const predecessor=randomUUID(),messages=[];
+ const client={query:async(sql,params=[])=>{
+  if(sql.includes('INSERT INTO assistant_messages'))messages.push(params);
+  return {rowCount:1,rows:[]};
+ },release(){}};
+ const pool={query:async(sql)=>{
+  if(sql.includes('FROM agent_work_assignments a LEFT JOIN tasks'))return {rowCount:1,rows:[{
+   status:'queued',role:'testing',objective:'Verify implementation in browser',
+   task_id:randomUUID(),goal_id:null,task_title:'Website QA'
+  }]};
+  if(sql.includes('FROM agent_work_assignments dependent'))return {rowCount:1,rows:[{
+   assignment_id:watch.processId,plan_key:'qa',prerequisite_id:predecessor,
+   prerequisite_role:'development',prerequisite_status:'cancelled',detail:'PR cancelled'
+  }]};
+  throw Error('Unexpected query '+sql);
+ },connect:async()=>client};
+ assert.equal(await checkProjectManagerWatch(pool,watch),'completed');
+ assert.equal(messages.length,2);
+ assert.match(messages[0][2],/ожидает шаг/);
+ assert.match(messages[0][2],/cancelled/);
+});
+
+test('queued DAG step without terminal dependency failures stays pending',async()=>{
+ const watch={...ids(),kind:'delegated_work'};
+ const pool={query:async sql=>{
+  if(sql.includes('FROM agent_work_assignments a LEFT JOIN tasks'))return {rowCount:1,rows:[{
+   status:'queued',role:'testing',objective:'Inspect the current browser state'
+  }]};
+  if(sql.includes('FROM agent_work_assignments dependent'))return {rowCount:0,rows:[]};
+  throw Error('Unexpected query '+sql);
+ },connect:async()=>{throw Error('No report when work can still progress');}};
+ assert.equal(await checkProjectManagerWatch(pool,watch),'pending');
+});
