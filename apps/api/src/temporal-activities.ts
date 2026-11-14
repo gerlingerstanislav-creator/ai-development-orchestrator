@@ -920,7 +920,8 @@ export async function delegatedWorkScope(assignmentId:string):Promise<{projectId
 }
 export async function runDelegatedWork(assignmentId:string):Promise<void>{
  const r=await pool.query(`SELECT a.*,t.title,t.description AS task_description,t.stage,
-  t.spec_version AS current_spec,p.agents_running
+  t.evidence_source_sha,t.implementation_commit,
+  t.spec_version AS current_spec,p.agents_running,p.owner_id AS project_owner_id
   FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
   JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL
   WHERE a.id=$1 AND a.status='running'`,[assignmentId]);
@@ -944,7 +945,7 @@ export async function runDelegatedWork(assignmentId:string):Promise<void>{
   role:'Исполнитель поручения: '+item.role,
   objective:item.objective,
   scope:'Проект '+item.project_id+'; задача '+item.task_id+'; поручение '+assignmentId,
-  tools:'Используй MCP capabilities.list/describe, agents.capabilities, tasks.read/history, project.source, agents.consult, work.delegate и реальные доступные инструменты. Никаких вымышленных скриншотов, тестов, PR и деплоя.',
+  tools:'Изолированный рабочий каталог с shell внутри sandbox, реальный Chromium и MCP capabilities.list/describe, tasks.read/history, agents.consult, work.delegate, work.artifacts. Выбирай операции по требуемому результату. Доступность браузера нужно проверить, доказательства сохраняются из доверенного browser gateway.',
   instructions:String(instruction.rows[0]?.agent_instructions||''),
   continuation:[
    'Критерии приёмки: '+item.acceptance,
@@ -953,6 +954,7 @@ export async function runDelegatedWork(assignmentId:string):Promise<void>{
    'Ищи доступные инструменты и зависимости по смыслу результата, не по названию задачи.',
    'Если недостаёт безопасного инструмента, отчитайся work.report(status=blocked) и назови точное имя из agents.capabilities: ПМ может выдать право через work.grant, не создавая новую задачу.',
    'Если нужны действия другого специалиста, используй work.delegate и сообщи о зависимости через work.report(status=blocked); не выдавай ожидание за завершение.',
+   'Если собирал визуальные доказательства, проверь реальный браузер и его screenshot output; после выполнения загляни в work.artifacts. Не выдавай локальный скриншот за production без проверки deployed SHA.',
    'После реальных действий зафиксируй результат и конкретные ссылки/ID/артефакты инструментом work.report(status=submitted,evidence=...).',
    'Если фактические доказательства отсутствуют, вызови work.report(status=blocked) с причиной и необходимыми условиями.',
    'Только успешное применение work.report является статусом поручения. Простой текст ответа не завершает поручение.'
@@ -961,10 +963,43 @@ export async function runDelegatedWork(assignmentId:string):Promise<void>{
  });
  await recordAgentPrompt(pool,{projectId:item.project_id,processId:assignmentId,role:item.role,operation:'delegated_work',prompt}).catch(()=>{});
  try{
-  const output=await askRunnerAssistant(prompt,item.project_id,item.task_id,'delegated_work',roleSettings,195000,[],
-   {role:item.role,processId:assignmentId});
-  // A message is not evidence of execution; only the scoped work.report tool moves status.
-  await finalizeWorkAttempt(pool,assignmentId,'Агент завершил сессию без подтверждённого результата через work.report. '+String(output).slice(0,850));
+  // Every specialist receives the same isolated execution environment. The
+  // model determines whether it needs shell, browser, project docs or another
+  // agent; the server does not route on task titles or screenshot keywords.
+  const linked=await pool.query(`SELECT g.repository,g.target_branch,g.default_branch,c.secret_encrypted
+   FROM project_git_repositories g JOIN connections c ON c.id=g.connection_id
+   WHERE g.project_id=$1 AND c.provider='github_token' LIMIT 1`,[item.project_id]);
+  const git=linked.rows[0];
+  const requestedSha=String(item.evidence_source_sha||item.implementation_commit||
+   String(item.task_description||'').match(/\\b[a-f0-9]{40}\\b/i)?.[0]||'');
+  const sourceSha=/^[a-f0-9]{40}$/i.test(requestedSha)?requestedSha.toLowerCase():undefined;
+  const response=await fetch(codexUrl+'/delegated-work',{
+   method:'POST',
+   headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
+   body:JSON.stringify({
+    projectId:item.project_id,taskId:item.task_id,assignmentId,
+    actorId:item.project_owner_id,role:item.role,
+    repository:git?.secret_encrypted?git.repository:null,
+    branch:git?.target_branch||git?.default_branch||'main',
+    token:git?.secret_encrypted?decrypt(git.secret_encrypted):undefined,
+    sourceSha,prompt,model:roleSettings.model,reasoning:roleSettings.reasoning
+   }),
+   signal:AbortSignal.timeout(460000)
+  });
+  const result=await response.json().catch(()=>({})) as any;
+  if(!response.ok)throw Error('Изолированный исполнитель: '+String(result.error||response.status).slice(0,500));
+  await event(item.project_id,assignmentId,'agent','runtime_completed',
+   'Выполнено в изолированной среде. Git SHA: '+String(result.source_sha||'нет репозитория')+
+   '; Chromium: '+(result.browser_available?'доступен':'недоступен')+
+   '; сохранено скриншотов: '+Number(result.screenshots_saved||0));
+  if(result.usage)await pool.query(
+   'INSERT INTO ai_token_usage(id,project_id,task_id,source_id,operation,model,input_tokens,cached_input_tokens,output_tokens) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+   [randomUUID(),item.project_id,item.task_id,randomUUID(),'delegated_work',roleSettings.model,
+    Number(result.usage.input_tokens)||0,Number(result.usage.cached_input_tokens)||0,Number(result.usage.output_tokens)||0]);
+  // The model cannot fake completion via its final prose: only work.report
+  // changes the assignment state. Images are stored before this activity ends.
+  await finalizeWorkAttempt(pool,assignmentId,
+   'Агент завершил сеанс без work.report. '+String(result.message||'').slice(0,850));
  }catch(error){
   await finalizeWorkAttempt(pool,assignmentId,'Сбой исполнителя: '+String(error).slice(0,1200));
  }
