@@ -32,7 +32,7 @@ export async function readProjectTaskCurrentWork(db:Pick<Pool,'query'>,projectId
     'browser_evidence',updated_at FROM task_evidence_runs
     WHERE project_id=$1 AND status IN ('queued','dispatching','running','failed')
    UNION ALL
-   SELECT task_id,role,status,LEFT(n.body,240),
+   SELECT q.task_id,q.role,q.status,LEFT(n.body,240),
     'consultation',q.updated_at FROM agent_peer_queue q
     JOIN task_agent_notes n ON n.id=q.note_id
     WHERE q.project_id=$1 AND q.status IN ('queued','running','waiting','failed')
