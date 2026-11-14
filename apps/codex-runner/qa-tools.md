@@ -27,7 +27,14 @@ not performed use `not_run` and empty command/evidenceId.
 ## Browser / visual checks (only when the browser is available)
 
 The browser runs in a separate isolated Chromium service, not inside the QA sandbox.
-Start it and check the returned `path`; for standalone pages pass their actual filename:
+**Important:** `browser-client.mjs start` automatically starts the app from the shared
+repository checkout (existing build or the project's dev script). It DOES NOT connect
+to a Vite process manually started in the Codex sandbox. First install project
+dependencies in the repo checkout if needed; then run `start` and check the
+returned path. Do not start another Vite process and do not request a proxy,
+target-origin or arbitrary localhost URL. `goto` accepts a *relative application
+path* only; absolute URLs (localhost or production) are deliberately rejected.
+For standalone HTML pass the actual filename:
 
 ```sh
 node /opt/codex-runner/browser-client.mjs start
@@ -46,6 +53,15 @@ page, run `restart` and `start` again. Screenshots alone do not establish accept
 each visual case needs a browser assertion with the exact case ID. Use representative
 mobile/desktop viewport sizes when responsiveness is a requirement. Do not invent
 required geometry, mockups or breakpoints that the specification never specified.
+If `start` says node_modules is missing, install dependencies once and retry.
+If it says the app root `#app`/`#root` is empty, the app's JavaScript has
+not rendered. Read the compiler/asset error in that response and run `npm run build`
+to distinguish a **product build defect** from a **browser transport problem**.
+Do not screenshot empty HTML and do not claim Chromium is unavailable if start
+returned a real application error. Never change the pinned task SHA silently.
+If the pinned revision is broken but a newer branch may contain a fix, tell PM
+the exact blocked SHA and ask PM to decide whether to update the task's source
+revision before retrying. Do not repeat the same identical blocked step.
 If the browser service cannot start after one reasonable retry, report exactly which
 visual checks remain blocked and what error occurred.
 
