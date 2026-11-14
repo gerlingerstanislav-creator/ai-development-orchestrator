@@ -63,7 +63,8 @@ export async function executePmGoalTool(db:Pick<Pool,'query'>,session:AgentSessi
     tradeoff:z.string().trim().min(12).max(500),
     needs_approval:z.boolean()
    }).strict()).min(1).max(3),
-   recommended_index:z.number().int().min(0).max(2)
+   recommended_index:z.number().int().min(0).max(2),
+   idempotency_key:z.string().min(8).max(120).optional()
   }).strict().parse(args);
   return proposePmCapabilityOptions(db,{
    projectId,goalId:data.goal_id,limitation:data.limitation,
