@@ -62,7 +62,7 @@ export function createCodexThreadStore(directory){
  */
 export function createCodexAppExecutor({store,spawnImpl=spawn,env={},command='codex'}){
  return async function execute({scope,requestId,prompt,model,effort,cwd,timeout=240000,
-  configArgs=[],sandboxPolicy,images=[],envOverrides={},onStarted,onProgress,onChild,signal}){
+  configArgs=[],sandboxPolicy,images=[],envOverrides={},onStarted,onProgress,onEvent,onChild,signal}){
   return store.run(scope,requestId,async()=>{
    const child=spawnImpl(command,['app-server','--listen','stdio://',...configArgs],{
     cwd,env:{...env,...envOverrides},stdio:['pipe','pipe','pipe'],detached:true
@@ -97,6 +97,10 @@ export function createCodexAppExecutor({store,spawnImpl=spawn,env={},command='co
     if(line.length>2000000){fail(Error('Codex App Server вернул слишком большой ответ'));return;}
     let msg;
     try{msg=JSON.parse(line);}catch{return;}
+    if(msg.id===undefined&&typeof msg.method==='string'){
+     // Observers are isolated from the Codex protocol and cannot affect a turn.
+     try{onEvent?.(msg);}catch{}
+    }
     if(msg.id!==undefined&&msg.id!==null&&pending.has(msg.id)){
      const task=pending.get(msg.id);pending.delete(msg.id);
      if(msg.error)task.reject(Error(String(msg.error.message||'Codex RPC error').slice(0,900)));
