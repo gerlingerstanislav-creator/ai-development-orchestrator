@@ -59,6 +59,7 @@ export const agentToolCatalog=[
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('project.agents.start','Запустить специалистов выбранного проекта после остановки или новой выкладки по прямому поручению владельца; запланированные задачи продолжат обработку.',{}),
  tool('work.list','Прочитать поручения и доказательства по задаче, не подменяя ими статус самой задачи.',{task_id:id},['task_id']),
+ tool('work.artifacts','Получить проверенные браузерные артефакты с SHA исходников, viewport, контрольной суммой и защищёнными ссылками на изображения.',{task_id:id},['task_id']),
  tool('work.plan','Составить произвольный проверяемый план из нескольких поручений с зависимостями. Зависимости задаются ключами шагов, не этапами Kanban. Все шаги и связи сохраняются атомарно; исполнители запускаются по мере завершения предусловий.',{
   task_id:id,
   steps:{type:'array',items:{type:'object',properties:{
@@ -135,7 +136,7 @@ export type AgentReaderScope={projectId:string;role:AgentRole;taskId?:string;pro
 
 const readerTools=new Set([
  'project.context','documents.search','documents.read','knowledge.search','knowledge.read','knowledge.sections','knowledge.section','knowledge.related','knowledge.context',
- 'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','project.source','work.list','agents.capabilities','capabilities.list','capabilities.describe'
+ 'tasks.list','tasks.read','tasks.history','processes.list','blockers.list','project.source','work.list','work.artifacts','agents.capabilities','capabilities.list','capabilities.describe'
 ]);
 
 const autonomousSpecialistRoles=new Set<AgentRole>(['analysis','development','testing','documentation','devops','architect']);
