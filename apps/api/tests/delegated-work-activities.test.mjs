@@ -11,7 +11,7 @@ function harness({status='running',agentsRunning=true,stage='development',spec=3
   agents_running:agentsRunning,granted_tools:toolGrants};
  const pool={query:async(sql,values)=>{
   calls.queries.push({sql,values});
-  if(sql.includes('SELECT a.*,t.title'))return {rows:status==='running'?[item]:[],rowCount:status==='running'?1:0};
+  if(sql.includes('SELECT a.*,COALESCE(t.title,g.objective)'))return {rows:status==='running'?[item]:[],rowCount:status==='running'?1:0};
   if(sql.includes('SELECT model,reasoning,enabled FROM project_ai_settings'))
    return {rows:[{model:'base',reasoning:'low',enabled}],rowCount:1};
   if(sql.includes('SELECT agent_instructions FROM workflow_stages'))
