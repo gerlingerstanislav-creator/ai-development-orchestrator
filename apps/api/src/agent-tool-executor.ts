@@ -3,6 +3,7 @@ import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {hashSecret,capabilitiesForRole,type AgentSession} from './agent-tools.js';
+import {taskGrantableTools} from './modules/agents/domain/tool-capabilities.js';
 import {instructionProposal,reconcileInstructions,proposeInstruction} from './instruction-governance.js';
 import {readPmTaskGoal} from './pm-task-goal.js';
 import {readTaskWorkBrief} from './task-work-brief.js';
@@ -23,7 +24,8 @@ function rejected(message:string,statusCode=409){return Object.assign(new Error(
 const uuid=z.string().uuid();
 export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSession,name:string,args:unknown,
  _startWorkflow:(jobId:string)=>Promise<void>,
- readSource?:(projectId:string,actorId:string,path?:string,commit?:string)=>Promise<unknown>):Promise<unknown>{
+ readSource?:(projectId:string,actorId:string,path?:string,commit?:string)=>Promise<unknown>,
+ grantedTools:readonly string[]=[]):Promise<unknown>{
  const projectId=session.project_id,actorId=session.actor_id;
  const params={...(args&&typeof args==='object'&&!Array.isArray(args)?args:{})} as Record<string,unknown>;
  if(session.task_id&&['knowledge.read','knowledge.section','knowledge.context','tasks.read','tasks.history','processes.list'].includes(name)){
@@ -115,7 +117,8 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   const {role}=z.object({role:z.enum(workRoles)}).parse(params);
   return {role,responsibility:responsibilityFor(role),
    tools:capabilitiesForRole(role,false).map(t=>({name:t.name,description:t.description,readOnly:t.readOnly})),
-   note:'Возможность роли не означает наличие настроенной среды; реальные эффекты подтверждают инструменты.'};
+   task_grantable_tools:taskGrantableTools,
+   note:'Новые безопасные права выдаются только на конкретное активное поручение через tools в work.delegate/work.plan. Проверка фактической среды обязательна.'};
  }
  case 'work.list':{
   const {task_id}=z.object({task_id:uuid}).parse(params);
@@ -132,16 +135,17 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
     role:z.enum(workRoles),
     objective:z.string().trim().min(12).max(2000),
     acceptance:z.string().trim().min(12).max(2000),
-    needs:z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)).max(8).default([])
+    needs:z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)).max(8).default([]),
+    tools:z.array(z.string()).max(12).default([])
    }).strict()).min(1).max(12)
   }).parse(params);
   if(session.task_id&&session.task_id!==data.task_id)throw rejected('Нельзя планировать чужую задачу',403);
   return planWork(pool,{projectId,taskId:data.task_id,sourceRole:session.role,steps:data.steps});
  }
  case 'work.delegate':{
-  const {task_id,role,objective,acceptance}=z.object({
+  const {task_id,role,objective,acceptance,tools}=z.object({
    task_id:uuid,role:z.enum(workRoles),objective:z.string().trim().min(12).max(2000),
-   acceptance:z.string().trim().min(12).max(2000)
+   acceptance:z.string().trim().min(12).max(2000),tools:z.array(z.string()).max(12).default([])
   }).parse(params);
   if(session.role!=='manager'&&session.task_id!==task_id)throw rejected('Нельзя делегировать работу для чужой задачи',403);
   if(session.role!=='manager'&&!session.process_id)throw rejected('Нет активного процесса',403);
@@ -159,7 +163,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
     if(!authorized.rowCount)throw rejected('Назначать работу может только действующий исполнитель этой задачи',403);
    }
   }
-  return delegateWork(pool,{projectId,taskId:task_id,role,objective,acceptance,sourceRole:session.role,parentId});
+  return delegateWork(pool,{projectId,taskId:task_id,role,objective,acceptance,sourceRole:session.role,parentId,tools});
  }
  case 'work.report':{
   if(!session.task_id||!session.process_id)throw rejected('Нет активного поручения с привязкой к задаче',403);
@@ -374,11 +378,11 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
  case 'capabilities.list':{
   const {category}=z.object({category:z.string().trim().max(60).optional()}).parse(params);
-  return {capabilities:capabilitiesForRole(session.role,session.read_only,category).map(({name,category,description,effects,requiresConfirmation})=>({name,category,description,effects,requiresConfirmation}))};
+  return {capabilities:capabilitiesForRole(session.role,session.read_only,category,grantedTools).map(({name,category,description,effects,requiresConfirmation})=>({name,category,description,effects,requiresConfirmation}))};
  }
  case 'capabilities.describe':{
   const {name:target}=z.object({name:z.string().min(2).max(90)}).parse(params);
-  const item=capabilitiesForRole(session.role,session.read_only).find(t=>t.name===target);
+  const item=capabilitiesForRole(session.role,session.read_only,undefined,grantedTools).find(t=>t.name===target);
   if(!item)throw rejected('Возможность недоступна для текущей роли',403);
   return {capability:item};
  }
