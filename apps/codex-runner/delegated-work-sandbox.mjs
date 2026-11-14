@@ -103,6 +103,19 @@ export function createDelegatedWorkSandbox({
     requestId:job.assignmentId+':'+attemptId,
     model:job.model,reasoning:job.reasoning,
     prompt:prefix+'\n\n'+job.prompt,
+    // The full role contract was already supplied on the first turn.
+    // A resumed Codex thread needs fresh environment facts and the task
+    // checkpoint, not a replay of every profile/instruction.
+    resumePrompt:[
+     'Продолжение поручения '+job.assignmentId+' в новой изолированной рабочей копии. Не полагайся на файлы старой песочницы.',
+     'Текущий SHA: '+(sourceSha||'репозиторий не подключён')+
+      '; Chromium: '+(browserConnected?'доступен':'недоступен')+'.',
+     'Прочитай актуальное состояние через '+(job.taskId?'tasks.read(task_id='+job.taskId+')':'goals.read(goal_id='+job.goalId+')')+
+      ', используй work.list и work.artifacts для результатов и зависимостей.',
+     'Узнай действующие разрешённые инструменты через capabilities.list/describe. Проверяй работу и сохраняй реальные доказательства.',
+     browserConnected?'Команды браузера описаны в .ado-qa-tools.md; прежние браузерные сессии недействительны.':'Если для результата нужен браузер, сообщи конкретный блокер.',
+     'После работы вызови work.report(status=submitted,evidence=...) или work.report(status=blocked). Текст ответа не меняет статус поручения.'
+    ].join('\n'),
     cwd:dir,env:{...cliEnv,...context.env},policyArgs:policy.execArgs,
     mcpArgs:context.args,timeout:190000,maxOutputChars:250000
    }));
