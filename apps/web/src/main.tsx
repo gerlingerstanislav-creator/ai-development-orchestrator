@@ -9,7 +9,8 @@ import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/
 import {parseAppRoute,projectUrl,uuidPattern,type ProjectSection,type AppRoute} from './features/navigation/routes.js';
 import {ProjectSidebar} from './features/navigation/ProjectSidebar.js';
 import {ProjectListPage} from './features/projects/ProjectListPage.js';
-import {api,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
+import {api,streamPmProgress,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
+import {PmProgressPanel,type PmProgressEvent} from './features/chat/PmProgressPanel.js';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle,Play,Square} from 'lucide-react';
@@ -363,6 +364,36 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [projectChats,setProjectChats]=useState<Record<string,ProjectChatState>>({});
  const selectedProjectId=selected?.id||'';
  const projectChatOpen=openChatProjectId===selectedProjectId;
+ const [pmProgress,setPmProgress]=useState<Record<string,PmProgressEvent[]>>({});
+ useEffect(()=>{
+  if(!token||!selectedProjectId||!projectChatOpen||projectChatMode!=='project')return;
+  const projectId=selectedProjectId,controller=new AbortController();
+  let active=true,cursor=0;
+  setPmProgress({});
+  const consume=async()=>{
+   while(active){
+    try{
+     await streamPmProgress(projectId,cursor,event=>{
+      if(!active)return;
+      cursor=Math.max(cursor,Number(event.id)||0);
+      setPmProgress(current=>{
+       const previous=current[event.message_id]||[];
+       if(previous.some(item=>item.id===event.id))return current;
+       return {...current,[event.message_id]:[...previous,event].slice(-70)};
+      });
+     },controller.signal);
+    }catch(error){
+     if(error instanceof AuthExpiredError||controller.signal.aborted)break;
+     // Reconnect using the last persisted cursor; failed streams never
+     // reset the message or cause another Codex turn.
+    }
+    if(!active)break;
+    await new Promise(resolve=>window.setTimeout(resolve,1500));
+   }
+  };
+  void consume();
+  return()=>{active=false;controller.abort();};
+ },[token,selectedProjectId,projectChatOpen,projectChatMode]);
  const selectedProjectRef=useRef(selectedProjectId);
  selectedProjectRef.current=selectedProjectId;
  function getProjectChat(mode:ProjectChatMode){
@@ -2111,6 +2142,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.created_at&&<time className="assistant-message-time" dateTime={m.created_at}>{new Date(m.created_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</time>}
        {m.role==='assistant'?<div className="pm-chat-markdown"><DocumentMarkdown source={pmDisplayText(m.body)}/></div>:<div>{m.body}</div>}
        <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
+      {m.role==='user'&&projectChatMode==='project'&&<PmProgressPanel events={pmProgress[m.id]||[]} status={m.status}/>}
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
       {m.status==='queued'&&<small className="chat-message-status">Сообщение сохранено · ожидает обработки</small>}
       {m.status==='processing'&&<small className="chat-message-status">ПМ обрабатывает сообщение…</small>}
