@@ -348,9 +348,9 @@ export async function checkDevelopment(args:TaskRef):Promise<{status:string;mess
   // Legacy jobs have no journal. Reuse a verifiable existing PR/branch when possible.
   const {task,repo,token}=await jobSettings(projectId,taskId);
   const actor=(await pool.query('SELECT triggered_by FROM ai_task_runs WHERE id=$1',[runId])).rows[0]?.triggered_by;
-  if(!task.test_feedback&&actor&&await finishExistingTaskBranch(args,{
-   repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,token,title:task.title
-  },actor))return {status:'completed',message:'PR восстановлен из GitHub'};
+  if(!task.test_feedback&&actor&&await finishExistingTaskBranch({...args,
+   repository:repo.repository,baseBranch:task.pr_base_branch||repo.target_branch||repo.default_branch,token,title:task.title,actorId:actor
+  }))return {status:'completed',message:'PR восстановлен из GitHub'};
   return failRunnerRun('development',projectId,runId,'У запуска нет сохранённого состояния. Проверьте ветку перед новым запуском.');
  }
  if(remote.status==='cancelled')return failRunnerRun('development',projectId,runId,'Исполнитель подтвердил остановку разработки');
