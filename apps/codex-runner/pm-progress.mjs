@@ -20,8 +20,9 @@ export function visibleCodexProgress(msg){
  // Codex explicitly labels this as a *summary*; raw reasoning text/deltas
  // are intentionally not exposed. Different app-server versions may omit it.
  if(method==='item/reasoning/summaryTextDelta'&&typeof params.delta==='string'){
-  const delta=safe(params.delta,240);
-  return delta?{kind:'summary',text:delta}:null;
+  // Preserve whitespace between streamed tokens; trim only after aggregation.
+  const delta=String(params.delta).replace(/[\\u0000-\\u001f\\u007f]/g,' ').slice(0,240);
+  return delta.trim()?{kind:'summary',text:delta}:null;
  }
  if(method==='item/started'&&item.type==='mcpToolCall'){
   const tool=cleanTool(item.tool)||cleanTool(item.name);
