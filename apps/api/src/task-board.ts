@@ -49,7 +49,7 @@ export async function installUniversalTaskBoardSchema(db:Pick<Pool,'query'>):Pro
  BEGIN
   IF NEW.stage IS DISTINCT FROM OLD.stage THEN
    IF NEW.stage='done' THEN
-    IF NEW.acceptance_mode='automatic' THEN
+    IF NEW.acceptance_mode='automatic' OR NEW.type='question' THEN
      NEW.board_status:='done';
      NEW.accepted_at:=now();
     ELSE
