@@ -49,8 +49,7 @@ test('delegation requires an active specialist assignment or another live task r
  }};
  await assert.rejects(attempt(db,specialist,'work.delegate',payload),error=>error.statusCode===403);
  assert.equal(calls.length,2);
- assert.deepEqual(calls[0].params.slice(0,4),[assignment,projectId,taskId,'testing']);
- assert.deepEqual(calls[0].params.slice(4),['submitted','All scenarios were executed successfully','An external test report exists']);
+ assert.deepEqual(calls[0].params,[assignment,projectId,taskId,'testing']);
  assert.deepEqual(calls[1].params,[assignment,projectId,taskId,'testing']);
 });
 test('live peer specialist can delegate in same task and cannot create unauthorized grants',async()=>{
@@ -85,7 +84,8 @@ test('work.report requires the exact active task-bound process',async()=>{
   evidence:'An external test report exists'
  }),/не активно/);
  assert.equal(calls.length,1);
- assert.deepEqual(calls[0].params,[assignment,projectId,taskId,'testing']);
+ assert.deepEqual(calls[0].params.slice(0,4),[assignment,projectId,taskId,'testing']);
+ assert.deepEqual(calls[0].params.slice(4),['submitted','All scenarios were executed successfully','An external test report exists']);
 });
 test('only project manager can review or grant, without bypassing QA or stage changes',async()=>{
  await assert.rejects(attempt(never,specialist,'work.review',{
