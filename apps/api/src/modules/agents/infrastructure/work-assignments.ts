@@ -118,7 +118,7 @@ export async function planWork(db:Db,input:{
  const scopeColumn=input.taskId?'task_id':'goal_id';
  const scopeId=input.taskId||input.goalId;
  const version=task?.spec_version||0;
- const previous=await db.query(`SELECT a.plan_id,a.id,a.plan_key,a.role,a.objective,a.acceptance,a.granted_tools,
+ const previous=await db.query(`SELECT a.plan_id,a.id,a.plan_key,a.role,a.objective,a.acceptance,a.granted_tools,a.status,
    COALESCE((SELECT array_agg(prerequisite.plan_key ORDER BY prerequisite.plan_key)
     FROM agent_work_plan_dependencies dependency
     JOIN agent_work_assignments prerequisite ON prerequisite.id=dependency.requires_id
@@ -143,6 +143,9 @@ export async function planWork(db:Db,input:{
  ])]));
  for(const [planId,rows] of plans){
   if(rows.length!==steps.length)continue;
+  // Completed/cancelled historical work is not a live duplicate: a new
+  // instruction may legitimately request another verification pass.
+  if(!rows.some(row=>['queued','running','submitted','blocked'].includes(row.status)))continue;
   const actual=new Map(rows.map(row=>[row.plan_key,JSON.stringify([
    row.role,row.objective,row.acceptance,[...(row.needs||[])].sort(),
    [...(row.granted_tools||[])].sort()
