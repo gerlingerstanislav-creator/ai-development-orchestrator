@@ -3,6 +3,7 @@ import type {Pool} from 'pg';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {BOARD_STATES,ACCEPTANCE_MODES,canPlanBoardMove,boardStateForStage} from './task-board.js';
+import {queueTaskExecutionKickoff} from './task-execution-kickoff.js';
 
 type Deps={
  pool:Pool;
@@ -11,7 +12,7 @@ type Deps={
  requireAdmin:(request:any,reply:any)=>Promise<boolean>;
 };
 const payload=z.object({
- action:z.enum(['move','set_acceptance','accept','request_changes','postpone','resume','archive','restore']),
+ action:z.enum(['move','start','set_acceptance','accept','request_changes','postpone','resume','archive','restore']),
  status:z.enum(BOARD_STATES).optional(),
  mode:z.enum(ACCEPTANCE_MODES).optional(),
  reason:z.string().trim().max(2000).optional(),
@@ -29,7 +30,7 @@ export function registerTaskBoardRoutes(app:FastifyInstance,{pool,uid,access,req
   const input=payload.parse(request.body);
   // Acceptance, deferment and archiving have product implications. They
   // require the same privileged user as workflow approvals.
-  if(input.action!=='move'&&!await requireAdmin(request,reply))return;
+  if((input.action!=='move'||input.status==='in_progress')&&!await requireAdmin(request,reply))return;
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -53,7 +54,17 @@ export function registerTaskBoardRoutes(app:FastifyInstance,{pool,uid,access,req
      if(input.status!==t.board_status){
       await client.query('UPDATE tasks SET board_status=$3,updated_at=now() WHERE project_id=$1 AND id=$2',[id,taskId,input.status]);
      }
+     if(input.status==='in_progress'&&t.stage==='backlog'){
+      response.kickoff=await queueTaskExecutionKickoff(client,{projectId:id,taskId,actorId:uid(request)});
+     }
      message='Состояние доски: '+input.status;
+     break;
+    }
+    case 'start': {
+     if(t.board_status!=='in_progress'||t.stage!=='backlog')
+      throw reject('Повторный запуск PM доступен только для задачи без запущенного технического workflow');
+     response.kickoff=await queueTaskExecutionKickoff(client,{projectId:id,taskId,actorId:uid(request)});
+     message='Проверено поручение PM по задаче';
      break;
     }
     case 'set_acceptance': {
