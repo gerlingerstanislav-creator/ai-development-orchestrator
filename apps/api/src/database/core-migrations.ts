@@ -25,6 +25,7 @@ import {installEpicStageSync,backfillLegacyEpicStages} from '../epic-stage-sync.
 import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-first-gate.js';
 import {installTaskEvidenceSchema} from '../task-evidence.js';
 import {installWorkAssignmentsSchema,installWorkPlanSchema,installTaskCapabilityGrants} from '../modules/agents/infrastructure/work-assignments.js';
+import {installWorkArtifactsSchema} from '../modules/agents/infrastructure/work-artifacts.js';
 
 /**
  * Append-only, transactional schema history.
@@ -146,6 +147,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:15,name:'scoped-agent-tool-capabilities',
    checksum:'ado-agent-tool-capability-grants-v15',
    up:database=>installTaskCapabilityGrants(database)
+  },
+  {
+   version:16,name:'delegated-work-browser-artifacts',
+   checksum:'ado-delegated-work-browser-artifacts-v16',
+   up:database=>installWorkArtifactsSchema(database)
   }
  ];
 }
