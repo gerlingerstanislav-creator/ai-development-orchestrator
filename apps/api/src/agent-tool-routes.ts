@@ -2,7 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
-import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,createAgentReaderSession,finishAgentSession,readerRoles,type AgentSession} from './agent-tools.js';
+import {agentToolCatalog,readAgentSession,hashSecret,toolsForSession,readSessionToolGrants,createAgentReaderSession,finishAgentSession,readerRoles,type AgentSession} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
 import {annotatePmToolResult} from './pm-goal-policy.js';
 import {inspectGitHubProjectSource} from './documentation-preparation.js';
@@ -112,14 +112,16 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  });
  app.get('/internal/agent-tools/catalog',async(req:any,reply)=>{
   const session=await authenticate(req,reply);if(!session)return;
-  return {tools:toolsForRole(session.role,session.read_only)};
+  const grants=await readSessionToolGrants(pool,session);
+  return {tools:toolsForSession(session.role,session.read_only,grants)};
  });
  app.post('/internal/agent-tools/call',async(req:any,reply)=>{
   const session=await authenticate(req,reply);if(!session)return;
   const parsed=callSchema.safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:'Неверные параметры вызова инструмента'});
   const {name,arguments:args}=parsed.data;
-  const tool=toolsForRole(session.role,session.read_only).find(tool=>tool.name===name);
+  const grantedTools=await readSessionToolGrants(pool,session);
+  const tool=toolsForSession(session.role,session.read_only,grantedTools).find(tool=>tool.name===name);
   if(!tool)return reply.code(403).send({error:'Инструмент недоступен для роли '+session.role});
   const key=!session.read_only&&typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
   const digest=hashSecret(JSON.stringify({name,args}));
@@ -178,7 +180,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
        const token=deps.decryptToken(linked.secret_encrypted);
        return {available:true,...await inspectGitHubProjectSource(linked.repository,
         commit||linked.target_branch||linked.default_branch||'main',token,path)};
-      });
+      },grantedTools);
    const result=session.role==='manager'?annotatePmToolResult(name,rawResult):rawResult;
    // A successful PM delegation is explicit authorization to wake the
    // project's specialists. Informational tools and chat leave Stop intact.
