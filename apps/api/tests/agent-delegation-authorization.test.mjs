@@ -14,7 +14,7 @@ test('active peer specialist can delegate work using agent_peer_queue.note_id',a
    return {rowCount:0,rows:[]};
   if(sql.includes('FROM agent_peer_queue'))
    return {rowCount:1,rows:[{id:process}]};
-  if(sql.includes('SELECT id,stage,spec_version FROM tasks'))
+  if(sql.includes('SELECT id,stage,board_status,postponed_at,archived_at,spec_version FROM tasks'))
    return {rowCount:1,rows:[{id:task,stage:'analysis',spec_version:1}]};
   if(sql.includes('count(*)::int AS n'))
    return {rowCount:1,rows:[{n:0}]};
