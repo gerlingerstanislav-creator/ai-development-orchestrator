@@ -46,6 +46,13 @@ test('PostgreSQL v14 stores atomic generic plans with same-task prerequisites an
   await tx.query('COMMIT');
  }catch(error){await tx.query('ROLLBACK');throw error;}finally{tx.release();}
  assert.equal(plan.assignments.length,3);
+ // Replaying the identical instruction (including after a PM process restart)
+ // must reuse the existing graph and dependency IDs rather than enqueueing it again.
+ const replay=await planWork(pool,{projectId,taskId,sourceRole:'manager',steps:[docs,qa,devops]});
+ assert.equal(replay.duplicate,true);
+ assert.equal(replay.plan_id,plan.plan_id);
+ assert.deepEqual(replay.assignments,plan.assignments);
+ assert.equal((await pool.query('SELECT count(*)::int AS n FROM agent_work_assignments WHERE task_id=$1',[taskId])).rows[0].n,3);
  assert.deepEqual(plan.assignments.map(x=>x.key),['env','capture','docs']);
  assert.deepEqual(plan.assignments[1].depends_on,[plan.assignments[0].id]);
  assert.deepEqual(plan.assignments[2].depends_on,[plan.assignments[1].id]);
