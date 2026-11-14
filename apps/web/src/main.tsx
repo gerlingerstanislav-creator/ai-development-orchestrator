@@ -8,6 +8,7 @@ import {DocumentMarkdown,pmDisplayText} from './features/documentation/Markdown.
 import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/AgentPromptDisclosure.js';
 import {parseAppRoute,projectUrl,uuidPattern,type ProjectSection,type AppRoute} from './features/navigation/routes.js';
 import {ProjectSidebar} from './features/navigation/ProjectSidebar.js';
+import {ProjectListPage} from './features/projects/ProjectListPage.js';
 import {api,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
@@ -1815,9 +1816,15 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   </div>
   </details>
  </section>
- </div>:!selected?<div className="page"><div className="page-heading"><div><span className="eyebrow">WORKSPACE</span><h1>{showTrash?'Корзина проектов':'Мои проекты'}</h1><p>{showTrash?'Проекты можно восстановить или удалить безвозвратно. Репозитории GitHub не затрагиваются.':'Создавайте проекты и управляйте разработкой в одном месте.'}</p></div><div className="project-page-actions"><button className="secondary" type="button" onClick={()=>setShowTrash(v=>!v)}>{showTrash?<><ArrowLeft size={16}/> Мои проекты</>:<><Trash2 size={16}/> Корзина ({trashedProjects.length})</>}</button>{!showTrash&&<button className="primary" onClick={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}><Plus size={17}/> Новый проект</button>}</div></div>
- {showTrash?<div className="project-grid">{trashedProjects.map(p=><div key={p.id} className="project-card project-card-trashed"><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><small className="muted">В корзине с {new Date(p.deleted_at).toLocaleString('ru-RU')}</small><div className="project-card-actions"><button type="button" className="secondary" disabled={projectDeleteBusy} onClick={()=>void restoreProject(p)}><RotateCcw size={15}/> Восстановить</button><button type="button" className="secondary project-danger-button" disabled={projectDeleteBusy} onClick={()=>void permanentlyDeleteProject(p)}><Trash2 size={15}/> Удалить навсегда</button></div></div>)}{trashedProjects.length===0&&<div className="empty">Корзина пуста.</div>}</div>
- :<div className="project-grid">{projects.map(p=><div key={p.id} className="project-card project-card-active"><a href={projectUrl(p.id)} className="project-card-link" onClick={e=>followLink(e,projectUrl(p.id))}><div className="project-symbol">{p.name.slice(0,1).toUpperCase()}</div><h3>{p.name}</h3><p>{p.description||'Описание проекта пока не добавлено'}</p><span>Открыть проект <ArrowRight size={16}/></span></a>{p.is_owner&&<button type="button" className="secondary project-trash-button" title="Переместить проект в корзину" aria-label={'В корзину: '+p.name} disabled={projectDeleteBusy} onClick={()=>void moveProjectToTrash(p)}><Trash2 size={15}/></button>}</div>)}{projects.length===0&&<div className="empty">Пока нет проектов. Создайте первый, чтобы начать работу.</div>}</div>}</div>
+ </div>:!selected?<ProjectListPage
+  projects={projects} trashedProjects={trashedProjects} showTrash={showTrash}
+  projectDeleteBusy={projectDeleteBusy}
+  onToggleTrash={()=>setShowTrash(v=>!v)}
+  onCreateProject={()=>{setForm({...form,name:'',description:''});setShowProject(true);}}
+  onRestoreProject={p=>void restoreProject(p)}
+  onPermanentlyDeleteProject={p=>void permanentlyDeleteProject(p)}
+  onMoveProjectToTrash={p=>void moveProjectToTrash(p)}
+  onFollowLink={followLink}/>
  :<div className={section==='tasks'?'page tasks-page':'page compact-project-page'}>
  {section==='overview'&&<div className="overview"><div className="panel"><h3>О проекте</h3><p>{selected.description||'Описание пока отсутствует.'}</p></div><div className="stats">{stages.map(s=><div className="stat" key={s.stage}><b>{tasks.filter(t=>t.type!=='question'&&t.stage===s.stage).length}</b><span>{s.label}</span></div>)}</div></div>}
  {section==='tasks'&&<><div className="toolbar"><div className="planning-filters"><input className="search" aria-label="Поиск по задачам" placeholder="Поиск по задачам…" value={search} onChange={e=>setSearch(e.target.value)}/>
