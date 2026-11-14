@@ -14,5 +14,9 @@ export function conversationThreadScope(data,fallbackRole='assistant'){
   ?'owner-chat:'+owner
   :String(data.process_id||data.context?.processId||
    (owner?'project-chat:'+owner:randomUUID()));
- return {projectId,role,taskId,processId};
+ // Existing Codex threads retain old instructions. Trusted policy revision
+ // ensures that updated manager rules apply without discarding DB history.
+ const revision=role==='manager'&&typeof data.prompt_revision==='string'&&
+  /^[a-f0-9]{16}$/.test(data.prompt_revision)?':policy-'+data.prompt_revision:'';
+ return {projectId,role,taskId,processId:processId+revision};
 }
