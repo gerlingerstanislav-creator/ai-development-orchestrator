@@ -2,7 +2,7 @@ import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {randomUUID,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
-import {agentToolCatalog,readAgentSession,hashSecret,toolsForSession,readSessionToolGrants,createAgentReaderSession,finishAgentSession,readerRoles,type AgentSession} from './agent-tools.js';
+import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,toolsForSession,readSessionToolGrants,createAgentReaderSession,finishAgentSession,readerRoles,type AgentSession} from './agent-tools.js';
 import {executeAgentTool} from './agent-tool-executor.js';
 import {annotatePmToolResult} from './pm-goal-policy.js';
 import {inspectGitHubProjectSource} from './documentation-preparation.js';
@@ -140,6 +140,13 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   try{
    if(connection){await connection.query('BEGIN');txOpen=true;}
    const db=connection||pool;
+   // Revocation and source-spec changes must not race elevated side effects.
+   // Keep a share lock on the actual task and assignment until the tool audit
+   // and its database effects commit atomically.
+   if(connection&&!toolsForRole(session.role,session.read_only).some(tool=>tool.name===name)){
+    const live=await readSessionToolGrants(connection,session,true);
+    if(!live.includes(name))throw Object.assign(Error('Дополнительное право отозвано или поручение завершено'),{statusCode:403});
+   }
    if(connection&&key)
     await connection.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',
      [session.project_id+':'+name+':'+key]);
