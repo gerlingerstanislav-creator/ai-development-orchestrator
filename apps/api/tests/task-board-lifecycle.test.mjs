@@ -32,7 +32,7 @@ test('planning statuses never grant permission to bypass technical QA or PR',()=
 
 test('v21 migrates old tasks and protects owner acceptance with real PostgreSQL',async()=>{
  await withSchema(async db=>{
-  const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+  const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=21);
   assert.equal(migrations.at(-1).version,21);
   await runSchemaMigrations(db,migrations.filter(x=>x.version<21));
   const ids={user:randomUUID(),project:randomUUID(),oldDone:randomUUID(),testing:randomUUID(),backlog:randomUUID(),auto:randomUUID(),question:randomUUID()};
