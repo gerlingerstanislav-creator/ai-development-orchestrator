@@ -37,6 +37,8 @@ test('fresh v19 installs durable PM goals, capability proposals and goal work wi
    'ado-project-pm-outcome-goals-v17');
   assert.equal((await db.query("SELECT to_regclass('project_pm_goals') IS NOT NULL AS installed")).rows[0].installed,true);
   assert.equal((await db.query("SELECT to_regclass('project_pm_goal_links') IS NOT NULL AS installed")).rows[0].installed,true);
+  assert.equal((await db.query("SELECT checksum FROM schema_migrations WHERE version=19")).rows[0].checksum,'ado-goal-scoped-agent-work-v19');
+  assert.equal((await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='agent_work_assignments' AND column_name='goal_id'")).rowCount,1);
   assert.equal((await db.query('SELECT checksum FROM schema_migrations WHERE version=18')).rows[0].checksum,
    'ado-project-pm-capability-proposals-v18');
   const proposal=(await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='project_pm_goals' AND column_name='capability_proposal'")).rows;
