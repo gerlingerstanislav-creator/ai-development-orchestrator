@@ -20,6 +20,13 @@ test('task chat shows parallel agent runs and retains one outcome per completed 
   await db.query("INSERT INTO ai_task_runs(id,project_id,task_id,status,message) VALUES($1,$2,$3,'running','Работа идёт')",[devId,projectId,taskId]);
   await db.query("INSERT INTO ai_test_runs(id,project_id,task_id,status,message) VALUES($1,$2,$3,'running','Проверки идут')",[qaId,projectId,taskId]);
   await recordAgentActivity(db,projectId,[otherTaskId],randomUUID(),'documentation','running','Другая задача');
+  // PM-created tasks have scheduler and delegated-work events before the
+  // first agent iteration. Those belong in the process feed/DAG, not in the
+  // typed agent-chat lane (which previously rendered a white screen).
+  await db.query(`INSERT INTO process_events(id,project_id,task_id,process_id,process_kind,stage,detail)
+    VALUES($1,$2,$3,$4,'pm_inbox','queued','PM kickoff'),
+          ($5,$2,$3,$6,'agent','running','Work assignment')`,
+    [randomUUID(),projectId,taskId,randomUUID(),randomUUID(),randomUUID()]);
   const active=await readAgentActivity(db,projectId,taskId);
   assert.deepEqual(active.map(run=>run.kind).sort(),['development','testing']);
   assert.ok(active.every(run=>run.status==='running'));
