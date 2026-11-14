@@ -79,7 +79,7 @@ test('delegated specialist resume uses compact context instead of repeating the 
  const calls=[];
  const execute=createPersistentCliExecutor(createCodexThreadStore(folder),async(_name,args,opts)=>{
   calls.push(args);
-  if(calls.length===1)opts.onStdout('{"type":"thread.started","thread_id":"12345678-1234-4234-8234-123456789abc"}\\n');
+  if(calls.length===1)opts.onStdout('{"type":"thread.started","thread_id":"12345678-1234-4234-8234-123456789abc"}\n');
   return {stdout:'',stderr:'',exitCode:0};
  });
  const scope={projectId:'project',taskId:'task',role:'delegated:testing:assignment'};
