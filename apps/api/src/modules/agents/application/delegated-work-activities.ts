@@ -10,23 +10,32 @@ type AskAssistant=(
  reader?:Omit<AgentReaderScope,'projectId'|'taskId'>
 )=>Promise<string>;
 
+export type DelegatedSandboxItem={
+ project_id:string;task_id:string;role:string;project_owner_id:string;
+ task_description?:string|null;evidence_source_sha?:string|null;implementation_commit?:string|null;
+};
+type ExecuteSandbox=(item:DelegatedSandboxItem,assignmentId:string,prompt:string,
+ ai:{model:string;reasoning:string})=>Promise<string>;
+
 /** Temporal only dispatches this application activity.
  * The role selects tools and owns report evidence; a successful model reply
  * never implies that the scoped work.report operation succeeded.
  */
 export function createDelegatedWorkActivities({
- pool,askRunnerAssistant,resolveSettings=resolveRoleAiSettings,
+ pool,askRunnerAssistant,executeSandbox,resolveSettings=resolveRoleAiSettings,
  recordPrompt=recordAgentPrompt,finalize
 }:{
  pool:Db;
  askRunnerAssistant:AskAssistant;
+ executeSandbox?:ExecuteSandbox;
  resolveSettings?:typeof resolveRoleAiSettings;
  recordPrompt?:typeof recordAgentPrompt;
  finalize:(db:Db,id:string,reason:string)=>Promise<unknown>;
 }){
 async function runDelegatedWork(assignmentId:string):Promise<void>{
  const r=await pool.query(`SELECT a.*,t.title,t.description AS task_description,t.stage,
-  t.spec_version AS current_spec,p.agents_running
+  t.evidence_source_sha,t.implementation_commit,
+  t.spec_version AS current_spec,p.agents_running,p.owner_id AS project_owner_id
   FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
   JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL
   WHERE a.id=$1 AND a.status='running'`,[assignmentId]);
@@ -50,7 +59,7 @@ async function runDelegatedWork(assignmentId:string):Promise<void>{
   role:'Исполнитель поручения: '+item.role,
   objective:item.objective,
   scope:'Проект '+item.project_id+'; задача '+item.task_id+'; поручение '+assignmentId,
-  tools:'Используй MCP capabilities.list/describe, agents.capabilities, tasks.read/history, project.source, agents.consult, work.delegate и реальные доступные инструменты. Никаких вымышленных скриншотов, тестов, PR и деплоя.',
+  tools:'Рабочая копия исходников с командами в sandbox, реальный Chromium и MCP capabilities.list/describe, tasks.read/history, agents.consult, work.delegate, work.artifacts. Исполнитель выбирает действия по критериям приёмки, не по имени этапа.',
   instructions:String(instruction.rows[0]?.agent_instructions||''),
   continuation:[
    'Критерии приёмки: '+item.acceptance,
@@ -59,6 +68,7 @@ async function runDelegatedWork(assignmentId:string):Promise<void>{
    'Ищи доступные инструменты и зависимости по смыслу результата, не по названию задачи.',
    'Если недостаёт безопасного инструмента, отчитайся work.report(status=blocked) и назови точное имя из agents.capabilities: ПМ может выдать право через work.grant, не создавая новую задачу.',
    'Если нужны действия другого специалиста, используй work.delegate и сообщи о зависимости через work.report(status=blocked); не выдавай ожидание за завершение.',
+   'Если собирал визуальные доказательства, сохрани реальные браузерные скриншоты. После закрытия runtime ПМ проверит work.artifacts с защищёнными ссылками и SHA; локальное не называй production без проверки deploy SHA.',
    'После реальных действий зафиксируй результат и конкретные ссылки/ID/артефакты инструментом work.report(status=submitted,evidence=...).',
    'Если фактические доказательства отсутствуют, вызови work.report(status=blocked) с причиной и необходимыми условиями.',
    'Только успешное применение work.report является статусом поручения. Простой текст ответа не завершает поручение.'
@@ -67,8 +77,10 @@ async function runDelegatedWork(assignmentId:string):Promise<void>{
  });
  await recordPrompt(pool,{projectId:item.project_id,processId:assignmentId,role:item.role,operation:'delegated_work',prompt}).catch(()=>{});
  try{
-  const output=await askRunnerAssistant(prompt,item.project_id,item.task_id,'delegated_work',roleSettings,195000,[],
-   {role:item.role,processId:assignmentId});
+  const output=executeSandbox
+   ?await executeSandbox(item,assignmentId,prompt,roleSettings)
+   :await askRunnerAssistant(prompt,item.project_id,item.task_id,'delegated_work',roleSettings,195000,[],
+     {role:item.role,processId:assignmentId});
   // A message is not evidence of execution; only the scoped work.report tool moves status.
   await finalize(pool,assignmentId,'Агент завершил сессию без подтверждённого результата через work.report. '+String(output).slice(0,850));
  }catch(error){
