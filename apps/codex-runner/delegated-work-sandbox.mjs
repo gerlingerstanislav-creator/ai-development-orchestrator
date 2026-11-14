@@ -12,7 +12,7 @@ export function validateDelegatedSandboxRequest(job){
   ![job.assignmentId,job.projectId,job.taskId,job.actorId].every(x=>idPattern.test(x))||
   typeof job.prompt!=='string'||job.prompt.length<12||job.prompt.length>55000||
   typeof job.model!=='string'||job.model.length>90||
-  !['low','medium','high','extra_high'].includes(job.reasoning))
+  !['minimal','low','medium','high','extra_high','xhigh'].includes(job.reasoning))
   throw new Error('Некорректное поручение для изолированного исполнителя');
  if(job.repository!==undefined&&job.repository!==null){
   if(!repoPattern.test(job.repository)||!safeBranch.test(job.branch||'main')||
