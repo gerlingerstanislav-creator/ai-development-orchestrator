@@ -24,7 +24,7 @@ export function qaReadableSummary(report:QaReadableEvidence,expectedCount?:numbe
  const blocked=Math.max(0,total-passed-failed);
  const checkFailures=checks.filter(c=>c.result==='failed').length;
  const verdict=report.verdict==='failed'||failed>0||checkFailures>0||findings.length>0?'failed':
-  report.verdict==='passed'&&blocked===0?'passed':'blocked';
+  report.verdict==='passed'&&blocked===0&&total>0?'passed':'blocked';
  const counts=total?passed+' из '+total+' сценариев пройдено'+(failed?', '+failed+' с ошибкой':'')+
   (blocked?', '+blocked+' не проверено':'')+'.':'Нет подтверждённых результатов проверок.';
  if(report.staleSpecification)
