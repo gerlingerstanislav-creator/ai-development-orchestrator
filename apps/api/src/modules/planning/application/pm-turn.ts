@@ -117,7 +117,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   });
   const data=await response.json().catch(()=>({})) as any;
   await audit('runner_response',response.ok?'info':'warning',undefined,response.status);
-  if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
+  if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(('Runner HTTP '+response.status+': '+String(data.error||'ПМ не вернул ответ')).slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
   const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true ORDER BY created_at,id',[projectId,session.id]);
   const seen=new Set<string>();
