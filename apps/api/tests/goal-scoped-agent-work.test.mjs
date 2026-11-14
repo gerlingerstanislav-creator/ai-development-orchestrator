@@ -40,6 +40,11 @@ test('manager delegates directly against existing PM goal without making a Kanba
  const inserted=calls.find(x=>x.sql.startsWith('INSERT INTO agent_work_assignments'));
  assert.deepEqual(inserted.params.slice(0,4).slice(2),[null,goalId]);
  assert.ok(calls.some(x=>x.sql.startsWith('INSERT INTO process_events')));
+ const links=calls.filter(x=>x.sql.startsWith('INSERT INTO project_pm_goal_links'));
+ assert.equal(links.length,1);
+ assert.deepEqual(links[0].params.slice(1,3),[projectId,goalId]);
+ assert.equal(links[0].params[3],result.id);
+ assert.ok(calls.some(x=>x.sql.includes("UPDATE project_pm_goals SET status='waiting_agents'")));
  assert.ok(!calls.some(x=>/INSERT INTO task_events|UPDATE tasks|INSERT INTO ai_task_runs/.test(x.sql)));
  await assert.rejects(executeAgentWorkTool(db,manager,'work.delegate',{
   task_id:goalId,goal_id:goalId,role,objective,acceptance
