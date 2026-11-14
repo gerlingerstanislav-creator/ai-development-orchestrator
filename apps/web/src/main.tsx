@@ -21,7 +21,7 @@ import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {QaRunEvidence} from './QaRunEvidence.js';
 import {ProjectTeam} from './ProjectTeam.js';
-import {aiAgentName,serviceStages} from './agent-labels.js';
+import {aiAgentName,serviceStages,taskAgentLabel} from './agent-labels.js';
 import {KnowledgeTraceability} from './KnowledgeTraceability.js';
 import {KnowledgeUpdateProposals} from './KnowledgeUpdateProposals.js';
 import {KnowledgeAudit} from './KnowledgeAudit.js';
@@ -51,14 +51,8 @@ type RequirementInfo={task:{id:string;title:string;description:string;spec_versi
 type TaskProcessEvent={id:string;process_kind:string;stage:string;detail:string;level:string;created_at:string};
 type AgentTaskNote={id:string;author_stage:string;author_name:string;target_stage:string;kind:'handoff'|'observation'|'question'|'risk'|'resolution';body:string;source_kind:string;status:string;answer?:string|null;answered_at?:string|null;created_at:string};
 type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_cleanup_required?:boolean;warnings?:string[];github_note:string};
-type AgentRun={id:string;kind:'analysis'|'development'|'testing'|'qa_design'|'documentation';status:'queued'|'running'|'completed'|'failed';summary:string;link:string|null;created_at:string;completed_at:string|null};
-const agentRunLabels={
- analysis:{name:'Аналитик',active:'Ведётся анализ'},
- development:{name:'Разработчик',active:'Ведётся разработка'},
- testing:{name:'Тестировщик',active:'Ведётся тестирование'},
- qa_design:{name:'Тестировщик',active:'Готовятся тестовые сценарии'},
- documentation:{name:'Документатор',active:'Обновляется документация'}
-};
+type AgentRun={id:string;kind:string;status:'queued'|'running'|'completed'|'failed';summary:string;link:string|null;created_at:string;completed_at:string|null};
+
 type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[];workAssignments?:TaskWorkAssignment[];kickoff?:TaskExecutionKickoff};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
 
@@ -2335,8 +2329,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       </details>
       {chatEntries.map(m=>'kind' in m&&m.kind==='agent_start'?<div className="manager-message from-manager agent-milestone" key={'start-'+m.agentKind+'-'+m.id}>
        <AgentPromptDisclosure projectId={selectedProjectId} processId={m.id}/>
-       <div className="manager-message-heading"><strong>{agentRunLabels[m.agentKind].name}</strong><small>{new Date(m.created_at).toLocaleString('ru-RU')}</small></div>
-       <div className="manager-message-body">{m.status==='queued'?'Задача поставлена в очередь.':agentRunLabels[m.agentKind].name+' взял задачу в работу.'}</div>
+       <div className="manager-message-heading"><strong>{taskAgentLabel(m.agentKind).name}</strong><small>{new Date(m.created_at).toLocaleString('ru-RU')}</small></div>
+       <div className="manager-message-body">{m.status==='queued'?'Задача поставлена в очередь.':taskAgentLabel(m.agentKind).name+' взял задачу в работу.'}</div>
       </div>:'kind' in m&&m.kind==='qa_report'?<div className="manager-message from-manager qa-report-message" key={'qa-'+m.id}>
        <div className="manager-message-heading">
         <strong>Тестировщик · Отчёт по тест-кейсам</strong>
@@ -2345,7 +2339,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={m.summary}/></div>
       </div>:'kind' in m?<div className="manager-message from-manager" key={m.kind+'-'+m.id}>
        <div className="manager-message-heading">
-        <strong>{agentRunLabels[m.agentKind].name} · {m.status==='failed'?'Ошибка':'Завершено'}</strong>
+        <strong>{taskAgentLabel(m.agentKind).name} · {m.status==='failed'?'Ошибка':'Завершено'}</strong>
         <small>{new Date(m.completed_at||m.created_at).toLocaleString('ru-RU')}</small>
        </div>
        <div className="manager-message-body pm-chat-markdown"><DocumentMarkdown source={
@@ -2380,7 +2374,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
      {(activeAgentRuns.length>0||managerWorking)&&<ul className="manager-live-activity" aria-label="Текущая работа команды" aria-live="polite">
       {activeAgentRuns.map(run=><li key={run.kind+'-'+run.id}><LoaderCircle size={14} aria-hidden="true"/>
-       {run.status==='queued'?'В очереди · '+agentRunLabels[run.kind].name:agentRunLabels[run.kind].active}</li>)}
+       {run.status==='queued'?'В очереди · '+taskAgentLabel(run.kind).name:taskAgentLabel(run.kind).active}</li>)}
       {managerWorking&&<li><LoaderCircle size={14} aria-hidden="true"/>Менеджер обрабатывает сообщение</li>}
      </ul>}
      {(decisions.length>0||readyForDevelopment||plannedAnalysis)&&<div className="task-command-strip manager-actions" aria-label="Решения Менеджера проекта">
