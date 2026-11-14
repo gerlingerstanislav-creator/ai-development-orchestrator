@@ -23,7 +23,7 @@ export type QaOutcomePorts={
  * ownership checks are enforced here, outside workflow deterministic code.
  */
 export function createQaOutcomeActivities({pool,event,jobSettings,nonRetryable,http=fetch}:QaOutcomePorts){
-export async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
+async function approveTestedTask(args:{projectId:string;taskId:string;testId:string;simplified?:boolean}){
  if(!args.simplified&&await pendingAgentQuestions(pool,args.projectId,args.taskId))throw nonRetryable('QA нашёл открытый вопрос. Ответь до перехода к слиянию');
  const {projectId,taskId,testId}=args;
  const verified=await pool.query(`SELECT t.implementation_kind,t.implementation_commit,t.execution_mode,t.evidence_source_sha,r.report
@@ -92,7 +92,7 @@ export async function approveTestedTask(args:{projectId:string;taskId:string;tes
   [randomUUID(),taskId,'tests_passed','Проверки завершены, PR готов к слиянию']);
  await event(projectId,testId,'testing','approved','Тесты пройдены. PR отправлен в очередь слияния');
 }
-export async function rejectTestedTask(args:{projectId:string;taskId:string;cycleId:string;testId:string;attempt:number;allowFix:boolean}):Promise<string|null>{
+async function rejectTestedTask(args:{projectId:string;taskId:string;cycleId:string;testId:string;attempt:number;allowFix:boolean}):Promise<string|null>{
  const {projectId,taskId,cycleId,testId,attempt,allowFix}=args;
  const test=await pool.query("SELECT report FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status='completed' AND verdict='failed'",
   [testId,projectId,taskId]);
