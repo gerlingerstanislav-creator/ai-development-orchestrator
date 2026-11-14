@@ -269,12 +269,19 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {requires_user_confirmation:true};
  }
  case 'tasks.list':{
-  const {product_owner_questions_only}=z.object({product_owner_questions_only:z.boolean().optional()}).parse(params);
+  const {product_owner_questions_only,display_number}=z.object({
+   product_owner_questions_only:z.boolean().optional(),
+   display_number:z.number().int().positive().optional()
+  }).parse(params);
   if(product_owner_questions_only){
-   const tasks=(await tasksWithCustomerQuestions(pool,projectId)).filter(task=>task.awaits_product_owner);
+   const tasks=(await tasksWithCustomerQuestions(pool,projectId)).filter(task=>task.awaits_product_owner&&
+    (display_number===undefined||Number(task.display_number)===display_number));
    return {tasks:tasks.map(({id,title,stage,type,document_id,question_status,analysis_state,display_number})=>({id,title,stage,type,document_id,question_status,analysis_state,display_number}))};
   }
-  const r=await pool.query('SELECT id,title,description,type,stage,board_status,acceptance_mode,postponed_at,analysis_state,display_number,document_id,question_status,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 500',[projectId]);
+  const fields='SELECT id,title,description,type,stage,board_status,acceptance_mode,postponed_at,analysis_state,display_number,document_id,question_status,updated_at FROM tasks WHERE project_id=$1';
+  const r=display_number!==undefined
+   ?await pool.query(fields+' AND display_number=$2 ORDER BY updated_at DESC LIMIT 2',[projectId,display_number])
+   :await pool.query(fields+' ORDER BY updated_at DESC LIMIT 500',[projectId]);
   return {tasks:r.rows};
  }
  case 'tasks.read':{
