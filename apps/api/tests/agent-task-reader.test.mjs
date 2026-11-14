@@ -8,7 +8,7 @@ test('scoped agent reads current task, PR identity and only its own project',asy
  const queries=[];
  const pool={query:async(sql,args)=>{
   queries.push({sql,args});
-  if(sql.includes('SELECT id,title,description,stage,analysis_state,clarification_questions,depends_on_task_id,pr_url,pr_number')){
+  if(sql.includes('SELECT id,title,description,stage,board_status,acceptance_mode,postponed_at,acceptance_feedback,analysis_state,clarification_questions')){
    if(args[0]!==project||args[1]!==taskId)return {rows:[],rowCount:0};
    return {rows:[{id:taskId,title:'Fix checkout',stage:'development',pr_url:'https://github.com/acme/orders/pull/12',pr_number:12,git_branch:taskId,pr_base_branch:'main',spec_reviewed_commit:'abc123'}],rowCount:1};
   }
