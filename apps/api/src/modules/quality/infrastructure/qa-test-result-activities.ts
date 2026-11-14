@@ -62,7 +62,7 @@ async function checkTesting(args:{projectId:string;taskId:string;testId:string})
   const assessed=evaluateQaRun({
    snapshot,remote,status,message,qaSpecVersion:row.rows[0].qa_spec_version,currentSpec
   });
-  const {adHoc,cases,checked,outcome,report}=assessed;
+  const {adHoc,cases,checked,report}=assessed;
   let verdict=assessed.verdict;
   let evidenceIssue='';
   if(currentSpec.rows[0]?.execution_mode==='browser_evidence'&&verdict==='passed'){
