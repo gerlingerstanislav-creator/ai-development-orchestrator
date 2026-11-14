@@ -13,7 +13,7 @@ import {ProjectWorkflowDiagram,ProjectSettingsPanel,type Stage,type AiSettings,t
 import {api,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle,Play,Square} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,LayoutGrid,List,Plus,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle,Play,Square} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {QaRunEvidence} from './QaRunEvidence.js';
