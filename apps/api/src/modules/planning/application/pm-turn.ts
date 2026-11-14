@@ -121,12 +121,14 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   const effects=await agentSessionEffects(pool,session.id);
   const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true ORDER BY created_at,id',[projectId,session.id]);
   const seen=new Set<string>();
+  const completedGoals=new Set(toolEvents.rows.filter(row=>row.tool==='goals.complete')
+   .map(row=>row.result?.id).filter((id:unknown):id is string=>typeof id==='string'));
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
    if(row.tool==='goals.open'&&row.result?.watch?.kind==='goal'){
     const watch=row.result.watch;
     if(typeof watch.process_id!=='string'||typeof watch.goal_id!=='string'||
-       seen.has(watch.process_id))return [];
+       seen.has(watch.process_id)||completedGoals.has(watch.goal_id))return [];
     seen.add(watch.process_id);
     return [{projectId,processId:watch.process_id,kind:'goal' as const,
       goalId:watch.goal_id,orderId:orderId||undefined,
@@ -216,7 +218,8 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     const goalStatus=goalResult.rows[0]?.status as string|undefined;
     // A scheduled operation isn't success. Never close an accepted goal
     // until goals.complete has checked linked evidence.
-    const status=goalStatus&&goalStatus!=='completed'
+    const status=goalStatus==='completed'?'completed':
+     goalStatus
      ?goalStatus==='waiting_user'||goalStatus==='needs_action'?'waiting_user':
        watchers.length?'waiting_agents':'working'
      :initialStatus;
