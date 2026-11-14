@@ -7,7 +7,7 @@ import {taskGrantableTools} from './modules/agents/domain/tool-capabilities.js';
 import {instructionProposal,reconcileInstructions,proposeInstruction} from './instruction-governance.js';
 import {readTaskWorkBrief} from './task-work-brief.js';
 import {extractGitHubDocumentLocation} from './github-document-import.js';
-import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager} from './project-iterations.js';
+import {listIterations,readIteration,saveIteration,queueIterationPlanning,recommendIterationLaunch,approveIterationViaManager,previewIterationPlanViaManager,publishIterationPlanViaManager,recordIterationDecision} from './project-iterations.js';
 import {tasksWithCustomerQuestions} from './project-manager.js';
 import {enqueueDevelopment,readDevelopmentQueue} from './agent-work-scheduler.js';
 import {taskConversationEvidence} from './task-agent-notes.js';
