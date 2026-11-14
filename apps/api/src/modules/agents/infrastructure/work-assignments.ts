@@ -150,6 +150,37 @@ export async function delegateWork(db:Db,input:{
  return {id:row.id,status:'queued',role:input.role,task_id:row.task_id};
 }
 
+/** PM may expand an unfinished assignment's bounded capabilities without
+ * rewriting the task or reopening an already completed attempt. On blocked
+ * work this deliberately starts a new Temporal attempt on the SAME work item.
+ */
+export async function grantWorkTools(db:Db,input:{
+ projectId:string;assignmentId:string;tools:readonly string[];reason:string
+}){
+ const requested=normalizeTaskToolGrants(input.tools);
+ if(!requested.length)throw fail('Нужно указать хотя бы один разрешённый инструмент',400);
+ if(input.reason.trim().length<12)throw fail('Обоснуй изменение полномочий',400);
+ const found=await db.query(`SELECT a.*,t.spec_version AS actual_version,t.stage AS task_stage
+  FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+  WHERE a.project_id=$1 AND a.id=$2 FOR UPDATE OF a`,[input.projectId,input.assignmentId]);
+ if(!found.rowCount)throw fail('Поручение не найдено',404);
+ const assignment=found.rows[0];
+ if(!['queued','blocked'].includes(assignment.status)||assignment.spec_version!==assignment.actual_version||
+    assignment.task_stage==='done'||(assignment.status==='blocked'&&Number(assignment.attempts)>=4))
+  throw fail('Изменить права можно только для незавершённого актуального поручения, которое допускает повтор');
+ const grants=[...new Set([...(assignment.granted_tools||[]),...requested])].sort();
+ normalizeTaskToolGrants(grants);
+ if(grants.length===(assignment.granted_tools||[]).length)
+  throw fail('Все указанные права уже есть у этого поручения');
+ await db.query(`UPDATE agent_work_assignments
+  SET granted_tools=$3::text[],status='queued',dispatched_at=NULL,next_attempt_at=now(),
+   reviewer_note=$4,updated_at=now()
+  WHERE id=$1 AND project_id=$2 AND status IN ('queued','blocked')`,
+  [assignment.id,input.projectId,grants,input.reason.slice(0,1500)]);
+ await event(db,assignment,'queued','ПМ дополнил инструменты поручения: '+requested.join(', ')+'. '+input.reason.slice(0,600));
+ return {id:assignment.id,task_id:assignment.task_id,status:'queued',granted_tools:grants};
+}
+
 export async function listWork(db:Db,projectId:string,taskId:string){
  const task=await db.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
  if(!task.rowCount)throw fail('Задача не найдена',404);
