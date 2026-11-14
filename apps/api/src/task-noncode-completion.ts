@@ -39,6 +39,9 @@ export async function completeNonCodeTask(db:Db,input:{
   OR EXISTS(SELECT 1 FROM requirement_review_runs WHERE task_id=$1 AND project_id=$2 AND status IN ('queued','running'))
   AS legacy_work`,[input.taskId,input.projectId]);
  if(legacy.rows[0]?.legacy_work)throw blocked('Существует кодовая разработка, QA или незавершённая проверка: не обходи существующий workflow');
+ const browser=await db.query(`SELECT 1 FROM agent_work_artifacts
+  WHERE task_id=$1 AND project_id=$2 LIMIT 1`,[input.taskId,input.projectId]);
+ if(browser.rowCount)throw blocked('Браузерные снимки требуют отдельной проверки артефактов и QA, а не документального завершения');
 
  const assignments=await db.query(`SELECT id,role,status,result,evidence,spec_version,reviewer_note
   FROM agent_work_assignments WHERE task_id=$1 AND project_id=$2 ORDER BY created_at,id FOR SHARE`,
