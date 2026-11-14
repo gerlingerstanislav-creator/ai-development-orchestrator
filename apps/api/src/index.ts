@@ -33,6 +33,7 @@ import {registerProjectIterationRoutes} from './project-iterations.js';
 import {resolveRoleAiSettings} from './project-team.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
 import {authorizePmDestructiveSource} from './pm-source-authorization.js';
+import {resolvePmTaskReference} from './pm-task-resolution.js';
 import {registerProjectTeamRoutes,reconcileProjectTeamProfiles} from './project-team.js';
 import { registerKnowledgeRoutes } from './knowledge.js';
 import {registerDocumentationResetRoutes} from './documentation-reset.js';
@@ -179,6 +180,10 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
  const user=(await pool.query('SELECT email FROM users WHERE id=$1',[session.actor_id])).rows[0];
  if(!user)throw Object.assign(Error('Пользователь не найден'),{statusCode:403});
  const id=z.string().uuid();
+ const resolveTask=()=>resolvePmTaskReference(pool,projectId,{
+  task_id:id.optional().parse(args.task_id),
+  task_number:z.number().int().positive().optional().parse(args.task_number)
+ });
  const authorizeDestructiveSource=(sourceId:string)=>authorizePmDestructiveSource(pool,{
   projectId,actorId:session.actor_id,currentMessageId:session.process_id,sourceMessageId:sourceId
  });
@@ -213,8 +218,9 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
     message:saved.reason};
   }
   if(name==='tasks.delete'){
-   const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
+   const sourceMessageId=id.parse(args.source_message_id);
    await authorizeDestructiveSource(sourceMessageId);
+   const resolved=await resolveTask(),taskId=resolved.id;
    const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
    const source=await pool.query(`
     SELECT body,task_id FROM manager_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
@@ -230,11 +236,12 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
    const body=response.json() as {error?:string;ok?:boolean;display_number?:number};
    if(response.statusCode===409)return {status:'blocked',task_id:taskId,reason:String(body.error||'Задачу нельзя удалить обычным способом'),blocked_tool:'tasks.delete'};
    if(response.statusCode>=400)throw Object.assign(Error(String(body.error||'Не удалось удалить задачу')),{statusCode:response.statusCode});
-   return {...body,status:'deleted',task_id:taskId};
+   return {...body,status:'deleted',task_id:taskId,task_number:resolved.display_number};
   }
   if(name==='tasks.cancel'||name==='tasks.close'||name==='workflow.move_task'){
-   const taskId=id.parse(args.task_id),sourceMessageId=id.parse(args.source_message_id);
+   const sourceMessageId=id.parse(args.source_message_id);
    if(name==='tasks.cancel'||name==='tasks.close')await authorizeDestructiveSource(sourceMessageId);
+   const resolved=await resolveTask(),taskId=resolved.id;
    const owner=await pool.query('SELECT 1 FROM projects WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL',[projectId,session.actor_id]);
    const message=await pool.query(`
     SELECT body,task_id FROM manager_messages WHERE id=$1 AND project_id=$2 AND actor_id=$3 AND role='user'
@@ -249,7 +256,7 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
    const call=async(method:'GET'|'PATCH'|'POST',endpoint:string,payload?:Record<string,unknown>)=>{
     const response=await app.inject({method,url:taskPath+endpoint,headers,...(payload?{payload}:{})});
     const data=response.json() as Record<string,any>;
-    if(response.statusCode>=400)return {status:'blocked',stage:null,reason:String(data.error||'Сервер отклонил переход'),blockers:data.blockers||null};
+    if(response.statusCode>=400)return {status:'blocked',stage:null,reason:String(data.error||'Сервер отклонил переход'),blockers:data.blockers||null,http_status:response.statusCode,task_id:taskId,task_number:resolved.display_number};
     return data;
    };
    if(name==='tasks.close'){
@@ -279,10 +286,16 @@ registerAgentToolRoutes(app,{pool,access,requireAdmin,runnerSecret:runnerKey,dec
     // Explicitly authenticated owner message, task scope and preview are the safeguards.
     // Word matching would misroute synonyms and penalize follow-up instructions.
     const preview=await call('GET','/cancel-preview');
-    if(preview.status==='blocked')return preview;
+    if(preview.status==='blocked')return {
+    ...preview,
+    reason:preview.http_status===404
+     ?'Задача #'+resolved.display_number+' («'+resolved.title+'») найдена в БД, но маршрут отмены вернул HTTP 404. Это ошибка исполнительного API, а не отсутствие карточки.'
+     :preview.reason
+   };
     if(Array.isArray(preview.blocked)&&preview.blocked.length)return {status:'blocked',reason:'Отмена не разрешена: есть связанные данные или активные процессы',blockers:preview.blocked};
     const result=await call('POST','/cancel',{confirm:true});
-    return result.status==='blocked'?result:{...result,status:'cancelled',message:'Задача отменена через штатный процесс с аудитом и безопасной очисткой GitHub.'};
+    return result.status==='blocked'?result:{...result,status:'cancelled',task_id:taskId,task_number:resolved.display_number,
+    message:'Задача #'+resolved.display_number+' отменена через штатный процесс с аудитом и безопасной очисткой GitHub.'};
    }
    const target=z.enum(['backlog','analysis','development','testing','merge_queue','deployment','documentation','done']).parse(args.target_stage) as WorkStage;
    const reason=z.string().trim().min(5).max(1200).parse(args.reason);
