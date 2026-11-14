@@ -61,6 +61,7 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  const firstId=first.json().id;
  await until(async()=>!!(await read(firstId)).pm_dispatched_at);
  assert.equal(deliveries.filter(id=>id==='project-pm-'+firstId).length,1);
+ await db.query("UPDATE assistant_messages SET status='completed' WHERE id=$1",[firstId]);
  assert.equal((await send({message:'Другой текст',requestId:key})).statusCode,409);
  assert.equal(first.json().order_id,null,'plain chat is not an order');
  assert.equal((await db.query('SELECT count(*)::int AS count FROM project_pm_orders')).rows[0].count,0);
@@ -79,6 +80,7 @@ test('project manager inbox acknowledges durable turns, deduplicates submissions
  assert.equal(reply.reply_to,firstId);
  assert.equal(reply.topic_id,topic);
  assert.equal(reply.pm_order_id,waitingOrder);
+ await db.query("UPDATE assistant_messages SET status='completed' WHERE id=$1",[replyId]);
  assert.equal((await db.query('SELECT count(*)::int AS count FROM project_pm_orders')).rows[0].count,1,'answer reuses the waiting order');
  await db.query("UPDATE project_chat_topics SET status='closed' WHERE id=$1",[topic]);
  assert.deepEqual((await send(answer)).json(),ownerAnswer.json(),'lost receipt can be recovered after the topic closes');
