@@ -35,7 +35,7 @@ test('task-goal watch reports stalled QA to the same PM order and resumes exactl
  const db=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
  t.after(async()=>{await db.end();await admin.query('DROP SCHEMA '+schema+' CASCADE');await admin.end();});
  await db.query(`
-  CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,display_number int,stage text,type text DEFAULT 'task',analysis_state text DEFAULT 'new');
+  CREATE TABLE tasks(id uuid PRIMARY KEY,project_id uuid,title text,display_number int,stage text,board_status text DEFAULT 'in_progress',type text DEFAULT 'task',analysis_state text DEFAULT 'new');
   CREATE TABLE task_orchestration_owners(task_id uuid,project_id uuid,state text);
   CREATE TABLE ai_task_runs(task_id uuid,project_id uuid,status text);
   CREATE TABLE ai_test_runs(task_id uuid,project_id uuid,status text);
@@ -84,7 +84,7 @@ test('task-goal watch reports stalled QA to the same PM order and resumes exactl
  const next=await executeAgentTool(db,session,'pm.orders.watch_task',{task_id:task},async()=>{});
  assert.equal(next.status,'needs_action');
  assert.equal(next.watch_registered,false,'no infinite re-watch without new work');
- await db.query("UPDATE tasks SET stage='done' WHERE id=$1",[task]);
+ await db.query("UPDATE tasks SET stage='done',board_status='done' WHERE id=$1",[task]);
  const done=await readPmTaskGoal(db,project,task);
  assert.equal(done.status,'done');
  const finished={...watch,processId:randomUUID()};
