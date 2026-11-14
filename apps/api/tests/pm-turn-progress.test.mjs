@@ -22,6 +22,10 @@ test('PM progress is durable, idempotent, attempt-scoped and inaccessible across
  const project=randomUUID(),other=randomUUID(),message=randomUUID();
  await db.query("INSERT INTO assistant_messages(id,project_id,role,channel,status) VALUES($1,$2,'user','project','processing')",[message,project]);
  await initPmTurnProgress(pool);
+ // Simulate an existing production table with the pre-stream CHECK constraint.
+ await pool.query(`ALTER TABLE pm_turn_progress DROP CONSTRAINT pm_turn_progress_kind_check;
+  ALTER TABLE pm_turn_progress ADD CONSTRAINT pm_turn_progress_kind_check
+  CHECK (kind IN ('status','summary','plan','tool'))`);
  await initPmTurnProgress(pool);
  const secret='a'.repeat(40);
  registerPmProgressRoutes(app,{pool,runnerSecret:secret,
