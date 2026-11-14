@@ -27,6 +27,10 @@ export async function initPmTurnProgress(db:Db){
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(message_id,attempt,sequence)
  );
+ -- Upgrade existing deployments whose original CHECK predates live answer events.
+ ALTER TABLE pm_turn_progress DROP CONSTRAINT IF EXISTS pm_turn_progress_kind_check;
+ ALTER TABLE pm_turn_progress ADD CONSTRAINT pm_turn_progress_kind_check
+  CHECK (kind IN ('status','summary','plan','tool','message'));
  CREATE INDEX IF NOT EXISTS idx_pm_turn_progress_project_cursor ON pm_turn_progress(project_id,id);
  `);
 }
