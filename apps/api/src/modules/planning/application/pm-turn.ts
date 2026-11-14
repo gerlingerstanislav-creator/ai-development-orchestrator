@@ -133,7 +133,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     });
    }
    const kind:ProjectManagerWatch['kind']=row.tool==='pm.orders.watch_task'?'task_goal':
-    (row.tool==='work.delegate'||(row.tool==='work.review'&&row.result?.status==='queued'))?'delegated_work':
+    (row.tool==='work.delegate'||row.tool==='work.grant'||(row.tool==='work.review'&&row.result?.status==='queued'))?'delegated_work':
     row.tool==='qa.retry'?'testing':row.tool==='iterations.launch'?'iteration_execution':
     ['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':
     row.tool==='workflow.approve_development'?'development':'document_import';
