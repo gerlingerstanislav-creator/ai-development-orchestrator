@@ -88,7 +88,7 @@ export function createDelegatedWorkSandbox({
     'Текущая проверенная ревизия исходников: '+(sourceSha||'репозиторий не подключён')+'.',
     'Браузер Chromium/Playwright из этой песочницы: '+(browserConnected?'доступен':'недоступен')+'.',
     browserConnected
-     ?'Доступны node /opt/codex-runner/browser-client.mjs start, viewport WIDTH HEIGHT, screenshot, assert и другие операции из .ado-qa-tools.md. Сначала подготовь реальное приложение, затем снимай проверяемые артефакты. Браузер открывает только локальное приложение из рабочего дерева.'
+     ?'Доступны node /opt/codex-runner/browser-client.mjs start, viewport WIDTH HEIGHT, screenshot, assert и другие операции из .ado-qa-tools.md. Команда start сама запускает приложение в отдельном QA-контейнере из общей рабочей копии. НЕ запускай Vite вручную ради browser bridge и НЕ используй абсолютный localhost URL: goto принимает только путь внутри приложения. Сначала установи зависимости, затем start; если #app пуст или сборка сломана, сообщи именно ошибку приложения, не требуй proxy/target-origin.'
      :'Если для результата нужен браузер, сообщи точную блокировку: инструмент сейчас не доступен.',
     'Команды внутри рабочей копии допускаются только через действующую sandbox policy; не пытайся обойти сетевые ограничения.',
     'Это рабочая копия без автоматического push/PR. Запрещено выдавать локальные изменения за доставленные пользователю.',
@@ -113,7 +113,7 @@ export function createDelegatedWorkSandbox({
      'Прочитай актуальное состояние через '+(job.taskId?'tasks.read(task_id='+job.taskId+')':'goals.read(goal_id='+job.goalId+')')+
       ', используй work.list и work.artifacts для результатов и зависимостей.',
      'Узнай действующие разрешённые инструменты через capabilities.list/describe. Проверяй работу и сохраняй реальные доказательства.',
-     browserConnected?'Команды браузера описаны в .ado-qa-tools.md; прежние браузерные сессии недействительны.':'Если для результата нужен браузер, сообщи конкретный блокер.',
+     browserConnected?'Команды браузера описаны в .ado-qa-tools.md; start сам поднимает приложение из текущего рабочего дерева, абсолютные localhost/production URL запрещены, прежние браузерные сессии недействительны.':'Если для результата нужен браузер, сообщи конкретный блокер.',
      'После работы вызови work.report(status=submitted,evidence=...) или work.report(status=blocked). Текст ответа не меняет статус поручения.'
     ].join('\n'),
     cwd:dir,env:{...cliEnv,...context.env},policyArgs:policy.execArgs,
