@@ -10,7 +10,7 @@ const manager={project_id:projectId,actor_id:'actor',role:'manager',id:'session'
 const specialist={...manager,role:'testing',task_id:taskId,process_id:assignment};
 const attempt=async(db,session,name,params)=>executeAgentWorkTool(db,session,name,params);
 const never={query:async()=>{throw Error('Unauthorized query');}};
-test('only the explicit work tool catalog delegates to the work service',()=>{
+test('only the explicit work tool catalog delegates to the work service',async()=>{
  for(const name of ['work.artifacts','work.list','work.plan','work.delegate','work.report','work.review','work.grant'])
   assert.equal(isAgentWorkTool(name),true,name);
  for(const name of ['agents.consult','work.other','documents.update','pm.orders.watch_task'])
