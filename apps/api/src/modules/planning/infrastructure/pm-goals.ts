@@ -1,8 +1,7 @@
 import {randomUUID} from 'node:crypto';
-import type {Pool} from 'pg';
 import {readPmTaskGoal} from '../../../pm-task-goal.js';
 
-type Db=Pick<Pool,'query'>;
+type Db={query:(sql:string,values?:any[])=>Promise<{rows:any[];rowCount:number|null}>};
 type Status='working'|'waiting_agents'|'waiting_user'|'needs_action'|'completed';
 type LinkKind='task'|'assignment'|'document';
 type GoalLink={id:string;kind:LinkKind;reference_id:string};
@@ -128,10 +127,10 @@ export async function assessPmGoal(db:Db,projectId:string,goalId:string,lock=fal
  const row=await db.query(`SELECT id,objective,criteria,status,order_id,source_message_id,completion_evidence
   FROM project_pm_goals WHERE id=$1 AND project_id=$2${lock?' FOR UPDATE':''}`,[goalId,projectId]);
  if(!row.rowCount)throw reject('Цель не найдена',404);
- const links=await db.query<GoalLink>(`SELECT id,kind,reference_id FROM project_pm_goal_links
+ const links=await db.query(`SELECT id,kind,reference_id FROM project_pm_goal_links
   WHERE goal_id=$1 AND project_id=$2 ORDER BY created_at,id`,[goalId,projectId]);
  const checks=[];
- for(const link of links.rows){
+ for(const link of links.rows as GoalLink[]){
   const inspection=await checkReference(db,projectId,link.kind,link.reference_id,lock);
   checks.push({...link,...inspection});
  }
