@@ -413,7 +413,7 @@ const assistant=registerAssistantRoutes(app,{pool,uid,access,requireAdmin,codexU
   await client.workflow.start('prepareProjectSpecification',{taskQueue:'agent-pipeline',workflowId:'analyst-'+jobId,args:[jobId]});
  }
 });
-registerProjectManagerInbox(app,{pool,uid,access,requireAdmin,start:async turn=>{
+registerProjectManagerInbox(app,{pool,uid,access,requireAdmin,runnerSecret:runnerKey,start:async turn=>{
  const client=await temporal();
  const workflowId=pmInboxWorkflowId(turn);
  try{
