@@ -26,6 +26,7 @@ import {installAnalysisFirstGate,repairLegacyAnalysisStates} from '../analysis-f
 import {installTaskEvidenceSchema} from '../task-evidence.js';
 import {installWorkAssignmentsSchema,installWorkPlanSchema,installTaskCapabilityGrants} from '../modules/agents/infrastructure/work-assignments.js';
 import {installWorkArtifactsSchema} from '../modules/agents/infrastructure/work-artifacts.js';
+import {installPmGoalSchema} from '../modules/planning/infrastructure/pm-goals.js';
 
 /**
  * Append-only, transactional schema history.
@@ -152,6 +153,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:16,name:'delegated-work-browser-artifacts',
    checksum:'ado-delegated-work-browser-artifacts-v16',
    up:database=>installWorkArtifactsSchema(database)
+  },
+  {
+   version:17,name:'project-pm-outcome-goals',
+   checksum:'ado-project-pm-outcome-goals-v17',
+   up:database=>installPmGoalSchema(database)
   }
  ];
 }
