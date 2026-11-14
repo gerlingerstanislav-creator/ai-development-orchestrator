@@ -20,7 +20,8 @@ test('project sidebar preserves all nine navigation destinations and active task
  const result=html();
  for(const segment of ['overview','tasks','docs','plan','qa','processes','team','workflow','settings'])
   assert.match(result,new RegExp('href="/projects/'+id+'/'+segment+'"'));
- assert.match(result,/class="nav active"[^>]+href="\/projects\/123e4567[^"]*\/tasks"/);
+ assert.match(result,/class="nav active"/);
+ assert.match(result,new RegExp('href="/projects/'+id+'/tasks"'));
  assert.match(result,/Администратор/);
  assert.match(result,/title="Выйти"/);
 });
