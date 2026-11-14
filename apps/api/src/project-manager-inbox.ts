@@ -1,6 +1,7 @@
 import type {PmWatchReport} from './modules/planning/application/pm-watch-report.js';
 import {createProjectManagerTurnExecutor} from './modules/planning/application/pm-turn.js';
 import {recordPmInboxDiagnostic} from './modules/planning/infrastructure/pm-inbox-diagnostics.js';
+import {initPmTurnProgress,registerPmProgressRoutes} from './modules/planning/infrastructure/pm-turn-progress.js';
 import type {FastifyInstance} from 'fastify';
 import type {Pool} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
@@ -15,6 +16,7 @@ type RouteDeps={
  access:(req:any,reply:any,projectId:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
  start:(turn:PendingTurn)=>Promise<void>;
+ runnerSecret?:string;
 };
 
 export async function initProjectManagerInbox(pool:Pick<Pool,'query'>){
@@ -29,6 +31,7 @@ export async function initProjectManagerInbox(pool:Pick<Pool,'query'>){
   CREATE INDEX IF NOT EXISTS idx_pm_inbox_delivery ON assistant_messages(pm_next_dispatch_at,created_at,id)
    WHERE role='user' AND channel IN ('project','pm-internal') AND status='queued' AND pm_dispatched_at IS NULL;
  `);
+ await initPmTurnProgress(pool);
 }
 
 type CompletedPmTool={tool:string;result?:unknown};
@@ -130,10 +133,17 @@ export async function publishOwnerQuestionsToPmChat(pool:Pick<Pool,'query'>){
 }
 
 export async function deliverProjectManagerInbox(pool:Pick<Pool,'query'>,start:RouteDeps['start'],onError:(error:unknown,turn:PendingTurn)=>void){
- const pending=await pool.query<PendingTurn>(`SELECT id,project_id,channel,pm_dispatch_attempt,pm_order_id FROM assistant_messages
-  WHERE channel IN ('project','pm-internal') AND role='user' AND status='queued'
-   AND pm_dispatched_at IS NULL AND pm_next_dispatch_at<=now()
-  ORDER BY pm_next_dispatch_at,created_at,id LIMIT 15`);
+ const pending=await pool.query<PendingTurn>(`SELECT m.id,m.project_id,m.channel,m.pm_dispatch_attempt,m.pm_order_id FROM assistant_messages m
+  WHERE m.channel IN ('project','pm-internal') AND m.role='user' AND m.status='queued'
+   AND m.pm_dispatched_at IS NULL AND m.pm_next_dispatch_at<=now()
+   -- A single logical PM owns one project conversation. New turns must wait
+   -- for every earlier queued or processing turn, including Temporal dispatch.
+   AND NOT EXISTS(SELECT 1 FROM assistant_messages earlier
+    WHERE earlier.project_id=m.project_id AND earlier.role='user'
+     AND earlier.channel IN ('project','pm-internal')
+     AND earlier.status IN ('queued','processing')
+     AND (earlier.created_at,earlier.id)<(m.created_at,m.id))
+  ORDER BY m.pm_next_dispatch_at,m.created_at,m.id LIMIT 15`);
  await Promise.all(pending.rows.map(async turn=>{
   try{await start(turn);}
   catch(error){
@@ -153,6 +163,7 @@ export async function deliverProjectManagerInbox(pool:Pick<Pool,'query'>,start:R
 
 export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
  const {pool,uid,access,requireAdmin,start}=deps;
+ registerPmProgressRoutes(app,{pool,access,requireAdmin,runnerSecret:deps.runnerSecret||''});
  let recovering=false;
  let timer:ReturnType<typeof setInterval>|null=null;
  let closing=false;
