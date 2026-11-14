@@ -15,7 +15,7 @@ export type QaReportRun={
 const mark=(value:string)=>value==='passed'?'✅':value==='failed'?'❌':value==='blocked'?'⚠️':'➖';
 const description=(value:string)=>value==='passed'?'пройден':value==='failed'?'не пройден':value==='blocked'?'нет возможности проверить':'не выполнялся';
 const safe=(value:unknown,max=240)=>String(value??'').replace(/[\r\n]+/g,' ').replace(/[\u0000-\u001f]/g,' ').trim().slice(0,max);
-const md=(value:unknown,max=240)=>safe(value,max).replace(/[\\*_{}\[\]()#+.!|<>~-]/g,'\\const md=(value:unknown,max=240)=>safe(value,max).replace(/[\\*_{}\[\]()#+.!|<>~-]/g,'\\$&').replace(/\x60/g,'\\\x60');').replace(/\x60/g,'\\\x60');
+const md=(value:unknown,max=240)=>safe(value,max).replace(/[\\*_{}\[\]()#+.!|<>~-]/g,'\\$&').replace(/\x60/g,'\\\x60');
 const readableEvidence=(value:unknown,status:string)=>{
  if(status==='passed')return '';
  const raw=safe(value,220);
