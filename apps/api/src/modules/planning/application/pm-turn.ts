@@ -201,7 +201,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    }
   }
   const message=String(error instanceof Error?error.message:error);
-  const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
+  const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|исполнитель.{0,40}занят|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
   if(retryable){
    await pool.query(`WITH waiting AS (
     UPDATE assistant_messages SET status='queued' WHERE id=$1 AND pm_dispatch_attempt=$2
