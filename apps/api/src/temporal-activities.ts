@@ -971,7 +971,7 @@ export async function runDelegatedWork(assignmentId:string):Promise<void>{
    WHERE g.project_id=$1 AND c.provider='github_token' LIMIT 1`,[item.project_id]);
   const git=linked.rows[0];
   const requestedSha=String(item.evidence_source_sha||item.implementation_commit||
-   String(item.task_description||'').match(/\\b[a-f0-9]{40}\\b/i)?.[0]||'');
+   String(item.task_description||'').match(/\b[a-f0-9]{40}\b/i)?.[0]||'');
   const sourceSha=/^[a-f0-9]{40}$/i.test(requestedSha)?requestedSha.toLowerCase():undefined;
   const response=await fetch(codexUrl+'/delegated-work',{
    method:'POST',
