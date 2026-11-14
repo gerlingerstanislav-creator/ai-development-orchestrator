@@ -47,7 +47,7 @@ export async function agentMemorySections(
   const body=String(row.body||'').trim().slice(0,800);
   if(!body||seen.has(normalize(body)))continue;
   seen.add(normalize(body));
-  const text=body+(Object.values(scope).some(Boolean)?' [Применимо: '+applicabilityText(scope)+']':'');
+  const text=body+(Object.values(scope).some(Boolean)?' [Применять только если '+applicabilityText(scope)+']':'');
   if(row.kind==='instruction_suggestion')instructions.push(text);
   else if(row.kind==='observation')observations.push('Опыт, не обязательное правило: '+text);
  }
