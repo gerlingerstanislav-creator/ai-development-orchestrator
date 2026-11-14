@@ -124,3 +124,29 @@ test('unblocked or unfinished QA cannot issue a manual QA approval record',async
   assert.equal(calls.inbox.length,0);
  }
 });
+
+test('verified failed QA overrides model claims in persisted message and process event',async()=>{
+ const sha='a'.repeat(40);
+ const row={status:'running',task_id:taskId,cycle_id:'cycle',attempt:1,
+  qa_spec_version:3,qa_plan_snapshot:{cases:[{id:'qa-1',title:'Собрать Vue приложение'}]}};
+ const remote={status:'completed',message:'Проверено 1 из 1. Всё успешно.',
+  summary:'Все критерии подтверждены!',verdict:'passed',testedCommit:sha,
+  executionVerified:true,capabilities:'npm available',
+  caseResults:[{case_id:'qa-1',result:'failed',reason:'executed',
+   evidence:'[qa-exec] case qa-1 → code 1: Vue compiler error'}],
+  checks:[{name:'npm run build',result:'failed',details:'Vue compiler error'}],
+  findings:[{severity:'major',description:'В AdminLogin.vue некорректный v-else-if'}]};
+ const {qa,calls}=harness({row,remote});
+ const result=await qa.checkTesting(run);
+ assert.equal(result.verdict,'failed');
+ assert.match(result.message,/QA обнаружил проблему/);
+ assert.doesNotMatch(result.message,/Все критерии подтверждены|Всё успешно/);
+ const write=calls.tx.find(x=>x.sql.startsWith('UPDATE ai_test_runs SET status='));
+ assert.ok(write);
+ assert.match(write.args[2],/QA обнаружил проблему/);
+ const report=JSON.parse(write.args[4]);
+ assert.match(report.summary,/QA обнаружил проблему/);
+ assert.equal(report.modelSummary,'Все критерии подтверждены!');
+ assert.match(calls.events[0][4],/QA обнаружил проблему/);
+ assert.doesNotMatch(calls.events[0][4],/Все критерии подтверждены/);
+});
