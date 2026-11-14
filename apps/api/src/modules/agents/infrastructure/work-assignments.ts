@@ -103,7 +103,7 @@ export async function planWork(db:Db,input:{
  for(const step of steps)if(!(workRoles as readonly string[]).includes(step.role))
   throw fail('Неизвестная роль в плане: '+step.role,400);
  const task=input.taskId?(await db.query(
-  'SELECT id,stage,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',
+  'SELECT id,stage,board_status,postponed_at,archived_at,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',
   [input.projectId,input.taskId])).rows[0]:null;
  const goal=input.goalId?(await db.query(
   "SELECT id,status FROM project_pm_goals WHERE project_id=$1 AND id=$2 FOR UPDATE",
@@ -111,6 +111,8 @@ export async function planWork(db:Db,input:{
  if(input.taskId&&!task)throw fail('Задача не найдена',404);
  if(input.goalId&&!goal)throw fail('Цель ПМ не найдена',404);
  if(task?.stage==='done'||goal?.status==='completed')throw fail('Завершённую задачу или цель нельзя повторно планировать');
+ if(task&&(task.postponed_at||task.archived_at||['acceptance','done'].includes(task.board_status)))
+  throw fail('Задача отложена или уже принята: сначала верни её в работу');
  // A repeated PM turn must not spawn the same DAG again. The parent task/goal
  // is locked above, so concurrent calls cannot both pass this replay check.
  // Compare the complete plan (including dependencies and temporary grants),
@@ -200,11 +202,13 @@ export async function delegateWork(db:Db,input:{
  if(!(workRoles as readonly string[]).includes(input.role))throw fail('Неизвестная роль',400);
  if(!!input.taskId===!!input.goalId)throw fail('Укажи ровно одну задачу или цель ПМ',400);
  const grants=normalizeTaskToolGrants(input.tools);
- const task=input.taskId?(await db.query('SELECT id,stage,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[input.projectId,input.taskId])).rows[0]:null;
+ const task=input.taskId?(await db.query('SELECT id,stage,board_status,postponed_at,archived_at,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[input.projectId,input.taskId])).rows[0]:null;
  const goal=input.goalId?(await db.query('SELECT id,status FROM project_pm_goals WHERE project_id=$1 AND id=$2 FOR UPDATE',[input.projectId,input.goalId])).rows[0]:null;
  if(input.taskId&&!task)throw fail('Задача не найдена',404);
  if(input.goalId&&!goal)throw fail('Цель ПМ не найдена',404);
  if(task?.stage==='done'||goal?.status==='completed')throw fail('Задача или цель уже завершена');
+ if(task&&(task.postponed_at||task.archived_at||['acceptance','done'].includes(task.board_status)))
+  throw fail('Задача отложена или уже принята: сначала верни её в работу');
  let parentId:string|null=null;
  if(input.parentId){
   const parent=(await db.query("SELECT id,role,parent_id,granted_tools FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id IS NOT DISTINCT FROM $3::uuid AND goal_id IS NOT DISTINCT FROM $4::uuid AND status='running'",
