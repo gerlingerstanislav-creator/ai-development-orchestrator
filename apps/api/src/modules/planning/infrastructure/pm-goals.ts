@@ -206,7 +206,7 @@ export async function completePmGoal(db:Db,input:{
  if(!assessment.verification.verified)
   throw reject('Нельзя завершить цель без подтверждённых связанных результатов: '+
    assessment.verification.missing.map(v=>v.kind+': '+v.reason).join('; ').slice(0,700));
- const finished=await db.query(`UPDATE project_pm_goals SET status='completed',completion_evidence=$3,updated_at=now()
+ const finished=await db.query(`UPDATE project_pm_goals SET status='completed',capability_proposal=NULL,completion_evidence=$3,updated_at=now()
   WHERE project_id=$1 AND id=$2 AND status<>'completed' RETURNING id,status,order_id`,
   [input.projectId,input.goalId,input.evidence]);
  if(!finished.rowCount)throw reject('Цель параллельно изменилась');
