@@ -9,10 +9,11 @@ import {AgentPromptDisclosure,type AgentPromptAudit} from './features/processes/
 import {parseAppRoute,projectUrl,uuidPattern,type ProjectSection,type AppRoute} from './features/navigation/routes.js';
 import {ProjectSidebar} from './features/navigation/ProjectSidebar.js';
 import {ProjectListPage} from './features/projects/ProjectListPage.js';
+import {ProjectWorkflowDiagram,ProjectSettingsPanel,type Stage,type AiSettings,type Connection,type GitLink} from './features/projects/ProjectConfigurationPanels.js';
 import {api,renewAccessToken,AuthExpiredError,authTokenKey as key} from './api/client.js';
 import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import {createRoot} from 'react-dom/client';
-import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,KeyRound,LayoutGrid,List,Plus,Settings2,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle,Play,Square} from 'lucide-react';
+import {Users,ArrowLeft,ArrowRight,BookOpen,ChevronDown,Columns3,ClipboardList,FileDown,FileText,LayoutGrid,List,Plus,Trash2,MessageCircle,Send,Pencil,CheckCircle2,LoaderCircle,Paperclip,Clock3,Workflow,ArrowRightCircle,ChevronRight,RotateCcw,X,AlertTriangle,Play,Square} from 'lucide-react';
 import './style.css';
 import {QaPanel} from './QaPanel.js';
 import {QaRunEvidence} from './QaRunEvidence.js';
@@ -31,7 +32,7 @@ import {GitHubCredentials} from './GitHubCredentials.js';
 type Project={id:string,name:string,description:string,is_owner?:boolean;agents_running?:boolean};
 type TrashedProject={id:string,name:string,description:string,deleted_at:string};
 type Task={execution_mode?:'code'|'browser_evidence';evidence_source_sha?:string|null;document_id?:string|null;document_title?:string|null;question_status?:'open'|'answered'|'resolved';question_answer?:string|null;iteration_id?:string|null;sprint_id?:string|null;version_id?:string|null;tags?:string[];priority?:number;awaits_product_owner?:boolean;owner_question_source_task_id?:string|null;spec_version?:number;spec_review_status?:'current'|'pending'|'needs_approval'|'rejected';spec_review_note?:string;test_feedback?:string;test_attempts?:number;id:string,display_number:number,title:string,description:string,type:string,stage:string,parent_id:string|null,created_at:string,analysis_state?:string,clarification_questions?:string[],related_task_ids?:string[],depends_on_task_id?:string|null,git_branch?:string|null,pr_url?:string|null,pr_base_branch?:string|null};
-type Stage={stage:string,label:string,description:string,mode:'automatic'|'approval'|'manual',position:number,agent_name:string,agent_instructions:string,responsibility?:{role:string|null;trigger:string;result:string;participants?:{role:string;assignment:string}[]}|null};
+
 const mentionOptions=[{alias:'Analyst',stage:'analysis'},{alias:'QA',stage:'testing'},{alias:'DevOps',stage:'deployment'}] as const;
 function mentionMatches(value:string,stages:Stage[]){
  const tail=/(?:^|\s)@([a-z]*)$/i.exec(value);
@@ -57,9 +58,9 @@ const agentRunLabels={
 };
 type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[]};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
-type Connection={id:string,name:string,provider:string};
-type GitLink={repository:string,default_branch:string,target_branch?:string,connection_id:string,connection_name?:string};
-type AiSettings={model:'gpt-6-luna'|'gpt-6-sol'|'gpt-6.1-sol';reasoning:'low'|'medium';enabled:boolean};
+
+
+
 type CodexRateWindow={usedPercent:number;windowDurationMins:number|null;resetsAt:number|null};
 type CodexRateBucket={id:string;name:string|null;primary:CodexRateWindow|null;secondary:CodexRateWindow|null;planType:string|null;reachedType:string|null};
 type CodexRateLimits={windows:CodexRateBucket[];resetCredits:number|null;checkedAt:string;stale?:boolean;warning?:string};
@@ -1983,91 +1984,16 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>}
  {section==='qa'&&<QaPanel projectId={selected.id} api={api} onError={fail}/>}
  {section==='team'&&<ProjectTeam projectId={selected.id} request={api}/>}
- {section==='workflow'&&<section className="panel workflow-settings-panel">
-  <div className="row-line">
-   <div><h3>Workflow · Схема процесса</h3><p className="muted">Нажми на этап, чтобы посмотреть его назначение или настроить агента.</p></div>
-   <span className="workflow-key"><span className="workflow-key-line"/> Переходы</span>
-  </div>
-  <div className="workflow-diagram-scroll">
-   <div className="workflow-diagram" role="group" aria-label="Последовательность этапов проекта">
-    {stages.map((stage,i)=><React.Fragment key={stage.stage}>
-      {i>0&&<div className="workflow-diagram-connector" tabIndex={0}
-       aria-label={'Переход: '+stages[i-1].label+' → '+stage.label}
-       data-tooltip={stages[i-1].label+' → '+stage.label}>
-       <svg viewBox="0 0 28 14" width="28" height="14" aria-hidden="true">
-        <path d="M 1 7 H 25 M 20 2 L 25 7 L 20 12" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-       </svg>
-      </div>}
-      <button type="button" className={'workflow-stage-card workflow-stage-'+stage.stage} onClick={()=>{setWorkflowModal({...stage});setWorkflowEditing(null);}}
-       title={'Настройки этапа «'+stage.label+'»'}>
-       <span className="workflow-stage-label">{stage.label}</span>
-       <span className="workflow-stage-description">{stage.description||'Описание не задано'}</span>
-       <span className="workflow-stage-agent">{serviceStages[stage.stage]?'Служебный этап':stage.agent_name?aiAgentName(stage.agent_name):'Исполнитель не указан'}</span>
-       <span className="workflow-stage-mode">{stage.stage==='deployment'?(deploymentMode==='skip'?'Пропуск без окружения':deploymentMode==='automatic'?'GitHub Actions + проверка':'Ручное подтверждение'):stage.mode==='automatic'?'Автоматически':stage.mode==='approval'?'С подтверждением':'Вручную'}</span>
-       <Settings2 size={14} className="workflow-stage-icon"/>
-      </button>
-     </React.Fragment>)}
-   </div>
-   {stages.some(stage=>stage.stage==='testing')&&stages.some(stage=>stage.stage==='development')&&
-    <div className="workflow-feedback" style={{width:stages.length*148+(stages.length-1)*28}}>
-     {(()=>{
-      const development=stages.findIndex(stage=>stage.stage==='development');
-      const testing=stages.findIndex(stage=>stage.stage==='testing');
-      const x1=development*176+74,x2=testing*176+74;
-      const width=x2-x1+20;
-      return <div className="workflow-feedback-link" tabIndex={0} role="img"
-       aria-label="Возврат из тестирования в разработку при ошибках с замечаниями и повторной проверкой"
-       style={{left:x1-10,width}}>
-       <svg className="workflow-feedback-path" viewBox={`0 0 ${width} 30`} preserveAspectRatio="none" aria-hidden="true">
-        <path d={`M ${width-10} 1 V 10 Q ${width-10} 23 ${width-23} 23 H 23 Q 10 23 10 10 V 1`}
-         fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-        <path d="M 5 8 L 10 1 L 15 8" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
-       </svg>
-       <div className="workflow-feedback-tooltip" role="tooltip">
-        <RotateCcw size={13}/> Тестирование → Разработка: найденные ошибки, замечания и повторная проверка
-       </div>
-      </div>;
-     })()}
-    </div>}
-  </div>
+ {section==='workflow'&&<ProjectWorkflowDiagram stages={stages} deploymentMode={deploymentMode} onOpenStage={stage=>{setWorkflowModal({...stage});setWorkflowEditing(null);}}/>}
+ {section==='settings'&&<ProjectSettingsPanel
+  aiSettings={aiSettings} onAiSettingsChange={setAiSettings} aiBusy={aiBusy} onSaveAiSettings={()=>void saveAiSettings()} aiMessage={aiMessage}
+  gitRepository={gitRepository} onGitRepositoryChange={setGitRepository}
+  targetBranch={targetBranch} onTargetBranchChange={setTargetBranch}
+  gitTokenId={gitTokenId} onGitTokenIdChange={setGitTokenId} connections={connections}
+  gitLink={gitLink} gitBusy={gitBusy} gitMessage={gitMessage}
+  onSaveGitLink={()=>void saveGitLink()} onRemoveGitLink={()=>void removeGitLink()} onFollowLink={followLink}
+ />}
 
- </section>}
- {section==='settings'&&<section className="panel project-settings-panel">
-  <h3>AI-агенты</h3>
-  <p className="muted">Модель и режим работы AI-агентов этого проекта. Запуском управляют задачи и процесс разработки.</p>
-  <div className="settings-grid">
-   <label>Модель по умолчанию<select value={aiSettings.model} onChange={e=>setAiSettings({...aiSettings,model:e.target.value as AiSettings['model']})}>
-    <option value="gpt-6-luna">GPT-6 Luna — экономный вариант</option>
-    <option value="gpt-6-sol">GPT-6 Sol — сложнее задачи</option>
-    <option value="gpt-6.1-sol">GPT-6.1 Sol — более мощная</option>
-   </select></label>
-   <label>Глубина рассуждений<select value={aiSettings.reasoning} onChange={e=>setAiSettings({...aiSettings,reasoning:e.target.value as AiSettings['reasoning']})}>
-    <option value="low">Низкая — экономит лимиты</option><option value="medium">Средняя</option>
-   </select></label>
-  </div>
-  <label style={{display:'flex',flexDirection:'row',alignItems:'center',gap:10}}>
-   <input type="checkbox" checked={aiSettings.enabled} onChange={e=>setAiSettings({...aiSettings,enabled:e.target.checked})} style={{width:18,height:18}}/>
-   Разрешить работу AI-агентов
-  </label>
-  <p className="muted">Подключение ChatGPT и сведения о лимитах доступны в настройках профиля.</p>
-  <button className="primary" disabled={aiBusy} onClick={()=>void saveAiSettings()}>Сохранить настройки AI</button>
-  {aiMessage&&<p>{aiMessage}</p>}
- <div className="project-settings-divider"/>
-  <div className="row-line"><h3>Репозиторий GitHub</h3><a className="secondary profile-settings-link" href="/account/settings" onClick={e=>followLink(e,'/account/settings')}><KeyRound size={15}/> Управлять токенами</a></div>
-  <p className="muted">Выбери репозиторий, целевую ветку PR и одно из личных подключений GitHub. Токены создаются и редактируются в профиле.</p>
-  <div className="settings-grid">
-   <label>Репозиторий (owner/name)<input value={gitRepository} placeholder="gerlingerstanislav-creator/ai-development-orchestrator" onChange={e=>setGitRepository(e.target.value)} /></label>
-   <label>Целевая ветка PR<input value={targetBranch} placeholder={gitLink?.default_branch||'main'} onChange={e=>setTargetBranch(e.target.value)} /></label>
-   <label>Подключение GitHub<select value={gitTokenId} onChange={e=>setGitTokenId(e.target.value)}><option value="">Выбери подключение</option>{connections.filter(c=>c.provider==='github_token').map(c=><option value={c.id} key={c.id}>{c.name}</option>)}</select></label>
-  </div>
-  {connections.every(c=>c.provider!=='github_token')&&<p className="muted">Нет сохранённых токенов. <a href="/account/settings" onClick={e=>followLink(e,'/account/settings')}>Добавить токен в профиле</a>, затем вернись к настройкам проекта.</p>}
-  {gitLink&&<p className="muted">Привязан: <strong>{gitLink.repository}</strong> · целевая ветка PR: <strong>{gitLink.target_branch||gitLink.default_branch}</strong></p>}
-  {gitMessage&&<p>{gitMessage}</p>}
-  <div className="codex-actions">
-   <button className="primary" disabled={gitBusy||!gitTokenId||!gitRepository.trim()} onClick={()=>void saveGitLink()}>Проверить и сохранить</button>
-   {gitLink&&<button className="secondary" disabled={gitBusy} onClick={()=>void removeGitLink()}>Отвязать репозиторий</button>}
-  </div>
- </section>}
  
  
  </div>}
