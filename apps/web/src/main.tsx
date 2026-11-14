@@ -2,6 +2,7 @@ import {ProcessCenter} from './features/processes/ProcessCenter.js';
 import type {ProjectProcess,ProjectProcessEvent} from './features/processes/process-center-model.js';
 import {TaskBoard} from './features/tasks/TaskBoard.js';
 import {TaskBoardControls} from './features/tasks/TaskBoardControls.js';
+import {TaskExecutionPlan,type TaskWorkAssignment,type TaskExecutionKickoff} from './features/tasks/TaskExecutionPlan.js';
 import {buildTaskTimeline,type ActivityItem} from './features/tasks/task-timeline.js';
 import {kanbanLanes,boardLaneFor,attentionNeeded,type BoardStatus} from './features/tasks/board-model.js';
 import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
@@ -58,7 +59,7 @@ const agentRunLabels={
  qa_design:{name:'Тестировщик',active:'Готовятся тестовые сценарии'},
  documentation:{name:'Документатор',active:'Обновляется документация'}
 };
-type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[]};
+type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[];workAssignments?:TaskWorkAssignment[];kickoff?:TaskExecutionKickoff};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
 
 
@@ -305,6 +306,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskTestRuns,setTaskTestRuns]=useState<TestRun[]>([]);
  const [taskAgentRuns,setTaskAgentRuns]=useState<AgentRun[]>([]);
  const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
+ const [taskWorkAssignments,setTaskWorkAssignments]=useState<TaskWorkAssignment[]>([]);
+ const [taskKickoff,setTaskKickoff]=useState<TaskExecutionKickoff>(null);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const taskAtBottom=useRef(true);const taskLastMessage=useRef<string|null>(null);
  const [taskShowScrollBottom,setTaskShowScrollBottom]=useState(false);
@@ -497,7 +500,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     api<TaskActivityResponse>('/projects/'+projectId+'/tasks/'+taskId+'/activity'),
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
-   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentRuns(activity.agentRuns||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskMessages(ms);
+   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentRuns(activity.agentRuns||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskWorkAssignments(activity.workAssignments||[]);setTaskKickoff(activity.kickoff||null);setTaskMessages(ms);
    setManagerState(await api<ManagerSnapshot>('/projects/'+projectId+'/tasks/'+taskId+'/manager'));
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
@@ -662,8 +665,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);
-     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);}).catch(fail);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);setTaskWorkAssignments([]);setTaskKickoff(null);
+     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);setTaskWorkAssignments(a.workAssignments||[]);setTaskKickoff(a.kickoff||null);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
   }else if(activeTask){setActiveTask(null);}
@@ -777,6 +780,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setTaskAgentRuns(old=>JSON.stringify(old)===JSON.stringify(feed.agentRuns||[])?old:feed.agentRuns||[]);
     setTaskAgentNotes(old=>JSON.stringify(old)===JSON.stringify(feed.notes||[])?old:feed.notes||[]);
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
+    setTaskWorkAssignments(old=>JSON.stringify(old)===JSON.stringify(feed.workAssignments||[])?old:feed.workAssignments||[]);
+    setTaskKickoff(old=>JSON.stringify(old)===JSON.stringify(feed.kickoff||null)?old:feed.kickoff||null);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
     setManagerState(old=>JSON.stringify(old)===JSON.stringify(manager)?old:manager);
     const current=manager.task;
@@ -868,6 +873,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const fresh=await api<Task[]>('/projects/'+selected.id+'/tasks');
    setTasks(fresh);
    setActiveTask(old=>old?fresh.find(t=>t.id===old.id)||old:null);
+   if(activeTask?.id===task.id)await refreshTaskActivity(selected.id,task.id);
   }catch(e){setTaskFeedback(e instanceof Error?e.message:'Ошибка изменения состояния задачи');fail(e);}
   finally{setBoardBusy(false);}
  }
@@ -2432,7 +2438,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </form>
     </ChatImageDropZone>
    </div>
-   {activeTask.type!=='question'&&<div className="task-workflow" aria-label="Этапы выполнения">
+   {activeTask.type!=='question'&&<>
+    <TaskExecutionPlan assignments={taskWorkAssignments} kickoff={taskKickoff} stage={activeTask.stage}
+     stageLabel={stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}
+     busy={boardBusy} onRetry={()=>void changeBoard(activeTask,'start')}/>
+    <details className="task-technical-workflow">
+     <summary>Технические этапы и ручные переходы (совместимость)</summary>
+     <div className="task-workflow" aria-label="Этапы технического workflow">
     {stages.map((stage,i)=><React.Fragment key={stage.stage}>
      {i>0&&<button className="workflow-arrow" disabled={!canAdvance(activeTask,stages[i-1].stage,stage.stage)}
        title={canAdvance(activeTask,stages[i-1].stage,stage.stage)?'Перейти: '+stage.label:'Для этого перехода нужны выполненные условия предыдущего этапа'}
@@ -2442,7 +2454,9 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       <span>{stage.label}{stage.stage===activeTask.stage&&stage.stage==='testing'&&qaOutcome&&<small className="workflow-qa-outcome"> · {qaOutcome}</small>}</span>
      </div>
     </React.Fragment>)}
-   </div>}
+   </div>
+    </details>
+   </>}
   </div>
  </div>}
  {error&&<div className="error-toast" role="alert"><span>{error}</span><button type="button" title="Закрыть уведомление" aria-label="Закрыть уведомление" onClick={()=>setError('')}><X size={17}/></button></div>}
