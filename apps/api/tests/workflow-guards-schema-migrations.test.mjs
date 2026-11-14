@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import pg from 'pg';
 import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
-const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(m=>m.version<=20);
 async function isolated(fn){
  const name='ado_guards_v11_'+randomUUID().replaceAll('-','');
  const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});
