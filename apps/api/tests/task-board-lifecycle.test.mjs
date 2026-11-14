@@ -35,7 +35,7 @@ test('v21 migrates old tasks and protects owner acceptance with real PostgreSQL'
   const migrations=coreSchemaMigrations({analysis:'Аналитика'});
   assert.equal(migrations.at(-1).version,21);
   await runSchemaMigrations(db,migrations.filter(x=>x.version<21));
-  const ids={user:randomUUID(),project:randomUUID(),oldDone:randomUUID(),testing:randomUUID(),backlog:randomUUID(),auto:randomUUID()};
+  const ids={user:randomUUID(),project:randomUUID(),oldDone:randomUUID(),testing:randomUUID(),backlog:randomUUID(),auto:randomUUID(),question:randomUUID()};
   await db.query('INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)',[ids.user,'board@example.test','test']);
   await db.query('INSERT INTO projects(id,name,owner_id) VALUES($1,$2,$3)',[ids.project,'Board',ids.user]);
   for(const [taskId,stage] of [[ids.oldDone,'done'],[ids.testing,'testing'],[ids.backlog,'backlog'],[ids.auto,'testing']]){
@@ -49,6 +49,12 @@ test('v21 migrates old tasks and protects owner acceptance with real PostgreSQL'
   assert.equal(task(ids.testing).board_status,'in_progress');
   assert.equal(task(ids.backlog).board_status,'backlog');
   assert.equal(task(ids.testing).acceptance_mode,'undecided');
+  // Resolved documentation questions cannot require human acceptance because
+  // they are answered inside their own question flow, not task detail controls.
+  await db.query("INSERT INTO tasks(id,project_id,title,type,stage) VALUES($1,$2,'Question','question','backlog')",[ids.question,ids.project]);
+  await db.query("UPDATE tasks SET stage='done' WHERE id=$1",[ids.question]);
+  assert.equal((await db.query('SELECT board_status FROM tasks WHERE id=$1',[ids.question])).rows[0].board_status,'done');
+
 
   const app=Fastify();
   registerTaskBoardRoutes(app,{
