@@ -123,6 +123,15 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   const seen=new Set<string>();
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
+   if(row.tool==='goals.open'&&row.result?.watch?.kind==='goal'){
+    const watch=row.result.watch;
+    if(typeof watch.process_id!=='string'||typeof watch.goal_id!=='string'||
+       seen.has(watch.process_id))return [];
+    seen.add(watch.process_id);
+    return [{projectId,processId:watch.process_id,kind:'goal' as const,
+      goalId:watch.goal_id,orderId:orderId||undefined,
+      topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
+   }
    if(row.tool==='goals.link'&&row.result?.watch){
     const watch=row.result.watch;
     if(!['task_goal','delegated_work'].includes(watch.kind)||typeof watch.process_id!=='string'||
