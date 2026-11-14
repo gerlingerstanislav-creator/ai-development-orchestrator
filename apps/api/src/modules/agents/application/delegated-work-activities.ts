@@ -3,7 +3,7 @@ import {resolveRoleAiSettings} from '../../../project-team.js';
 import type {RunnerImage} from '../../../chat-images.js';
 import type {AgentReaderScope} from '../../../agent-tools.js';
 
-type Db=Parameters<typeof resolveRoleAiSettings>[0];
+type Db=Parameters<typeof recordAgentPrompt>[0];
 type AskAssistant=(
  prompt:string,projectId:string,taskId:string|null,operation:string,
  ai:{model:string;reasoning:string},timeoutMs:number,images:RunnerImage[],
