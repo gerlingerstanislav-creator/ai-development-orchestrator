@@ -9,7 +9,8 @@ const shaPattern=/^[a-f0-9]{40}$/i;
 const safeBranch=/^[a-z0-9_.\/-]{1,120}$/i;
 export function validateDelegatedSandboxRequest(job){
  if(!job||!['analysis','development','testing','documentation','devops','architect'].includes(job.role)||
-  ![job.assignmentId,job.projectId,job.taskId,job.actorId].every(x=>idPattern.test(x))||
+  ![job.assignmentId,job.projectId,job.actorId].every(x=>idPattern.test(x))||
+  !(job.taskId===null||idPattern.test(job.taskId))||
   typeof job.prompt!=='string'||job.prompt.length<12||job.prompt.length>55000||
   typeof job.model!=='string'||job.model.length>90||
   !['minimal','low','medium','high','extra_high','xhigh'].includes(job.reasoning))
@@ -58,7 +59,7 @@ export function createDelegatedWorkSandbox({
      throw new Error('Репозиторий не находится на запрошенном закреплённом SHA');
    }
    const policy=await isolatedTaskPolicy(workspace,dir,undefined,true,true);
-   if(job.repository&&await browser.health()){
+   if(job.repository&&job.taskId&&await browser.health()){
     browserSession=browser.open(attemptId,[],{adHoc:true});
     await writeFile(join(dir,'.ado-browser-session.json'),JSON.stringify(browserSession),{mode:0o600});
     try{
@@ -89,7 +90,8 @@ export function createDelegatedWorkSandbox({
      :'Если для результата нужен браузер, сообщи точную блокировку: инструмент сейчас не доступен.',
     'Команды внутри рабочей копии допускаются только через действующую sandbox policy; не пытайся обойти сетевые ограничения.',
     'Это рабочая копия без автоматического push/PR. Запрещено выдавать локальные изменения за доставленные пользователю.',
-    'Для результатов используй MCP work.report, не объявляй работу завершённой без подтверждения фактических действий.'
+    'Для результатов используй MCP work.report, не объявляй работу завершённой без подтверждения фактических действий.',
+    !job.taskId?'Это поручение связано с целью ПМ, а не с карточкой Kanban. Сохранение браузерных снимков в task work.artifacts для него недоступно.':'Артефакты привязаны к задаче и закреплённой ревизии.'
    ].join('\n');
    const result=await withReaderContext(agentApi,runnerSecret,{
     projectId:job.projectId,taskId:job.taskId,processId:job.assignmentId,
