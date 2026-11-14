@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {pendingAgentQuestions} from '../../../task-agent-notes.js';
 import {browserEvidenceAssessment} from '../../../task-evidence.js';
+import {qaReadableSummary} from '../../../qa-readable-summary.js';
 import {resolveRoleAiSettings} from '../../../project-team.js';
 import {deploymentDecision} from '../../../deployment-stage.js';
 
@@ -98,7 +99,7 @@ async function rejectTestedTask(args:{projectId:string;taskId:string;cycleId:str
   [testId,projectId,taskId]);
  if(!test.rowCount)throw nonRetryable('Нет завершённого неуспешного QA-прогона этой задачи');
  const report=test.rows[0].report||{};
- const feedback=JSON.stringify(report).slice(0,10000);
+ const feedback=qaReadableSummary({verdict:'failed',caseResults:report.caseResults,checks:report.checks,findings:report.findings},report.caseResults?.length).slice(0,1100)+' Полные технические доказательства сохранены в QA-отчёте.';
  const lastDeveloper=await pool.query(
   "SELECT result_kind,result_commit FROM ai_task_runs WHERE cycle_id=$1 AND cycle_attempt=$2 AND project_id=$3 AND task_id=$4 ORDER BY created_at DESC LIMIT 1",
   [cycleId,attempt,projectId,taskId]);
