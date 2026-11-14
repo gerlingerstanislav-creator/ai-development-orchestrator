@@ -31,9 +31,9 @@ export async function queueTaskExecutionKickoff(db:Db,input:{
  // The task ID is an idempotency key for the initial launch. Further changes
  // are planned by the same PM/order; no duplicate work graph on a second click.
  const previous=(await db.query(`SELECT id,status,pm_order_id
-   FROM assistant_messages WHERE project_id=$1 AND actor_id=$2
-   AND pm_request_id=$3 AND channel='pm-internal' AND role='user'
-   FOR UPDATE`,[input.projectId,input.actorId,input.taskId])).rows[0];
+   FROM assistant_messages WHERE project_id=$1 AND task_id=$2
+   AND pm_request_id=$2 AND channel='pm-internal' AND role='user'
+   FOR UPDATE`,[input.projectId,input.taskId])).rows[0];
  if(previous){
   if(previous.status==='failed'){
    await db.query(`UPDATE assistant_messages SET status='queued',pm_dispatch_attempt=pm_dispatch_attempt+1,
