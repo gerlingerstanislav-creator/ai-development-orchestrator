@@ -184,7 +184,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    // to its original order, not an unrelated second PM assignment.
    if(!confirmedOrderId){
     const touchedGoals=[...new Set(toolEvents.rows
-     .filter(row=>['goals.link','goals.plan','goals.update','goals.complete'].includes(row.tool))
+     .filter(row=>['goals.link','goals.plan','goals.propose_alternatives','goals.update','goals.complete'].includes(row.tool))
      .map(row=>row.result?.goal_id||row.result?.id)
      .filter((id:unknown):id is string=>typeof id==='string'))];
     if(touchedGoals.length===1){
