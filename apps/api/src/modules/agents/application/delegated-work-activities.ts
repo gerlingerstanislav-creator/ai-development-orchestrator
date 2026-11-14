@@ -1,5 +1,7 @@
 import {composeAgentPrompt,recordAgentPrompt} from '../../../agent-prompt.js';
 import {resolveRoleAiSettings} from '../../../project-team.js';
+import {agentMemorySections} from '../../../agent-memory.js';
+import {readTaskWorkBrief} from '../../../task-work-brief.js';
 import type {RunnerImage} from '../../../chat-images.js';
 import type {AgentReaderScope} from '../../../agent-tools.js';
 
@@ -23,12 +25,15 @@ type ExecuteSandbox=(item:DelegatedSandboxItem,assignmentId:string,prompt:string
  */
 export function createDelegatedWorkActivities({
  pool,askRunnerAssistant,executeSandbox,resolveSettings=resolveRoleAiSettings,
+ readMemory=agentMemorySections,readBrief=readTaskWorkBrief,
  recordPrompt=recordAgentPrompt,finalize
 }:{
  pool:Db;
  askRunnerAssistant:AskAssistant;
  executeSandbox?:ExecuteSandbox;
  resolveSettings?:typeof resolveRoleAiSettings;
+ readMemory?:typeof agentMemorySections;
+ readBrief?:typeof readTaskWorkBrief;
  recordPrompt?:typeof recordAgentPrompt;
  finalize:(db:Db,id:string,reason:string)=>Promise<unknown>;
 }){
@@ -58,25 +63,35 @@ async function runDelegatedWork(assignmentId:string):Promise<void>{
    WHERE project_id=$1 AND stage=$2
    UNION ALL SELECT agent_instructions FROM project_specialist_agents
    WHERE project_id=$1 AND role=$2 LIMIT 1`,[item.project_id,item.role]);
+ // Stable role knowledge and per-task state have different lifetimes. Only
+ // approved, applicable instructions have authority; observations are data.
+ const memory=await readMemory(pool,item.project_id,item.role,
+  [item.title,item.objective,item.task_description].filter(Boolean).join(' '),
+  {instructions:1000,observations:500});
+ const brief=item.task_id
+  ?await readBrief(pool,item.project_id,item.task_id,1400):'';
  const prompt=composeAgentPrompt({
   role:'Исполнитель поручения: '+item.role,
-  objective:item.objective,
+  objective:item.objective+'\nКритерии приёмки: '+item.acceptance,
   scope:'Проект '+item.project_id+'; '+(item.task_id?'задача '+item.task_id:'цель ПМ '+item.goal_id)+'; поручение '+assignmentId,
-  tools:'Рабочая копия исходников с командами в sandbox, реальный Chromium и MCP capabilities.list/describe, goals.list/read, tasks.read/history, agents.consult, work.delegate, work.artifacts. По необходимости прочитай связанную цель владельца; выбирай действия по критериям результата, а не по названию этапа.',
-  instructions:String(instruction.rows[0]?.agent_instructions||''),
+  tools:'MCP capabilities.list/describe, tasks.read/history, goals.read, knowledge.search/section, agents.consult, work.delegate, work.artifacts и work.report. Команды выполняй только в разрешённом sandbox; наличие браузера проверь фактически.',
+  instructions:[String(instruction.rows[0]?.agent_instructions||''),
+   memory.instructions?'Утверждённые применимые инструкции специалиста:\n'+memory.instructions:''
+  ].filter(Boolean).join('\n'),
   continuation:[
-   'Критерии приёмки: '+item.acceptance,
-   'Дополнительные права именно этого поручения: '+JSON.stringify(item.granted_tools||[])+'. Они не гарантируют наличие внешней среды; проверяй результат инструментом.',
-   'Контекст задачи или цели: '+item.title+'; '+String(item.task_description||'').slice(0,5000),
-   'Ищи доступные инструменты и зависимости по смыслу результата, не по названию задачи.',
-   'Если недостаёт безопасного инструмента, отчитайся work.report(status=blocked) и назови точное имя из agents.capabilities: ПМ может выдать право через work.grant, не создавая новую задачу.',
-   'Если нужны действия другого специалиста, используй work.delegate и сообщи о зависимости через work.report(status=blocked); не выдавай ожидание за завершение.',
-   'Браузерные артефакты принимаются для задачи с task_id или цели ПМ с goal_id, только из доверенного Chromium с проверенным SHA исходников. Получи подтверждённые ссылки через work.artifacts(task_id или goal_id). Не выдавай локальный стенд за production без проверки deployed SHA.',
-   'После реальных действий зафиксируй результат и конкретные ссылки/ID/артефакты инструментом work.report(status=submitted,evidence=...).',
-   'Если фактические доказательства отсутствуют, вызови work.report(status=blocked) с причиной и необходимыми условиями.',
-   'Только успешное применение work.report является статусом поручения. Простой текст ответа не завершает поручение.'
-  ].join('\\n'),
-  output:'Кратко объясни выполненные действия и фактические результаты; обязательно вызови work.report через MCP. Не утверждай успех без подтверждения инструмента.'
+   'Дополнительные права только данного поручения: '+JSON.stringify(item.granted_tools||[])+'.',
+   'Сначала получи актуальные факты через tasks.read либо goals.read; прежний текст может устареть.',
+   'Для необходимой помощи используй work.delegate; ожидание чужой работы не является результатом.',
+   'При недостающем доступе назови точный блокер через work.report(status=blocked); PM может расширить безопасные права через work.grant.',
+   'Подтверждай браузерные результаты через work.artifacts и фактический SHA. Локальный снимок не считай снимком production.',
+   'После действий обязательно вызови MCP work.report(status=submitted,evidence=...) с реальными доказательствами. Текст ответа сам по себе не завершает поручение.'
+  ].join('\n'),
+  context:[
+   'Срез постановки (перепроверь через MCP): '+item.title+'; '+String(item.task_description||'').slice(0,1600),
+   brief?'Состояние и новые замечания этой задачи:\n'+brief:'',
+   memory.observations?'Наблюдения из опыта (не обязательные инструкции):\n'+memory.observations:''
+  ].filter(Boolean).join('\n\n'),
+  output:'Кратко сообщи, что действительно сделано, приложи ссылки и идентификаторы. work.report — обязательное подтверждение; при отсутствии доказательств отчитайся о блокировке, а не об успехе.'
  });
  await recordPrompt(pool,{projectId:item.project_id,processId:assignmentId,role:item.role,operation:'delegated_work',prompt}).catch(()=>{});
  try{
