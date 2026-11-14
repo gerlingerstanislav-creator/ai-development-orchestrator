@@ -112,7 +112,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   await audit('runner_request');
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
+   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,progress_attempt:attempt,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
