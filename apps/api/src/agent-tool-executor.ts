@@ -274,12 +274,12 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    const tasks=(await tasksWithCustomerQuestions(pool,projectId)).filter(task=>task.awaits_product_owner);
    return {tasks:tasks.map(({id,title,stage,type,document_id,question_status,analysis_state,display_number})=>({id,title,stage,type,document_id,question_status,analysis_state,display_number}))};
   }
-  const r=await pool.query('SELECT id,title,description,type,stage,analysis_state,display_number,document_id,question_status,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 500',[projectId]);
+  const r=await pool.query('SELECT id,title,description,type,stage,board_status,acceptance_mode,postponed_at,analysis_state,display_number,document_id,question_status,updated_at FROM tasks WHERE project_id=$1 ORDER BY updated_at DESC LIMIT 500',[projectId]);
   return {tasks:r.rows};
  }
  case 'tasks.read':{
   const {task_id}=z.object({task_id:uuid}).parse(params);
-  const r=await pool.query('SELECT id,title,description,stage,analysis_state,clarification_questions,depends_on_task_id,pr_url,pr_number,git_branch,pr_base_branch,spec_version,spec_review_status,spec_reviewed_commit,test_feedback,updated_at FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]);
+  const r=await pool.query('SELECT id,title,description,stage,board_status,acceptance_mode,postponed_at,acceptance_feedback,analysis_state,clarification_questions,depends_on_task_id,pr_url,pr_number,git_branch,pr_base_branch,spec_version,spec_review_status,spec_reviewed_commit,test_feedback,updated_at FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]);
   if(!r.rowCount)throw rejected('Задача не найдена',404);
   const [conversation,questions,open,answers,repository]=await Promise.all([
    taskConversationEvidence(pool,projectId,task_id),
