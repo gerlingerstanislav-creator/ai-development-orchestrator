@@ -30,15 +30,16 @@ export async function executeAgentWorkTool(
   return listWorkArtifacts(pool,projectId,task_id);
  }
  case 'work.list':{
-  const {task_id}=z.object({task_id:uuid}).parse(params);
+  const {task_id,goal_id}=z.object({task_id:uuid.optional(),goal_id:uuid.optional()}).strict().parse(params);
+  if(!!task_id===!!goal_id)throw rejected('Укажи задачу или цель ПМ',400);
   if(session.task_id&&session.task_id!==task_id)throw rejected('Нельзя читать поручения другой задачи',403);
-  return listWork(pool,projectId,task_id);
+  return listWork(pool,projectId,task_id,goal_id);
  }
  case 'work.plan':{
   if(!['manager','analyst','business_analyst'].includes(session.role))
    throw rejected('Составление плана принадлежит ПМ или аналитику',403);
   const data=z.object({
-   task_id:uuid,
+   task_id:uuid.optional(),goal_id:uuid.optional(),
    steps:z.array(z.object({
     key:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/),
     role:z.enum(workRoles),
@@ -48,22 +49,28 @@ export async function executeAgentWorkTool(
     tools:z.array(z.string()).max(12).default([])
    }).strict()).min(1).max(12)
   }).parse(params);
+  if(!!data.task_id===!!data.goal_id)throw rejected('Укажи задачу или цель ПМ',400);
+  if(data.goal_id&&session.role!=='manager')throw rejected('Создавать план по цели может только ПМ',403);
   if(session.task_id&&session.task_id!==data.task_id)throw rejected('Нельзя планировать чужую задачу',403);
-  return planWork(pool,{projectId,taskId:data.task_id,sourceRole:session.role,steps:data.steps});
+  return planWork(pool,{projectId,taskId:data.task_id,goalId:data.goal_id,sourceRole:session.role,steps:data.steps});
  }
  case 'work.delegate':{
-  const {task_id,role,objective,acceptance,tools}=z.object({
-   task_id:uuid,role:z.enum(workRoles),objective:z.string().trim().min(12).max(2000),
+  const {task_id,goal_id,role,objective,acceptance,tools}=z.object({
+   task_id:uuid.optional(),goal_id:uuid.optional(),role:z.enum(workRoles),objective:z.string().trim().min(12).max(2000),
    acceptance:z.string().trim().min(12).max(2000),tools:z.array(z.string()).max(12).default([])
   }).parse(params);
-  if(session.role!=='manager'&&session.task_id!==task_id)throw rejected('Нельзя делегировать работу для чужой задачи',403);
+  if(!!task_id===!!goal_id)throw rejected('Укажи задачу или цель ПМ',400);
+  if(session.role!=='manager'&&session.task_id!== (task_id||null))throw rejected('Нельзя делегировать работу для чужой задачи',403);
   if(session.role!=='manager'&&!session.process_id)throw rejected('Нет активного процесса',403);
   let parentId:string|null=null;
   if(session.role!=='manager'){
    const active=await pool.query(`SELECT id FROM agent_work_assignments
-    WHERE id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'`,[session.process_id,projectId,task_id,session.role]);
+    WHERE id=$1 AND project_id=$2 AND task_id IS NOT DISTINCT FROM $3::uuid
+      AND goal_id IS NOT DISTINCT FROM $5::uuid AND role=$4 AND status='running'`,
+     [session.process_id,projectId,task_id||null,session.role,goal_id||null]);
    if(active.rowCount)parentId=session.process_id!;
    else {
+    if(goal_id)throw rejected('Только текущий исполнитель цели может делегировать дальше',403);
     const authorized=await pool.query(`SELECT note_id AS id FROM agent_peer_queue WHERE note_id=$1 AND project_id=$2 AND task_id=$3 AND role=$4 AND status='running'
      UNION ALL SELECT id FROM ai_task_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='development' AND status IN ('queued','running')
      UNION ALL SELECT id FROM ai_test_runs WHERE id=$1 AND project_id=$2 AND task_id=$3 AND $4='testing' AND status IN ('queued','running')
@@ -72,10 +79,10 @@ export async function executeAgentWorkTool(
     if(!authorized.rowCount)throw rejected('Назначать работу может только действующий исполнитель этой задачи',403);
    }
   }
-  return delegateWork(pool,{projectId,taskId:task_id,role,objective,acceptance,sourceRole:session.role,parentId,tools});
+  return delegateWork(pool,{projectId,taskId:task_id,goalId:goal_id,role,objective,acceptance,sourceRole:session.role,parentId,tools});
  }
  case 'work.report':{
-  if(!session.task_id||!session.process_id)throw rejected('Нет активного поручения с привязкой к задаче',403);
+  if(!session.process_id||session.read_only)throw rejected('Нет активного поручения',403);
   const {result,evidence,status}=z.object({
    result:z.string().trim().min(20).max(3000),evidence:z.string().trim().min(12).max(3000),
    status:z.enum(['submitted','blocked'])

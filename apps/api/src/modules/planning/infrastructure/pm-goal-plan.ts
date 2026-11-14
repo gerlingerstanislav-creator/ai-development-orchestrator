@@ -11,7 +11,7 @@ const denied=(message:string,statusCode=409)=>Object.assign(Error(message),{stat
  * "I delegated it" state can survive a failed dependency graph.
  */
 export async function planPmGoalWork(db:Db,input:{
- projectId:string;goalId:string;taskId:string;steps:readonly WorkPlanStep[];
+ projectId:string;goalId:string;taskId?:string;steps:readonly WorkPlanStep[];
 }){
  const goal=await db.query(`SELECT g.id,g.status,g.order_id
   FROM project_pm_goals g WHERE g.project_id=$1 AND g.id=$2 FOR UPDATE`,
@@ -19,7 +19,7 @@ export async function planPmGoalWork(db:Db,input:{
  if(!goal.rowCount)throw denied('Цель не найдена в проекте',404);
  if(goal.rows[0].status==='completed')throw denied('Завершённую цель нельзя перепланировать');
  const plan=await planWork(db,{
-  projectId:input.projectId,taskId:input.taskId,sourceRole:'manager',steps:input.steps
+  projectId:input.projectId,taskId:input.taskId,goalId:input.taskId?undefined:input.goalId,sourceRole:'manager',steps:input.steps
  });
  // Every deliverable is linked before the transaction commits. The goal
  // cannot be marked complete until each assignment has been reviewed.

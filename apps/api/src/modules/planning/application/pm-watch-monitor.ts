@@ -64,19 +64,19 @@ export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWat
  if(watch.kind==='delegated_work'){
   const assignment=(await pool.query(`SELECT a.status,a.result,a.evidence,a.role,a.objective,
    t.title AS task_title,t.display_number
-   FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+   FROM agent_work_assignments a LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
    WHERE a.project_id=$1 AND a.id=$2`,[watch.projectId,watch.processId])).rows[0];
   if(!assignment)return reportPmWatchCompletion(pool,watch,{
    message:'Поручение агенту больше недоступно. Проверь исходную задачу и историю.',
    resumeInstruction:' Не считать неизвестное поручение завершённым.'});
   if(['queued','running'].includes(assignment.status))return 'pending';
-  const message='Поручение '+assignment.role+' по задаче #'+assignment.display_number+
-   ' «'+assignment.task_title+'» завершило попытку со статусом '+assignment.status+
+  const scope=assignment.display_number?'по задаче #'+assignment.display_number+' «'+assignment.task_title+'»':'по цели ПМ';
+  const message='Поручение '+assignment.role+' '+scope+' завершило попытку со статусом '+assignment.status+
    '. Цель: '+assignment.objective+'. Результат: '+String(assignment.result||'нет подтверждения').slice(0,1400)+
    '. Доказательства: '+String(assignment.evidence||'не представлены').slice(0,900);
   return reportPmWatchCompletion(pool,watch,{message,
    resumeInstruction:assignment.status==='submitted'
-    ?' Прочитай work.list и проверь представленные доказательства, затем work.review(accept или retry). Принятие поручения не означает закрытие самой задачи.'
+    ?' Прочитай work.list (по task_id или goal_id), проверь доказательства и вызови work.review(accept или retry). Принятие поручения не заменяет QA или закрытие задачи.'
     :' Это не успех. Прочитай work.list и blockers.list, устрани блокировку или запроси решение владельца. Не объявляй выполнение только по тексту агента.'});
  }
  if(watch.kind==='testing'){

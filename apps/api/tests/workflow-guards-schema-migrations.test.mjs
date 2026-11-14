@@ -13,9 +13,9 @@ async function isolated(fn){
  try{await fn(db);}
  finally{await db.end();await admin.query('DROP SCHEMA "'+name+'" CASCADE');await admin.end();}
 }
-test('fresh v18 installs durable PM goals and capability proposals without altering earlier workflow migrations',async()=>{
+test('fresh v19 installs durable PM goals, capability proposals and goal work without altering earlier workflow migrations',async()=>{
  await isolated(async db=>{
-  assert.deepEqual(await runSchemaMigrations(db,migrations),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]);
+  assert.deepEqual(await runSchemaMigrations(db,migrations),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]);
   assert.deepEqual(await runSchemaMigrations(db,migrations),[]);
   const triggers=(await db.query(`SELECT tgname FROM pg_trigger
    WHERE tgrelid='tasks'::regclass AND NOT tgisinternal
@@ -37,6 +37,8 @@ test('fresh v18 installs durable PM goals and capability proposals without alter
    'ado-project-pm-outcome-goals-v17');
   assert.equal((await db.query("SELECT to_regclass('project_pm_goals') IS NOT NULL AS installed")).rows[0].installed,true);
   assert.equal((await db.query("SELECT to_regclass('project_pm_goal_links') IS NOT NULL AS installed")).rows[0].installed,true);
+  assert.equal((await db.query("SELECT checksum FROM schema_migrations WHERE version=19")).rows[0].checksum,'ado-goal-scoped-agent-work-v19');
+  assert.equal((await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='agent_work_assignments' AND column_name='goal_id'")).rowCount,1);
   assert.equal((await db.query('SELECT checksum FROM schema_migrations WHERE version=18')).rows[0].checksum,
    'ado-project-pm-capability-proposals-v18');
   const proposal=(await db.query("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='project_pm_goals' AND column_name='capability_proposal'")).rows;
@@ -54,7 +56,7 @@ test('v11 repairs legacy cards once and preserves QA rework transition and activ
   await db.query("INSERT INTO tasks(id,project_id,title,type,stage,parent_id) VALUES($1,$2,'Unapproved','task','backlog',$3)",[unapproved,project,epic]);
   await db.query("INSERT INTO tasks(id,project_id,title,type,stage) VALUES($1,$2,'QA rework','task','testing')",[qaTask,project]);
   await db.query("INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,status,expires_at,task_id) VALUES($1,$2,$3,'development','active-v11','running',now()+interval '2 hours',$4)",[session,project,user,qaTask]);
-  assert.deepEqual(await runSchemaMigrations(db,migrations),[11,12,13,14,15,16,17,18]);
+  assert.deepEqual(await runSchemaMigrations(db,migrations),[11,12,13,14,15,16,17,18,19]);
   assert.deepEqual(await runSchemaMigrations(db,migrations),[]);
   assert.equal((await db.query('SELECT stage FROM tasks WHERE id=$1',[epic])).rows[0].stage,'backlog');
   assert.equal((await db.query('SELECT analysis_state FROM tasks WHERE id=$1',[child])).rows[0].analysis_state,'new');

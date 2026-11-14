@@ -40,7 +40,7 @@ export async function executePmGoalTool(db:Pick<Pool,'query'>,session:AgentSessi
  }
  case 'goals.plan':{
   const data=z.object({
-   goal_id:uuid,task_id:uuid,
+   goal_id:uuid,task_id:uuid.optional(),
    steps:z.array(z.object({
     key:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/),
     role:z.enum(workRoles),

@@ -32,7 +32,7 @@ export const agentToolCatalog=[
  tool('goals.read','ПМ: проверить принятую цель, критерии успеха и факты по каждому связанному результату.',{goal_id:id},['goal_id']),
  tool('goals.open','ПМ: принять текущий запрос владельца как долгосрочную цель с проверяемыми критериями. Не вызывать для простых вопросов, анализа или идей без просьбы выполнять. Источник берётся из текущего сообщения автоматически.',{objective:str,criteria:{type:'array',items:str}},['objective','criteria']),
  tool('goals.link','ПМ: привязать к цели реально существующий результат (задачу, поручение или документ) и включить контроль выполнения. Никаких фиктивных ссылок.',{goal_id:id,kind:{type:'string',enum:['task','assignment','document']},reference_id:id},['goal_id','kind','reference_id']),
- tool('goals.plan','ПМ: построить план поручений с зависимостями для существующей задачи и атомарно привязать ВСЕ результаты к принятой цели. Используй вместо work.plan при выполнении цели. Задача может быть создана перед планированием, если её ещё нет.',{
+ tool('goals.plan','ПМ: построить план поручений с зависимостями для существующей задачи или напрямую для цели ПМ и атомарно привязать ВСЕ результаты к принятой цели. Используй вместо work.plan при выполнении цели. Без карточки Kanban task_id не нужен; поручения относятся к самой цели.',{
   goal_id:id,task_id:id,
   steps:{type:'array',items:{type:'object',properties:{
    key:field('string','Уникальный ключ шага'),
@@ -41,7 +41,7 @@ export const agentToolCatalog=[
    needs:{type:'array',items:{type:'string'}},
    tools:{type:'array',items:{type:'string'}}
   },required:['key','role','objective','acceptance','needs'],additionalProperties:false}}
- },['goal_id','task_id','steps']),
+ },['goal_id','steps']),
  tool('goals.propose_alternatives','ПМ: цель недостижима текущими возможностями. Записать проверенное ограничение и 1–3 реалистичных варианта (обход или доработка платформы), рекомендацию и необходимость согласования. Это НЕ запускает разработку и НЕ завершает цель; предложение сохраняется для следующих сообщений.',{
   goal_id:id,
   limitation:str,
@@ -87,10 +87,10 @@ export const agentToolCatalog=[
  tool('knowledge.related','Найти связанные требования и архитектурные документы.',{document_id:id},['document_id']),
  tool('knowledge.context','Получить минимальный обязательный контекст и релевантные документы для задачи.',{task_id:id,stage:str},['task_id']),
  tool('project.agents.start','Запустить специалистов выбранного проекта после остановки или новой выкладки по прямому поручению владельца; запланированные задачи продолжат обработку.',{}),
- tool('work.list','Прочитать поручения и доказательства по задаче, не подменяя ими статус самой задачи.',{task_id:id},['task_id']),
+ tool('work.list','Прочитать поручения по задаче или цели ПМ (ровно один идентификатор).',{task_id:id,goal_id:id}),
  tool('work.artifacts','Получить проверенные браузерные артефакты с SHA исходников, viewport, контрольной суммой и защищёнными ссылками на изображения.',{task_id:id},['task_id']),
  tool('work.plan','Составить произвольный проверяемый план из нескольких поручений с зависимостями. Зависимости задаются ключами шагов, не этапами Kanban. Все шаги и связи сохраняются атомарно; исполнители запускаются по мере завершения предусловий.',{
-  task_id:id,
+  task_id:id,goal_id:id,
   steps:{type:'array',items:{type:'object',properties:{
    key:field('string','Короткий уникальный ключ шага, например prepare-env'),
    role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},
@@ -100,8 +100,8 @@ export const agentToolCatalog=[
    tools:{type:'array',items:{type:'string'},description:'Дополнительные безопасные инструменты именно для этого поручения; см. agents.capabilities'}
   },required:['key','role','objective','acceptance'],additionalProperties:false}},
   idempotency_key:idem
- },['task_id','steps']),
- tool('work.delegate','Поручить специалисту конкретную работу на основе цели, критериев приёмки и его инструментов. Без фиктивных PR и переходов Kanban; результат проверяет ПМ.',{task_id:id,role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},objective:str,acceptance:str,tools:{type:'array',items:{type:'string'},description:'Дополнительные инструменты на срок активного поручения'},idempotency_key:idem},['task_id','role','objective','acceptance']),
+ },['steps']),
+ tool('work.delegate','Поручить специалисту конкретную работу на основе цели, критериев приёмки и его инструментов. Без фиктивных PR и переходов Kanban; результат проверяет ПМ.',{task_id:id,goal_id:id,role:{type:'string',enum:['analysis','development','testing','documentation','devops','architect']},objective:str,acceptance:str,tools:{type:'array',items:{type:'string'},description:'Дополнительные инструменты на срок активного поручения'},idempotency_key:idem},['role','objective','acceptance']),
  tool('work.report','Исполнитель: сообщить проверяемый результат или конкретную блокировку своего активного поручения. Сообщение не закрывает задачу; итог изучает ПМ.',{result:str,evidence:str,status:{type:'string',enum:['submitted','blocked']}},['result','evidence','status']),
  tool('work.review','ПМ: проверить результат или назначить повтор после блокировки. Принятие поручения не обходит QA/PR/выкладку и не переводит саму задачу в done.',{assignment_id:id,action:{type:'string',enum:['accept','retry','cancel']},reason:str,idempotency_key:idem},['assignment_id','action','reason']),
  tool('work.grant','ПМ: добавить конкретному незавершённому поручению необходимые безопасные инструменты. Заблокированная попытка сохраняется в истории и повторяется; полномочия выдаются только этому исполнителю и текущей версии задачи.',{assignment_id:id,tools:{type:'array',items:str},reason:str,idempotency_key:idem},['assignment_id','tools','reason']),
@@ -200,16 +200,18 @@ export function toolsForSession(role:AgentRole,readOnly=false,grants:readonly st
  return agentToolCatalog.filter(tool=>additional.has(tool.name)||baseline.includes(tool));
 }
 export async function readSessionToolGrants(pool:Pick<Pool,'query'>,session:AgentSession,lock=false):Promise<string[]>{
- if(session.read_only||!session.task_id||!session.process_id||
+ if(session.read_only||!session.process_id||
     !autonomousSpecialistRoles.has(session.role))return [];
  // A session token alone is never sufficient: the assignment and its spec must
  // still be live in the same project and task, including after cancellation.
  let active;
  try{active=await pool.query(`SELECT a.granted_tools FROM agent_work_assignments a
-  JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id AND t.spec_version=a.spec_version
+  LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id AND t.spec_version=a.spec_version AND t.stage<>'done'
+  LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id AND g.status<>'completed'
   JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL AND p.agents_running=true
-  WHERE a.id=$1 AND a.project_id=$2 AND a.task_id=$3 AND a.role=$4
-   AND a.status='running' LIMIT 1${lock?' FOR SHARE OF a,t':''}`,
+  WHERE a.id=$1 AND a.project_id=$2 AND a.task_id IS NOT DISTINCT FROM $3::uuid AND a.role=$4
+   AND a.status='running' AND (t.id IS NOT NULL OR g.id IS NOT NULL)
+   LIMIT 1${lock?' FOR SHARE OF a':''}`,
   [session.process_id,session.project_id,session.task_id,session.role]);}
  catch(error){
   // Legacy isolated reader fixtures may not have run the v15 schema yet.
@@ -254,7 +256,10 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  const docJob=role==='documentation'&&!!processId;
  const docGuard=docJob?(taskId
   ?` AND EXISTS (SELECT 1 FROM agent_work_assignments a WHERE a.id=$4 AND a.project_id=p.id AND a.task_id=$3 AND a.role='documentation' AND a.status='running')`
-  :` AND EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running')`):'';
+  :` AND (EXISTS (SELECT 1 FROM document_import_jobs j WHERE j.id=$4 AND j.project_id=p.id AND j.actor_id=COALESCE($2::uuid,p.owner_id) AND j.status='running')
+   OR EXISTS (SELECT 1 FROM agent_work_assignments a JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
+    WHERE a.id=$4 AND a.project_id=p.id AND a.task_id IS NULL AND a.role='documentation'
+     AND a.status='running' AND g.status<>'completed'))`):'';
  const result=await pool.query(`SELECT COALESCE($2::uuid,p.owner_id) AS actor_id FROM projects p
   WHERE p.id=$1 AND p.deleted_at IS NULL
    AND ($2::uuid IS NULL OR p.owner_id=$2 OR EXISTS(SELECT 1 FROM memberships m WHERE m.project_id=p.id AND m.user_id=$2))
@@ -264,7 +269,7 @@ export async function createAgentReaderSession(pool:Pick<Pool,'query'>,scope:Age
  const secret=randomBytes(32).toString('hex'),id=randomUUID();
  await pool.query(`INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,expires_at,read_only,task_id,process_id)
   VALUES($1,$2,$3,$4,$5,now()+interval '130 minutes',$8,$6,$7)`,
- [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!processId:!autonomousSpecialistRoles.has(role)||!taskId||!processId]);
+ [id,projectId,result.rows[0].actor_id,role,hashSecret(secret),taskId??null,processId??null,role==='documentation'?!processId:!autonomousSpecialistRoles.has(role)||!processId]);
  return {id,secret};
 }
 export async function finishAgentSession(pool:Pick<Pool,'query'>,id:string){

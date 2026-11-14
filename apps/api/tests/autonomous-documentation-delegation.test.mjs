@@ -48,6 +48,8 @@ test('terminal artifacts are verified, and a PM clarification resumes exactly on
   'CREATE TABLE documents(id uuid PRIMARY KEY,project_id uuid,title text,body text)',
   'CREATE TABLE document_import_jobs(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,status text,message text,request_text text,source_key text,analyst_input jsonb,result jsonb,saved_documents int,updated_at timestamptz DEFAULT now())',
   "CREATE TABLE agent_sessions(id uuid PRIMARY KEY,project_id uuid,actor_id uuid,role text,token_hash text,expires_at timestamptz,read_only boolean,task_id uuid,process_id uuid,status text DEFAULT 'running')",
+  'CREATE TABLE project_pm_goals(id uuid PRIMARY KEY,project_id uuid,status text)',
+  'CREATE TABLE agent_work_assignments(id uuid PRIMARY KEY,project_id uuid,goal_id uuid,task_id uuid,role text,status text)',
   'CREATE TABLE agent_tool_events(id uuid PRIMARY KEY,session_id uuid,project_id uuid,tool text,arguments jsonb,result jsonb,success boolean,created_at timestamptz DEFAULT now())'
  ].join(';')+';');
  const project=randomUUID(),user=randomUUID(),job=randomUUID(),doc=randomUUID();

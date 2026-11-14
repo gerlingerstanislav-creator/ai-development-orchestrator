@@ -19,6 +19,8 @@ test('delegated sandbox validates project identity, role and repository without 
  assert.deepEqual(validateDelegatedSandboxRequest(base),base);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,role:'manager'}),/Некорректное поручение/);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,taskId:'other'}),/Некорректное поручение/);
+ assert.equal(validateDelegatedSandboxRequest({...base,taskId:null}).taskId,null);
+ assert.throws(()=>validateDelegatedSandboxRequest({...base,taskId:undefined}),/Некорректное поручение/);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,repository:'https://localhost:3001'}),/GitHub source/);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,sourceSha:'branch'}),/GitHub source/);
 });

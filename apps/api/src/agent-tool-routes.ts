@@ -130,7 +130,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   if(mutating&&session.role==='documentation'){
    if(!session.process_id)return reply.code(403).send({error:'Нет поручения аналитика'});
    const running=await pool.query(
-    "SELECT id FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='running' UNION ALL SELECT id FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id=$3 AND role='documentation' AND status='running'",
+    "SELECT id FROM document_import_jobs WHERE id=$1 AND project_id=$2 AND status='running' UNION ALL SELECT id FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id IS NOT DISTINCT FROM $3::uuid AND role='documentation' AND status='running'",
     [session.process_id,session.project_id,session.task_id||null]);
    if(!running.rowCount)return reply.code(409).send({error:'Поручение аналитика уже не выполняется'});
   }

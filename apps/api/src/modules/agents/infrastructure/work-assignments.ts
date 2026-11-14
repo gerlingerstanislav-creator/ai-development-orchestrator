@@ -65,21 +65,56 @@ export async function installTaskCapabilityGrants(db:Db){
  await db.query("ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS granted_tools text[] NOT NULL DEFAULT ARRAY[]::text[]");
 }
 
+/** v18: a work item belongs either to a Kanban task or directly to a PM goal.
+ * Composite FKs keep dependencies and goal links inside the same project/scope.
+ * Existing task-scoped assignments and historical migration checksums remain intact.
+ */
+export async function installGoalWorkScope(db:Db){
+ await db.query(`ALTER TABLE agent_work_assignments
+  ADD COLUMN IF NOT EXISTS goal_id uuid;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_goal_project_identity ON project_pm_goals(project_id,id);
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_goal_identity
+  ON agent_work_assignments(project_id,goal_id,id);
+ ALTER TABLE agent_work_assignments ALTER COLUMN task_id DROP NOT NULL;
+ ALTER TABLE agent_work_assignments
+  ADD CONSTRAINT agent_work_scope_xor CHECK ((task_id IS NULL) <> (goal_id IS NULL));
+ ALTER TABLE agent_work_assignments
+  ADD CONSTRAINT agent_work_goal_project FOREIGN KEY(project_id,goal_id)
+   REFERENCES project_pm_goals(project_id,id) ON DELETE CASCADE;
+ CREATE INDEX IF NOT EXISTS idx_agent_work_goal ON agent_work_assignments(project_id,goal_id,created_at DESC);
+ ALTER TABLE agent_work_plan_dependencies ADD COLUMN IF NOT EXISTS goal_id uuid;
+ ALTER TABLE agent_work_plan_dependencies ALTER COLUMN task_id DROP NOT NULL;
+ ALTER TABLE agent_work_plan_dependencies
+  ADD CONSTRAINT agent_work_dependency_scope_xor CHECK ((task_id IS NULL) <> (goal_id IS NULL));
+ ALTER TABLE agent_work_plan_dependencies
+  ADD CONSTRAINT agent_work_dependency_goal_source FOREIGN KEY(project_id,goal_id,assignment_id)
+   REFERENCES agent_work_assignments(project_id,goal_id,id) ON DELETE CASCADE;
+ ALTER TABLE agent_work_plan_dependencies
+  ADD CONSTRAINT agent_work_dependency_goal_prerequisite FOREIGN KEY(project_id,goal_id,requires_id)
+   REFERENCES agent_work_assignments(project_id,goal_id,id) ON DELETE CASCADE;`);
+}
+
 /** Planning is one transaction: either all steps and edges exist, or none. */
 export async function planWork(db:Db,input:{
- projectId:string;taskId:string;sourceRole:string;steps:readonly WorkPlanStep[]
+ projectId:string;taskId?:string|null;goalId?:string|null;sourceRole:string;steps:readonly WorkPlanStep[]
 }){
+ if(!!input.taskId===!!input.goalId)throw fail('Укажи ровно одну задачу или цель ПМ',400);
  const steps=orderWorkPlan(input.steps);
  for(const step of steps)if(!(workRoles as readonly string[]).includes(step.role))
   throw fail('Неизвестная роль в плане: '+step.role,400);
- const task=(await db.query(
+ const task=input.taskId?(await db.query(
   'SELECT id,stage,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',
-  [input.projectId,input.taskId])).rows[0];
- if(!task)throw fail('Задача не найдена',404);
- if(task.stage==='done')throw fail('Готовую задачу нельзя повторно планировать без нового задания');
- const usage=(await db.query(
-  "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted','blocked')",
-  [input.projectId,input.taskId])).rows[0];
+  [input.projectId,input.taskId])).rows[0]:null;
+ const goal=input.goalId?(await db.query(
+  "SELECT id,status FROM project_pm_goals WHERE project_id=$1 AND id=$2 FOR UPDATE",
+  [input.projectId,input.goalId])).rows[0]:null;
+ if(input.taskId&&!task)throw fail('Задача не найдена',404);
+ if(input.goalId&&!goal)throw fail('Цель ПМ не найдена',404);
+ if(task?.stage==='done'||goal?.status==='completed')throw fail('Завершённую задачу или цель нельзя повторно планировать');
+ const usage=(await db.query(input.taskId?
+  "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted','blocked')":
+  "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND goal_id=$2 AND status IN ('queued','running','submitted','blocked')",
+  [input.projectId,input.taskId||input.goalId])).rows[0];
  if(Number(usage?.n||0)+steps.length>12)throw fail('Превышен лимит незавершённых поручений в задаче');
  const planId=randomUUID();
  const ids=new Map(steps.map(step=>[step.key,randomUUID()]));
@@ -87,41 +122,44 @@ export async function planWork(db:Db,input:{
  for(const step of steps){
   const id=ids.get(step.key)!;
   const grants=normalizeTaskToolGrants(step.tools);
-  const row={id,project_id:input.projectId,task_id:input.taskId};
+  const row={id,project_id:input.projectId,task_id:input.taskId||null};
   await db.query(`INSERT INTO agent_work_assignments
-   (id,project_id,task_id,plan_id,plan_key,source_role,role,objective,acceptance,spec_version,granted_tools)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-   [id,input.projectId,input.taskId,planId,step.key,input.sourceRole,
-    step.role,step.objective,step.acceptance,task.spec_version,grants]);
+   (id,project_id,task_id,goal_id,plan_id,plan_key,source_role,role,objective,acceptance,spec_version,granted_tools)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+   [id,input.projectId,input.taskId||null,input.goalId||null,planId,step.key,input.sourceRole,
+    step.role,step.objective,step.acceptance,task?.spec_version||0,grants]);
   for(const need of step.needs)await db.query(`INSERT INTO agent_work_plan_dependencies
-   (project_id,task_id,assignment_id,requires_id) VALUES($1,$2,$3,$4)`,
-   [input.projectId,input.taskId,id,ids.get(need)!]);
+   (project_id,task_id,goal_id,assignment_id,requires_id) VALUES($1,$2,$3,$4,$5)`,
+   [input.projectId,input.taskId||null,input.goalId||null,id,ids.get(need)!]);
   assignments.push({id,key:step.key,role:step.role,depends_on:step.needs.map(need=>ids.get(need)!)});
   await event(db,row,'queued',input.sourceRole+' → '+step.role+': '+step.objective+
    (step.needs.length?' · после '+step.needs.join(', '):''));
  }
- return {plan_id:planId,task_id:input.taskId,status:'queued',assignments};
+ return {plan_id:planId,task_id:input.taskId||null,goal_id:input.goalId||null,status:'queued',assignments};
 }
 
-async function event(db:Db,row:{id:string;project_id:string;task_id:string},state:string,detail:string){
+async function event(db:Db,row:{id:string;project_id:string;task_id:string|null},state:string,detail:string){
  await db.query("INSERT INTO process_events(id,project_id,process_id,process_kind,stage,detail,level,task_id) VALUES($1,$2,$3,'agent',$4,$5,$6,$7)",
  [randomUUID(),row.project_id,row.id,state,detail.slice(0,1500),state==='blocked'||state==='failed'?'warning':'info',row.task_id]);
- await db.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_assignment',$3)",
+ if(row.task_id)await db.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'agent_assignment',$3)",
  [randomUUID(),row.task_id,state+': '+detail.slice(0,1400)]);
 }
 
 export async function delegateWork(db:Db,input:{
- projectId:string;taskId:string;sourceRole:string;role:string;objective:string;acceptance:string;parentId?:string|null;tools?:readonly string[]
+ projectId:string;taskId?:string|null;goalId?:string|null;sourceRole:string;role:string;objective:string;acceptance:string;parentId?:string|null;tools?:readonly string[]
 }){
  if(!(workRoles as readonly string[]).includes(input.role))throw fail('Неизвестная роль',400);
+ if(!!input.taskId===!!input.goalId)throw fail('Укажи ровно одну задачу или цель ПМ',400);
  const grants=normalizeTaskToolGrants(input.tools);
- const task=(await db.query('SELECT id,stage,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[input.projectId,input.taskId])).rows[0];
- if(!task)throw fail('Задача не найдена',404);
- if(task.stage==='done')throw fail('Задача уже завершена');
+ const task=input.taskId?(await db.query('SELECT id,stage,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[input.projectId,input.taskId])).rows[0]:null;
+ const goal=input.goalId?(await db.query('SELECT id,status FROM project_pm_goals WHERE project_id=$1 AND id=$2 FOR UPDATE',[input.projectId,input.goalId])).rows[0]:null;
+ if(input.taskId&&!task)throw fail('Задача не найдена',404);
+ if(input.goalId&&!goal)throw fail('Цель ПМ не найдена',404);
+ if(task?.stage==='done'||goal?.status==='completed')throw fail('Задача или цель уже завершена');
  let parentId:string|null=null;
  if(input.parentId){
-  const parent=(await db.query("SELECT id,role,parent_id,granted_tools FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status='running'",
-   [input.parentId,input.projectId,input.taskId])).rows[0];
+  const parent=(await db.query("SELECT id,role,parent_id,granted_tools FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id IS NOT DISTINCT FROM $3::uuid AND goal_id IS NOT DISTINCT FROM $4::uuid AND status='running'",
+   [input.parentId,input.projectId,input.taskId||null,input.goalId||null])).rows[0];
   if(!parent||parent.role!==input.sourceRole)throw fail('Делегирование возможно только из своего активного поручения',403);
   if(parent.parent_id){
    const grand=(await db.query('SELECT parent_id FROM agent_work_assignments WHERE id=$1',[parent.parent_id])).rows[0];
@@ -133,21 +171,34 @@ export async function delegateWork(db:Db,input:{
  }
  if(input.sourceRole!=='manager'&&!['analyst','business_analyst'].includes(input.sourceRole)&&!parentId&&grants.length)
   throw fail('Нельзя выдавать дополнительные права без активного поручения с такими правами',403);
- const count=(await db.query("SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted','blocked')",
- [input.projectId,input.taskId])).rows[0];
+ const count=(await db.query(input.taskId?
+ "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted','blocked')":
+ "SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND goal_id=$2 AND status IN ('queued','running','submitted','blocked')",
+ [input.projectId,input.taskId||input.goalId])).rows[0];
  if(Number(count.n)>=12)throw fail('Слишком много незавершённых поручений');
- const existing=(await db.query("SELECT id,status,granted_tools FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND role=$3 AND objective=$4 AND spec_version=$5 AND status IN ('queued','running','submitted','completed','blocked') ORDER BY created_at DESC LIMIT 1",
- [input.projectId,input.taskId,input.role,input.objective,task.spec_version])).rows[0];
+ const existing=(await db.query(input.taskId?
+ "SELECT id,status,granted_tools FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND role=$3 AND objective=$4 AND spec_version=$5 AND status IN ('queued','running','submitted','completed','blocked') ORDER BY created_at DESC LIMIT 1":
+ "SELECT id,status,granted_tools FROM agent_work_assignments WHERE project_id=$1 AND goal_id=$2 AND role=$3 AND objective=$4 AND spec_version=$5 AND status IN ('queued','running','submitted','completed','blocked') ORDER BY created_at DESC LIMIT 1",
+ [input.projectId,input.taskId||input.goalId,input.role,input.objective,task?.spec_version||0])).rows[0];
  if(existing){
   if(JSON.stringify([...new Set(existing.granted_tools||[])].sort())!==JSON.stringify(grants))
    throw fail('Поручение с этой целью уже есть, но набор прав отличается. Пересмотри существующее поручение.');
   return {id:existing.id,status:existing.status,duplicate:true};
  }
- const row={id:randomUUID(),project_id:input.projectId,task_id:input.taskId};
- await db.query("INSERT INTO agent_work_assignments(id,project_id,task_id,parent_id,source_role,role,objective,acceptance,spec_version,granted_tools) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
- [row.id,row.project_id,row.task_id,parentId,input.sourceRole,input.role,input.objective,input.acceptance,task.spec_version,grants]);
+ const row={id:randomUUID(),project_id:input.projectId,task_id:input.taskId||null};
+ await db.query("INSERT INTO agent_work_assignments(id,project_id,task_id,goal_id,parent_id,source_role,role,objective,acceptance,spec_version,granted_tools) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+ [row.id,row.project_id,row.task_id,input.goalId||null,parentId,input.sourceRole,input.role,input.objective,input.acceptance,task?.spec_version||0,grants]);
+ // Direct delegation is part of the accepted goal in the SAME MCP transaction.
+ // The PM must never have to remember a separate goals.link for a single step.
+ if(input.goalId){
+  await db.query(`INSERT INTO project_pm_goal_links(id,project_id,goal_id,kind,reference_id)
+   VALUES($1,$2,$3,'assignment',$4) ON CONFLICT(goal_id,kind,reference_id) DO NOTHING`,
+   [randomUUID(),input.projectId,input.goalId,row.id]);
+  await db.query(`UPDATE project_pm_goals SET status='waiting_agents',capability_proposal=NULL,updated_at=now()
+   WHERE project_id=$1 AND id=$2 AND status<>'completed'`,[input.projectId,input.goalId]);
+ }
  await event(db,row,'queued',input.sourceRole+' → '+input.role+': '+input.objective);
- return {id:row.id,status:'queued',role:input.role,task_id:row.task_id};
+ return {id:row.id,status:'queued',role:input.role,task_id:row.task_id,goal_id:input.goalId||null};
 }
 
 /** PM may expand an unfinished assignment's bounded capabilities without
@@ -160,13 +211,16 @@ export async function grantWorkTools(db:Db,input:{
  const requested=normalizeTaskToolGrants(input.tools);
  if(!requested.length)throw fail('Нужно указать хотя бы один разрешённый инструмент',400);
  if(input.reason.trim().length<12)throw fail('Обоснуй изменение полномочий',400);
- const found=await db.query(`SELECT a.*,t.spec_version AS actual_version,t.stage AS task_stage
-  FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+ const found=await db.query(`SELECT a.*,COALESCE(t.spec_version,0) AS actual_version,
+  CASE WHEN g.id IS NOT NULL THEN g.status ELSE t.stage END AS task_stage
+  FROM agent_work_assignments a
+  LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+  LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
   WHERE a.project_id=$1 AND a.id=$2 FOR UPDATE OF a`,[input.projectId,input.assignmentId]);
  if(!found.rowCount)throw fail('Поручение не найдено',404);
  const assignment=found.rows[0];
  if(!['queued','blocked'].includes(assignment.status)||assignment.spec_version!==assignment.actual_version||
-    assignment.task_stage==='done'||(assignment.status==='blocked'&&Number(assignment.attempts)>=4))
+    ['done','completed'].includes(assignment.task_stage)||(assignment.status==='blocked'&&Number(assignment.attempts)>=4))
   throw fail('Изменить права можно только для незавершённого актуального поручения, которое допускает повтор');
  const grants=[...new Set([...(assignment.granted_tools||[]),...requested])].sort();
  normalizeTaskToolGrants(grants);
@@ -181,30 +235,39 @@ export async function grantWorkTools(db:Db,input:{
  return {id:assignment.id,task_id:assignment.task_id,status:'queued',granted_tools:grants};
 }
 
-export async function listWork(db:Db,projectId:string,taskId:string){
- const task=await db.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
- if(!task.rowCount)throw fail('Задача не найдена',404);
- const r=await db.query(`SELECT a.id,a.plan_id,a.plan_key,a.parent_id,a.source_role,a.role,a.objective,a.acceptance,
+export async function listWork(db:Db,projectId:string,taskId?:string|null,goalId?:string|null){
+ if(!!taskId===!!goalId)throw fail('Укажи задачу или цель ПМ',400);
+ const scope=taskId?'tasks':'project_pm_goals';
+ const record=await db.query(`SELECT 1 FROM ${scope} WHERE id=$1 AND project_id=$2`,[taskId||goalId,projectId]);
+ if(!record.rowCount)throw fail('Задача или цель не найдена',404);
+ const r=await db.query(`SELECT a.id,a.task_id,a.goal_id,a.plan_id,a.plan_key,a.parent_id,a.source_role,a.role,a.objective,a.acceptance,
   a.status,a.spec_version,a.granted_tools,a.attempts,a.result,a.evidence,a.reviewer_note,a.created_at,a.updated_at,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',dependency.id,'key',dependency.plan_key,
     'status',dependency.status) ORDER BY dependency.created_at,dependency.id)
    FROM agent_work_plan_dependencies link
    JOIN agent_work_assignments dependency ON dependency.id=link.requires_id
    WHERE link.assignment_id=a.id),'[]'::jsonb) AS prerequisites
- FROM agent_work_assignments a WHERE a.project_id=$1 AND a.task_id=$2
- ORDER BY a.created_at,a.id LIMIT 100`,[projectId,taskId]);
+ FROM agent_work_assignments a WHERE a.project_id=$1 AND ${taskId?'a.task_id':'a.goal_id'}=$2
+ ORDER BY a.created_at,a.id LIMIT 100`,[projectId,taskId||goalId]);
  return {assignments:r.rows};
 }
 
 /** Tool self-report is SUBMITTED, never an automatic task completion. */
 export async function reportWork(db:Db,input:{
- projectId:string;taskId:string;assignmentId:string;role:string;status:'submitted'|'blocked';result:string;evidence:string
+ projectId:string;taskId?:string|null;assignmentId:string;role:string;status:'submitted'|'blocked';result:string;evidence:string
 }){
  const r=await db.query(`UPDATE agent_work_assignments a SET status=$5,result=$6,evidence=$7,updated_at=now()
- FROM tasks t WHERE a.id=$1 AND a.project_id=$2 AND a.task_id=$3 AND a.role=$4
- AND a.status='running' AND t.id=a.task_id AND t.project_id=a.project_id
- AND t.spec_version=a.spec_version AND t.stage<>'done' RETURNING a.id,a.project_id,a.task_id`,
- [input.assignmentId,input.projectId,input.taskId,input.role,input.status,input.result.slice(0,3000),input.evidence.slice(0,3000)]);
+ FROM projects p WHERE a.id=$1 AND a.project_id=$2 AND a.task_id IS NOT DISTINCT FROM $3::uuid AND a.role=$4
+ AND a.status='running' AND p.id=a.project_id AND p.agents_running=true AND p.deleted_at IS NULL
+ AND (
+  (a.task_id IS NOT NULL AND EXISTS(
+   SELECT 1 FROM tasks t WHERE t.id=a.task_id AND t.project_id=a.project_id
+    AND t.spec_version=a.spec_version AND t.stage<>'done'))
+  OR (a.goal_id IS NOT NULL AND a.task_id IS NULL AND EXISTS(
+   SELECT 1 FROM project_pm_goals g WHERE g.id=a.goal_id AND g.project_id=a.project_id
+    AND g.status<>'completed'))
+ ) RETURNING a.id,a.project_id,a.task_id`,
+ [input.assignmentId,input.projectId,input.taskId||null,input.role,input.status,input.result.slice(0,3000),input.evidence.slice(0,3000)]);
  if(!r.rowCount)throw fail('Поручение не активно, не ваше или версия задачи изменилась');
  await event(db,r.rows[0],input.status,input.role+': '+input.result);
  return {id:input.assignmentId,status:input.status,requires_review:input.status==='submitted'};
@@ -213,26 +276,29 @@ export async function reportWork(db:Db,input:{
 export async function reviewWork(db:Db,input:{
  projectId:string;assignmentId:string;action:'accept'|'retry'|'cancel';reason:string
 }){
- const r=await db.query(`SELECT a.*,t.spec_version AS actual_version
- FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+ const r=await db.query(`SELECT a.*,COALESCE(t.spec_version,0) AS actual_version,g.status AS goal_status
+ FROM agent_work_assignments a LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+ LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
  WHERE a.project_id=$1 AND a.id=$2 FOR UPDATE OF a`,[input.projectId,input.assignmentId]);
  if(!r.rowCount)throw fail('Поручение не найдено',404);
  const row=r.rows[0];
  let target:string;
  if(input.action==='accept'){
-  if(row.status!=='submitted'||!row.evidence.trim()||row.spec_version!==row.actual_version)
+  if(row.status!=='submitted'||!row.evidence.trim()||row.spec_version!==row.actual_version||row.goal_status==='completed')
    throw fail('Нельзя принять непроверенное или устаревшее поручение');
   // A parent cannot be accepted while a delegated specialist still owns work.
   // Check the whole descendant tree, not only immediate children.
   const pending=await db.query(`WITH RECURSIVE descendants AS (
    SELECT id,status FROM agent_work_assignments
-    WHERE parent_id=$1 AND project_id=$2 AND task_id=$3
+    WHERE parent_id=$1 AND project_id=$2 AND task_id IS NOT DISTINCT FROM $3::uuid
+     AND goal_id IS NOT DISTINCT FROM $4::uuid
    UNION ALL
    SELECT child.id,child.status FROM agent_work_assignments child
     JOIN descendants parent ON child.parent_id=parent.id
-    WHERE child.project_id=$2 AND child.task_id=$3
+    WHERE child.project_id=$2 AND child.task_id IS NOT DISTINCT FROM $3::uuid
+     AND child.goal_id IS NOT DISTINCT FROM $4::uuid
   ) SELECT 1 FROM descendants WHERE status NOT IN ('completed','cancelled') LIMIT 1`,
-   [row.id,input.projectId,row.task_id]);
+   [row.id,input.projectId,row.task_id||null,row.goal_id||null]);
   if(pending.rowCount)throw fail('Нельзя принять поручение, пока делегированная работа не завершена');
   target='completed';
  }else if(input.action==='retry'){
@@ -245,7 +311,7 @@ export async function reviewWork(db:Db,input:{
  await db.query("UPDATE agent_work_assignments SET status=$3,reviewer_note=$4,next_attempt_at=now(),dispatched_at=CASE WHEN $3='queued' THEN NULL ELSE dispatched_at END,updated_at=now() WHERE project_id=$1 AND id=$2",
  [input.projectId,input.assignmentId,target,input.reason.slice(0,1500)]);
  await event(db,row,target,'ПМ: '+input.reason);
- return {id:row.id,status:target,task_id:row.task_id};
+ return {id:row.id,status:target,task_id:row.task_id,goal_id:row.goal_id||null};
 }
 
 export async function finalizeWorkAttempt(db:Db,id:string,reason:string){
@@ -264,10 +330,13 @@ export async function reconcileAgentWorkAssignments(pool:Pool,temporal:()=>Promi
   await db.query(`UPDATE agent_work_assignments a SET status='blocked',result='ТЗ изменилось; нужно пересмотреть поручение',updated_at=now()
    FROM tasks t WHERE t.id=a.task_id AND t.project_id=a.project_id AND a.status IN ('queued','submitted')
    AND (a.spec_version<>t.spec_version OR t.stage='done')`);
-  const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.role,a.status,a.attempts FROM agent_work_assignments a
-   JOIN projects p ON p.id=a.project_id JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+  const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.goal_id,a.role,a.status,a.attempts FROM agent_work_assignments a
+   JOIN projects p ON p.id=a.project_id
+   LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+   LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
    WHERE (a.status='queued' OR (a.status='running' AND a.dispatched_at IS NULL)) AND a.next_attempt_at<=now() AND p.agents_running=true AND p.deleted_at IS NULL
-   AND t.stage<>'done' AND a.spec_version=t.spec_version
+   AND ((a.task_id IS NOT NULL AND t.stage<>'done' AND a.spec_version=t.spec_version)
+     OR (a.goal_id IS NOT NULL AND g.status<>'completed'))
    AND NOT EXISTS(
     SELECT 1 FROM agent_work_plan_dependencies deps
     JOIN agent_work_assignments prereq ON prereq.id=deps.requires_id
