@@ -48,8 +48,14 @@ test('PM progress is durable, idempotent, attempt-scoped and inaccessible across
   const stream=await fetch(origin+url,{headers:{Accept:'text/event-stream'},signal:controller.signal});
   assert.equal(stream.status,200);
   assert.match(stream.headers.get('content-type'),/text\/event-stream/);
-  const chunk=await stream.body.getReader().read();
-  assert.match(new TextDecoder().decode(chunk.value),/event: progress/);
+  const reader=stream.body.getReader(),decoder=new TextDecoder();
+  let collected='';
+  while(!collected.includes('event: progress')&&collected.length<5000){
+   const chunk=await reader.read();
+   if(chunk.done)break;
+   collected+=decoder.decode(chunk.value);
+  }
+  assert.match(collected,/event: progress/);
  }finally{controller.abort();}
 
  await db.query("UPDATE assistant_messages SET status='completed' WHERE id=$1",[message]);
