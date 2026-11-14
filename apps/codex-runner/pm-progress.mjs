@@ -50,7 +50,7 @@ export function visibleCodexProgress(msg){
 
 export function createPmProgressPublisher({apiUrl,secret,projectId,messageId,attempt,fetchImpl=fetch}){
  let sequence=0,chain=Promise.resolve(),summary='',timer=null,summaryLength=0;
- let messageBuffer='',messageTimer=null,messageUpdates=0;
+ let messageBuffer='',messageTimer=null,messageUpdates=0,messageDirty=false;
  const endpoint=apiUrl.replace(/\/internal\/agent-tools\/?$/,'/internal/pm-turn-progress');
  const send=(entry)=>{
   if(!entry||sequence>=300)return;
@@ -71,18 +71,22 @@ export function createPmProgressPublisher({apiUrl,secret,projectId,messageId,att
  };
  const flushMessage=()=>{
   if(messageTimer!==null){clearTimeout(messageTimer);messageTimer=null;}
-  if(!messageBuffer||messageUpdates>=100)return;
+  if(!messageBuffer||!messageDirty||messageUpdates>=160)return;
   // Store a short sanitized snapshot, not full model output or tool payloads.
   const tail=messageBuffer.slice(-310);
   const text=safe(tail,310);
-  if(text){messageUpdates++;send({kind:'message',text:(messageBuffer.length>310?'…':'')+text});}
+  if(text){messageDirty=false;messageUpdates++;send({kind:'message',text:(messageBuffer.length>310?'…':'')+text});}
  };
  const onEvent=msg=>{
   const entry=visibleCodexProgress(msg);
   if(!entry)return;
+  if(msg.method==='item/started'&&msg.params?.item?.type==='agentMessage'){
+   flushMessage();messageBuffer='';messageDirty=false;
+  }
   if(entry.kind==='message'){
    flushSummary();
    messageBuffer=(messageBuffer+entry.text).slice(-4000);
+   messageDirty=true;
    if(messageTimer===null)messageTimer=setTimeout(flushMessage,200);
    return;
   }
