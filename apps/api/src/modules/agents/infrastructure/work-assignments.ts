@@ -202,13 +202,16 @@ export async function grantWorkTools(db:Db,input:{
  const requested=normalizeTaskToolGrants(input.tools);
  if(!requested.length)throw fail('Нужно указать хотя бы один разрешённый инструмент',400);
  if(input.reason.trim().length<12)throw fail('Обоснуй изменение полномочий',400);
- const found=await db.query(`SELECT a.*,t.spec_version AS actual_version,t.stage AS task_stage
-  FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+ const found=await db.query(`SELECT a.*,COALESCE(t.spec_version,0) AS actual_version,
+  CASE WHEN g.id IS NOT NULL THEN g.status ELSE t.stage END AS task_stage
+  FROM agent_work_assignments a
+  LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+  LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
   WHERE a.project_id=$1 AND a.id=$2 FOR UPDATE OF a`,[input.projectId,input.assignmentId]);
  if(!found.rowCount)throw fail('Поручение не найдено',404);
  const assignment=found.rows[0];
  if(!['queued','blocked'].includes(assignment.status)||assignment.spec_version!==assignment.actual_version||
-    assignment.task_stage==='done'||(assignment.status==='blocked'&&Number(assignment.attempts)>=4))
+    ['done','completed'].includes(assignment.task_stage)||(assignment.status==='blocked'&&Number(assignment.attempts)>=4))
   throw fail('Изменить права можно только для незавершённого актуального поручения, которое допускает повтор');
  const grants=[...new Set([...(assignment.granted_tools||[]),...requested])].sort();
  normalizeTaskToolGrants(grants);
@@ -223,30 +226,39 @@ export async function grantWorkTools(db:Db,input:{
  return {id:assignment.id,task_id:assignment.task_id,status:'queued',granted_tools:grants};
 }
 
-export async function listWork(db:Db,projectId:string,taskId:string){
- const task=await db.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
- if(!task.rowCount)throw fail('Задача не найдена',404);
- const r=await db.query(`SELECT a.id,a.plan_id,a.plan_key,a.parent_id,a.source_role,a.role,a.objective,a.acceptance,
+export async function listWork(db:Db,projectId:string,taskId?:string|null,goalId?:string|null){
+ if(!!taskId===!!goalId)throw fail('Укажи задачу или цель ПМ',400);
+ const scope=taskId?'tasks':'project_pm_goals';
+ const record=await db.query(`SELECT 1 FROM ${scope} WHERE id=$1 AND project_id=$2`,[taskId||goalId,projectId]);
+ if(!record.rowCount)throw fail('Задача или цель не найдена',404);
+ const r=await db.query(`SELECT a.id,a.task_id,a.goal_id,a.plan_id,a.plan_key,a.parent_id,a.source_role,a.role,a.objective,a.acceptance,
   a.status,a.spec_version,a.granted_tools,a.attempts,a.result,a.evidence,a.reviewer_note,a.created_at,a.updated_at,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',dependency.id,'key',dependency.plan_key,
     'status',dependency.status) ORDER BY dependency.created_at,dependency.id)
    FROM agent_work_plan_dependencies link
    JOIN agent_work_assignments dependency ON dependency.id=link.requires_id
    WHERE link.assignment_id=a.id),'[]'::jsonb) AS prerequisites
- FROM agent_work_assignments a WHERE a.project_id=$1 AND a.task_id=$2
- ORDER BY a.created_at,a.id LIMIT 100`,[projectId,taskId]);
+ FROM agent_work_assignments a WHERE a.project_id=$1 AND ${taskId?'a.task_id':'a.goal_id'}=$2
+ ORDER BY a.created_at,a.id LIMIT 100`,[projectId,taskId||goalId]);
  return {assignments:r.rows};
 }
 
 /** Tool self-report is SUBMITTED, never an automatic task completion. */
 export async function reportWork(db:Db,input:{
- projectId:string;taskId:string;assignmentId:string;role:string;status:'submitted'|'blocked';result:string;evidence:string
+ projectId:string;taskId?:string|null;assignmentId:string;role:string;status:'submitted'|'blocked';result:string;evidence:string
 }){
  const r=await db.query(`UPDATE agent_work_assignments a SET status=$5,result=$6,evidence=$7,updated_at=now()
- FROM tasks t WHERE a.id=$1 AND a.project_id=$2 AND a.task_id=$3 AND a.role=$4
- AND a.status='running' AND t.id=a.task_id AND t.project_id=a.project_id
- AND t.spec_version=a.spec_version AND t.stage<>'done' RETURNING a.id,a.project_id,a.task_id`,
- [input.assignmentId,input.projectId,input.taskId,input.role,input.status,input.result.slice(0,3000),input.evidence.slice(0,3000)]);
+ FROM projects p WHERE a.id=$1 AND a.project_id=$2 AND a.task_id IS NOT DISTINCT FROM $3::uuid AND a.role=$4
+ AND a.status='running' AND p.id=a.project_id AND p.agents_running=true AND p.deleted_at IS NULL
+ AND (
+  (a.task_id IS NOT NULL AND EXISTS(
+   SELECT 1 FROM tasks t WHERE t.id=a.task_id AND t.project_id=a.project_id
+    AND t.spec_version=a.spec_version AND t.stage<>'done'))
+  OR (a.goal_id IS NOT NULL AND a.task_id IS NULL AND EXISTS(
+   SELECT 1 FROM project_pm_goals g WHERE g.id=a.goal_id AND g.project_id=a.project_id
+    AND g.status<>'completed'))
+ ) RETURNING a.id,a.project_id,a.task_id`,
+ [input.assignmentId,input.projectId,input.taskId||null,input.role,input.status,input.result.slice(0,3000),input.evidence.slice(0,3000)]);
  if(!r.rowCount)throw fail('Поручение не активно, не ваше или версия задачи изменилась');
  await event(db,r.rows[0],input.status,input.role+': '+input.result);
  return {id:input.assignmentId,status:input.status,requires_review:input.status==='submitted'};
