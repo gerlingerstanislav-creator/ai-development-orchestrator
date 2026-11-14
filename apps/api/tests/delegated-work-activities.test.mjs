@@ -24,6 +24,8 @@ function harness({status='running',agentsRunning=true,stage='development',spec=3
    calls.settings.push({projectId,role,defaults});
    return {model:'role-selected',reasoning:'high',enabled:true};
   },
+  readMemory:async()=>({instructions:'Сохраняй независимые QA-доказательства',observations:'В прошлый раз тестовый стенд был недоступен'}),
+  readBrief:async()=> 'Новое замечание владельца: проверь пустую форму',
   recordPrompt:async(_db,x)=>{calls.audit.push(x);},
   askRunnerAssistant:async(...params)=>{
    calls.completion.push(params);
@@ -75,6 +77,10 @@ test('agent role, scoped grants, acceptance and instructions are sent to the sam
  assert.match(prompt,/browser\.session/);
  assert.match(prompt,/Follow approved QA instructions/);
  assert.match(prompt,/work\.report/);
+ assert.match(prompt,/Сохраняй независимые QA-доказательства/);
+ assert.match(prompt,/Новое замечание владельца/);
+ assert.match(prompt,/В прошлый раз тестовый стенд/);
+ assert.match(prompt,/\[\[ADO:OBJECTIVE\]\][\s\S]*Критерии приёмки: Real screenshots/);
  assert.equal(calls.audit.length,1);
  assert.equal(calls.audit[0].operation,'delegated_work');
  assert.equal(calls.finalized.length,1);

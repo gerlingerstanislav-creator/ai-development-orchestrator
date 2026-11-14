@@ -10,7 +10,7 @@ export function codexThreadIdFromJson(line){
  }catch{return null;}
 }
 export function createPersistentCliExecutor(store,command){
- return async function run({scope,requestId,model,reasoning,prompt,cwd,env,
+ return async function run({scope,requestId,model,reasoning,prompt,resumePrompt,cwd,env,
   policyArgs=[],mcpArgs=[],outputSchema,timeout,jobId,maxOutputChars=350000}){
   return store.run(scope,requestId,async()=>{
    const saved=await store.read(scope);
@@ -19,7 +19,7 @@ export function createPersistentCliExecutor(store,command){
    // The output schema is used for first turns. On resume, follow-up prompts
    // are validated by the existing QA verifier regardless of model prose.
    const args=['exec',...common,...(outputSchema?['--output-schema',outputSchema]:[]),
-    ...(saved?['resume',saved.threadId]:[]),prompt];
+    ...(saved?['resume',saved.threadId]:[]),saved&&resumePrompt?resumePrompt:prompt];
    let pending='',seenThread=false;
    const writes=[];
    let result;
