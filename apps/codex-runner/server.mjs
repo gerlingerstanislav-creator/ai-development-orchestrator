@@ -6,6 +6,7 @@ import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
 import {createCommandExecutor} from './command-executor.mjs';
 import {createCodexThreadStore,createCodexAppExecutor} from './codex-app-server.mjs';
+import {createPmProgressPublisher} from './pm-progress.mjs';
 import {createPersistentCliExecutor} from './codex-cli-session.mjs';
 import {conversationThreadScope} from './codex-thread-scope.mjs';
 import { spawn, execFile } from 'node:child_process';
@@ -440,8 +441,14 @@ http.createServer(async(req,res)=>{
     if(roleKey&&(activeAgentRoles.get(roleKey)||0)>=(data.role_capacity||1))return reply(res,429,{error:'Исполнитель этой роли занят'});
     if(roleKey)activeAgentRoles.set(roleKey,(activeAgentRoles.get(roleKey)||0)+1);
     activeChatRequests++;
+   const progress=data.agent_role==='manager'&&typeof data.request_id==='string'&&
+    /^[a-f0-9-]{36}$/i.test(data.request_id)&&Number.isInteger(data.progress_attempt)&&data.progress_attempt>0
+    ?createPmProgressPublisher({apiUrl:agentApi,secret:jobKey,
+      projectId:data.project_id,messageId:data.request_id,attempt:data.progress_attempt})
+    :null;
    try{
     if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
+    progress?.publish({kind:'status',text:'ПМ изучает сообщение'});
     // The shell policies keep the MCP session out of project commands.
     const context=agentMcp(data.session_token,agentApi);
     const scope=conversationThreadScope(data,'analyst');
@@ -451,7 +458,7 @@ http.createServer(async(req,res)=>{
      prompt:previous&&typeof data.resume_prompt==='string'&&data.resume_prompt.trim()?data.resume_prompt:data.prompt,model:data.model,effort:data.reasoning,cwd:'/opt/codex-runner',
      timeout:240000,configArgs:[...appConversationSettings,...context.args],
      envOverrides:context.env,images:imagePaths(imageArgs),
-     sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}}
+     sandboxPolicy:{type:'readOnly',access:{type:'fullAccess'}},onEvent:progress?.onEvent
     }));
     const message=result.message.trim();
     if(!message)return reply(res,502,{error:'Агент не вернул итоговое сообщение'});
@@ -459,7 +466,7 @@ http.createServer(async(req,res)=>{
     return reply(res,200,{message,usage:result.usage,thread_id:result.threadId,turn_id:result.turnId});
    }catch(error){
     return reply(res,503,{error:'Агент Codex: '+String(error?.message||error).slice(0,900)});
-   }finally{activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
+   }finally{await progress?.flush();activeChatRequests--;if(roleKey)activeAgentRoles.set(roleKey,Math.max(0,(activeAgentRoles.get(roleKey)||1)-1));}
   }
   if(req.url==='/assistant'&&req.method==='POST'){
    if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Сейчас выполняется несколько AI-диалогов. Повтори запрос немного позже.'});
