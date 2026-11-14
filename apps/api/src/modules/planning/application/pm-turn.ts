@@ -112,12 +112,12 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   await audit('runner_request');
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
+   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,progress_attempt:attempt,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
   await audit('runner_response',response.ok?'info':'warning',undefined,response.status);
-  if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(String(data.error||'ПМ не вернул ответ').slice(0,700));
+  if(!response.ok||typeof data.message!=='string'||!data.message.trim())throw Error(('Runner HTTP '+response.status+': '+String(data.error||'ПМ не вернул ответ')).slice(0,700));
   const effects=await agentSessionEffects(pool,session.id);
   const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true ORDER BY created_at,id',[projectId,session.id]);
   const seen=new Set<string>();
@@ -201,7 +201,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    }
   }
   const message=String(error instanceof Error?error.message:error);
-  const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
+  const retryable=/busy|concurren|перегруз|несколько AI|лимит одноврем|исполнитель.{0,40}занят|429|503|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|AbortError/i.test(message);
   if(retryable){
    await pool.query(`WITH waiting AS (
     UPDATE assistant_messages SET status='queued' WHERE id=$1 AND pm_dispatch_attempt=$2
