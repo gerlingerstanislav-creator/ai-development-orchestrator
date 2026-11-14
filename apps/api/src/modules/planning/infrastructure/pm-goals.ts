@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
+import {readPmTaskGoal} from '../../../pm-task-goal.js';
 
 type Db=Pick<Pool,'query'>;
 type Status='working'|'waiting_agents'|'waiting_user'|'needs_action'|'completed';
@@ -115,6 +116,9 @@ export async function linkPmGoal(db:Db,input:{
   [randomUUID(),input.goalId,input.kind+':'+input.referenceId]);
  const watch=input.kind==='assignment'&&['queued','running'].includes(state.state)
   ?{kind:'delegated_work' as const,process_id:input.referenceId}
+  :input.kind==='task'&&state.state!=='done'&&
+    (await readPmTaskGoal(db,input.projectId,input.referenceId)).status==='running'
+  ?{kind:'task_goal' as const,process_id:randomUUID(),task_id:input.referenceId}
   :null;
  return {goal_id:input.goalId,linked:!!inserted.rowCount,kind:input.kind,
   reference_id:input.referenceId,verification:state,watch};
