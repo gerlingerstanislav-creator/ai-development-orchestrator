@@ -42,7 +42,7 @@ export async function installTaskWorkBoardActivation(db:Db):Promise<void>{
   IF promoted IS NOT NULL THEN
    INSERT INTO task_events(id,task_id,event,detail)
     VALUES(gen_random_uuid(),NEW.task_id,'board_activated_by_work',
-     'В работе: поставлено поручение '+TG_TABLE_NAME+'. Подробности в Центре процессов.');
+     'В работе: поставлено поручение ' || TG_TABLE_NAME || '. Подробности в Центре процессов.');
   END IF;
   RETURN NEW;
  END $$`);
