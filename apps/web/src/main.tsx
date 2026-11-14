@@ -758,6 +758,10 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   if(last!==projectLastMessage.current&&projectAtBottom.current)scrollProjectToBottom();
   projectLastMessage.current=last;
  },[projectMessages,projectChatOpen,projectChatMode,projectTopicId,projectHistoryLoaded,selectedProjectId]);
+ useLayoutEffect(()=>{
+  // Live progress extends the last bubble without adding a new message id.
+  if(projectChatOpen&&projectChatMode==='project'&&projectAtBottom.current)scrollProjectToBottom();
+ },[pmProgress,projectChatOpen,projectChatMode]);
  useEffect(()=>{taskLastMessage.current=null;taskAtBottom.current=true;setTaskShowScrollBottom(false);},[activeTask?.id]);
  useLayoutEffect(()=>{
   const latest=chatEntries.at(-1)?.id||null;
