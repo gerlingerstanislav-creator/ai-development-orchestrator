@@ -16,7 +16,7 @@ import {buildKnowledgeContext} from './knowledge-workflow.js';
 import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
-import {delegateWork,listWork,planWork,reportWork,reviewWork,workRoles} from './modules/agents/infrastructure/work-assignments.js';
+import {delegateWork,listWork,planWork,reportWork,reviewWork,grantWorkTools,workRoles} from './modules/agents/infrastructure/work-assignments.js';
 import {responsibilityFor} from './role-responsibilities.js';
 import {createDoc,updateDoc,deleteDoc,documentRevision as revision,parentExists,createPage,updatePage,deleteEmptyPage} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
@@ -181,6 +181,14 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    reason:z.string().trim().min(12).max(2000)
   }).parse(params);
   return reviewWork(pool,{projectId,assignmentId:assignment_id,action,reason});
+ }
+ case 'work.grant':{
+  if(session.role!=='manager')throw rejected('Выдавать дополнительные инструменты может только ПМ',403);
+  const {assignment_id,tools,reason}=z.object({
+   assignment_id:uuid,tools:z.array(z.string()).min(1).max(12),
+   reason:z.string().trim().min(12).max(1600)
+  }).parse(params);
+  return grantWorkTools(pool,{projectId,assignmentId:assignment_id,tools,reason});
  }
  case 'agents.consult':{
   const {task_id,target_role,question,idempotency_key}=z.object({
