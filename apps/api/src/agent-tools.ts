@@ -173,12 +173,19 @@ export async function readSessionToolGrants(pool:Pick<Pool,'query'>,session:Agen
     !autonomousSpecialistRoles.has(session.role))return [];
  // A session token alone is never sufficient: the assignment and its spec must
  // still be live in the same project and task, including after cancellation.
- const active=await pool.query(`SELECT a.granted_tools FROM agent_work_assignments a
+ let active;
+ try{active=await pool.query(`SELECT a.granted_tools FROM agent_work_assignments a
   JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id AND t.spec_version=a.spec_version
   JOIN projects p ON p.id=a.project_id AND p.deleted_at IS NULL AND p.agents_running=true
   WHERE a.id=$1 AND a.project_id=$2 AND a.task_id=$3 AND a.role=$4
    AND a.status='running' LIMIT 1`,
-  [session.process_id,session.project_id,session.task_id,session.role]);
+  [session.process_id,session.project_id,session.task_id,session.role]);}
+ catch(error){
+  // Legacy isolated reader fixtures may not have run the v15 schema yet.
+  // No table/column means no extra privileges; never infer a grant.
+  if(['42P01','42703'].includes(String((error as {code?:string}).code||'')))return [];
+  throw error;
+ }
  return active.rowCount?normalizeTaskToolGrants(active.rows[0].granted_tools||[]):[];
 }
 
