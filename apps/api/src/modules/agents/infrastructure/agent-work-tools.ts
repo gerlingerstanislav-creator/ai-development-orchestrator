@@ -3,12 +3,13 @@ import {z} from 'zod';
 import type {AgentSession} from '../../../agent-tools.js';
 import {delegateWork,listWork,planWork,reportWork,reviewWork,grantWorkTools,workRoles} from './work-assignments.js';
 import {listWorkArtifacts} from './work-artifacts.js';
+import {completeNonCodeTask} from '../../../task-noncode-completion.js';
 
 const uuid=z.string().uuid();
 const rejected=(message:string,statusCode=409)=>Object.assign(new Error(message),{statusCode});
 const WORK_TOOL_NAMES=[
  'work.artifacts','work.list','work.plan','work.delegate',
- 'work.report','work.review','work.grant'
+ 'work.report','work.review','work.grant','work.complete_task'
 ] as const;
 const workTools=new Set<string>(WORK_TOOL_NAMES);
 export function isAgentWorkTool(name:string){return workTools.has(name);}
@@ -97,6 +98,17 @@ export async function executeAgentWorkTool(
   }).parse(params);
   return reportWork(pool,{projectId,taskId:session.task_id,assignmentId:session.process_id,
    role:session.role,status,result,evidence});
+ }
+ case 'work.complete_task':{
+  if(session.role!=='manager'||session.read_only)throw rejected('Завершение задачи доступно только ПМ',403);
+  const {task_id,kind,summary,evidence}=z.object({
+   task_id:uuid,
+   kind:z.enum(['research','documentation']),
+   summary:z.string().trim().min(20).max(1500),
+   evidence:z.string().trim().min(20).max(1800)
+  }).strict().parse(params);
+  if(session.task_id&&session.task_id!==task_id)throw rejected('Нельзя завершать чужую задачу',403);
+  return completeNonCodeTask(pool,{projectId,taskId:task_id,actorId:session.actor_id||'',kind,summary,evidence});
  }
  case 'work.review':{
   if(session.role!=='manager')throw rejected('Принять результат может только ПМ',403);
