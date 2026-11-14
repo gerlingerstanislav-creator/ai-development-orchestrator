@@ -18,7 +18,11 @@ test('existing task #36 is found by cancellation preview and active PM work is a
   const owner=randomUUID(),project=randomUUID(),task=randomUUID(),assignment=randomUUID(),pmMessage=randomUUID();
   await db.query('INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)',[owner,'pm-cancel@example.test','hash']);
   await db.query('INSERT INTO projects(id,name,owner_id) VALUES($1,$2,$3)',[project,'Cancel',owner]);
-  await db.query("INSERT INTO tasks(id,project_id,title,description,stage,display_number) VALUES($1,$2,'Скриншоты текущей реализации сайта','Подготовить скриншоты','development',36)",[task,project]);
+  await db.query("INSERT INTO tasks(id,project_id,title,description,stage,analysis_state,display_number) VALUES($1,$2,'Скриншоты текущей реализации сайта','Подготовить скриншоты','backlog','approved',36)",[task,project]);
+  // The real PostgreSQL gate requires accepted analysis before development.
+  await db.query("INSERT INTO task_events(id,task_id,actor_id,event,detail) VALUES($1,$2,$3,'analysis_completed','Подтверждено')",
+   [randomUUID(),task,owner]);
+  await db.query("UPDATE tasks SET stage='development' WHERE id=$1",[task]);
   registerTaskCancellationRoutes(app,{
    pool:db,uid:()=>owner,access:async()=>true,requireAdmin:async()=>true,
    decryptToken:()=>'' 
