@@ -2,10 +2,12 @@ import type {Pool} from 'pg';
 import {z} from 'zod';
 import type {AgentSession} from '../../../agent-tools.js';
 import {openPmGoal,linkPmGoal,assessPmGoal,listPmGoals,updatePmGoalStatus,completePmGoal} from './pm-goals.js';
+import {planPmGoalWork} from './pm-goal-plan.js';
+import {workRoles} from '../../agents/infrastructure/work-assignments.js';
 
 const uuid=z.string().uuid();
 const denied=(message:string,statusCode=403)=>Object.assign(new Error(message),{statusCode});
-const names=new Set(['goals.open','goals.list','goals.read','goals.link','goals.update','goals.complete']);
+const names=new Set(['goals.open','goals.list','goals.read','goals.link','goals.plan','goals.update','goals.complete']);
 export function isPmGoalTool(name:string){return names.has(name);}
 export async function executePmGoalTool(db:Pick<Pool,'query'>,session:AgentSession,
  name:string,args:Record<string,unknown>){
@@ -35,6 +37,20 @@ export async function executePmGoalTool(db:Pick<Pool,'query'>,session:AgentSessi
   const data=z.object({goal_id:uuid,kind:z.enum(['task','assignment','document']),
    reference_id:uuid}).strict().parse(args);
   return linkPmGoal(db,{projectId,goalId:data.goal_id,kind:data.kind,referenceId:data.reference_id});
+ }
+ case 'goals.plan':{
+  const data=z.object({
+   goal_id:uuid,task_id:uuid.optional(),
+   steps:z.array(z.object({
+    key:z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/),
+    role:z.enum(workRoles),
+    objective:z.string().trim().min(12).max(2000),
+    acceptance:z.string().trim().min(12).max(2000),
+    needs:z.array(z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/)).max(8).default([]),
+    tools:z.array(z.string()).max(12).default([])
+   }).strict()).min(1).max(12)
+  }).strict().parse(args);
+  return planPmGoalWork(db,{projectId,goalId:data.goal_id,taskId:data.task_id,steps:data.steps});
  }
  case 'goals.update':{
   const data=z.object({goal_id:uuid,status:z.enum(['working','waiting_user','needs_action']),

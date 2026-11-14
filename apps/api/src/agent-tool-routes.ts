@@ -193,7 +193,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    // A successful PM delegation is explicit authorization to wake the
    // project's specialists. Informational tools and chat leave Stop intact.
    if(session.role==='manager'&&(result as any)?.status!=='blocked'&&(result as any)?.ok!==false&&(result as any)?.recorded!==false&&new Set([
-    'tasks.create','tasks.route_execution','tasks.retry_evidence','work.delegate','work.plan','work.review','work.grant','iterations.prepare_plan','iterations.launch',
+    'tasks.create','tasks.route_execution','tasks.retry_evidence','work.delegate','work.plan','goals.plan','work.review','work.grant','iterations.prepare_plan','iterations.launch',
     'workflow.approve_development','workflow.move_task','workflow.release_task',
     'qa.retry','documentation.import','documentation.prepare_spec',
     'documentation.rebuild','documentation.organize',
