@@ -45,6 +45,9 @@ test('role ACL and temporary grants remain outside the catalog',()=>{
  assert.ok(!docs.has('tasks.delete'));
  assert.ok(docs.has('documents.update'));
  assert.ok(!docs.has('tasks.close'));
+ assert.ok(manager.has('work.complete_task'));
+ assert.ok(!docs.has('work.complete_task'));
+ assert.ok(!new Set(capabilitiesForRole('business_analyst').map(x=>x.name)).has('work.complete_task'));
  const temporary=new Set(toolsForSession('testing',false,['documents.update']).map(x=>x.name));
  assert.ok(temporary.has('documents.update'),'an allowlisted assignment grant adds only that tool');
  assert.ok(!new Set(toolsForSession('testing').map(x=>x.name)).has('documents.update'));
