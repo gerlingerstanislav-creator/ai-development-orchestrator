@@ -7,6 +7,7 @@ export type AgentPromptParts={
  objective:string;
  tools?:string;
  instructions?:string;
+ policy?:string;
  scope?:string;
  context?:string;
  continuation?:string;
@@ -29,6 +30,7 @@ export function agentPromptZones(input:AgentPromptParts){
  return {
   identity,
   objective:input.objective.trim(),
+  policy:String(input.policy||'').slice(0,5200),
   scope:String(input.scope||'').slice(0,900),
   tools:'Точные параметры доступных операций раскрывает MCP-каталог роли. '+String(input.tools||'').slice(0,650),
   protocol:String(input.continuation||'').slice(0,1200),
