@@ -188,6 +188,15 @@ export async function delegateWork(db:Db,input:{
  const row={id:randomUUID(),project_id:input.projectId,task_id:input.taskId||null};
  await db.query("INSERT INTO agent_work_assignments(id,project_id,task_id,goal_id,parent_id,source_role,role,objective,acceptance,spec_version,granted_tools) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
  [row.id,row.project_id,row.task_id,input.goalId||null,parentId,input.sourceRole,input.role,input.objective,input.acceptance,task?.spec_version||0,grants]);
+ // Direct delegation is part of the accepted goal in the SAME MCP transaction.
+ // The PM must never have to remember a separate goals.link for a single step.
+ if(input.goalId){
+  await db.query(`INSERT INTO project_pm_goal_links(id,project_id,goal_id,kind,reference_id)
+   VALUES($1,$2,$3,'assignment',$4) ON CONFLICT(goal_id,kind,reference_id) DO NOTHING`,
+   [randomUUID(),input.projectId,input.goalId,row.id]);
+  await db.query(`UPDATE project_pm_goals SET status='waiting_agents',updated_at=now()
+   WHERE project_id=$1 AND id=$2 AND status<>'completed'`,[input.projectId,input.goalId]);
+ }
  await event(db,row,'queued',input.sourceRole+' → '+input.role+': '+input.objective);
  return {id:row.id,status:'queued',role:input.role,task_id:row.task_id,goal_id:input.goalId||null};
 }
