@@ -48,7 +48,7 @@ export function createDocumentationJobRunner({
  async function runDocumentationJob(jobId:string){
   const job=(await pool.query("SELECT * FROM document_import_jobs WHERE id=$1 AND status='running' AND analyst_input IS NOT NULL",[jobId])).rows[0];
   if(!job)return;
-  const {project_id:id,actor_id:actorId,request_text:message,source_key:sourceKey}=job;
+  const {project_id:id,actor_id:actorId,request_text:message}=job;
   const {location,attachments,mode,documentId,questionId,structureOnly,rebuildSpec,autonomous,requireChanges,readProjectSource}=job.analyst_input as AnalystInput;
   const input={actorId,message:message+(attachments.length?'\n\nМатериалы: '+attachments.map(file=>file.name).join(', '):''),mode};
   // All AI calls see the latest owner guidance, including instructions submitted while a call was running.
