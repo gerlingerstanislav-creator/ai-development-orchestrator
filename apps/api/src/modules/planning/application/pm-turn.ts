@@ -7,6 +7,7 @@ import {agentMemorySections} from '../../../agent-memory.js';
 import type {PmWatchReport} from './pm-watch-report.js';
 import {PM_GOAL_POLICY,pmOrderStateFromResults} from '../../../pm-goal-policy.js';
 import {PM_EXECUTION_GUIDANCE} from '../../../pm-execution-guidance.js';
+import {platformPromptRules} from '../../../prompt-assembler.mjs';
 import {buildPmConversationContext} from '../domain/pm-conversation-context.js';
 
 // Derive infrastructure-provided DB port without coupling application code to pg.
@@ -110,7 +111,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   // Durable Codex threads retain their original policy. Rotate only if
   // approved project instructions, role memory or PM rules actually change.
   const promptRevision=createHash('sha256')
-   .update([instructions.slice(0,2200),approvedMemory,PM_GOAL_POLICY,PM_EXECUTION_GUIDANCE].join('\n'))
+   .update([instructions.slice(0,2200),approvedMemory,platformPromptRules,PM_GOAL_POLICY,PM_EXECUTION_GUIDANCE].join('\n'))
    .digest('hex').slice(0,16);
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   await audit('runner_request');
