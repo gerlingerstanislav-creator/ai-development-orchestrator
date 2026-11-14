@@ -28,6 +28,12 @@ export function TaskBoardControls({task,busy,onAction}:Props){
      task.postponed_at?
       <button type="button" className="secondary" disabled={busy} onClick={()=>void onAction('resume')}>Вернуть отложенную</button>:
       <>
+       {task.stage==='backlog'&&['backlog','todo'].includes(status)&&<>
+        {status==='backlog'&&<button type="button" className="secondary" disabled={busy}
+         onClick={()=>void onAction('move',{status:'todo'})}>К работе</button>}
+        <button type="button" className="primary" disabled={busy}
+         onClick={()=>void onAction('move',{status:'in_progress'})}>Запустить с PM</button>
+       </>}
        {!['done','acceptance'].includes(status)&&<button type="button" className="secondary" disabled={busy}
         onClick={()=>void onAction('postpone',{until:until||null})}>Отложить</button>}
        {status==='done'&&<button type="button" className="secondary" disabled={busy}

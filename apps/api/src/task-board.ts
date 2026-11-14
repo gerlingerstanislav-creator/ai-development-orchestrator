@@ -20,7 +20,10 @@ export function canPlanBoardMove(stage:string,current:BoardState,target:BoardSta
  if(!['backlog','todo','in_progress'].includes(target))return false;
  // This is planning, not permission to skip code/QA/PR gates. Execution
  // states can only be changed by their existing workflow commands.
- return stage==='backlog'&&['backlog','todo','in_progress'].includes(current);
+ // Once execution was requested, returning the card to planning via drag and
+ // drop would leave queued PM/Temporal work running invisibly. Use the real
+ // pause/cancel process controls, not a cosmetic reverse transition.
+ return stage==='backlog'&&(current==='backlog'||current==='todo');
 }
 
 export async function installUniversalTaskBoardSchema(db:Pick<Pool,'query'>):Promise<void>{

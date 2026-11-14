@@ -1444,3 +1444,29 @@ body:has(.tasks-page){overflow:hidden}
 .task-board-rework textarea{margin:8px 0;padding:8px;font-size:11px}
 .task-board-rework small{display:block;margin-top:6px;font-size:10px}
 @media(max-width:1200px){.tasks-page .board.board-lifecycle{grid-template-columns:repeat(5,minmax(210px,1fr))}}
+
+/* Durable, task-scoped dynamic execution DAG; legacy workflow stays available below it. */
+.task-dynamic-plan{border-top:1px solid #e2e7ef;background:#fafbfe;padding:9px 13px;display:flex;flex-direction:column;gap:7px;max-height:260px;overflow:auto}
+.task-dynamic-plan-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.task-dynamic-plan-heading strong{font-size:12px;color:#37435b}
+.task-dynamic-plan-heading small{font-size:10px;color:#8290a2}
+.task-dynamic-kickoff{display:flex;align-items:center;gap:7px;font-size:11px;color:#62708a}
+.task-dynamic-kickoff span:nth-child(2){flex:1}
+.task-dynamic-kickoff .secondary{font-size:10px;padding:5px 8px}
+.task-dynamic-plan-group{display:flex;gap:7px;align-items:stretch;overflow-x:auto;padding-bottom:4px}
+.task-dynamic-plan-group>.muted{align-self:center;white-space:nowrap;font-size:10px}
+.task-dynamic-step{flex:0 0 200px;min-width:0;background:#fff;border:1px solid #e2e7ef;border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:4px}
+.task-dynamic-step-title{display:flex;align-items:center;gap:6px}
+.task-dynamic-step-title strong{font-size:11px;color:#435069}
+.task-dynamic-step-title small{font-size:9px;color:#7b8699;margin-left:auto;text-align:right}
+.task-dynamic-step p{font-size:10px;line-height:1.4;color:#5d6677;margin:0;overflow-wrap:anywhere}
+.task-dynamic-step>.muted,.task-dynamic-step>.task-warning{font-size:10px}
+.task-dynamic-plan-empty{font-size:11px;margin:0}
+.task-plan-dot{width:8px;height:8px;border-radius:50%;background:#bdc6d2;flex:0 0 8px}
+.task-plan-dot.running,.task-plan-dot.processing{background:#6e98e8}
+.task-plan-dot.submitted{background:#e5b879}
+.task-plan-dot.completed{background:#6cb99d}
+.task-plan-dot.blocked,.task-plan-dot.failed{background:#dc7c76}
+.task-technical-workflow{border-top:1px solid #e5e9f0;background:#fff;padding:6px 11px}
+.task-technical-workflow>summary{cursor:pointer;color:#687587;font-size:10px;font-weight:600}
+.task-technical-workflow>.task-workflow{margin-top:6px}

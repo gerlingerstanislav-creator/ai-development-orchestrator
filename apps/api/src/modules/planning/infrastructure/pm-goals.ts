@@ -106,7 +106,7 @@ export async function openPmGoal(db:Db,input:{
 async function checkReference(db:Db,projectId:string,kind:LinkKind,referenceId:string,lock=false){
  const locking=lock?' FOR SHARE':'';
  const sql=kind==='task'
-  ?`SELECT t.id,t.title,t.stage,t.type FROM tasks t WHERE t.project_id=$1 AND t.id=$2${locking}`
+  ?`SELECT t.id,t.title,t.stage,t.board_status,t.type FROM tasks t WHERE t.project_id=$1 AND t.id=$2${locking}`
   :kind==='assignment'
   ?`SELECT a.id,a.task_id,a.status,a.evidence,a.result,a.spec_version,t.spec_version AS current_version
     FROM agent_work_assignments a LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
@@ -116,8 +116,10 @@ async function checkReference(db:Db,projectId:string,kind:LinkKind,referenceId:s
  const row=result.rows[0];
  if(!row)return {verified:false,state:'missing',reason:'Связанный объект недоступен в этом проекте'};
  if(kind==='task')return {
-  verified:row.stage==='done',state:row.stage,
-  reason:row.stage==='done'?'Задача подтверждена в done':'Задача ещё не завершена',
+  verified:row.stage==='done'&&row.board_status!=='acceptance',
+  state:row.board_status==='acceptance'?'acceptance':row.stage,
+  reason:row.stage==='done'&&row.board_status==='acceptance'?'Задача ожидает приёмки владельца':
+   row.stage==='done'?'Задача подтверждена в done':'Задача ещё не завершена',
   title:row.title
  };
  if(kind==='assignment'){

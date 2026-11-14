@@ -11,7 +11,7 @@ function store(active){
   queries,
   query:async (sql,args)=>{
    queries.push({sql,args});
-   if(sql.includes('SELECT id,title,display_number,stage,analysis_state,type'))return {
+   if(sql.includes('SELECT id,title,display_number,stage,board_status,analysis_state,type'))return {
     rows:[{id:task,title:'Проверить пользовательский интерфейс',display_number:36,stage:'development',analysis_state:'approved',type:'task'}]
    };
    return {rows:[{active}]};
@@ -48,4 +48,17 @@ test('PM goal watches development, QA and delegated work for bug and improvement
   assert.equal((await readPmTaskGoal(db,project,task)).status,'running');
   assert.equal(db.queries.length,2);
  }
+});
+
+test('technical done still needs owner action while the Kanban result is on acceptance',async()=>{
+ const db={query:async()=>({rows:[{id:task,title:'Отчёт',display_number:38,stage:'done',
+  board_status:'acceptance',analysis_state:'ready',type:'task'}]})};
+ const result=await readPmTaskGoal(db,project,task);
+ assert.equal(result.status,'needs_action');
+ assert.match(result.reason,/приёмки владельцем/);
+});
+test('PM reports success only after the owner has accepted done',async()=>{
+ const db={query:async()=>({rows:[{id:task,title:'Отчёт',display_number:38,stage:'done',
+  board_status:'done',analysis_state:'ready',type:'task'}]})};
+ assert.equal((await readPmTaskGoal(db,project,task)).status,'done');
 });

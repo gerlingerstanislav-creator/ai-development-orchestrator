@@ -4,6 +4,7 @@ import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {TaskBoard} from '../src/features/tasks/TaskBoard.tsx';
 import {TaskBoardControls} from '../src/features/tasks/TaskBoardControls.tsx';
+import {TaskExecutionPlan} from '../src/features/tasks/TaskExecutionPlan.tsx';
 import {kanbanLanes,attentionNeeded,dependencyReady,kanbanOrder,boardLaneFor} from '../src/features/tasks/board-model.ts';
 
 const task=(id,props={})=>({
@@ -75,4 +76,32 @@ test('unconfirmed and archived tasks show guarded acceptance controls',()=>{
  }));
  assert.match(archived,/Восстановить из архива/);
  assert.doesNotMatch(archived,/Принять результат/);
+});
+
+test('task details display live PM work DAG, dependencies and a separate legacy technical stage',()=>{
+ const a={id:'a',plan_id:'plan-1',plan_key:'research',role:'analysis',
+  objective:'Исследовать технические ограничения',acceptance:'Проверенная архитектурная заметка',
+  status:'completed',result:'Готово',evidence:'Проверенный отчёт',prerequisites:[],created_at:'2026-11-15'};
+ const b={id:'b',plan_id:'plan-1',plan_key:'qa',role:'testing',
+  objective:'Проверить работу по требуемым критериям',acceptance:'Результаты браузерных тестов',
+  status:'queued',result:null,evidence:null,prerequisites:[{id:'a',key:'research',status:'completed'}],created_at:'2026-11-15'};
+ const html=renderToStaticMarkup(React.createElement(TaskExecutionPlan,{
+  assignments:[a,b],kickoff:{id:'msg',pm_order_id:'order',status:'completed',pm_dispatch_attempt:1},
+  stage:'backlog',stageLabel:'Бэклог',busy:false,onRetry:()=>{}
+ }));
+ assert.match(html,/План выполнения/);
+ assert.match(html,/Аналитик/);
+ assert.match(html,/QA/);
+ assert.match(html,/После:/);
+ assert.match(html,/В очереди/);
+ assert.match(html,/Текущий технический этап: Бэклог/);
+});
+test('failed kickoff supports retry without inventing task completion',()=>{
+ const html=renderToStaticMarkup(React.createElement(TaskExecutionPlan,{
+  assignments:[],kickoff:{id:'msg',pm_order_id:'order',status:'failed',pm_dispatch_attempt:1},
+  stage:'backlog',stageLabel:'Бэклог',busy:false,onRetry:()=>{}
+ }));
+ assert.match(html,/Планирование PM завершилось ошибкой/);
+ assert.match(html,/Повторить запуск PM/);
+ assert.doesNotMatch(html,/Принять результат/);
 });

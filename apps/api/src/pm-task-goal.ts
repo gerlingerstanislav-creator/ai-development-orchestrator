@@ -6,10 +6,15 @@ export type PmTaskGoalState={
 /** Facts shared by MCP and Temporal. Never infer workflow success from a queued
  * command or a previous QA report. A PM watch only waits while work is active. */
 export async function readPmTaskGoal(db:Db,projectId:string,taskId:string):Promise<PmTaskGoalState>{
- const task=(await db.query(`SELECT id,title,display_number,stage,analysis_state,type
+ const task=(await db.query(`SELECT id,title,display_number,stage,board_status,analysis_state,type
   FROM tasks WHERE id=$1 AND project_id=$2`,[taskId,projectId])).rows[0];
  if(!task)return {task_id:taskId,title:'',display_number:null,stage:'',analysis_state:'',
   status:'missing',reason:'Задача отсутствует: проверь, не была ли отменена'};
+ if(task.stage==='done'&&task.board_status==='acceptance')return {
+  task_id:taskId,title:task.title,display_number:task.display_number,
+  stage:task.stage,analysis_state:task.analysis_state,status:'needs_action',
+  reason:'Техническое выполнение завершено; задача ожидает явной приёмки владельцем'
+ };
  if(task.stage==='done')return {task_id:taskId,title:task.title,display_number:task.display_number,
   stage:task.stage,analysis_state:task.analysis_state,status:'done',reason:'Этап done подтверждён в БД'};
  if(!['task','bug','improvement'].includes(task.type))return {task_id:taskId,title:task.title,display_number:task.display_number,
