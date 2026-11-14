@@ -1,4 +1,4 @@
-import type * as React from 'react';
+import React from 'react';
 import {ChevronDown,LayoutGrid,CheckCircle2,Plus,LoaderCircle,Square,Play,Columns3,
  BookOpen,ClipboardList,Clock3,Users,Workflow,Settings2,ArrowRightCircle} from 'lucide-react';
 import {projectUrl,type ProjectSection} from './routes.js';
