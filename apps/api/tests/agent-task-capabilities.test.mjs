@@ -65,7 +65,7 @@ test('delegation grants exactly requested tools and rejects escalation by childr
  const queries=[];
  const db={query:async(sql,args)=>{
   queries.push({sql,args});
-  if(sql.includes('SELECT id,stage,spec_version'))return {rows:[{stage:'analysis',spec_version:2}],rowCount:1};
+  if(sql.includes('SELECT id,stage,board_status,postponed_at,archived_at,spec_version'))return {rows:[{stage:'analysis',spec_version:2}],rowCount:1};
   if(sql.includes('SELECT id,role,parent_id,granted_tools'))return {rows:[{id:processId,role:'testing',parent_id:null,granted_tools:[]}],rowCount:1};
   if(sql.includes('count(*)::int AS n'))return {rows:[{n:0}],rowCount:1};
   if(sql.includes('SELECT id,status,granted_tools'))return {rows:[],rowCount:0};
@@ -83,7 +83,7 @@ test('delegation grants exactly requested tools and rejects escalation by childr
 test('DAG work plans persist tool grants as part of each assignment',async()=>{
  const inserts=[];
  const db={query:async(sql,args)=>{
-  if(sql.includes('SELECT id,stage,spec_version'))return {rows:[{stage:'analysis',spec_version:2}],rowCount:1};
+  if(sql.includes('SELECT id,stage,board_status,postponed_at,archived_at,spec_version'))return {rows:[{stage:'analysis',spec_version:2}],rowCount:1};
   if(sql.includes('count(*)::int AS n'))return {rows:[{n:0}],rowCount:1};
   if(sql.includes('INSERT INTO agent_work_assignments'))inserts.push(args);
   return {rows:[],rowCount:1};
