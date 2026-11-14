@@ -7,8 +7,9 @@ import {randomUUID} from 'node:crypto';
 export type PmWatchReport={
  projectId:string;
  processId:string;
- kind:'iteration_plan'|'document_import'|'development'|'iteration_execution'|'testing'|'task_goal'|'delegated_work';
+ kind:'iteration_plan'|'document_import'|'development'|'iteration_execution'|'testing'|'task_goal'|'delegated_work'|'goal';
  taskId?:string;
+ goalId?:string;
  orderId?:string;
  topicId?:string|null;
  actorId?:string;
