@@ -1,6 +1,5 @@
 import {composeAgentPrompt,recordAgentPrompt} from '../../../agent-prompt.js';
 import {resolveRoleAiSettings} from '../../../project-team.js';
-import {finalizeWorkAttempt} from '../infrastructure/work-assignments.js';
 import type {RunnerImage} from '../../../chat-images.js';
 import type {AgentReaderScope} from '../../../agent-tools.js';
 
@@ -17,13 +16,13 @@ type AskAssistant=(
  */
 export function createDelegatedWorkActivities({
  pool,askRunnerAssistant,resolveSettings=resolveRoleAiSettings,
- recordPrompt=recordAgentPrompt,finalize=finalizeWorkAttempt
+ recordPrompt=recordAgentPrompt,finalize
 }:{
  pool:Db;
  askRunnerAssistant:AskAssistant;
  resolveSettings?:typeof resolveRoleAiSettings;
  recordPrompt?:typeof recordAgentPrompt;
- finalize?:typeof finalizeWorkAttempt;
+ finalize:(db:Db,id:string,reason:string)=>Promise<unknown>;
 }){
 async function runDelegatedWork(assignmentId:string):Promise<void>{
  const r=await pool.query(`SELECT a.*,t.title,t.description AS task_description,t.stage,
