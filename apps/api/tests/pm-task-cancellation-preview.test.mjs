@@ -26,7 +26,7 @@ test('existing task #36 is found by cancellation preview and active PM work is a
   const preview=()=>app.inject({method:'GET',url:'/api/projects/'+project+'/tasks/'+task+'/cancel-preview'});
   let response=await preview();
   assert.equal(response.statusCode,200,response.body);
-  assert.equal(response.json().task.display_number,'36'===String(response.json().task.display_number)?response.json().task.display_number:36);
+  assert.equal(Number(response.json().task.display_number),36);
   assert.deepEqual(response.json().blocked,[]);
   await db.query(`INSERT INTO agent_work_assignments(
    id,project_id,task_id,source_role,role,objective,acceptance,spec_version,status
