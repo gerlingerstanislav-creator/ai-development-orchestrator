@@ -18,6 +18,7 @@ import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
 import {workRoles} from './modules/agents/infrastructure/work-assignments.js';
 import {executeAgentWorkTool,isAgentWorkTool} from './modules/agents/infrastructure/agent-work-tools.js';
+import {executePmGoalTool,isPmGoalTool} from './modules/planning/infrastructure/pm-goal-tools.js';
 import {responsibilityFor} from './role-responsibilities.js';
 import {parentExists} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
@@ -34,6 +35,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   params.task_id=session.task_id;
  }
  if(isAgentWorkTool(name))return executeAgentWorkTool(pool,session,name,params);
+ if(isPmGoalTool(name))return executePmGoalTool(pool,session,name,params);
  if(isAgentKnowledgeTool(name))return executeAgentKnowledgeTool(pool,session,name,params);
  switch(name){
  case 'project.source':{

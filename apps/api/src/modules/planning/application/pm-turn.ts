@@ -121,8 +121,30 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   const effects=await agentSessionEffects(pool,session.id);
   const toolEvents=await pool.query('SELECT tool,result FROM agent_tool_events WHERE project_id=$1 AND session_id=$2 AND success=true ORDER BY created_at,id',[projectId,session.id]);
   const seen=new Set<string>();
+  const completedGoals=new Set(toolEvents.rows.filter(row=>row.tool==='goals.complete')
+   .map(row=>row.result?.id).filter((id:unknown):id is string=>typeof id==='string'));
+  const goalsWithLinkedWatch=new Set(toolEvents.rows.filter(row=>row.tool==='goals.link'&&row.result?.watch)
+   .map(row=>row.result?.goal_id).filter((id:unknown):id is string=>typeof id==='string'));
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
+   if(row.tool==='goals.open'&&row.result?.watch?.kind==='goal'){
+    const watch=row.result.watch;
+    if(typeof watch.process_id!=='string'||typeof watch.goal_id!=='string'||
+       seen.has(watch.process_id)||completedGoals.has(watch.goal_id)||goalsWithLinkedWatch.has(watch.goal_id))return [];
+    seen.add(watch.process_id);
+    return [{projectId,processId:watch.process_id,kind:'goal' as const,
+      goalId:watch.goal_id,orderId:orderId||undefined,
+      topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
+   }
+   if(row.tool==='goals.link'&&row.result?.watch){
+    const watch=row.result.watch;
+    if(!['task_goal','delegated_work'].includes(watch.kind)||typeof watch.process_id!=='string'||
+       seen.has(watch.process_id))return [];
+    seen.add(watch.process_id);
+    return [{projectId,processId:watch.process_id,kind:watch.kind as 'task_goal'|'delegated_work',
+      ...(watch.kind==='task_goal'?{taskId:watch.task_id}:{}),
+      orderId:orderId||undefined,topicId:effectiveTopicForWatch,actorId:turn.actor_id}];
+   }
    if(row.tool==='work.plan'&&Array.isArray(row.result?.assignments)){
     return row.result.assignments.flatMap((item:{id?:unknown;role?:unknown})=>{
      const id=item.id;
@@ -152,6 +174,23 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   let confirmedOrderId=orderId;
   try{
    await client.query('BEGIN');
+   // Follow-up chat instructions that change one existing goal remain attached
+   // to its original order, not an unrelated second PM assignment.
+   if(!confirmedOrderId){
+    const touchedGoals=[...new Set(toolEvents.rows
+     .filter(row=>['goals.link','goals.update','goals.complete'].includes(row.tool))
+     .map(row=>row.result?.goal_id||row.result?.id)
+     .filter((id:unknown):id is string=>typeof id==='string'))];
+    if(touchedGoals.length===1){
+     const original=await client.query(`SELECT order_id FROM project_pm_goals
+      WHERE project_id=$1 AND id=$2 AND order_id IS NOT NULL`,[projectId,touchedGoals[0]]);
+     if(original.rowCount){
+      confirmedOrderId=original.rows[0].order_id;
+      await client.query('UPDATE assistant_messages SET pm_order_id=$2 WHERE project_id=$1 AND id=$3',
+       [projectId,confirmedOrderId,messageId]);
+     }
+    }
+   }
    const finished=await client.query("UPDATE assistant_messages SET status='completed' WHERE id=$1 AND status='processing' AND pm_dispatch_attempt=$2 RETURNING id",[messageId,attempt]);
    if(finished.rowCount&&!confirmedOrderId&&turn.channel==='project'){
     confirmedOrderId=await ensureProjectManagerActionOrder(client,{
@@ -166,11 +205,27 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
      [randomUUID(),projectId,data.message,effectiveTopic,confirmedOrderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
    }
    if(confirmedOrderId&&finished.rowCount){
+    // The goal can be opened before its order exists. Bind them atomically.
+    await client.query(`UPDATE project_pm_goals SET order_id=$3,updated_at=now()
+     WHERE project_id=$1 AND source_message_id=$2 AND order_id IS NULL`,
+     [projectId,messageId,confirmedOrderId]);
     const hasOpenQuestion=toolEvents.rows.some(row=>row.tool==='iterations.ask_question'||row.tool==='discussions.open'&&row.result?.awaiting_reply===true);
     const explicitlySet=toolEvents.rows.some(row=>row.tool==='pm.orders.update'&&row.result?.id===confirmedOrderId);
+    const touchedGoal=toolEvents.rows.some(row=>row.tool==='goals.complete');
     const questionOpen=ownerQuestion&&!!(await client.query("SELECT 1 FROM task_agent_notes WHERE id=$1 AND status IN ('open','processing')",[ownerQuestion.id])).rowCount;
-    const status=pmOrderStateFromResults(toolEvents.rows,watchers.length,Boolean(questionOpen||hasOpenQuestion));
-    if(!explicitlySet||status!=='completed'||ownerQuestion)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,status,effectiveTopic]);
+    const initialStatus=pmOrderStateFromResults(toolEvents.rows,watchers.length,Boolean(questionOpen||hasOpenQuestion));
+    const goalResult=await client.query(`SELECT id,status FROM project_pm_goals
+     WHERE project_id=$1 AND order_id=$2 ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,
+     [projectId,confirmedOrderId]);
+    const goalStatus=goalResult.rows[0]?.status as string|undefined;
+    // A scheduled operation isn't success. Never close an accepted goal
+    // until goals.complete has checked linked evidence.
+    const status=goalStatus==='completed'?'completed':
+     goalStatus
+     ?goalStatus==='waiting_user'||goalStatus==='needs_action'?'waiting_user':
+       watchers.length?'waiting_agents':'working'
+     :initialStatus;
+    if(!explicitlySet||status!=='completed'||ownerQuestion||touchedGoal)await client.query('UPDATE project_pm_orders SET status=$2,topic_id=COALESCE($3,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,status,effectiveTopic]);
     else await client.query('UPDATE project_pm_orders SET topic_id=COALESCE($2,topic_id),updated_at=now() WHERE id=$1',[confirmedOrderId,effectiveTopic]);
     if(effectiveTopic)await client.query(`UPDATE project_chat_topics t SET status='closed',closed_at=now()
      WHERE t.id=$1 AND t.project_id=$2 AND t.status='open'

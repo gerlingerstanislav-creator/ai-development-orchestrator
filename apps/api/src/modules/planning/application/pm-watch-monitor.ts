@@ -1,5 +1,6 @@
 import {reportPmWatchCompletion,type PmWatchReport} from './pm-watch-report.js';
 import {readPmTaskGoal} from '../../../pm-task-goal.js';
+import {assessPmGoal} from '../infrastructure/pm-goals.js';
 
 type ProjectManagerWatch=PmWatchReport;
 /** The watch application needs only scoped reads and a transactional writer. */
@@ -20,6 +21,34 @@ async function reportIterationExecutionWatch(pool:Pool,watch:ProjectManagerWatch
 /** Polling is a short database activity; the waiting happens in Temporal,
  * not in the PM AI session or an HTTP request. */
 export async function checkProjectManagerWatch(pool:Pool,watch:ProjectManagerWatch):Promise<'pending'|'completed'>{
+ if(watch.kind==='goal'){
+  if(!watch.goalId)return 'completed';
+  const assessed=await assessPmGoal(pool,watch.projectId,watch.goalId);
+  if(assessed.goal.status==='completed')
+   return reportPmWatchCompletion(pool,watch,{
+    message:'Цель «'+String(assessed.goal.objective).slice(0,180)+'» подтверждена и завершена.',
+    resumeInstruction:' Проверь, что пользователю предоставлен результат с доказательствами.'
+   });
+  let ongoing=false;
+  for(const link of assessed.links){
+   if(link.verified)continue;
+   if(link.kind==='assignment'&&['queued','running'].includes(link.state))ongoing=true;
+   if(link.kind==='task'&&
+     (await readPmTaskGoal(pool,watch.projectId,link.reference_id)).status==='running')
+    ongoing=true;
+  }
+  if(ongoing)return 'pending';
+  const message=assessed.links.length===0
+   ?'Цель «'+String(assessed.goal.objective).slice(0,180)+'» принята, но к ней не привязаны проверяемые результаты.'
+   :assessed.verification.verified
+   ?'По цели «'+String(assessed.goal.objective).slice(0,180)+'» связанная работа подтверждена. Проверь критерии и вызови goals.complete, если они действительно достигнуты.'
+   :'Цель «'+String(assessed.goal.objective).slice(0,180)+'» не достигнута: '+
+     assessed.verification.missing.map(x=>x.kind+' '+x.reference_id+': '+x.reason).join('; ').slice(0,1200);
+  return reportPmWatchCompletion(pool,watch,{
+   message,
+   resumeInstruction:' Продолжай ИСХОДНУЮ цель в том же заказе. Прочитай goals.read, выбери дальнейший инструмент или делегируй работу. Если нужно решение владельца, обозначь точную блокировку. Не выдавай промежуточный результат за выполненную цель.'
+  });
+ }
  if(watch.kind==='task_goal'){
   if(!watch.taskId)return 'completed';
   const task=await readPmTaskGoal(pool,watch.projectId,watch.taskId);
