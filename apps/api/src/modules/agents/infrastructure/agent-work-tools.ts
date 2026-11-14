@@ -103,7 +103,7 @@ export async function executeAgentWorkTool(
   if(session.role!=='manager'||session.read_only)throw rejected('Завершение задачи доступно только ПМ',403);
   const {task_id,kind,summary,evidence}=z.object({
    task_id:uuid,
-   kind:z.enum(['research','documentation']),
+   kind:z.enum(['research','documentation','screenshots']),
    summary:z.string().trim().min(20).max(1500),
    evidence:z.string().trim().min(20).max(1800)
   }).strict().parse(params);
