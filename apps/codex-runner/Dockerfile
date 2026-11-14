@@ -20,6 +20,7 @@ COPY apps/codex-runner/qa-job.mjs ./qa-job.mjs
 COPY apps/codex-runner/delegated-work-sandbox.mjs ./delegated-work-sandbox.mjs
 COPY apps/codex-runner/command-executor.mjs ./command-executor.mjs
 COPY apps/codex-runner/codex-app-server.mjs ./codex-app-server.mjs
+COPY apps/codex-runner/pm-progress.mjs ./pm-progress.mjs
 COPY apps/codex-runner/codex-cli-session.mjs ./codex-cli-session.mjs
 COPY apps/codex-runner/codex-thread-scope.mjs ./codex-thread-scope.mjs
 COPY apps/codex-runner/ci-test-discovery.mjs ./ci-test-discovery.mjs
