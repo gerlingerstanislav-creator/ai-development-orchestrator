@@ -5,7 +5,6 @@ import {readChatImages} from '../../../chat-images.js';
 import {conversationInstructions,resolveRoleAiSettings} from '../../../project-team.js';
 import type {PmWatchReport} from './pm-watch-report.js';
 import {PM_GOAL_POLICY,pmOrderStateFromResults} from '../../../pm-goal-policy.js';
-import {assessPmGoal} from '../infrastructure/pm-goals.js';
 
 // Derive infrastructure-provided DB port without coupling application code to pg.
 type Pool=Parameters<typeof recordAgentPrompt>[0];
