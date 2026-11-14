@@ -1013,6 +1013,7 @@ export async function runDelegatedWork(assignmentId:string):Promise<void>{
   instructions:String(instruction.rows[0]?.agent_instructions||''),
   continuation:[
    'Критерии приёмки: '+item.acceptance,
+   'Дополнительные права именно этого поручения: '+JSON.stringify(item.granted_tools||[])+'. Они не гарантируют наличие внешней среды; проверяй результат инструментом.',
    'ТЗ и задача: '+item.title+'; '+String(item.task_description).slice(0,5000),
    'Ищи доступные инструменты и зависимости по смыслу результата, не по названию задачи.',
    'Если нужны действия другого специалиста, используй work.delegate и сообщи о зависимости через work.report(status=blocked); не выдавай ожидание за завершение.',
