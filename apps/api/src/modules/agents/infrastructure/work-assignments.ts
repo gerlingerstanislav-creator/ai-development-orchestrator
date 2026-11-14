@@ -3,6 +3,7 @@ import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
 import {roleCapacity} from '../../../project-team.js';
 import {orderWorkPlan,type WorkPlanStep} from '../domain/work-plan.js';
+import {normalizeTaskToolGrants,restrictChildToolGrants} from '../domain/tool-capabilities.js';
 
 type Db=Pick<Pool,'query'>;
 export const workRoles=['analysis','development','testing','documentation','devops','architect'] as const;
@@ -59,6 +60,11 @@ export async function installWorkPlanSchema(db:Db){
   ON agent_work_plan_dependencies(requires_id);`);
 }
 
+/** v15: capability grants never outlive the assignment's task and version. */
+export async function installTaskCapabilityGrants(db:Db){
+ await db.query("ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS granted_tools text[] NOT NULL DEFAULT ARRAY[]::text[]");
+}
+
 /** Planning is one transaction: either all steps and edges exist, or none. */
 export async function planWork(db:Db,input:{
  projectId:string;taskId:string;sourceRole:string;steps:readonly WorkPlanStep[]
@@ -80,12 +86,13 @@ export async function planWork(db:Db,input:{
  const assignments:{id:string;key:string;role:string;depends_on:string[]}[]=[];
  for(const step of steps){
   const id=ids.get(step.key)!;
+  const grants=normalizeTaskToolGrants(step.tools);
   const row={id,project_id:input.projectId,task_id:input.taskId};
   await db.query(`INSERT INTO agent_work_assignments
-   (id,project_id,task_id,plan_id,plan_key,source_role,role,objective,acceptance,spec_version)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+   (id,project_id,task_id,plan_id,plan_key,source_role,role,objective,acceptance,spec_version,granted_tools)
+   VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
    [id,input.projectId,input.taskId,planId,step.key,input.sourceRole,
-    step.role,step.objective,step.acceptance,task.spec_version]);
+    step.role,step.objective,step.acceptance,task.spec_version,grants]);
   for(const need of step.needs)await db.query(`INSERT INTO agent_work_plan_dependencies
    (project_id,task_id,assignment_id,requires_id) VALUES($1,$2,$3,$4)`,
    [input.projectId,input.taskId,id,ids.get(need)!]);
@@ -104,15 +111,16 @@ async function event(db:Db,row:{id:string;project_id:string;task_id:string},stat
 }
 
 export async function delegateWork(db:Db,input:{
- projectId:string;taskId:string;sourceRole:string;role:string;objective:string;acceptance:string;parentId?:string|null
+ projectId:string;taskId:string;sourceRole:string;role:string;objective:string;acceptance:string;parentId?:string|null;tools?:readonly string[]
 }){
  if(!(workRoles as readonly string[]).includes(input.role))throw fail('Неизвестная роль',400);
+ const grants=normalizeTaskToolGrants(input.tools);
  const task=(await db.query('SELECT id,stage,spec_version FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE',[input.projectId,input.taskId])).rows[0];
  if(!task)throw fail('Задача не найдена',404);
  if(task.stage==='done')throw fail('Задача уже завершена');
  let parentId:string|null=null;
  if(input.parentId){
-  const parent=(await db.query("SELECT id,role,parent_id FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status='running'",
+  const parent=(await db.query("SELECT id,role,parent_id,granted_tools FROM agent_work_assignments WHERE id=$1 AND project_id=$2 AND task_id=$3 AND status='running'",
    [input.parentId,input.projectId,input.taskId])).rows[0];
   if(!parent||parent.role!==input.sourceRole)throw fail('Делегирование возможно только из своего активного поручения',403);
   if(parent.parent_id){
@@ -120,17 +128,24 @@ export async function delegateWork(db:Db,input:{
    if(grand?.parent_id)throw fail('Превышена глубина делегирования');
   }
   if(input.sourceRole===input.role)throw fail('Нельзя делегировать самому себе');
+  restrictChildToolGrants(grants,parent.granted_tools||[]);
   parentId=parent.id;
  }
+ if(input.sourceRole!=='manager'&&!['analyst','business_analyst'].includes(input.sourceRole)&&!parentId&&grants.length)
+  throw fail('Нельзя выдавать дополнительные права без активного поручения с такими правами',403);
  const count=(await db.query("SELECT count(*)::int AS n FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','running','submitted','blocked')",
  [input.projectId,input.taskId])).rows[0];
  if(Number(count.n)>=12)throw fail('Слишком много незавершённых поручений');
- const existing=(await db.query("SELECT id,status FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND role=$3 AND objective=$4 AND spec_version=$5 AND status IN ('queued','running','submitted','completed','blocked') ORDER BY created_at DESC LIMIT 1",
+ const existing=(await db.query("SELECT id,status,granted_tools FROM agent_work_assignments WHERE project_id=$1 AND task_id=$2 AND role=$3 AND objective=$4 AND spec_version=$5 AND status IN ('queued','running','submitted','completed','blocked') ORDER BY created_at DESC LIMIT 1",
  [input.projectId,input.taskId,input.role,input.objective,task.spec_version])).rows[0];
- if(existing)return {id:existing.id,status:existing.status,duplicate:true};
+ if(existing){
+  if(JSON.stringify([...new Set(existing.granted_tools||[])].sort())!==JSON.stringify(grants))
+   throw fail('Поручение с этой целью уже есть, но набор прав отличается. Пересмотри существующее поручение.');
+  return {id:existing.id,status:existing.status,duplicate:true};
+ }
  const row={id:randomUUID(),project_id:input.projectId,task_id:input.taskId};
- await db.query("INSERT INTO agent_work_assignments(id,project_id,task_id,parent_id,source_role,role,objective,acceptance,spec_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
- [row.id,row.project_id,row.task_id,parentId,input.sourceRole,input.role,input.objective,input.acceptance,task.spec_version]);
+ await db.query("INSERT INTO agent_work_assignments(id,project_id,task_id,parent_id,source_role,role,objective,acceptance,spec_version,granted_tools) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+ [row.id,row.project_id,row.task_id,parentId,input.sourceRole,input.role,input.objective,input.acceptance,task.spec_version,grants]);
  await event(db,row,'queued',input.sourceRole+' → '+input.role+': '+input.objective);
  return {id:row.id,status:'queued',role:input.role,task_id:row.task_id};
 }
@@ -139,7 +154,7 @@ export async function listWork(db:Db,projectId:string,taskId:string){
  const task=await db.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[taskId,projectId]);
  if(!task.rowCount)throw fail('Задача не найдена',404);
  const r=await db.query(`SELECT a.id,a.plan_id,a.plan_key,a.parent_id,a.source_role,a.role,a.objective,a.acceptance,
-  a.status,a.spec_version,a.attempts,a.result,a.evidence,a.reviewer_note,a.created_at,a.updated_at,
+  a.status,a.spec_version,a.granted_tools,a.attempts,a.result,a.evidence,a.reviewer_note,a.created_at,a.updated_at,
   COALESCE((SELECT jsonb_agg(jsonb_build_object('id',dependency.id,'key',dependency.plan_key,
     'status',dependency.status) ORDER BY dependency.created_at,dependency.id)
    FROM agent_work_plan_dependencies link
