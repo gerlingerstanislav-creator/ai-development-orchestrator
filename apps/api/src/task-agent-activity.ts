@@ -12,6 +12,7 @@ export async function readAgentActivity(pool:Pool,projectId:string,taskId:string
   WITH scoped_events AS (
    SELECT DISTINCT ON (process_id) process_id,process_kind,stage,detail,created_at
    FROM process_events WHERE project_id=$1 AND task_id=$2
+     AND process_kind IN ('analysis','development','testing','qa_design','documentation')
    ORDER BY process_id,created_at DESC,id DESC
   ), runs AS (
    SELECT r.id::text,'development' AS kind,r.status,
