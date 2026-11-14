@@ -1,5 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import pg from 'pg';
+import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
+import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
+import {planPmGoalWork} from '../dist/modules/planning/infrastructure/pm-goal-plan.js';
+import {openPmGoal,completePmGoal,assessPmGoal} from '../dist/modules/planning/infrastructure/pm-goals.js';
 import {installGoalWorkScope,delegateWork,planWork,reportWork,listWork,reviewWork} from '../dist/modules/agents/infrastructure/work-assignments.js';
 import {executeAgentWorkTool} from '../dist/modules/agents/infrastructure/agent-work-tools.js';
 import {readSessionToolGrants,toolsForRole} from '../dist/agent-tools.js';
@@ -152,4 +158,68 @@ test('PM receives goal-scoped work result in same conversation watch',async()=>{
  assert.equal(result,'completed');
  assert.ok(statements.some(x=>x.includes('project_pm_process_reports')));
  assert.ok(!statements.some(x=>x.includes('UPDATE tasks SET stage')));
+});
+
+
+test('real PostgreSQL v19: goal-only DAG is executable, reviewable and completable without tasks',async t=>{
+ if(!process.env.DATABASE_URL){t.skip('Integration PostgreSQL is not available');return;}
+ const schema='goalwork_'+randomUUID().replaceAll('-','');
+ const admin=new pg.Client({connectionString:process.env.DATABASE_URL});
+ await admin.connect();
+ await admin.query('CREATE SCHEMA "'+schema+'"');
+ const db=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema+',public'});
+ t.after(async()=>{
+  await db.end();
+  await admin.query('DROP SCHEMA IF EXISTS "'+schema+'" CASCADE');
+  await admin.end();
+ });
+ assert.ok((await runSchemaMigrations(db,coreSchemaMigrations({analysis:'Аналитика'}))).includes(19));
+ const actor=randomUUID(),project=randomUUID(),message=randomUUID();
+ await db.query('INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)',
+  [actor,'goal-work-'+actor+'@example.test','hash']);
+ await db.query("INSERT INTO projects(id,name,owner_id,agents_running) VALUES($1,'Goal Work Integration',$2,true)",
+  [project,actor]);
+ await db.query(`INSERT INTO assistant_messages(id,project_id,actor_id,role,body,channel,status)
+  VALUES($1,$2,$3,'user','Prepare project documentation and verify the result','project','processing')`,
+  [message,project,actor]);
+ const goal=await openPmGoal(db,{
+  projectId:project,sourceMessageId:message,actorId:actor,
+  objective:'Prepare and independently verify updated documentation',
+  criteria:['The content is written and verified by a separate specialist']
+ });
+ const steps=[
+  {key:'draft',role:'documentation',objective:'Write documentation based on project source',
+   acceptance:'Document identifier and verified revision are recorded',needs:[],tools:[]},
+  {key:'verify',role:'analysis',objective:'Review the documentation produced by the first specialist',
+   acceptance:'Independent confirmation of document structure and source',needs:['draft'],tools:[]}
+ ];
+ const plan=await planPmGoalWork(db,{projectId:project,goalId:goal.id,steps});
+ assert.equal(plan.task_id,null);
+ assert.equal(plan.goal_id,goal.id);
+ assert.equal(plan.assignments.length,2);
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM agent_work_plan_dependencies WHERE goal_id=$1',[goal.id])).rows[0].n,1);
+ const rows=(await db.query('SELECT id,role,task_id,goal_id FROM agent_work_assignments WHERE goal_id=$1 ORDER BY created_at',[goal.id])).rows;
+ assert.equal(rows.length,2);
+ assert.ok(rows.every(x=>x.task_id===null&&x.goal_id===goal.id));
+ for(const assignment of plan.assignments){
+  await db.query("UPDATE agent_work_assignments SET status='running' WHERE id=$1",[assignment.id]);
+  const role=assignment.role;
+  const report=await reportWork(db,{
+   projectId:project,taskId:null,assignmentId:assignment.id,role,status:'submitted',
+   result:'Real integration check recorded the specialist output and trace',
+   evidence:'Verified document revision and explicit scope '+assignment.id
+  });
+  assert.equal(report.status,'submitted');
+  const accepted=await reviewWork(db,{projectId:project,assignmentId:assignment.id,
+   action:'accept',reason:'Checked actual evidence and goal scope constraints'});
+  assert.equal(accepted.status,'completed');
+ }
+ const assessed=await assessPmGoal(db,project,goal.id);
+ assert.equal(assessed.verification.verified,true);
+ const completed=await completePmGoal(db,{
+  projectId:project,goalId:goal.id,
+  evidence:'Both scoped specialists were reviewed and the goal links were verified in PostgreSQL'
+ });
+ assert.equal(completed.status,'completed');
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM tasks WHERE project_id=$1',[project])).rows[0].n,0);
 });
