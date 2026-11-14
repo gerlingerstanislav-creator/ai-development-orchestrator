@@ -47,6 +47,9 @@ export async function processProjectManagerInbox(projectId:string,messageId:stri
   }
  }
 }
+const delegatedWorkSteps=proxyActivities<Pick<typeof activities,'runDelegatedWork'>>({
+ startToCloseTimeout:'10 minutes',retry:{maximumAttempts:1}
+});
 const qualitySteps=proxyActivities<Pick<typeof activities,'runSelfHostedQualityGates'>>({startToCloseTimeout:'80 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
 const planningSteps=proxyActivities<typeof activities>({startToCloseTimeout:'15 minutes',retry:{maximumAttempts:3,initialInterval:'3 seconds',backoffCoefficient:2}});
 const deploymentSteps=proxyActivities<typeof activities>({startToCloseTimeout:'30 minutes',heartbeatTimeout:'1 minute',retry:{maximumAttempts:1}});
@@ -67,7 +70,7 @@ export async function executeDelegatedWork(assignmentId:string):Promise<void>{
  try{
   const {projectId}=await steps.delegatedWorkScope(assignmentId);
   await waitForProjectAgents({projectId});
-  await steps.runDelegatedWork(assignmentId);
+  await delegatedWorkSteps.runDelegatedWork(assignmentId);
  }catch(error){
   await steps.failDelegatedWork(assignmentId,String(error));
  }
