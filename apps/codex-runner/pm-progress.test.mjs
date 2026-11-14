@@ -14,6 +14,7 @@ test('never expose raw reasoning, shell commands, tool input or tool results',()
   item:{type:'mcpToolCall',tool:'tools.exec',result:'access_token=secret'}
  }}).text,'Инструмент tools.exec завершил работу');
  assert.equal(visibleCodexProgress({method:'item/reasoning/summaryTextDelta',params:{delta:'Проверяю сценарии'}}).kind,'summary');
+ assert.equal(visibleCodexProgress({method:'item/agentMessage/delta',params:{delta:'Готовлю ответ'}}).kind,'message');
  assert.equal(visibleCodexProgress({method:'turn/plan/updated',params:{plan:[{
   step:'Передаю QA проверку',status:'inProgress'
  }]}}).text,'План: Передаю QA проверку');
@@ -33,10 +34,11 @@ test('publisher posts only sanitized sequential events with stable project and m
  reporter.onEvent({method:'item/started',params:{item:{type:'mcpToolCall',tool:'work.delegate',arguments:{
   password:'password must not be forwarded'
  }}}});
+ reporter.onEvent({method:'item/agentMessage/delta',params:{delta:'Готовлю ответ'}});
  reporter.onEvent({method:'turn/completed'});
  await reporter.flush();
- assert.deepEqual(sent.map(item=>item.body.kind),['status','summary','tool','status']);
- assert.deepEqual(sent.map(item=>item.body.sequence),[1,2,3,4]);
+ assert.deepEqual(sent.map(item=>item.body.kind),['status','summary','tool','message','status']);
+ assert.deepEqual(sent.map(item=>item.body.sequence),[1,2,3,4,5]);
  assert.ok(sent.every(item=>item.url==='http://api:3001/internal/pm-turn-progress'));
  assert.ok(sent.every(item=>item.headers['X-Runner-Secret']==='r'.repeat(40)));
  assert.ok(sent.every(item=>item.body.projectId==='project'&&item.body.messageId==='message'&&item.body.attempt===2));
