@@ -39,6 +39,7 @@ import {recordAgentActivity} from './task-agent-activity.js';
 import {markPeerWorkResult} from './agent-peer-queue.js';
 import {createPeerQuestionResolution} from './modules/agents/application/peer-question-resolution.js';
 import {createDelegatedWorkActivities} from './modules/agents/application/delegated-work-activities.js';
+import {finalizeWorkAttempt} from './modules/agents/infrastructure/work-assignments.js';
 import {evaluateQaRun} from './modules/quality/domain/qa-verdict.js';
 import {browserEvidenceAssessment,validEvidenceSha} from './task-evidence.js';
 import {finishTaskEvidenceRun} from './task-evidence-queue.js';
@@ -919,7 +920,7 @@ export async function delegatedWorkScope(assignmentId:string):Promise<{projectId
  return {projectId:r.rows[0].project_id};
 }
 /** Stable Temporal activity names; the application owns the agent turn and its work.report gate. */
-export const {runDelegatedWork,failDelegatedWork}=createDelegatedWorkActivities({pool,askRunnerAssistant});
+export const {runDelegatedWork,failDelegatedWork}=createDelegatedWorkActivities({pool,askRunnerAssistant,finalize:finalizeWorkAttempt});
 
 export async function runPeerQuestionWork(noteId:string):Promise<void>{
  const q=await pool.query("SELECT project_id,task_id FROM agent_peer_queue WHERE note_id=$1 AND status='running'",[noteId]);
