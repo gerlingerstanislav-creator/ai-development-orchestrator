@@ -23,11 +23,19 @@ export async function executeAgentWorkTool(
  const projectId=session.project_id;
  switch(name){
  case 'work.artifacts':{
-  const {task_id}=z.object({task_id:uuid}).parse(params);
+  const {task_id,goal_id}=z.object({task_id:uuid.optional(),goal_id:uuid.optional()}).strict().parse(params);
+  if(!!task_id===!!goal_id)throw rejected('Укажи задачу или цель ПМ',400);
   if(session.task_id&&session.task_id!==task_id)throw rejected('Нельзя читать чужие артефакты',403);
-  if(!(await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[task_id,projectId])).rowCount)
-   throw rejected('Задача не найдена',404);
-  return listWorkArtifacts(pool,projectId,task_id);
+  if(goal_id&&session.role!=='manager'){
+   if(!session.process_id||!(await pool.query(`SELECT 1 FROM agent_work_assignments
+    WHERE id=$1 AND project_id=$2 AND goal_id=$3 AND role=$4`,
+    [session.process_id,projectId,goal_id,session.role])).rowCount)
+    throw rejected('Нельзя читать артефакты чужой цели',403);
+  }
+  const scope=task_id?'tasks':'project_pm_goals';
+  if(!(await pool.query(`SELECT 1 FROM ${scope} WHERE id=$1 AND project_id=$2`,[task_id||goal_id,projectId])).rowCount)
+   throw rejected('Задача или цель не найдена',404);
+  return listWorkArtifacts(pool,projectId,task_id,goal_id);
  }
  case 'work.list':{
   const {task_id,goal_id}=z.object({task_id:uuid.optional(),goal_id:uuid.optional()}).strict().parse(params);

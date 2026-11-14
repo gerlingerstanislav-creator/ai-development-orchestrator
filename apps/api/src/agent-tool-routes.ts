@@ -232,16 +232,17 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
    origin:z.literal('isolated-local-browser')
   }).strict();
   const parsed=z.object({
-   projectId:uuid,taskId:uuid,assignmentId:uuid,
+   projectId:uuid,taskId:uuid.nullable(),goalId:uuid.nullable().optional(),assignmentId:uuid,
    sourceSha:z.string().regex(/^[a-f0-9]{40}$/i),
    artifacts:z.array(image).min(1).max(10)
   }).strict().safeParse(req.body);
   if(!parsed.success)return reply.code(400).send({error:'Некорректные артефакты браузера'});
   const items=parsed.data;
+  if(!!items.taskId===!!items.goalId)return reply.code(400).send({error:'Укажи задачу или цель ПМ'});
   const saved=[];
   for(const artifact of items.artifacts){
    saved.push(await storeWorkArtifact(pool,{
-    projectId:items.projectId,taskId:items.taskId,assignmentId:items.assignmentId,
+    projectId:items.projectId,taskId:items.taskId,goalId:items.goalId,assignmentId:items.assignmentId,
     sourceSha:items.sourceSha,...artifact
    }));
   }
@@ -255,6 +256,18 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   const artifact=await pool.query(
    'SELECT data,mime,name FROM agent_work_artifacts WHERE project_id=$1 AND task_id=$2 AND id=$3',
    [id,taskId,artifactId]);
+  if(!artifact.rowCount)return reply.code(404).send({error:'Артефакт не найден'});
+  reply.header('Content-Type','image/jpeg');
+  reply.header('Cache-Control','private, max-age=3600');
+  reply.header('X-Content-Type-Options','nosniff');
+  return reply.send(artifact.rows[0].data);
+ });
+ app.get('/api/projects/:id/goals/:goalId/work-artifacts/:artifactId',async(req:any,reply)=>{
+  const {id,goalId,artifactId}=z.object({id:uuid,goalId:uuid,artifactId:uuid}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const artifact=await pool.query(
+   'SELECT data,mime,name FROM agent_work_artifacts WHERE project_id=$1 AND goal_id=$2 AND id=$3',
+   [id,goalId,artifactId]);
   if(!artifact.rowCount)return reply.code(404).send({error:'Артефакт не найден'});
   reply.header('Content-Type','image/jpeg');
   reply.header('Cache-Control','private, max-age=3600');

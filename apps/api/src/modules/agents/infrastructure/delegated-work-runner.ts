@@ -30,7 +30,7 @@ export function createDelegatedRunner({pool,baseUrl,secret,decrypt,event,fetchIm
    method:'POST',
    headers:{'X-Runner-Secret':secret,'Content-Type':'application/json'},
    body:JSON.stringify({
-    projectId:item.project_id,taskId:item.task_id||null,assignmentId,
+    projectId:item.project_id,taskId:item.task_id||null,goalId:item.goal_id||null,assignmentId,
     actorId:item.project_owner_id,role:item.role,
     repository:git?.secret_encrypted?git.repository:null,
     branch:git?.target_branch||git?.default_branch||'main',

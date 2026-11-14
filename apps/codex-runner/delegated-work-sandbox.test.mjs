@@ -19,7 +19,8 @@ test('delegated sandbox validates project identity, role and repository without 
  assert.deepEqual(validateDelegatedSandboxRequest(base),base);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,role:'manager'}),/Некорректное поручение/);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,taskId:'other'}),/Некорректное поручение/);
- assert.equal(validateDelegatedSandboxRequest({...base,taskId:null}).taskId,null);
+ assert.equal(validateDelegatedSandboxRequest({...base,taskId:null,goalId:'00000000-0000-4000-8000-000000000006'}).taskId,null);
+ assert.throws(()=>validateDelegatedSandboxRequest({...base,taskId:null}),/Некорректное поручение/);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,taskId:undefined}),/Некорректное поручение/);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,repository:'https://localhost:3001'}),/GitHub source/);
  assert.throws(()=>validateDelegatedSandboxRequest({...base,sourceSha:'branch'}),/GitHub source/);
@@ -80,6 +81,12 @@ test('generic specialist runs in isolated workspace and uploads only verified br
   assert.deepEqual(uploads[0].artifacts[0].viewport,{width:390,height:844});
   assert.ok(calls.some(call=>call.binary==='git'&&call.args[0]==='clone'));
   assert.ok(calls.some(call=>call.binary==='codex'));
-  assert.equal(closed.length,1);
+  const goalId='00000000-0000-4000-8000-000000000006';
+  const goalResult=await run({...base,taskId:null,goalId});
+  assert.equal(goalResult.browser_available,true);
+  assert.equal(goalResult.screenshots_saved,1);
+  assert.equal(uploads[1].taskId,null);
+  assert.equal(uploads[1].goalId,goalId);
+  assert.equal(closed.length,2);
  }finally{globalThis.fetch=oldFetch;await rm(workspacesRoot,{recursive:true,force:true});}
 });
