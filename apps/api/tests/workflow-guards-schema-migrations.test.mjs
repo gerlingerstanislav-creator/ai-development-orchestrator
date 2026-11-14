@@ -13,9 +13,9 @@ async function isolated(fn){
  try{await fn(db);}
  finally{await db.end();await admin.query('DROP SCHEMA "'+name+'" CASCADE');await admin.end();}
 }
-test('fresh v17 installs durable PM goals without altering earlier workflow migrations',async()=>{
+test('fresh v18 installs goal-scoped assignments without altering earlier workflow migrations',async()=>{
  await isolated(async db=>{
-  assert.deepEqual(await runSchemaMigrations(db,migrations),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]);
+  assert.deepEqual(await runSchemaMigrations(db,migrations),[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]);
   assert.deepEqual(await runSchemaMigrations(db,migrations),[]);
   const triggers=(await db.query(`SELECT tgname FROM pg_trigger
    WHERE tgrelid='tasks'::regclass AND NOT tgisinternal
@@ -50,7 +50,7 @@ test('v11 repairs legacy cards once and preserves QA rework transition and activ
   await db.query("INSERT INTO tasks(id,project_id,title,type,stage,parent_id) VALUES($1,$2,'Unapproved','task','backlog',$3)",[unapproved,project,epic]);
   await db.query("INSERT INTO tasks(id,project_id,title,type,stage) VALUES($1,$2,'QA rework','task','testing')",[qaTask,project]);
   await db.query("INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,status,expires_at,task_id) VALUES($1,$2,$3,'development','active-v11','running',now()+interval '2 hours',$4)",[session,project,user,qaTask]);
-  assert.deepEqual(await runSchemaMigrations(db,migrations),[11,12,13,14,15,16,17]);
+  assert.deepEqual(await runSchemaMigrations(db,migrations),[11,12,13,14,15,16,17,18]);
   assert.deepEqual(await runSchemaMigrations(db,migrations),[]);
   assert.equal((await db.query('SELECT stage FROM tasks WHERE id=$1',[epic])).rows[0].stage,'backlog');
   assert.equal((await db.query('SELECT analysis_state FROM tasks WHERE id=$1',[child])).rows[0].analysis_state,'new');
