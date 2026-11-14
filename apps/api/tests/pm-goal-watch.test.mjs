@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import pg from 'pg';
-import {openPmGoal,installPmGoalSchema} from '../dist/modules/planning/infrastructure/pm-goals.js';
+import {openPmGoal,installPmGoalSchema,installPmCapabilityProposalSchema} from '../dist/modules/planning/infrastructure/pm-goals.js';
 import {checkProjectManagerWatch} from '../dist/project-manager-inbox.js';
 
 test('Temporal returns an unfulfilled goal to its original PM conversation exactly once',async t=>{
@@ -21,6 +21,7 @@ test('Temporal returns an unfulfilled goal to its original PM conversation exact
   CREATE TABLE project_pm_process_reports(project_id uuid,process_id uuid,kind text,PRIMARY KEY(project_id,process_id));
  `);
  await installPmGoalSchema(pool);
+ await installPmCapabilityProposalSchema(pool);
  const projectId=randomUUID(),actorId=randomUUID(),messageId=randomUUID(),orderId=randomUUID();
  await pool.query('INSERT INTO projects VALUES($1)',[projectId]);
  await pool.query("INSERT INTO project_pm_orders(id,project_id,status) VALUES($1,$2,'working')",[orderId,projectId]);

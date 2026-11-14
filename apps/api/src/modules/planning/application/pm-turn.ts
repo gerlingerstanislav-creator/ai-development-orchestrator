@@ -52,7 +52,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    orderId?pool.query('SELECT summary,status,topic_id FROM project_pm_orders WHERE project_id=$1 AND id=$2',[projectId,orderId]):Promise.resolve({rows:[]}),
    orderId?pool.query('SELECT kind,detail,process_id FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 6',[orderId]):Promise.resolve({rows:[]}),
    !turn.reply_to?pool.query("SELECT role,left(body,450) AS body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND id<>$2 AND ((topic_id=$3) OR ($3::uuid IS NULL AND topic_id IS NULL)) ORDER BY created_at DESC,id DESC LIMIT 6",[projectId,messageId,turn.topic_id||null]):Promise.resolve({rows:[]}),
-   pool.query("SELECT id,objective,criteria,status,order_id FROM project_pm_goals WHERE project_id=$1 AND status<>'completed' ORDER BY updated_at DESC LIMIT 6",[projectId]),
+   pool.query("SELECT id,objective,criteria,status,order_id,capability_proposal FROM project_pm_goals WHERE project_id=$1 AND status<>'completed' ORDER BY updated_at DESC LIMIT 6",[projectId]),
    pool.query("SELECT question,answer FROM project_pm_decisions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 4",[projectId])
   ]);
   const config=await resolveRoleAiSettings(pool,projectId,'manager',configResult.rows[0]);
@@ -184,7 +184,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    // to its original order, not an unrelated second PM assignment.
    if(!confirmedOrderId){
     const touchedGoals=[...new Set(toolEvents.rows
-     .filter(row=>['goals.link','goals.plan','goals.update','goals.complete'].includes(row.tool))
+     .filter(row=>['goals.link','goals.plan','goals.propose_alternatives','goals.update','goals.complete'].includes(row.tool))
      .map(row=>row.result?.goal_id||row.result?.id)
      .filter((id:unknown):id is string=>typeof id==='string'))];
     if(touchedGoals.length===1){

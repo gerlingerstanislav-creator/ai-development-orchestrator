@@ -34,3 +34,19 @@ test('bounded context never inserts a full document or a large conversation into
  assert.ok(!text.includes(huge.slice(0,1000)));
  assert.match(text,/Цель 0/);
 });
+
+test('a blocked goal preserves its proposed system improvement across PM turns',()=>{
+ const context=buildPmConversationContext([{
+  id:'00000000-0000-4000-8000-000000000001',
+  objective:'Получить проверенные снимки работающего сайта',criteria:['Проверенные артефакты'],
+  status:'needs_action',
+  capability_proposal:{
+   limitation:'Тестовая среда не допускает нужное действие браузера',
+   options:[{description:'Подключить scoped browser tool к MCP Runner'}],
+   recommended_index:0
+  }
+ }],[]);
+ assert.match(context,/блокировка: Тестовая среда/);
+ assert.match(context,/предлагаемый вариант: Подключить scoped browser tool/);
+ assert.match(context,/подробности через goals.read/);
+});
