@@ -92,3 +92,24 @@ test('developer/QA disagreement on same unchanged SHA requires PM, not another C
  assert.ok(f.calls.some(x=>x.sql.includes("'qa_dev_disagreement'")));
  assert.equal(f.events[0][3],'needs_attention');
 });
+
+test('developer receives a readable QA defect rather than serialized internal JSON',async()=>{
+ const f=fixture(async sql=>{
+  if(sql.includes('SELECT report FROM ai_test_runs'))return {rowCount:1,rows:[{report:{
+   commit:sha,summary:'Все проверки успешны!',
+   caseResults:[{case_id:'qa-1',result:'failed',evidence:'[qa-exec] case qa-1 -> code 1'}],
+   findings:[{description:'Vue compiler: в AdminLogin.vue ошибочное v-else-if'}],
+   checks:[{name:'npm run build',result:'failed',details:'Vue compiler error'}]
+  }}]};
+  if(sql.includes('SELECT result_kind,result_commit'))return {rowCount:0,rows:[]};
+  if(sql.startsWith('UPDATE tasks SET stage='))return {rowCount:1,rows:[]};
+  if(sql.includes('INSERT INTO task_events'))return {rowCount:1,rows:[]};
+  throw Error('Unexpected SQL: '+sql);
+ });
+ const result=await f.gates.rejectTestedTask({projectId,taskId,testId,cycleId,attempt:1,allowFix:false});
+ assert.equal(result,null);
+ const update=f.calls.find(x=>x.sql.startsWith('UPDATE tasks SET stage='));
+ assert.match(update.values[2],/QA обнаружил проблему/);
+ assert.match(update.values[2],/AdminLogin.vue/);
+ assert.doesNotMatch(update.values[2],/"caseResults"|\[qa-exec\]|Все проверки успешны/);
+});

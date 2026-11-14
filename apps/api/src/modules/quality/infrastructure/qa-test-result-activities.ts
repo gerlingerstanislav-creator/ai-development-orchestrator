@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {ApplicationFailure} from '@temporalio/common';
 import {evaluateQaRun} from '../domain/qa-verdict.js';
 import {browserEvidenceAssessment} from '../../../task-evidence.js';
+import {qaReadableSummary} from '../../../qa-readable-summary.js';
 import type {AgentNoteInput} from '../../../task-agent-notes.js';
 
 /** QA result adjudication and blocked-test handoff use the existing Temporal
@@ -61,15 +62,25 @@ async function checkTesting(args:{projectId:string;taskId:string;testId:string})
   const assessed=evaluateQaRun({
    snapshot,remote,status,message,qaSpecVersion:row.rows[0].qa_spec_version,currentSpec
   });
-  const {adHoc,cases,checked,outcome,report}=assessed;
+  const {adHoc,cases,checked,report}=assessed;
   let verdict=assessed.verdict;
+  let evidenceIssue='';
   if(currentSpec.rows[0]?.execution_mode==='browser_evidence'&&verdict==='passed'){
    const proof=browserEvidenceAssessment(report,String(currentSpec.rows[0].evidence_source_sha||''));
    if(!proof.passed){
     verdict='blocked';
-    report.summary=String(report.summary||'').slice(0,1200)+' · Артефакты не подтверждены: '+proof.reason;
+    evidenceIssue='Не подтверждены снимки экрана: '+proof.reason;
    }
   }
+  // Preserve the model's narrative for diagnostics, but never publish it as
+  // an authoritative QA result. In particular, "all passed" can contradict
+  // a failed Vue build and verified empty DOM.
+  Object.assign(report,{modelSummary:String(report.summary||'').slice(0,1000)});
+  report.summary=qaReadableSummary({
+   verdict,caseResults:checked,checks:Array.isArray(report.checks)?report.checks:[],
+   findings:Array.isArray(report.findings)?report.findings:[],
+   staleSpecification:report.staleSpecification,evidenceIssue
+  },cases.length);
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -83,12 +94,12 @@ async function checkTesting(args:{projectId:string;taskId:string;testId:string})
      [randomUUID(),projectId,testId,check.case_id,check.result,check.evidence]);
    }
    await client.query('UPDATE ai_test_runs SET status=$2,message=$3,verdict=$4,report=$5,qa_plan_snapshot=COALESCE($6,qa_plan_snapshot),completed_at=now() WHERE id=$1',
-    [testId,status,outcome,verdict,JSON.stringify(report),adHoc?JSON.stringify({...snapshot,cases}):null]);
+    [testId,status,report.summary,verdict,JSON.stringify(report),adHoc?JSON.stringify({...snapshot,cases}):null]);
    await client.query('COMMIT');
   }catch(e){await client.query('ROLLBACK');throw e;}finally{client.release();}
   if(String(remote.handoffNote||'').trim())await recordNote({projectId,taskId:row.rows[0].task_id,authorStage:'testing',authorName:'AI-тестировщик',targetStage:verdict==='failed'?'development':'all',kind:verdict==='failed'?'risk':'handoff',body:String(remote.handoffNote),sourceKey:'tester:'+testId,sourceRunId:testId});
   await event(projectId,testId,'testing',verdict,String(report.summary||'Тестирование завершено').slice(0,1400)+' · Результаты всех тест-кейсов доступны в отчёте QA в чате задачи.',verdict==='passed'?'info':verdict==='failed'?'error':'warning');
-  return {status,message:outcome,verdict};
+  return {status,message:report.summary,verdict};
  }
  if(message!==row.rows[0].message){
   await pool.query("UPDATE ai_test_runs SET status=$2,message=$3 WHERE id=$1 AND status IN ('queued','running')",[testId,status,message]);

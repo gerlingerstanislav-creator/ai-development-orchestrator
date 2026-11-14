@@ -75,6 +75,32 @@ try{
  assert.match(retryBody.error,/HTTP 404/);
  assert.equal((await request('start',{path:'/lines.html'})).path,'/lines.html');
  await request('close');
+ // A Vite/Vue project without installed dependencies must NEVER fall back to
+ // serving index.html as static HTML (which gives HTTP 200 but an empty #app).
+ await writeFile(join(repo,'package.json'),JSON.stringify({scripts:{dev:'vite'}}));
+ await writeFile(join(repo,'index.html'),'<html><body><div id="app"></div><script type="module" src="/src/main.js"></script></body></html>');
+ const missingDependencies=await fetch(url+'/action',{
+  method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({session:id,token,action:'start'}),signal:AbortSignal.timeout(18000)
+ });
+ assert.equal(missingDependencies.status,422);
+ assert.match((await missingDependencies.json()).error,/node_modules/);
+ await rm(join(repo,'package.json'));await rm(join(repo,'index.html'));
+ // A broken page script must be diagnosed as an unrendered app rather than
+ // an unavailable browser or a successful screenshot.
+ await writeFile(join(repo,'blank.html'),
+  '<!doctype html><title>Broken SPA</title><div id="app"></div><script type="module">throw Error("test app bootstrap failure")</script>');
+ const blank=await fetch(url+'/action',{
+  method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({session:id,token,action:'start',path:'/blank.html'}),signal:AbortSignal.timeout(18000)
+ });
+ assert.equal(blank.status,422);
+ const failure=(await blank.json()).error;
+ assert.match(failure,/#app/);
+ assert.match(failure,/test app bootstrap failure/);
+ assert.equal((await request('start',{path:'/lines.html'})).path,'/lines.html',
+  'failed SPA mount must not poison later Chromium sessions');
+ await request('close');
  // Regression: unresponsive page scripts must not hold the QA browser worker
  // forever or poison subsequent attempts using the same session identity.
  await request('start',{path:'/lines.html'});
