@@ -17,6 +17,7 @@ import {markdownSections,sectionBody} from './markdown-knowledge-sections.js';
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
 import {delegateWork,listWork,planWork,reportWork,reviewWork,grantWorkTools,workRoles} from './modules/agents/infrastructure/work-assignments.js';
+import {listWorkArtifacts} from './modules/agents/infrastructure/work-artifacts.js';
 import {responsibilityFor} from './role-responsibilities.js';
 import {createDoc,updateDoc,deleteDoc,documentRevision as revision,parentExists,createPage,updatePage,deleteEmptyPage} from './modules/knowledge/infrastructure/agent-document-pages.js';
 function rejected(message:string,statusCode=409){return Object.assign(new Error(message),{statusCode});}
@@ -118,7 +119,22 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
   return {role,responsibility:responsibilityFor(role),
    tools:capabilitiesForRole(role,false).map(t=>({name:t.name,description:t.description,readOnly:t.readOnly})),
    task_grantable_tools:taskGrantableTools,
+   execution_environment:{
+    kind:'isolated_task_workspace',
+    repository:'connected project source, pinned to verified SHA',
+    shell:'sandboxed, no GitHub credentials in agent commands',
+    browser:'Chromium/Playwright through authenticated local browser bridge when healthy',
+    evidence:'work.artifacts returns immutable verified screenshots after execution',
+    note:'Рабочая среда проверяется непосредственно при запуске; доступ к production не гарантирован'
+   },
    note:'Новые безопасные права выдаются только на конкретное активное поручение через tools в work.delegate/work.plan. Проверка фактической среды обязательна.'};
+ }
+ case 'work.artifacts':{
+  const {task_id}=z.object({task_id:uuid}).parse(params);
+  if(session.task_id&&session.task_id!==task_id)throw rejected('Нельзя читать чужие артефакты',403);
+  if(!(await pool.query('SELECT 1 FROM tasks WHERE id=$1 AND project_id=$2',[task_id,projectId])).rowCount)
+   throw rejected('Задача не найдена',404);
+  return listWorkArtifacts(pool,projectId,task_id);
  }
  case 'work.list':{
   const {task_id}=z.object({task_id:uuid}).parse(params);
