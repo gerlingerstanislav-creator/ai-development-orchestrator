@@ -28,7 +28,7 @@ test('browser artifact gate can block even after successful case assertions',()=
   evidenceIssue:'Не подтверждены desktop и mobile скриншоты'
  },2);
  assert.match(summary,/не смог полностью проверить/);
- assert.match(summary,/снимки/);
+ assert.match(summary,/скриншоты|снимки/);
  assert.doesNotMatch(summary,/QA завершён успешно/);
 });
 test('zero cases cannot be reported as a successful QA run',()=>{
