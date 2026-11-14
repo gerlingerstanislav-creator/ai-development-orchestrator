@@ -38,9 +38,9 @@ test('PM progress is durable, idempotent, attempt-scoped and inaccessible across
  const events=await readPmTurnProgress(pool,project,0);
  assert.equal(events.length,1);
  assert.deepEqual(events[0].message_id,message);
- const fetch=await app.inject({method:'GET',url});
- assert.equal(fetch.statusCode,200);
- assert.equal(fetch.json().events.length,1);
+ const snapshot=await app.inject({method:'GET',url});
+ assert.equal(snapshot.statusCode,200);
+ assert.equal(snapshot.json().events.length,1);
  assert.equal((await app.inject({method:'GET',url:'/api/projects/'+other+'/manager/inbox/progress'})).statusCode,403);
  const origin=await app.listen({host:'127.0.0.1',port:0});
  const controller=new AbortController();
