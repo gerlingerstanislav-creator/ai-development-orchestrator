@@ -59,7 +59,7 @@ async function runDelegatedWork(assignmentId:string):Promise<void>{
   role:'Исполнитель поручения: '+item.role,
   objective:item.objective,
   scope:'Проект '+item.project_id+'; задача '+item.task_id+'; поручение '+assignmentId,
-  tools:'Рабочая копия исходников с командами в sandbox, реальный Chromium и MCP capabilities.list/describe, tasks.read/history, agents.consult, work.delegate, work.artifacts. Исполнитель выбирает действия по критериям приёмки, не по имени этапа.',
+  tools:'Рабочая копия исходников с командами в sandbox, реальный Chromium и MCP capabilities.list/describe, goals.list/read, tasks.read/history, agents.consult, work.delegate, work.artifacts. По необходимости прочитай связанную цель владельца; выбирай действия по критериям результата, а не по названию этапа.',
   instructions:String(instruction.rows[0]?.agent_instructions||''),
   continuation:[
    'Критерии приёмки: '+item.acceptance,
