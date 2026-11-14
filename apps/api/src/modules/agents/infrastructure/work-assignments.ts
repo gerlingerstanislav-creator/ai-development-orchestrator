@@ -65,6 +65,35 @@ export async function installTaskCapabilityGrants(db:Db){
  await db.query("ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS granted_tools text[] NOT NULL DEFAULT ARRAY[]::text[]");
 }
 
+/** v18: a work item belongs either to a Kanban task or directly to a PM goal.
+ * Composite FKs keep dependencies and goal links inside the same project/scope.
+ * Existing task-scoped assignments and historical migration checksums remain intact.
+ */
+export async function installGoalWorkScope(db:Db){
+ await db.query(`ALTER TABLE agent_work_assignments
+  ADD COLUMN IF NOT EXISTS goal_id uuid;
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_pm_goal_project_identity ON project_pm_goals(project_id,id);
+ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_work_goal_identity
+  ON agent_work_assignments(project_id,goal_id,id);
+ ALTER TABLE agent_work_assignments ALTER COLUMN task_id DROP NOT NULL;
+ ALTER TABLE agent_work_assignments
+  ADD CONSTRAINT agent_work_scope_xor CHECK ((task_id IS NULL) <> (goal_id IS NULL));
+ ALTER TABLE agent_work_assignments
+  ADD CONSTRAINT agent_work_goal_project FOREIGN KEY(project_id,goal_id)
+   REFERENCES project_pm_goals(project_id,id) ON DELETE CASCADE;
+ CREATE INDEX IF NOT EXISTS idx_agent_work_goal ON agent_work_assignments(project_id,goal_id,created_at DESC);
+ ALTER TABLE agent_work_plan_dependencies ADD COLUMN IF NOT EXISTS goal_id uuid;
+ ALTER TABLE agent_work_plan_dependencies ALTER COLUMN task_id DROP NOT NULL;
+ ALTER TABLE agent_work_plan_dependencies
+  ADD CONSTRAINT agent_work_dependency_scope_xor CHECK ((task_id IS NULL) <> (goal_id IS NULL));
+ ALTER TABLE agent_work_plan_dependencies
+  ADD CONSTRAINT agent_work_dependency_goal_source FOREIGN KEY(project_id,goal_id,assignment_id)
+   REFERENCES agent_work_assignments(project_id,goal_id,id) ON DELETE CASCADE;
+ ALTER TABLE agent_work_plan_dependencies
+  ADD CONSTRAINT agent_work_dependency_goal_prerequisite FOREIGN KEY(project_id,goal_id,requires_id)
+   REFERENCES agent_work_assignments(project_id,goal_id,id) ON DELETE CASCADE;`);
+}
+
 /** Planning is one transaction: either all steps and edges exist, or none. */
 export async function planWork(db:Db,input:{
  projectId:string;taskId:string;sourceRole:string;steps:readonly WorkPlanStep[]
