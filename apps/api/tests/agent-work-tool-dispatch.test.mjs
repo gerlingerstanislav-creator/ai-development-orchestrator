@@ -49,7 +49,7 @@ test('delegation requires an active specialist assignment or another live task r
  }};
  await assert.rejects(attempt(db,specialist,'work.delegate',payload),error=>error.statusCode===403);
  assert.equal(calls.length,2);
- assert.deepEqual(calls[0].params,[assignment,projectId,taskId,'testing']);
+ assert.deepEqual(calls[0].params,[assignment,projectId,taskId,'testing',null]);
  assert.deepEqual(calls[1].params,[assignment,projectId,taskId,'testing']);
 });
 test('live peer specialist can delegate in same task and cannot create unauthorized grants',async()=>{
@@ -97,7 +97,7 @@ test('only project manager can review or grant, without bypassing QA or stage ch
  const calls=[];
  const db={query:async(sql,args)=>{
   calls.push({sql,args});
-  if(sql.includes('SELECT a.*,t.spec_version'))return {rowCount:1,rows:[{
+  if(sql.includes('SELECT a.*,COALESCE(t.spec_version'))return {rowCount:1,rows:[{
    id:assignment,task_id:taskId,status:'submitted',evidence:'',
    spec_version:4,actual_version:4
   }]};
