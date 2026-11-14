@@ -67,7 +67,7 @@ test('scope, evidence and current work version gate goal completion',async()=>{
    [sourceMessageId,projectId,actorId]);
   await db.query("INSERT INTO tasks VALUES($1,$2,'Незавершённая работа','analysis','task',2)",
    [taskId,projectId]);
-  await db.query("INSERT INTO agent_work_assignments VALUES($1,$2,$3,'running','','2','')",
+  await db.query("INSERT INTO agent_work_assignments VALUES($1,$2,$3,'running','',1,'')",
    [assignmentId,projectId,taskId]);
   await db.query("INSERT INTO documents VALUES($1,$2,'Другой проект','Это отдельная длинная страница')",
    [otherDocument,otherProject]);
