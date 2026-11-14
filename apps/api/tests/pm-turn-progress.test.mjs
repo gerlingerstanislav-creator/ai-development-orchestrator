@@ -42,6 +42,16 @@ test('PM progress is durable, idempotent, attempt-scoped and inaccessible across
  assert.equal(fetch.statusCode,200);
  assert.equal(fetch.json().events.length,1);
  assert.equal((await app.inject({method:'GET',url:'/api/projects/'+other+'/manager/inbox/progress'})).statusCode,403);
+ const origin=await app.listen({host:'127.0.0.1',port:0});
+ const controller=new AbortController();
+ try{
+  const stream=await fetch(origin+url,{headers:{Accept:'text/event-stream'},signal:controller.signal});
+  assert.equal(stream.status,200);
+  assert.match(stream.headers.get('content-type'),/text\/event-stream/);
+  const chunk=await stream.body.getReader().read();
+  assert.match(new TextDecoder().decode(chunk.value),/event: progress/);
+ }finally{controller.abort();}
+
  await db.query("UPDATE assistant_messages SET status='completed' WHERE id=$1",[message]);
  assert.equal((await app.inject({method:'POST',url:endpoint,headers,payload:{...event,sequence:2}})).statusCode,202);
  assert.equal((await readPmTurnProgress(pool,project,0)).length,1);
