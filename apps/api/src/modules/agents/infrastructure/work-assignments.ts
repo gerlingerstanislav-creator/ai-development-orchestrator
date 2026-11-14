@@ -65,7 +65,7 @@ export async function installTaskCapabilityGrants(db:Db){
  await db.query("ALTER TABLE agent_work_assignments ADD COLUMN IF NOT EXISTS granted_tools text[] NOT NULL DEFAULT ARRAY[]::text[]");
 }
 
-/** v18: a work item belongs either to a Kanban task or directly to a PM goal.
+/** v19: a work item belongs either to a Kanban task or directly to a PM goal.
  * Composite FKs keep dependencies and goal links inside the same project/scope.
  * Existing task-scoped assignments and historical migration checksums remain intact.
  */
