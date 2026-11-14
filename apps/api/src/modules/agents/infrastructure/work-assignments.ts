@@ -194,7 +194,7 @@ export async function delegateWork(db:Db,input:{
   await db.query(`INSERT INTO project_pm_goal_links(id,project_id,goal_id,kind,reference_id)
    VALUES($1,$2,$3,'assignment',$4) ON CONFLICT(goal_id,kind,reference_id) DO NOTHING`,
    [randomUUID(),input.projectId,input.goalId,row.id]);
-  await db.query(`UPDATE project_pm_goals SET status='waiting_agents',updated_at=now()
+  await db.query(`UPDATE project_pm_goals SET status='waiting_agents',capability_proposal=NULL,updated_at=now()
    WHERE project_id=$1 AND id=$2 AND status<>'completed'`,[input.projectId,input.goalId]);
  }
  await event(db,row,'queued',input.sourceRole+' → '+input.role+': '+input.objective);
