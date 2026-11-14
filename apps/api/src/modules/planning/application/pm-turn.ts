@@ -5,6 +5,7 @@ import {readChatImages} from '../../../chat-images.js';
 import {conversationInstructions,resolveRoleAiSettings} from '../../../project-team.js';
 import type {PmWatchReport} from './pm-watch-report.js';
 import {PM_GOAL_POLICY,pmOrderStateFromResults} from '../../../pm-goal-policy.js';
+import {buildPmConversationContext} from '../domain/pm-conversation-context.js';
 
 // Derive infrastructure-provided DB port without coupling application code to pg.
 type Pool=Parameters<typeof recordAgentPrompt>[0];
@@ -43,14 +44,16 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
  try{
   // No project-wide task snapshots or chat history on each PM turn.
   // Current order and explicit reply are sufficient; tools provide everything else.
-  const [configResult,projectResult,replyResult,topicResult,orderResult,eventResult,recentResult]=await Promise.all([
+  const [configResult,projectResult,replyResult,topicResult,orderResult,eventResult,recentResult,goalsResult,decisionsResult]=await Promise.all([
    pool.query('SELECT model,reasoning,enabled FROM project_ai_settings WHERE project_id=$1',[projectId]),
    pool.query('SELECT name,description FROM projects WHERE id=$1',[projectId]),
    turn.reply_to?pool.query("SELECT role,body FROM assistant_messages WHERE project_id=$1 AND id=$2",[projectId,turn.reply_to]):Promise.resolve({rows:[]}),
    turn.topic_id?pool.query('SELECT title,status FROM project_chat_topics WHERE project_id=$1 AND id=$2',[projectId,turn.topic_id]):Promise.resolve({rows:[]}),
    orderId?pool.query('SELECT summary,status,topic_id FROM project_pm_orders WHERE project_id=$1 AND id=$2',[projectId,orderId]):Promise.resolve({rows:[]}),
    orderId?pool.query('SELECT kind,detail,process_id FROM project_pm_order_events WHERE order_id=$1 ORDER BY created_at DESC LIMIT 6',[orderId]):Promise.resolve({rows:[]}),
-   !turn.reply_to?pool.query("SELECT role,left(body,450) AS body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND id<>$2 AND ((topic_id=$3) OR ($3::uuid IS NULL AND topic_id IS NULL)) ORDER BY created_at DESC,id DESC LIMIT 6",[projectId,messageId,turn.topic_id||null]):Promise.resolve({rows:[]})
+   !turn.reply_to?pool.query("SELECT role,left(body,450) AS body FROM assistant_messages WHERE project_id=$1 AND task_id IS NULL AND channel='project' AND status='completed' AND id<>$2 AND ((topic_id=$3) OR ($3::uuid IS NULL AND topic_id IS NULL)) ORDER BY created_at DESC,id DESC LIMIT 6",[projectId,messageId,turn.topic_id||null]):Promise.resolve({rows:[]}),
+   pool.query("SELECT id,objective,criteria,status,order_id FROM project_pm_goals WHERE project_id=$1 AND status<>'completed' ORDER BY updated_at DESC LIMIT 6",[projectId]),
+   pool.query("SELECT question,answer FROM project_pm_decisions WHERE project_id=$1 ORDER BY created_at DESC LIMIT 4",[projectId])
   ]);
   const config=await resolveRoleAiSettings(pool,projectId,'manager',configResult.rows[0]);
   if(!config?.enabled)throw Error('AI выключен в настройках проекта');
@@ -61,6 +64,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    "SELECT n.id,n.task_id,n.body,n.status FROM project_pm_order_events e JOIN task_agent_notes n ON n.id=e.process_id AND n.project_id=$2 WHERE e.order_id=$1 AND e.kind='owner_question' LIMIT 1",
    [orderId,projectId])).rows[0]:null;
   const images=await readChatImages(pool,projectId,messageId,'assistant');
+  const durableContext=buildPmConversationContext(goalsResult.rows,decisionsResult.rows);
   const prompt=composeAgentPrompt({
    role:'Менеджер проекта AI Development Orchestrator. Один логический ПМ, независимые поручения.',
    objective:String(turn.body||'Изучи приложенные изображения'),
@@ -89,10 +93,11 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     ownerQuestion?'Вопрос, на который отвечает пользователь: '+JSON.stringify(ownerQuestion):'',
     replyResult.rows[0]?'Ответ на сообщение: '+JSON.stringify(replyResult.rows[0]).slice(0,1600):'',
     eventResult.rows.length?'Последние события этого поручения: '+JSON.stringify(eventResult.rows).slice(0,1000):'',
+    durableContext,
     recentResult.rows.length?'Короткий контекст текущего диалога: '+JSON.stringify(recentResult.rows.reverse()).slice(0,2200):'',
      images.length?'Приложены изображения: '+images.map(image=>image.name).join(', ')+'. Рассмотри их визуальное содержимое.':''
    ].filter(Boolean).join('\n\n'),
-    output:'Ответь по-русски. Укажи достигнутый результат и следующий шаг по исходной цели. При блокировке сообщи конкретные варианты, рекомендацию и ответственного. Не выдавай запуск за завершение.'
+    output:'Отвечай по-русски естественно и прямо, как универсальный AI-помощник. На вопросы давай содержательный ответ без формального отчёта и без лишних действий. При поручении обозначь фактически достигнутый результат, оставшиеся шаги и ответственного; при блокировке предложи конкретные альтернативы. Никогда не выдавай запуск процесса за выполнение цели.'
   });
   // First turn uses the complete PM role contract; subsequent turns keep that
   // contract in the same Codex thread and supply only fresh owner input.
@@ -104,6 +109,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    turn.topic_id?'Тема '+turn.topic_id+': '+JSON.stringify(topicResult.rows[0]||{}).slice(0,350):'',
    ownerQuestion?'Решаемый вопрос: '+JSON.stringify(ownerQuestion).slice(0,850):'',
    eventResult.rows.length?'Новые события поручения: '+JSON.stringify(eventResult.rows).slice(0,850):'',
+   durableContext,
    images.length?'Приложены изображения: '+images.map(image=>image.name).join(', '):'',
    'Не пересказывай всю историю. При необходимости используй адресные MCP-инструменты; '+
     'сохранённые фоновые поручения отслеживаются Temporal, не ожидай их синхронно.'
