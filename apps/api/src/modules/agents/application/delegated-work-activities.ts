@@ -91,7 +91,7 @@ async function runDelegatedWork(assignmentId:string):Promise<void>{
    brief?'Состояние и новые замечания этой задачи:\n'+brief:'',
    memory.observations?'Наблюдения из опыта (не обязательные инструкции):\n'+memory.observations:''
   ].filter(Boolean).join('\n\n'),
-  output:'Кратко сообщи, что действительно сделано, приложи ссылки и идентификаторы. work.report — обязательное подтверждение; при отсутствии доказательств отчитайся о блокировке, а не об успехе.'
+  output:'Для work.report поле result — понятное владельцу сообщение на русском: что удалось, почему нет результата и что конкретно требуется дальше, максимум 2–3 предложения, без внутренних ID, JSON, команд CLI и стека ошибок. Поле evidence — отдельные технические доказательства (SHA, ошибка компиляции, команда и код выхода). Не путай ошибку приложения с недоступностью браузерного моста. Не повторяй уже доказанную блокировку без изменений окружения или исходников. work.report обязателен: без реальных артефактов верни blocked.'
  });
  await recordPrompt(pool,{projectId:item.project_id,processId:assignmentId,role:item.role,operation:'delegated_work',prompt}).catch(()=>{});
  try{
