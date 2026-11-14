@@ -83,7 +83,10 @@ test('instruction audit upgrades only exact former defaults, never owner-customi
   await db.query("UPDATE project_conversation_agents SET agent_instructions='Индивидуальные правила аналитика' WHERE project_id=$1 AND role='analyst'",[project]);
   await db.query("UPDATE project_specialist_agents SET agent_instructions=$2 WHERE project_id=$1 AND role='architect'",
    [project,previousAgentInstructions.architect]);
-  await db.query("UPDATE workflow_stages SET agent_instructions=$2 WHERE project_id=$1 AND stage='development'",
+  await db.query(`INSERT INTO workflow_stages(
+    project_id,stage,label,mode,position,agent_name,agent_instructions)
+    VALUES($1,'development','Разработка','approval',3,'Разработчик',$2)
+    ON CONFLICT(project_id,stage) DO UPDATE SET agent_instructions=EXCLUDED.agent_instructions`,
    [project,previousAgentInstructions.development]);
   await reconcileProjectTeamProfiles(db);
   const manager=(await db.query("SELECT agent_instructions FROM project_conversation_agents WHERE project_id=$1 AND role='manager'",[project])).rows[0];
