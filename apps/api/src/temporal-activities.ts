@@ -19,7 +19,6 @@ import {executeProjectManagerInbox,failProjectManagerInbox,readProjectManagerWat
 import {runIterationPlanning} from './project-iterations.js';
 import {performAutomaticDeployment,failAutomaticDeployment as markDeploymentFailed} from './deployment-automation.js';
 import {runQualityGates} from './quality-gates.js';
-import {deploymentDecision} from './deployment-stage.js';
 import pg from 'pg';
 import type {PoolClient} from 'pg';
 import {randomUUID} from 'node:crypto';
