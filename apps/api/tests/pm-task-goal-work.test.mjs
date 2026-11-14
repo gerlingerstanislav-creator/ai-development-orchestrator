@@ -49,3 +49,16 @@ test('PM goal watches development, QA and delegated work for bug and improvement
   assert.equal(db.queries.length,2);
  }
 });
+
+test('technical done still needs owner action while the Kanban result is on acceptance',async()=>{
+ const db={query:async()=>({rows:[{id:task,title:'Отчёт',display_number:38,stage:'done',
+  board_status:'acceptance',analysis_state:'ready',type:'task'}]})};
+ const result=await readPmTaskGoal(db,project,task);
+ assert.equal(result.status,'needs_action');
+ assert.match(result.reason,/приёмки владельцем/);
+});
+test('PM reports success only after the owner has accepted done',async()=>{
+ const db={query:async()=>({rows:[{id:task,title:'Отчёт',display_number:38,stage:'done',
+  board_status:'done',analysis_state:'ready',type:'task'}]})};
+ assert.equal((await readPmTaskGoal(db,project,task)).status,'done');
+});
