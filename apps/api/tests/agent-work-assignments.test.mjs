@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
- installWorkAssignmentsSchema,delegateWork,reportWork,reviewWork,listWork,finalizeWorkAttempt,workRoles
+ installWorkAssignmentsSchema,delegateWork,reportWork,reviewWork,grantWorkTools,listWork,finalizeWorkAttempt,workRoles
 } from '../dist/modules/agents/infrastructure/work-assignments.js';
 import {toolsForRole,capabilitiesForRole} from '../dist/agent-tools.js';
 import {checkProjectManagerWatch} from '../dist/modules/planning/application/pm-watch-monitor.js';
@@ -174,4 +174,36 @@ test('manager cannot accept parent while a delegated child remains active',async
   reason:'Проверка независимого результата дочернего поручения'}),/делегированная работа не завершена/);
  assert.ok(statements[1].sql.includes("status NOT IN ('completed','cancelled')"));
  assert.deepEqual(statements[1].args,[assignmentId,projectId,taskId]);
+});
+
+test('PM can unblock an assignment by granting a safe tool without creating a new work item',async()=>{
+ const calls=[];
+ const db={query:async(sql,args)=>{
+  calls.push({sql,args});
+  if(sql.startsWith('SELECT a.*'))return {rows:[{
+   id:assignmentId,project_id:projectId,task_id:taskId,granted_tools:[],
+   status:'blocked',attempts:1,spec_version:2,actual_version:2,task_stage:'testing'
+  }],rowCount:1};
+  return {rows:[],rowCount:1};
+ }};
+ const result=await grantWorkTools(db,{
+  projectId,assignmentId,tools:['documents.update'],reason:'ПМ разрешил обновление подтверждённого документа'
+ });
+ assert.equal(result.status,'queued');
+ assert.deepEqual(result.granted_tools,['documents.update']);
+ const update=calls.find(c=>c.sql.startsWith('UPDATE agent_work_assignments'));
+ assert.deepEqual(update.args.slice(0,3),[assignmentId,projectId,['documents.update']]);
+ assert.ok(calls.some(c=>c.sql.startsWith('INSERT INTO process_events')));
+ assert.ok(!calls.some(c=>c.sql.includes('INSERT INTO agent_work_assignments')));
+});
+
+test('PM cannot grant unsafe tools, or revive completed or stale assignments',async()=>{
+ const db={query:async()=>({rows:[{
+  id:assignmentId,project_id:projectId,task_id:taskId,status:'completed',attempts:1,
+  spec_version:2,actual_version:2,task_stage:'done',granted_tools:[]
+ }],rowCount:1})};
+ await assert.rejects(grantWorkTools(db,{projectId,assignmentId,tools:['tasks.close'],
+  reason:'Нельзя обходить согласования и защиту QA'}),/нельзя передать/);
+ await assert.rejects(grantWorkTools(db,{projectId,assignmentId,tools:['documents.update'],
+  reason:'Попытка изменить завершённое поручение'}),/незавершённого/);
 });

@@ -69,7 +69,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     instructions.slice(0,2800),
     PM_GOAL_POLICY,
     'Координируй работу специалистов; не подменяй аналитика, разработчика, QA или DevOps.',
-    'Для сложной цели используй work.plan(task_id,steps) с произвольными зависимостями needs по ключам шагов; для одиночной работы — work.delegate. Сначала узнай разрешённые возможности через agents.capabilities(role). Если специалисту нужны дополнительные безопасные инструменты, назначь их в tools конкретного work.delegate или шага work.plan: права действуют только пока выполняется поручение. Не выдавай глобальных прав, секретов, обходов QA/CI, слияния или выкладки. Для статуса используй work.list, для реального результата work.review. Поручение не является PR, обходом QA или автоматическим закрытием самой задачи. Делегируй по смыслу и необходимым инструментам, а не по типу заявки. Если требуются зависимости или доступ к среде, поручай их соответствующему специалисту.',
+    'Для сложной цели используй work.plan(task_id,steps) с произвольными зависимостями needs по ключам шагов; для одиночной работы — work.delegate. Сначала узнай разрешённые возможности через agents.capabilities(role). Если специалисту нужны дополнительные безопасные инструменты, назначь их в tools конкретного work.delegate или шага work.plan: права действуют только пока выполняется поручение. Не выдавай глобальных прав, секретов, обходов QA/CI, слияния или выкладки. Для статуса используй work.list, для реального результата work.review. Поручение не является PR, обходом QA или автоматическим закрытием самой задачи. Делегируй по смыслу и необходимым инструментам, а не по типу заявки. Если исполнитель заблокирован отсутствующим безопасным инструментом, используй work.grant для того же поручения: предыдущие доказательства и история остаются. Если инструмент не может быть выдан, поручай среду соответствующему специалисту. Не запрашивай у пользователя секреты без необходимости.',
     'При просьбе подготовить или уточнить ТЗ передай вводные аналитику через documentation.prepare_spec. Для плана используй iterations.prepare_plan: аналитик обновляет текущие карточки и создаёт недостающие. Готовые задачи автоматически идут в разработку.',
     'Если запрос просто вопрос — отвечай без побочных изменений. При неизвестном факте используй адресное чтение.',
     'Различай удаление пустой карточки (tasks.delete) и безопасную отмену начатой задачи с PR (tasks.cancel). При отказе проверяй альтернативы и блокировки, а не прекращай поручение.',
@@ -133,7 +133,7 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     });
    }
    const kind:ProjectManagerWatch['kind']=row.tool==='pm.orders.watch_task'?'task_goal':
-    (row.tool==='work.delegate'||(row.tool==='work.review'&&row.result?.status==='queued'))?'delegated_work':
+    (row.tool==='work.delegate'||row.tool==='work.grant'||(row.tool==='work.review'&&row.result?.status==='queued'))?'delegated_work':
     row.tool==='qa.retry'?'testing':row.tool==='iterations.launch'?'iteration_execution':
     ['iterations.prepare_plan','pm.decisions.record'].includes(row.tool)?'iteration_plan':
     row.tool==='workflow.approve_development'?'development':'document_import';
