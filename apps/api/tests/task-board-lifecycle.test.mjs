@@ -65,7 +65,7 @@ test('v21 migrates old tasks and protects owner acceptance with real PostgreSQL'
    let state=(await db.query('SELECT board_status,postponed_at,postponed_until FROM tasks WHERE id=$1',[ids.backlog])).rows[0];
    assert.equal(state.board_status,'backlog');
    assert.ok(state.postponed_at);
-   assert.equal(state.postponed_until.toISOString().slice(0,10),'2026-12-15');
+   assert.equal(String(state.postponed_until).slice(0,10),'2026-12-15');
    assert.equal((await action(ids.backlog,{action:'resume'})).statusCode,200);
    assert.equal((await db.query('SELECT board_status FROM tasks WHERE id=$1',[ids.backlog])).rows[0].board_status,'todo');
 
