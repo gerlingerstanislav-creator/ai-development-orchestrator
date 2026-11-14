@@ -123,12 +123,14 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   const seen=new Set<string>();
   const completedGoals=new Set(toolEvents.rows.filter(row=>row.tool==='goals.complete')
    .map(row=>row.result?.id).filter((id:unknown):id is string=>typeof id==='string'));
+  const goalsWithLinkedWatch=new Set(toolEvents.rows.filter(row=>row.tool==='goals.link'&&row.result?.watch)
+   .map(row=>row.result?.goal_id).filter((id:unknown):id is string=>typeof id==='string'));
   const effectiveTopicForWatch=turn.topic_id||toolEvents.rows.filter(row=>row.tool==='discussions.open').map(row=>row.result?.topic?.id).find((id:unknown)=>typeof id==='string')||null;
   watchers=toolEvents.rows.flatMap(row=>{
    if(row.tool==='goals.open'&&row.result?.watch?.kind==='goal'){
     const watch=row.result.watch;
     if(typeof watch.process_id!=='string'||typeof watch.goal_id!=='string'||
-       seen.has(watch.process_id)||completedGoals.has(watch.goal_id))return [];
+       seen.has(watch.process_id)||completedGoals.has(watch.goal_id)||goalsWithLinkedWatch.has(watch.goal_id))return [];
     seen.add(watch.process_id);
     return [{projectId,processId:watch.process_id,kind:'goal' as const,
       goalId:watch.goal_id,orderId:orderId||undefined,
