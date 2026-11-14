@@ -1,5 +1,6 @@
 import {validAgentRequest,assistantRequestError,runnerJobRequestError} from './request-contracts.mjs';
 import {createQaJobRunner} from './qa-job.mjs';
+import {createDelegatedWorkSandbox} from './delegated-work-sandbox.mjs';
 import {createCodexDeviceAuth} from './device-auth.mjs';
 import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
@@ -569,9 +570,31 @@ function safeQuotaFailure(error){
   .slice(0,250);
 }
 
+const runDelegatedSandbox=createDelegatedWorkSandbox({
+ command,isolatedTaskPolicy,persistentCli,cliEnv,withReaderContext,
+ agentApi,runnerSecret:jobKey,
+ browser:{health:browserHealth,open:openQaBrowserSession,
+  screenshots:getQaScreenshotEvidence,close:closeQaBrowserSession},
+ decodeCodex:codexJsonResult,workspacesRoot:process.env.QA_BROWSER_WORKSPACES_DIR
+});
+
 http.createServer(async(req,res)=>{
  try {
   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
+  if(req.method==='POST'&&req.url==='/delegated-work'){
+   if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Все изолированные исполнители заняты'});
+   const data=await readJson(req,65000);
+   activeChatRequests++;
+   try{
+    if(!(await connected()).connected)return reply(res,409,{error:'Сначала подключи Codex CLI'});
+    const result=await runDelegatedSandbox(data);
+    return reply(res,200,result);
+   }catch(error){
+    const message=String(error?.message||error).replaceAll(String(data.token||''),'[REDACTED]').slice(0,900);
+    process.stderr.write('[delegated-work] '+message+'\n');
+    return reply(res,503,{error:message});
+   }finally{activeChatRequests--;}
+  }
   if(req.method==='GET'&&(req.url==='/usage-limits'||req.url.startsWith('/usage-limits?'))){
    const refresh=new URL(req.url,'http://localhost').searchParams.get('refresh')==='1';
    try{return reply(res,200,await rateLimitCache.read({force:refresh}));}

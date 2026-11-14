@@ -6,6 +6,7 @@ import {agentToolCatalog,readAgentSession,hashSecret,toolsForRole,toolsForSessio
 import {executeAgentTool} from './agent-tool-executor.js';
 import {annotatePmToolResult} from './pm-goal-policy.js';
 import {inspectGitHubProjectSource} from './documentation-preparation.js';
+import {storeWorkArtifact} from './modules/agents/infrastructure/work-artifacts.js';
 
 const uuid=z.string().uuid();
 const callSchema=z.object({
@@ -219,6 +220,46 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
     [randomUUID(),session.id,session.project_id,name,JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify({error:message.slice(0,400)})]).catch(()=>{});
    return reply.code(Math.min(599,Math.max(400,Number((error as any).statusCode)||400))).send({error:message.slice(0,650)});
   }finally{connection?.release();}
+ });
+ // The Runner has verified Chromium receipts and file hashes. No model may
+ // submit image bytes through ordinary MCP calls or invent an artifact URL.
+ app.post('/internal/agent-tools/work-artifacts',{bodyLimit:5*1024*1024},async(req:any,reply)=>{
+  if(!authorizeRunner(req,reply))return;
+  const image=z.object({
+   name:z.string().max(150),mime:z.literal('image/jpeg'),
+   data:z.string().max(450000),sha256:z.string().regex(/^[a-f0-9]{64}$/i),
+   viewport:z.object({width:z.number().int(),height:z.number().int()}).strict(),
+   origin:z.literal('isolated-local-browser')
+  }).strict();
+  const parsed=z.object({
+   projectId:uuid,taskId:uuid,assignmentId:uuid,
+   sourceSha:z.string().regex(/^[a-f0-9]{40}$/i),
+   artifacts:z.array(image).min(1).max(10)
+  }).strict().safeParse(req.body);
+  if(!parsed.success)return reply.code(400).send({error:'Некорректные артефакты браузера'});
+  const items=parsed.data;
+  const saved=[];
+  for(const artifact of items.artifacts){
+   saved.push(await storeWorkArtifact(pool,{
+    projectId:items.projectId,taskId:items.taskId,assignmentId:items.assignmentId,
+    sourceSha:items.sourceSha,...artifact
+   }));
+  }
+  return {saved:saved.length,artifact_ids:saved.map(item=>item.id)};
+ });
+ app.get('/api/projects/:id/tasks/:taskId/work-artifacts/:artifactId',async(req:any,reply)=>{
+  const {id,taskId,artifactId}=z.object({
+   id:uuid,taskId:uuid,artifactId:uuid
+  }).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const artifact=await pool.query(
+   'SELECT data,mime,name FROM agent_work_artifacts WHERE project_id=$1 AND task_id=$2 AND id=$3',
+   [id,taskId,artifactId]);
+  if(!artifact.rowCount)return reply.code(404).send({error:'Артефакт не найден'});
+  reply.header('Content-Type','image/jpeg');
+  reply.header('Cache-Control','private, max-age=3600');
+  reply.header('X-Content-Type-Options','nosniff');
+  return reply.send(artifact.rows[0].data);
  });
  app.get('/api/projects/:id/agent-memory',async(req:any,reply)=>{
   const {id}=z.object({id:uuid}).parse(req.params);
