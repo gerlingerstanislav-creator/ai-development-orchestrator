@@ -107,7 +107,7 @@ test('new branch without modifications or evidence is blocked, not a false succe
  const f=fixture({existing:false});
  await f.run();
  assert.equal(f.state.status,'failed');
- assert.match(f.state.message,/не представлены ни изменения, ни подтверждение/);
+ assert.match(f.state.message,/[Нн]е представлены ни изменения, ни подтверждение/);
  assert.equal(f.state.branch,taskId);
  assert.equal(f.events.cli.length,1);
  assert.equal(f.events.prs.length,0);
