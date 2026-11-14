@@ -1,4 +1,5 @@
 import {agentInstructions} from './agent-instructions.js';
+import {previousAgentInstructions} from './agent-instructions-legacy.js';
 import {composeAgentPrompt,recordAgentPrompt} from './agent-prompt.js';
 import {capabilitiesForRole,type AgentRole} from './agent-tools.js';
 import {applicabilitySchema,inspectInstruction,reconcileInstructions} from './instruction-governance.js';
@@ -31,7 +32,7 @@ const oldDeploymentInstructions='Организуй проверяемую до�
 export function mergeDevopsInstructions(specialist:string,stage:string,historicalStage:string|null=null){
  const result=specialist.trim();
  const additions=[stage.trim(),historicalStage?.trim()||'']
-  .filter(Boolean).filter(value=>value!==oldDeploymentInstructions);
+  .filter(Boolean).filter(value=>value!==oldDeploymentInstructions&&value!==previousAgentInstructions.devops);
  let combined=result;
  for(const text of additions){
   if(combined.includes(text))continue;
@@ -120,7 +121,7 @@ export async function reconcileProjectTeamProfiles(pool:Pool){
  ON CONFLICT(project_id,role) DO NOTHING;
  -- Reconcile DevOps after the schema migration without discarding edited stage instructions.
  `);
- await pool.query("UPDATE project_specialist_agents SET agent_instructions=$1 WHERE role='architect' AND agent_instructions=''",[agentInstructions.architect]);
+ await pool.query("UPDATE project_specialist_agents a SET agent_instructions=$2,updated_at=now() WHERE role='architect' AND agent_instructions=ANY($1::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role='architect')",[['',previousAgentInstructions.architect],agentInstructions.architect]);
  await pool.query("UPDATE project_conversation_agents SET agent_name='Аналитик BA/SA' WHERE role='analyst' AND agent_name='Бизнес-аналитик'");
  await pool.query("UPDATE workflow_stages SET agent_name='Аналитик BA/SA' WHERE stage='analysis' AND agent_name IN ('Системный аналитик','AI-аналитик','AI-системный аналитик')");
  // Move only untouched built-in profiles to concise current instructions.
@@ -132,12 +133,12 @@ export async function reconcileProjectTeamProfiles(pool:Pool){
   analyst:'Работай с требованиями, исходными материалами и структурой технического задания. Отделяй подтверждённые требования от предположений, выявляй противоречия, задавай необходимые уточняющие вопросы и сохраняй согласованные решения в документации.'
  };
  for(const role of ['manager','analyst'] as const){
-  await pool.query("UPDATE project_conversation_agents a SET agent_instructions=$3,updated_at=now() WHERE role=$1 AND agent_instructions=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role=$1)",[role,['',oldConversation[role]],agentInstructions[role]]);
+  await pool.query("UPDATE project_conversation_agents a SET agent_instructions=$3,updated_at=now() WHERE role=$1 AND agent_instructions=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role=$1)",[role,['',oldConversation[role],previousAgentInstructions[role]],agentInstructions[role]]);
  }
  for(const role of ['analysis','development','testing','documentation'] as const){
-  await pool.query("UPDATE workflow_stages w SET agent_instructions=$3 WHERE stage=$1 AND agent_instructions=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=w.project_id AND h.role=$1)",[role,['',legacyDefaults[role],bootstrapDefaults[role]],agentInstructions[role]]);
+  await pool.query("UPDATE workflow_stages w SET agent_instructions=$3 WHERE stage=$1 AND agent_instructions=ANY($2::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=w.project_id AND h.role=$1)",[role,['',legacyDefaults[role],bootstrapDefaults[role],previousAgentInstructions[role]],agentInstructions[role]]);
  }
- await pool.query("UPDATE project_specialist_agents a SET agent_instructions=$2,updated_at=now() WHERE role='devops' AND agent_instructions=ANY($1::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role='devops')",[[legacyDefaults.devops,''],agentInstructions.devops]);
+ await pool.query("UPDATE project_specialist_agents a SET agent_instructions=$2,updated_at=now() WHERE role='devops' AND agent_instructions=ANY($1::text[]) AND NOT EXISTS (SELECT 1 FROM agent_instruction_history h WHERE h.project_id=a.project_id AND h.role='devops')",[[legacyDefaults.devops,'',previousAgentInstructions.devops],agentInstructions.devops]);
  // A prior version kept an independent deployment-stage role. Read the
  // last saved stage instruction before synchronizing the two profile tables.
  // A role edited through Team has history; workflow-setting edits may not.
@@ -167,6 +168,7 @@ export async function reconcileProjectTeamProfiles(pool:Pool){
    String(row.specialist_instructions||''),String(row.stage_instructions||''),
    recoverHistory?String(row.historical_stage_instructions):null);
   const customStage=String(row.stage_instructions||'').trim()!==oldDeploymentInstructions
+    &&String(row.stage_instructions||'').trim()!==previousAgentInstructions.devops
    &&String(row.stage_instructions||'').trim()!==String(row.specialist_instructions||'').trim();
   const name=customStage&&row.specialist_name==='AI-DevOps'&&row.stage_name!=='AI-DevOps'
    ?String(row.stage_name):String(row.specialist_name);
