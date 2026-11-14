@@ -17,8 +17,10 @@ export async function executePmGoalTool(db:Pick<Pool,'query'>,session:AgentSessi
   if(!session.process_id)throw denied('Нельзя принять цель без сообщения пользователя');
   const data=z.object({objective:z.string().trim().min(12).max(4000),
    criteria:z.array(z.string().trim().min(12).max(800)).min(1).max(8)}).strict().parse(args);
-  return openPmGoal(db,{...data,projectId,sourceMessageId:session.process_id,
+  const goal=await openPmGoal(db,{...data,projectId,sourceMessageId:session.process_id,
    actorId:session.actor_id});
+  return {...goal,watch:{kind:'goal',process_id:goal.id,goal_id:goal.id}};
+
  }
  case 'goals.list':{
   z.object({}).strict().parse(args);
