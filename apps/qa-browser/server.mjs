@@ -145,7 +145,7 @@ async function requireRenderedApplication(s){
  },root,{timeout:5000}).then(()=>true).catch(()=>false);
  if(ready)return;
  const diagnostics=[...(s.pageErrors||[]).slice(-3),(s.devOutput||'').slice(-750)]
-  .map(value=>String(value||'').replace(/[\\r\\n]+/g,' ').trim()).filter(Boolean).join(' · ').slice(0,1250);
+  .map(value=>String(value||'').replace(/[\r\n]+/g,' ').trim()).filter(Boolean).join(' · ').slice(0,1250);
  throw Error('Сайт открылся, но интерфейс не отрисовался: #'+root+
   ' пуст. Это ошибка запуска JavaScript-приложения, а не отсутствие Chromium или разрешения на URL.'+
   (diagnostics?' Детали: '+diagnostics:' Проверь ошибки сборки/импорта Vue, React или Vite.'));
