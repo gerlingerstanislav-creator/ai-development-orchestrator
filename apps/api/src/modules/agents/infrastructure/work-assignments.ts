@@ -267,26 +267,29 @@ export async function reportWork(db:Db,input:{
 export async function reviewWork(db:Db,input:{
  projectId:string;assignmentId:string;action:'accept'|'retry'|'cancel';reason:string
 }){
- const r=await db.query(`SELECT a.*,t.spec_version AS actual_version
- FROM agent_work_assignments a JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+ const r=await db.query(`SELECT a.*,COALESCE(t.spec_version,0) AS actual_version,g.status AS goal_status
+ FROM agent_work_assignments a LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+ LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
  WHERE a.project_id=$1 AND a.id=$2 FOR UPDATE OF a`,[input.projectId,input.assignmentId]);
  if(!r.rowCount)throw fail('Поручение не найдено',404);
  const row=r.rows[0];
  let target:string;
  if(input.action==='accept'){
-  if(row.status!=='submitted'||!row.evidence.trim()||row.spec_version!==row.actual_version)
+  if(row.status!=='submitted'||!row.evidence.trim()||row.spec_version!==row.actual_version||row.goal_status==='completed')
    throw fail('Нельзя принять непроверенное или устаревшее поручение');
   // A parent cannot be accepted while a delegated specialist still owns work.
   // Check the whole descendant tree, not only immediate children.
   const pending=await db.query(`WITH RECURSIVE descendants AS (
    SELECT id,status FROM agent_work_assignments
-    WHERE parent_id=$1 AND project_id=$2 AND task_id=$3
+    WHERE parent_id=$1 AND project_id=$2 AND task_id IS NOT DISTINCT FROM $3::uuid
+     AND goal_id IS NOT DISTINCT FROM $4::uuid
    UNION ALL
    SELECT child.id,child.status FROM agent_work_assignments child
     JOIN descendants parent ON child.parent_id=parent.id
-    WHERE child.project_id=$2 AND child.task_id=$3
+    WHERE child.project_id=$2 AND child.task_id IS NOT DISTINCT FROM $3::uuid
+     AND child.goal_id IS NOT DISTINCT FROM $4::uuid
   ) SELECT 1 FROM descendants WHERE status NOT IN ('completed','cancelled') LIMIT 1`,
-   [row.id,input.projectId,row.task_id]);
+   [row.id,input.projectId,row.task_id||null,row.goal_id||null]);
   if(pending.rowCount)throw fail('Нельзя принять поручение, пока делегированная работа не завершена');
   target='completed';
  }else if(input.action==='retry'){
@@ -299,7 +302,7 @@ export async function reviewWork(db:Db,input:{
  await db.query("UPDATE agent_work_assignments SET status=$3,reviewer_note=$4,next_attempt_at=now(),dispatched_at=CASE WHEN $3='queued' THEN NULL ELSE dispatched_at END,updated_at=now() WHERE project_id=$1 AND id=$2",
  [input.projectId,input.assignmentId,target,input.reason.slice(0,1500)]);
  await event(db,row,target,'ПМ: '+input.reason);
- return {id:row.id,status:target,task_id:row.task_id};
+ return {id:row.id,status:target,task_id:row.task_id,goal_id:row.goal_id||null};
 }
 
 export async function finalizeWorkAttempt(db:Db,id:string,reason:string){
@@ -318,10 +321,13 @@ export async function reconcileAgentWorkAssignments(pool:Pool,temporal:()=>Promi
   await db.query(`UPDATE agent_work_assignments a SET status='blocked',result='ТЗ изменилось; нужно пересмотреть поручение',updated_at=now()
    FROM tasks t WHERE t.id=a.task_id AND t.project_id=a.project_id AND a.status IN ('queued','submitted')
    AND (a.spec_version<>t.spec_version OR t.stage='done')`);
-  const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.role,a.status,a.attempts FROM agent_work_assignments a
-   JOIN projects p ON p.id=a.project_id JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+  const r=await db.query(`SELECT a.id,a.project_id,a.task_id,a.goal_id,a.role,a.status,a.attempts FROM agent_work_assignments a
+   JOIN projects p ON p.id=a.project_id
+   LEFT JOIN tasks t ON t.id=a.task_id AND t.project_id=a.project_id
+   LEFT JOIN project_pm_goals g ON g.id=a.goal_id AND g.project_id=a.project_id
    WHERE (a.status='queued' OR (a.status='running' AND a.dispatched_at IS NULL)) AND a.next_attempt_at<=now() AND p.agents_running=true AND p.deleted_at IS NULL
-   AND t.stage<>'done' AND a.spec_version=t.spec_version
+   AND ((a.task_id IS NOT NULL AND t.stage<>'done' AND a.spec_version=t.spec_version)
+     OR (a.goal_id IS NOT NULL AND g.status<>'completed'))
    AND NOT EXISTS(
     SELECT 1 FROM agent_work_plan_dependencies deps
     JOIN agent_work_assignments prereq ON prereq.id=deps.requires_id
