@@ -74,8 +74,30 @@ try{
   await writeFile(join(output,name),jpeg);
   manifest.screenshots.push({name,viewport,sha256:sum,bytes:jpeg.length});
  }
+ // Real local full-page screenshot: verifies the new browser path, rather
+ // than only the old desktop/mobile viewport snapshots.
+ await action('viewport',{width:1920,height:1080});
+ const pages=await action('list_pages');
+ if(!pages.ok||!Array.isArray(pages.paths)||!pages.paths.includes('/'))
+  throw Error('Cannot enumerate actual locally rendered project pages');
+ const entirePage=await action('screenshot',{fullPage:true});
+ if(entirePage.fullPage!==true||entirePage.viewport?.width!==1920||
+  entirePage.pixelWidth<1920||entirePage.pixelHeight<1080)
+  throw Error('Chromium did not confirm a full-resolution full-page screenshot');
+ const verified=getQaScreenshotEvidence(id).some(x=>x.sha256===entirePage.sha256&&
+  x.name===entirePage.screenshot.split('/').at(-1));
+ if(!verified)throw Error('Full page screenshot has no trusted Chromium receipt');
+ const fullJpeg=await readFile(join(repo,entirePage.screenshot));
+ const fullSha=createHash('sha256').update(fullJpeg).digest('hex');
+ if(fullSha!==entirePage.sha256||fullJpeg.length<100)
+  throw Error('Full page screenshot failed SHA-256 verification');
+ const fullName='full-page-1920-wide.jpg';
+ await writeFile(join(output,fullName),fullJpeg);
+ manifest.screenshots.push({name:fullName,fullPage:true,
+  viewport:entirePage.viewport,pixelWidth:entirePage.pixelWidth,
+  pixelHeight:entirePage.pixelHeight,sha256:fullSha,bytes:fullJpeg.length});
  await writeFile(join(output,'manifest.json'),JSON.stringify(manifest,null,2));
- console.log('PASS: real local Vue build and two Chromium screenshots at SHA '+sha);
+ console.log('PASS: real local Vue build, desktop/mobile and full-page Chromium screenshots at SHA '+sha);
 }finally{
  if(session)await closeQaBrowserSession(id);
  if(gateway)await new Promise(resolve=>gateway.close(resolve));
