@@ -1,3 +1,4 @@
+import React from 'react';
 import {DocumentMarkdown,pmDisplayText} from '../documentation/Markdown.js';
 import {SecurePmScreenshot} from '../tasks/TaskPmScreenshotGallery.js';
 import {parsePmScreenshotReferences} from './pm-screenshot-references.js';
