@@ -3,7 +3,7 @@ import type {ProjectProcess,ProjectProcessEvent} from './features/processes/proc
 import {TaskBoard} from './features/tasks/TaskBoard.js';
 import {TaskCurrentWork,type CurrentWork} from './features/tasks/TaskCurrentWork.js';
 import {TaskBoardControls} from './features/tasks/TaskBoardControls.js';
-import {TaskExecutionPlan,type TaskWorkAssignment,type TaskExecutionKickoff} from './features/tasks/TaskExecutionPlan.js';
+import {TaskExecutionPlan,type TaskWorkAssignment,type TaskExecutionKickoff,type TaskEvidenceRun} from './features/tasks/TaskExecutionPlan.js';
 import {buildTaskTimeline,type ActivityItem} from './features/tasks/task-timeline.js';
 import {kanbanLanes,boardLaneFor,attentionNeeded,type BoardStatus} from './features/tasks/board-model.js';
 import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
@@ -54,7 +54,7 @@ type AgentTaskNote={id:string;author_stage:string;author_name:string;target_stag
 type CancelPreview={task:{id:string;title:string;display_number:number;stage:string};blocked:string[];stats:{documents:number;qa_plans:number;qa_cases:number;qa_flows:number};confirmation:string;github_cleanup_required?:boolean;warnings?:string[];github_note:string};
 type AgentRun={id:string;kind:string;status:'queued'|'running'|'completed'|'failed';summary:string;link:string|null;created_at:string;completed_at:string|null};
 
-type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[];workAssignments?:TaskWorkAssignment[];kickoff?:TaskExecutionKickoff};
+type TaskActivityResponse={events:Array<{id:string;event:string;detail:string;created_at:string}>;processEvents:TaskProcessEvent[];owner:null|{owner_id:string;kind:'development'|'testing';workflow_id:string;state:string;started_at:string};tests:TestRun[];notes:AgentTaskNote[];agentRuns?:AgentRun[];workAssignments?:TaskWorkAssignment[];kickoff?:TaskExecutionKickoff;evidenceRuns?:TaskEvidenceRun[]};
 type Doc={id:string,title:string,body:string,parent_id:string|null,updated_at:string,document_kind:'technical'|'functional',implementation_status:'unverified'|'planned'|'partial'|'implemented',implementation_evidence:string;system_key?:'spec'|'architecture'|'operations'|'design'|'research'|null;source_refs?:Array<{path:string;heading:string;url:string|null}>};
 
 
@@ -303,6 +303,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskOrchestration,setTaskOrchestration]=useState<TaskActivityResponse['owner']>(null);
  const [taskWorkAssignments,setTaskWorkAssignments]=useState<TaskWorkAssignment[]>([]);
  const [taskKickoff,setTaskKickoff]=useState<TaskExecutionKickoff>(null);
+ const [taskEvidenceRuns,setTaskEvidenceRuns]=useState<TaskEvidenceRun[]>([]);
  const projectThreadRef=useRef<HTMLDivElement|null>(null);const taskThreadRef=useRef<HTMLDivElement|null>(null);
  const taskAtBottom=useRef(true);const taskLastMessage=useRef<string|null>(null);
  const [taskShowScrollBottom,setTaskShowScrollBottom]=useState(false);
@@ -495,7 +496,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     api<TaskActivityResponse>('/projects/'+projectId+'/tasks/'+taskId+'/activity'),
     api<AssistantMessage[]>('/projects/'+projectId+'/tasks/'+taskId+'/assistant/messages')
    ]);
-   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentRuns(activity.agentRuns||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskWorkAssignments(activity.workAssignments||[]);setTaskKickoff(activity.kickoff||null);setTaskMessages(ms);
+   setTasks(ts);setEvents(activity.events);setTaskProcessEvents(activity.processEvents);setTaskTestRuns(activity.tests||[]);setTaskAgentRuns(activity.agentRuns||[]);setTaskAgentNotes(activity.notes||[]);setTaskOrchestration(activity.owner);setTaskWorkAssignments(activity.workAssignments||[]);setTaskKickoff(activity.kickoff||null);setTaskEvidenceRuns(activity.evidenceRuns||[]);setTaskMessages(ms);
    setManagerState(await api<ManagerSnapshot>('/projects/'+projectId+'/tasks/'+taskId+'/manager'));
    setActiveTask(current=>current?.id===taskId?ts.find(t=>t.id===taskId)||current:current);
   }catch(e){fail(e);}
@@ -660,8 +661,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    const task=tasks.find(t=>t.id===route.taskId);
    if(task){
     if(activeTask?.id!==task.id){
-     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);setTaskWorkAssignments([]);setTaskKickoff(null);
-     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);setTaskWorkAssignments(a.workAssignments||[]);setTaskKickoff(a.kickoff||null);}).catch(fail);
+     setActiveTask({...task});setEditingField(null);setTaskFeedback('');setEvents([]);setTaskProcessEvents([]);setTaskTestRuns([]);setTaskAgentRuns([]);setTaskAgentNotes([]);setManagerState(null);setManagerFeedback('');setCancelPreview(null);setCancelPhrase('');setCancelError('');setAnswerNoteId(null);setAnswerText('');setTaskOrchestration(null);setTaskWorkAssignments([]);setTaskKickoff(null);setTaskEvidenceRuns([]);
+     void api<TaskActivityResponse>('/projects/'+selected.id+'/tasks/'+task.id+'/activity').then(a=>{setEvents(a.events);setTaskProcessEvents(a.processEvents);setTaskAgentNotes(a.notes||[]);setTaskOrchestration(a.owner);setTaskWorkAssignments(a.workAssignments||[]);setTaskKickoff(a.kickoff||null);setTaskEvidenceRuns(a.evidenceRuns||[]);}).catch(fail);
     }
    }else{navigate(projectUrl(selected.id,'tasks'),true);setError('Задача не найдена');}
   }else if(activeTask){setActiveTask(null);}
@@ -777,6 +778,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     setTaskOrchestration(old=>JSON.stringify(old)===JSON.stringify(feed.owner)?old:feed.owner);
     setTaskWorkAssignments(old=>JSON.stringify(old)===JSON.stringify(feed.workAssignments||[])?old:feed.workAssignments||[]);
     setTaskKickoff(old=>JSON.stringify(old)===JSON.stringify(feed.kickoff||null)?old:feed.kickoff||null);
+    setTaskEvidenceRuns(old=>JSON.stringify(old)===JSON.stringify(feed.evidenceRuns||[])?old:feed.evidenceRuns||[]);
     setTaskMessages(old=>JSON.stringify(old)===JSON.stringify(messages)?old:messages);
     setManagerState(old=>JSON.stringify(old)===JSON.stringify(manager)?old:manager);
     const current=manager.task;
@@ -2199,7 +2201,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
    <div className="task-modal-top">
     <span className="eyebrow">ЗАДАЧА #{activeTask.display_number}</span>
     <div className="task-modal-actions">
-     <span className="task-stage-label">{kanbanLanes.find(x=>x.stage===boardLaneFor(activeTask))?.label||'В работе'} · {stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}{activeTask.execution_mode==='browser_evidence'?' · Артефакты без PR':''}{qaOutcome?' · '+qaOutcome:''}</span>
+     <span className="task-stage-label">{kanbanLanes.find(x=>x.stage===boardLaneFor(activeTask))?.label||'В работе'} · {stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}{qaOutcome?' · '+qaOutcome:''}</span>
      {['backlog','analysis'].includes(activeTask.stage)&&<button type="button" className="secondary" title="Удалить ненужную задачу без результатов разработки" onClick={()=>void deleteUnstartedTask()}><Trash2 size={14}/> Удалить</button>}
      {activeTask.type!=='question'&&!['documentation','done'].includes(activeTask.stage)&&
       <button className="secondary" type="button" disabled={cancelBusy} onClick={()=>void showTaskCancellation()}>Отменить задачу</button>}
@@ -2434,7 +2436,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     </ChatImageDropZone>
    </div>
    {activeTask.type!=='question'&&<>
-    <TaskExecutionPlan assignments={taskWorkAssignments} kickoff={taskKickoff} stage={activeTask.stage}
+    <TaskExecutionPlan assignments={taskWorkAssignments} kickoff={taskKickoff} evidenceRun={taskEvidenceRuns[0]||null} stage={activeTask.stage}
      stageLabel={stages.find(x=>x.stage===activeTask.stage)?.label||activeTask.stage}
      busy={boardBusy} onRetry={()=>void changeBoard(activeTask,'start')}/>
     <details className="task-technical-workflow">
