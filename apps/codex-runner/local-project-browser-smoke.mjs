@@ -38,9 +38,15 @@ try{
  await mkdir(workspace,{recursive:true});
  await command('git',['clone','--depth','1','--branch',branch,
   'https://github.com/'+site+'.git',repo],{cwd:workspace,timeout:85000});
- const sha=await command('git',['rev-parse','HEAD']);
- if(sha!==expectedSha)throw Error('test branch changed: '+sha+'; expected '+expectedSha+
-  '. Update the intentional regression pin before capturing.');
+ // Keep the CI fixture reproducible even when the active test branch
+ // advances. Production browser.capture deliberately uses the latest branch.
+ let sha=await command('git',['rev-parse','HEAD']);
+ if(sha!==expectedSha){
+  await command('git',['fetch','--depth','1','origin',expectedSha],{timeout:85000});
+  await command('git',['checkout','--detach',expectedSha]);
+  sha=await command('git',['rev-parse','HEAD']);
+ }
+ if(sha!==expectedSha)throw Error('Cannot verify pinned source SHA '+expectedSha);
  await command('npm',['install','--no-package-lock','--no-audit','--no-fund'],{timeout:125000});
  await command('npm',['run','build'],{timeout:110000});
  await readFile(join(repo,'dist','index.html'));
@@ -50,6 +56,7 @@ try{
  const started=await action('start');
  if(started.path!=='/')throw Error('Unexpected local preview page: '+started.path);
  const manifest={environment:'local-isolated-preview',repository:site,branch,
+  revisionMode:'pinned-ci-regression',
   sourceSha:sha,build:'npm install && npm run build',screenshots:[]};
  await mkdir(output,{recursive:true});
  for(const viewport of [{width:1440,height:900},{width:390,height:844}]){
