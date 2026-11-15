@@ -64,14 +64,18 @@ export async function initChatFiles(db:Pick<Pool,'query'>){
   'task_id uuid REFERENCES tasks(id) ON DELETE CASCADE,'+
   'assistant_message_id uuid REFERENCES assistant_messages(id) ON DELETE CASCADE,'+
   'manager_message_id uuid REFERENCES manager_messages(id) ON DELETE CASCADE,'+
+  'pending_pm_session_id uuid REFERENCES agent_sessions(id) ON DELETE CASCADE,'+
   'actor_id uuid REFERENCES users(id) ON DELETE SET NULL,'+
   'name text NOT NULL,mime_type text NOT NULL,'+
   'size_bytes int NOT NULL CHECK(size_bytes>0 AND size_bytes<=2097152),'+
-  'CONSTRAINT exactly_one_chat_file_message CHECK ((assistant_message_id IS NULL) <> (manager_message_id IS NULL)),'+
+  'CONSTRAINT exactly_one_chat_file_message CHECK ('+
+  '((assistant_message_id IS NOT NULL)::int+(manager_message_id IS NOT NULL)::int+'+
+  '(pending_pm_session_id IS NOT NULL)::int)=1),'+
   'sha256 char(64) NOT NULL,file_data bytea NOT NULL,'+
   'created_at timestamptz NOT NULL DEFAULT now());'+
   'CREATE INDEX IF NOT EXISTS idx_chat_files_message ON chat_files(assistant_message_id,created_at,id);'+
   'CREATE INDEX IF NOT EXISTS idx_chat_files_manager ON chat_files(manager_message_id,created_at,id);'+
+  'CREATE INDEX IF NOT EXISTS idx_chat_files_pending ON chat_files(pending_pm_session_id,created_at,id);'+
   'CREATE INDEX IF NOT EXISTS idx_chat_files_project ON chat_files(project_id,id);');
 }
 export async function saveChatFiles(db:Pick<PoolClient,'query'>,input:{
@@ -87,6 +91,43 @@ export async function saveChatFiles(db:Pick<PoolClient,'query'>,input:{
   ]);
  }
 }
+/** An authenticated manager can publish small TEXT deliverables as real files.
+ * Their bytes are staged against the live agent session and transferred to its
+ * new PM reply transactionally. Never place generated files on a public route.
+ */
+export async function stagePmChatTextFile(db:Pick<Pool,'query'>,input:{
+ projectId:string;actorId:string;sessionId:string;name:string;content:string
+}){
+ const ext=extension(input.name);
+ if(!textExtensions.has(ext))throw invalid('ПМ может публиковать текстовые TXT, MD, CSV, JSON, YAML файлы');
+ if(!input.content||Buffer.byteLength(input.content,'utf8')>100000)
+  throw invalid('Размер текстового файла ПМ: от 1 до 100 КБ');
+ const file=validateChatFiles([{
+  name:input.name,mimeType:CHAT_FILE_TYPES[ext],
+  data:Buffer.from(input.content,'utf8').toString('base64')
+ }])[0];
+ const result=await db.query('INSERT INTO chat_files '+
+  '(id,project_id,pending_pm_session_id,actor_id,name,mime_type,size_bytes,sha256,file_data) '+
+  'SELECT $1,s.project_id,s.id,s.actor_id,$4,$5,$6,$7,$8 FROM agent_sessions s '+
+  "WHERE s.id=$2 AND s.project_id=$3 AND s.actor_id=$9 AND s.role='manager' AND s.status='running' "+
+  'AND (SELECT count(*) FROM chat_files f WHERE f.pending_pm_session_id=s.id)<5 '+
+  'RETURNING id',[
+  randomUUID(),input.sessionId,input.projectId,file.name,file.mimeType,
+  file.size,file.sha256,file.bytes,input.actorId
+ ]);
+ if(!result.rowCount)throw invalid('Нельзя прикрепить файл: сессия ПМ завершена либо превышен лимит');
+ return {id:result.rows[0].id,name:file.name,size:file.size,sha256:file.sha256,
+  status:'queued_for_reply'};
+}
+export async function publishPmChatFiles(db:Pick<Pool,'query'>,input:{
+ projectId:string;sessionId:string;messageId:string
+}){
+ const result=await db.query('UPDATE chat_files SET assistant_message_id=$3,pending_pm_session_id=NULL '+
+  'WHERE project_id=$1 AND pending_pm_session_id=$2 RETURNING id',
+  [input.projectId,input.sessionId,input.messageId]);
+ return result.rowCount??0;
+}
+
 /** PM receives bounded readable data, not file paths or executable instructions.
  * Binary attachments remain safely downloadable and are not falsely parsed.
  */
