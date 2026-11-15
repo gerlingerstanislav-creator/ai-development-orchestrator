@@ -1561,3 +1561,13 @@ body:has(.tasks-page){overflow:hidden}
 .chat-file-error{position:absolute;top:100%;left:4px;color:#bd3348;z-index:2;font-size:10px;background:white;padding:3px}
 .pm-chat-conversation>.chat-file-gallery{max-height:116px;overflow:auto}
 @media(max-width:650px){.chat-file-item{flex-basis:100%;max-width:100%}}
+
+/* Real full-page screenshots: readable zoom, not a 200px tall thumbnail in a lightbox. */
+.task-pm-shot .chat-image-lightbox>img{width:auto;height:auto;max-width:calc(100vw - 48px);max-height:calc(100vh - 100px)}
+.pm-full-page-lightbox{flex-direction:column;justify-content:flex-start;gap:10px;padding:56px 14px 14px}
+.pm-full-page-toolbar{display:flex;align-items:center;justify-content:center;gap:16px;flex:none;color:#fff;font-size:12px;max-width:calc(100vw - 76px)}
+.pm-full-page-toolbar span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pm-full-page-toolbar button{flex:none;background:#fff;color:#1e293b;border:0;border-radius:7px;font-size:12px;font-weight:600;cursor:pointer;padding:7px 12px}
+.pm-full-page-scroll{max-width:100%;width:100%;min-height:0;flex:1;overflow:auto;text-align:center;overscroll-behavior:contain;background:#101827}
+.task-pm-shot .pm-full-page-scroll img{display:block;margin:0 auto;max-width:100%;max-height:none;width:auto;height:auto;object-fit:contain}
+.task-pm-shot .pm-full-page-scroll img.native-resolution{max-width:none;max-height:none;width:auto;height:auto}
