@@ -61,23 +61,28 @@ export async function initChatFiles(db:Pick<Pool,'query'>){
  await db.query('CREATE TABLE IF NOT EXISTS chat_files('+
   'id uuid PRIMARY KEY,'+
   'project_id uuid NOT NULL REFERENCES projects(id) ON DELETE CASCADE,'+
-  'assistant_message_id uuid NOT NULL REFERENCES assistant_messages(id) ON DELETE CASCADE,'+
+  'task_id uuid REFERENCES tasks(id) ON DELETE CASCADE,'+
+  'assistant_message_id uuid REFERENCES assistant_messages(id) ON DELETE CASCADE,'+
+  'manager_message_id uuid REFERENCES manager_messages(id) ON DELETE CASCADE,'+
   'actor_id uuid REFERENCES users(id) ON DELETE SET NULL,'+
   'name text NOT NULL,mime_type text NOT NULL,'+
   'size_bytes int NOT NULL CHECK(size_bytes>0 AND size_bytes<=2097152),'+
+  'CONSTRAINT exactly_one_chat_file_message CHECK ((assistant_message_id IS NULL) <> (manager_message_id IS NULL)),'+
   'sha256 char(64) NOT NULL,file_data bytea NOT NULL,'+
   'created_at timestamptz NOT NULL DEFAULT now());'+
   'CREATE INDEX IF NOT EXISTS idx_chat_files_message ON chat_files(assistant_message_id,created_at,id);'+
+  'CREATE INDEX IF NOT EXISTS idx_chat_files_manager ON chat_files(manager_message_id,created_at,id);'+
   'CREATE INDEX IF NOT EXISTS idx_chat_files_project ON chat_files(project_id,id);');
 }
 export async function saveChatFiles(db:Pick<PoolClient,'query'>,input:{
- projectId:string;actorId:string;messageId:string;files:SavedChatFile[]
+ projectId:string;actorId:string;messageId:string;taskId?:string|null;scope?:'assistant'|'manager';files:SavedChatFile[]
 }){
  for(const file of input.files){
   await db.query('INSERT INTO chat_files '+
-   '(id,project_id,assistant_message_id,actor_id,name,mime_type,size_bytes,sha256,file_data)'+
-   ' VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[
-   randomUUID(),input.projectId,input.messageId,input.actorId,
+   '(id,project_id,task_id,assistant_message_id,manager_message_id,actor_id,name,mime_type,size_bytes,sha256,file_data)'+
+   ' VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[
+   randomUUID(),input.projectId,input.taskId||null,
+   input.scope==='manager'?null:input.messageId,input.scope==='manager'?input.messageId:null,input.actorId,
    file.name,file.mimeType,file.size,file.sha256,file.bytes
   ]);
  }
@@ -85,9 +90,10 @@ export async function saveChatFiles(db:Pick<PoolClient,'query'>,input:{
 /** PM receives bounded readable data, not file paths or executable instructions.
  * Binary attachments remain safely downloadable and are not falsely parsed.
  */
-export async function readPmChatFileContext(db:Pick<Pool,'query'>,projectId:string,messageId:string){
+export async function readPmChatFileContext(db:Pick<Pool,'query'>,projectId:string,messageId:string,scope:'assistant'|'manager'='assistant'){
+ const column=scope==='manager'?'manager_message_id':'assistant_message_id';
  const r=await db.query('SELECT name,mime_type,size_bytes,file_data FROM chat_files '+
-  'WHERE project_id=$1 AND assistant_message_id=$2 ORDER BY created_at,id LIMIT $3',
+  'WHERE project_id=$1 AND '+column+'=$2 ORDER BY created_at,id LIMIT $3',
   [projectId,messageId,MAX_CHAT_FILES]);
  return r.rows.map((row:any)=>{
   const name=String(row.name),bytes=row.file_data as Buffer;
