@@ -335,7 +335,7 @@ async function run(s,body){
 // infinite loop. The host must expire and tear down that session before the
 // gateway/client deadline; otherwise subsequent QA attempts remain blocked.
 async function boundedRun(s,body){
- const limit=body.action==='start'?65000:Number(process.env.QA_BROWSER_ACTION_TIMEOUT_MS||20000);
+ const limit=body.action==='start'?65000:body.action==='screenshot'&&body.fullPage===true?55000:Number(process.env.QA_BROWSER_ACTION_TIMEOUT_MS||20000);
  let timer,expired=false;
  try{
   return await Promise.race([
