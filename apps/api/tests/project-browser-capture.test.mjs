@@ -8,6 +8,7 @@ import {storeProjectBrowserArtifacts,attachProjectCaptureToPmReply}
  from '../dist/project-browser-capture.js';
 import {toolsForRole} from '../dist/agent-tools.js';
 import {PM_EXECUTION_GUIDANCE} from '../dist/pm-execution-guidance.js';
+import {PM_GOAL_POLICY} from '../dist/pm-goal-policy.js';
 
 const sha='a'.repeat(40);
 const jpeg=Buffer.concat([
@@ -100,4 +101,6 @@ test('project-wide PM capture exists for manager, not specialists, and guidance 
  assert.match(PM_EXECUTION_GUIDANCE,/browser\.capture_project/);
  assert.match(PM_EXECUTION_GUIDANCE,/mode=all_pages/);
  assert.match(PM_EXECUTION_GUIDANCE,/НЕ отказывай из-за закрытых/);
+ assert.match(PM_GOAL_POLICY,/browser\.capture_project/);
+ assert.match(PM_GOAL_POLICY,/активная задача НЕ требуется/);
 });
