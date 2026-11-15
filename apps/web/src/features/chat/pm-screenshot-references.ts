@@ -22,6 +22,6 @@ export function parsePmScreenshotReferences(source:string,projectId:string){
    images.push({artifactId:id,taskId,url,label:label.trim()});
   }
   return '';
- }).replace(/\n[ \t]*\n[ \t]*\n/g,'\n\n');
+ }).replace(/^[ \t]*[-*+][ \t]*$/gm,'').replace(/\n[ \t]*\n[ \t]*\n/g,'\n\n');
  return {markdown,images};
 }
