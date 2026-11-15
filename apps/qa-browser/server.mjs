@@ -206,7 +206,7 @@ async function run(s,body){
      pageReady=true;
     }catch(error){
      const message=String(error.message||error);
-     const browserCrash=/target page, context or browser has been closed|browsercontext\\.newpage|browser has been closed|browser closed|failed to launch|eagain|enomem/i.test(message);
+     const browserCrash=/target page, context or browser has been closed|browsercontext\.newpage|browser has been closed|browser closed|failed to launch|eagain|enomem/i.test(message);
      await s.browser?.close().catch(()=>{});
      s.browser=null;s.context=null;s.page=null;
      if(!browserCrash||attempt===2)
