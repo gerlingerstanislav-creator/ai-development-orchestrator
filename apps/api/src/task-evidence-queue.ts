@@ -3,6 +3,7 @@ import type {Pool} from 'pg';
 import type {Client as TemporalClient} from '@temporalio/client';
 import {acquireTaskOrchestration,releaseTaskOrchestration} from './task-orchestration.js';
 import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
+import {confirmedEvidenceSourceBlocker} from './task-evidence-blockers.js';
 
 /** Durable idempotent dispatch for work whose deliverable is visual evidence.
  * Never creates a development run or PR; the QA Runner owns the evidence.
@@ -34,6 +35,31 @@ export async function reconcileTaskEvidenceQueue(pool:Pool,temporal:()=>Promise<
     AND t.spec_version=r.spec_version AND t.evidence_source_sha=r.source_sha
    ORDER BY r.created_at LIMIT 20`);
   for(const run of queued.rows){
+   if(run.status==='queued'){
+    // A previous verified Vue compiler failure cannot be fixed by simply
+    // dispatching the same immutable commit to Chromium again.
+    const blocker=await confirmedEvidenceSourceBlocker(db,{
+     projectId:run.project_id,taskId:run.task_id,sourceSha:run.source_sha
+    });
+    if(blocker){
+     await db.query('BEGIN');
+     try{
+      const stopped=await db.query(`UPDATE task_evidence_runs
+       SET status='blocked',message=$2,updated_at=now()
+       WHERE id=$1 AND status='queued' RETURNING id`,[run.id,blocker]);
+      if(stopped.rowCount){
+       await db.query("UPDATE tasks SET test_feedback=$3,updated_at=now() WHERE id=$1 AND project_id=$2 AND evidence_source_sha=$4",
+        [run.task_id,run.project_id,blocker,run.source_sha]);
+       await db.query(`INSERT INTO process_events(
+        id,project_id,process_id,process_kind,stage,detail,level,task_id)
+        VALUES($1,$2,$3,'testing','evidence_blocked',$4,'warning',$5)`,
+        [randomUUID(),run.project_id,run.id,blocker,run.task_id]);
+      }
+      await db.query('COMMIT');
+     }catch(e){await db.query('ROLLBACK').catch(()=>{});throw e;}
+     continue;
+    }
+   }
    if(run.status==='queued'){
     await db.query('BEGIN');
     try{
