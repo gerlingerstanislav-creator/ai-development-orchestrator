@@ -230,6 +230,7 @@ export async function runPmBrowserCapture(db:Pool,input:{
    VALUES($1,$2,$3,'agent','completed',$4,$5)`,
    [randomUUID(),input.projectId,captureId,'ПМ сохранил два реальных скриншота SHA '+response.source_sha,input.taskId]);
   return {status:'completed',capture_id:captureId,source_sha:response.source_sha,
+   environment:'local-isolated-preview',repository:source.repository,branch,
    previous_pinned_sha:sourceChanged?task.evidence_source_sha:null,
    screenshots:artifacts.map(x=>({url:x.url,viewport:x.viewport,sha256:x.sha256})),
    message:sourceChanged?(repinned
