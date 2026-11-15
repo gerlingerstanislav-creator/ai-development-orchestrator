@@ -1179,6 +1179,16 @@ label{font-size:12px;gap:6px;margin-bottom:13px}
 .project-plan-page{flex:1;min-height:0;min-width:0;overflow:auto}
 .project-plan-page .iteration-workspace{width:100%;box-sizing:border-box}
 .project-chat{width:min(860px,calc(100vw - 28px))}
+/* PM window backgrounds only: message text and controls remain fully opaque. */
+.pm-project-chat{
+ background:rgba(255,255,255,.88);
+ -webkit-backdrop-filter:blur(8px);
+ backdrop-filter:blur(8px);
+}
+.pm-project-chat .assistant-thread{background:rgba(250,251,254,.66)}
+.pm-project-chat .assistant-composer{background:rgba(255,255,255,.82)}
+.pm-project-chat .pm-topic-sidebar{background:rgba(255,255,255,.34)}
+
 .pm-chat-body{display:flex;flex:1;min-width:0;min-height:0}
 .pm-topic-sidebar{width:205px;flex:0 0 205px;display:flex;flex-direction:column;gap:4px;padding:12px 8px;border-right:1px solid #e7eaf2;overflow-y:auto}
 .pm-topic-sidebar-title{padding:2px 7px 7px;font-size:11px;color:#8491a7}

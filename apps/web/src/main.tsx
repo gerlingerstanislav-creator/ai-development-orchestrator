@@ -2040,7 +2040,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  </div>}
  </main>
  {selected&&!accountSettings&&!activeTask&&!showTask&&!showProject&&<>
-  {projectChatOpen&&<section className="project-chat" aria-label="Чат проекта">
+  {projectChatOpen&&<section className={projectChatMode==='project'?'project-chat pm-project-chat':'project-chat'} aria-label="Чат проекта">
    <header className="project-chat-heading"><div><strong>{aiAgentName(projectChatMode==='documentation'?'Бизнес-аналитик (БА)':'Менеджер проекта (ПМ)')}</strong><small>{aiSettings.model}</small></div>
     <div className="docs-actions">{projectChatMode==='documentation'&&projectImportJobId&&<button className="secondary" type="button" disabled={processActionBusy} onClick={()=>void stopActiveAnalystJob()}>Прервать</button>}
     {projectChatMode==='documentation'&&<button className="secondary ba-handoff-trigger" disabled={projectChatBusy} type="button" onClick={()=>{setBaHandoffOpen(open=>!open);setBaHandoffBody(projectMessages.filter(m=>m.role==='assistant').slice(-1)[0]?.body.slice(0,18000)||'');setBaHandoffTitle('');}}>Передать СА</button>}
