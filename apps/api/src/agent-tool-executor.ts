@@ -17,6 +17,7 @@ import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
 import {confirmedEvidenceSourceBlocker} from './task-evidence-blockers.js';
 import {validEvidenceSha} from './task-evidence.js';
+import {stagePmChatTextFile} from './chat-files.js';
 import {workRoles} from './modules/agents/infrastructure/work-assignments.js';
 import {executeAgentWorkTool,isAgentWorkTool} from './modules/agents/infrastructure/agent-work-tools.js';
 import {executePmGoalTool,isPmGoalTool} from './modules/planning/infrastructure/pm-goal-tools.js';
@@ -42,6 +43,34 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  if(isPmConversationTool(name))return executePmConversationTool(pool,session,name,params);
  if(isAgentKnowledgeTool(name))return executeAgentKnowledgeTool(pool,session,name,params);
  switch(name){
+ case 'chat.images.attach_capture':{
+  if(session.role!=='manager'||session.read_only)throw rejected('Вложения ПМ недоступны этой роли',403);
+  const {capture_id}=z.object({capture_id:uuid}).parse(params);
+  const capture=await pool.query(`SELECT c.id,c.source_sha,
+   count(a.id)::int AS shots,
+   count(a.id) FILTER(WHERE (a.viewport->>'width')::int>=900)::int AS desktop,
+   count(a.id) FILTER(WHERE (a.viewport->>'width')::int<=600)::int AS mobile,
+   count(a.id) FILTER(WHERE a.origin='isolated-local-browser' AND a.mime='image/jpeg'
+    AND a.source_sha=c.source_sha)::int AS verified
+   FROM pm_browser_captures c
+   LEFT JOIN pm_browser_capture_artifacts a ON a.capture_id=c.id AND a.project_id=c.project_id
+   WHERE c.id=$1 AND c.project_id=$2 AND c.status='completed'
+   GROUP BY c.id,c.source_sha`,[capture_id,projectId]);
+  const found=capture.rows[0];
+  if(!found||found.shots!==2||found.verified!==2||found.desktop<1||found.mobile<1)
+   throw rejected('Нет завершённой проверенной пары скриншотов для прикрепления');
+  return {capture_id,status:'completed',source_sha:String(found.source_sha).trim(),
+   attachments:2};
+ }
+ case 'chat.files.publish':{
+  if(session.role!=='manager'||session.read_only)throw rejected('Публикация файлов доступна только ПМ',403);
+  const {name,content}=z.object({
+   name:z.string().trim().min(3).max(180),
+   content:z.string().min(1).max(100000)
+  }).parse(params);
+  return stagePmChatTextFile(pool,{projectId,actorId,
+   sessionId:session.id,name,content});
+ }
  case 'project.source':{
   if(!readSource)throw rejected('Источник проекта недоступен для агента',503);
   const data=z.object({path:z.string().trim().max(500).optional(),commit:z.string().regex(/^[a-f0-9]{40}$/i).optional()}).parse(params);
