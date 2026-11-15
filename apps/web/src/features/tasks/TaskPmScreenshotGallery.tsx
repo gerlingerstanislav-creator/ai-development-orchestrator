@@ -47,7 +47,7 @@ export function TaskPmScreenshotGallery({artifacts}:{artifacts?:PmBrowserArtifac
  const latest=artifacts[0].capture_id;
  const images=artifacts.filter(x=>x.capture_id===latest).slice(0,2);
  return <details className="task-pm-screenshots">
-  <summary>Скриншоты ПМ · {images.length} · SHA {String(images[0]?.source_sha||'').slice(0,12)}</summary>
+  <summary>Локальный preview · Скриншоты ПМ · {images.length} · SHA {String(images[0]?.source_sha||'').slice(0,12)}</summary>
   <div className="task-pm-screenshots-grid">
    {images.map(artifact=><SecureScreenshot key={artifact.id} artifact={artifact}/>)}
   </div>

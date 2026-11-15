@@ -41,6 +41,7 @@ COPY apps/codex-runner/agent-context.mjs apps/codex-runner/agent-mcp.mjs apps/co
 COPY apps/codex-runner/startup-smoke.mjs ./startup-smoke.mjs
 # Exercise actual Codex sandbox -> loopback gateway -> isolated Chromium in CI.
 COPY apps/codex-runner/browser-smoke.mjs ./browser-smoke.mjs
+COPY apps/codex-runner/local-project-browser-smoke.mjs ./local-project-browser-smoke.mjs
 USER node
 EXPOSE 4300
 CMD ["node","server.mjs"]

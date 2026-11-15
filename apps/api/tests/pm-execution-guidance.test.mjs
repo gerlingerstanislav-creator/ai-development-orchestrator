@@ -8,6 +8,8 @@ test('PM selects direct or delegated work without mandatory role pipeline',()=>{
  assert.match(PM_EXECUTION_GUIDANCE,/work\.plan|goals\.plan/);
  assert.match(PM_EXECUTION_GUIDANCE,/work\.artifacts/);
  assert.match(PM_EXECUTION_GUIDANCE,/browser\.capture/);
+ assert.match(PM_EXECUTION_GUIDANCE,/локальная сборка исходников/);
+ assert.match(PM_GOAL_POLICY,/не спрашивай адрес внешнего тестового сайта/);
  assert.match(PM_EXECUTION_GUIDANCE,/Не запускай work\.delegate или QA только ради скриншотов/);
  assert.doesNotMatch(PM_EXECUTION_GUIDANCE,/сначала аналитик.*затем разработчик.*затем QA/i);
 });

@@ -68,6 +68,7 @@ jobs:
           node --test apps/codex-runner/ci-test-discovery.test.mjs
           node --check apps/codex-runner/browser-client.mjs
           node --check apps/codex-runner/browser-gateway.mjs
+          node --check apps/codex-runner/local-project-browser-smoke.mjs
           node --check apps/codex-runner/qa-completion.mjs
           node --check apps/codex-runner/qa-prompt.mjs
           node --check apps/codex-runner/developer-prompt.mjs
@@ -161,6 +162,19 @@ jobs:
         run: docker compose up -d --no-deps qa-browser
       - name: Verify real sandbox -> loopback gateway -> Chromium assertion
         run: docker compose run --rm --no-deps --entrypoint node codex /opt/codex-runner/browser-smoke.mjs
+      - name: Capture actual local Vue site from GitHub test branch
+        run: |
+          mkdir -p local-preview-screenshots
+          chmod 777 local-preview-screenshots
+          docker compose run --rm --no-deps -v "${{ github.workspace }}/local-preview-screenshots:/qa-artifacts" \
+            --entrypoint node codex /opt/codex-runner/local-project-browser-smoke.mjs
+      - name: Save real local preview screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-preview-put-bez-pregrad-${{ github.sha }}
+          path: local-preview-screenshots/
+          if-no-files-found: error
+          retention-days: 14
       - name: Browser diagnostics after failure
         if: failure()
         run: docker compose logs --no-color qa-browser

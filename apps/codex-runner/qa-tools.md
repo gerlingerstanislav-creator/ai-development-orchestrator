@@ -26,7 +26,7 @@ not performed use `not_run` and empty command/evidenceId.
 
 ## Browser / visual checks (only when the browser is available)
 
-The browser runs in a separate isolated Chromium service, not inside the QA sandbox.
+The browser runs in a separate isolated Chromium service, not inside the QA sandbox. For an unspecified "test environment", always run the local build of the checked-out GitHub revision; a deployed test URL is NOT required unless the user explicitly asked to verify a deployed site. Source SHA proves the local checkout, not a public deployment.
 **Important:** `browser-client.mjs start` automatically starts the app from the shared
 repository checkout (existing build or the project's dev script). It DOES NOT connect
 to a Vite process manually started in the Codex sandbox. First install project
