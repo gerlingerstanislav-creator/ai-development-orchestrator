@@ -92,4 +92,11 @@ test('a verified Vue compilation failure on the same immutable SHA prevents anot
  await assert.rejects(routeTaskToBrowserEvidence(pool,{projectId:project,taskId:task,actorId:user,
   sourceSha:sha,reason:'Repeat with the exact same immutable commit'}),/ошибка компиляции/);
  assert.equal(await confirmedEvidenceSourceBlocker(pool,{projectId:project,taskId:task,sourceSha:'b'.repeat(40)}),null);
+ const duplicate=randomUUID();
+ await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage) VALUES($1,$2,'Another screenshot task',$3,'task','analysis')",
+  [duplicate,project,'Capture screenshots for SHA '+sha]);
+ await assert.rejects(routeTaskToBrowserEvidence(pool,{
+  projectId:project,taskId:duplicate,actorId:user,sourceSha:sha,
+  reason:'Retry screenshot generation from another card'
+ }),/ошибка компиляции/,'creating a duplicate card must not bypass the same verified immutable-source blocker');
 });
