@@ -5,6 +5,7 @@ import {TaskCurrentWork,type CurrentWork} from './features/tasks/TaskCurrentWork
 import {TaskBoardControls} from './features/tasks/TaskBoardControls.js';
 import {TaskExecutionPlan,type TaskWorkAssignment,type TaskExecutionKickoff,type TaskEvidenceRun,type PmBrowserCaptureRun} from './features/tasks/TaskExecutionPlan.js';
 import {TaskPmScreenshotGallery,type PmBrowserArtifact} from './features/tasks/TaskPmScreenshotGallery.js';
+import {PmMessageContent} from './features/chat/PmMessageContent.js';
 import {buildTaskTimeline,type ActivityItem} from './features/tasks/task-timeline.js';
 import {kanbanLanes,boardLaneFor,attentionNeeded,type BoardStatus} from './features/tasks/board-model.js';
 import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
@@ -2076,7 +2077,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.topic_id&&<small className="pm-message-topic">{m.topic_title||projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       {m.created_at&&<time className="assistant-message-time" dateTime={m.created_at}>{new Date(m.created_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</time>}
-       {m.role==='assistant'?<div className="pm-chat-markdown"><DocumentMarkdown source={pmDisplayText(m.body)}/></div>:<div>{m.body}</div>}
+       {m.role==='assistant'?<div className="pm-chat-markdown"><PmMessageContent source={m.body} projectId={selectedProjectId} hasAttachments={Boolean(m.images?.length)}/></div>:<div>{m.body}</div>}
        <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
       {m.role==='user'&&projectChatMode==='project'&&<PmProgressPanel events={pmProgress[m.id]||[]} status={m.status}/>}
       {m.role==='assistant'&&!m.pending&&<button type="button" className="textbtn pm-reply-button" onClick={()=>{setProjectReplyTo(m.id);projectInputRef.current?.focus();}}>Ответить</button>}
@@ -2366,7 +2367,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        </div>
        {m.role==='manager'&&m.reply_to&&<AgentPromptDisclosure projectId={selectedProjectId} processId={m.reply_to}/>}
        <div className={'manager-message-body '+(m.role==='manager'?'pm-chat-markdown':'')}>
-        {m.role==='manager'?<DocumentMarkdown source={pmDisplayText(m.body)}/>:m.body}
+        {m.role==='manager'?<PmMessageContent source={m.body} projectId={selectedProjectId} hasAttachments={Boolean(m.images?.length)}/>:m.body}
        </div>
         <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
        {m.role==='user'&&['queued','processing'].includes(m.status)&&!m.id.startsWith('pending-')&&
