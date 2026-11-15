@@ -68,6 +68,7 @@ jobs:
           node --test apps/codex-runner/ci-test-discovery.test.mjs
           node --check apps/codex-runner/browser-client.mjs
           node --check apps/codex-runner/browser-gateway.mjs
+          node --check apps/codex-runner/local-project-browser-smoke.mjs
           node --check apps/codex-runner/qa-completion.mjs
           node --check apps/codex-runner/qa-prompt.mjs
           node --check apps/codex-runner/developer-prompt.mjs
