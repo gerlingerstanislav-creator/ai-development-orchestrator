@@ -80,3 +80,24 @@ test('manager conversation renders reusable private file chips and safe download
  assert.match(markup,/Скачать/);
  assert.doesNotMatch(markup,/blob:|data:/,'metadata must never leak attachment bytes');
 });
+
+test('project capture screenshots render as real clickable protected image widgets in PM history',()=>{
+ const items=[
+  {id:'11111111-1111-1111-1111-111111111111',
+   url:'/api/projects/'+project+'/browser-artifacts/11111111-1111-1111-1111-111111111111',
+   name:'1920x1080-example.jpg',label:'Главная',path:'/',width:2880,height:6800,
+   sha256:'a'.repeat(64)},
+  {id:'22222222-2222-2222-2222-222222222222',
+   url:'/api/projects/'+project+'/browser-artifacts/22222222-2222-2222-2222-222222222222',
+   name:'1920x1080-other.jpg',label:'Контакты',path:'/contacts',width:2880,height:3200,
+   sha256:'b'.repeat(64)}
+ ];
+ const markup=renderToStaticMarkup(React.createElement(PmMessageContent,{
+  source:'Готово, обе страницы целиком.',projectId:project,screenshots:items
+ }));
+ assert.match(markup,/Полноразмерные скриншоты проекта/);
+ assert.equal((markup.match(/class="task-pm-shot"/g)||[]).length,2);
+ assert.match(markup,/2880×6800/);
+ assert.match(markup,/2880×3200/);
+ assert.doesNotMatch(markup,/href="\/api\/projects/,'images are real protected widgets, not raw links');
+});
