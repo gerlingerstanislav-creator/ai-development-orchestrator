@@ -1,4 +1,4 @@
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {composeAgentPrompt,recordAgentPrompt} from '../../../agent-prompt.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from '../../../agent-tools.js';
 import {readChatImages} from '../../../chat-images.js';
@@ -7,6 +7,7 @@ import {agentMemorySections} from '../../../agent-memory.js';
 import type {PmWatchReport} from './pm-watch-report.js';
 import {PM_GOAL_POLICY,pmOrderStateFromResults} from '../../../pm-goal-policy.js';
 import {PM_EXECUTION_GUIDANCE} from '../../../pm-execution-guidance.js';
+import {platformPromptRules} from '../../../prompt-assembler.mjs';
 import {buildPmConversationContext} from '../domain/pm-conversation-context.js';
 
 // Derive infrastructure-provided DB port without coupling application code to pg.
@@ -107,11 +108,16 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    'Не пересказывай всю историю. При необходимости используй адресные MCP-инструменты; '+
     'сохранённые фоновые поручения отслеживаются Temporal, не ожидай их синхронно.'
   ].filter(Boolean).join('\n');
+  // Durable Codex threads retain their original policy. Rotate only if
+  // approved project instructions, role memory or PM rules actually change.
+  const promptRevision=createHash('sha256')
+   .update([instructions.slice(0,2200),approvedMemory,platformPromptRules,PM_GOAL_POLICY,PM_EXECUTION_GUIDANCE].join('\n'))
+   .digest('hex').slice(0,16);
   await recordAgentPrompt(pool,{projectId,processId:orderId||messageId,role:'manager',operation:'pm_turn',prompt}).catch(()=>{});
   await audit('runner_request');
   const response=await fetch(runnerUrl+'/agent',{
    method:'POST',headers:{'X-Runner-Secret':runnerKey,'Content-Type':'application/json'},
-   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,progress_attempt:attempt,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,images}),
+   body:JSON.stringify({model:config.model,reasoning:config.reasoning,prompt,resume_prompt:resumePrompt,request_id:messageId,progress_attempt:attempt,actor_id:turn.actor_id,session_token:session.secret,agent_role:'manager',project_id:projectId,role_capacity:1,prompt_revision:promptRevision,images}),
    signal:AbortSignal.timeout(255000)
   });
   const data=await response.json().catch(()=>({})) as any;
