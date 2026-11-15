@@ -29,6 +29,7 @@ import {installWorkArtifactsSchema,installGoalWorkArtifactScope} from '../module
 import {installPmGoalSchema,installPmCapabilityProposalSchema} from '../modules/planning/infrastructure/pm-goals.js';
 import {installUniversalTaskBoardSchema} from '../task-board.js';
 import {installTaskWorkBoardActivation} from '../task-board-activation.js';
+import {installPmBrowserCaptureSchema} from '../pm-browser-capture.js';
 
 /**
  * Append-only, transactional schema history.
@@ -185,6 +186,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:22,name:'task-work-activates-kanban',
    checksum:'ado-task-work-activates-kanban-v22',
    up:database=>installTaskWorkBoardActivation(database)
+  },
+  {
+   version:23,name:'pm-direct-browser-capture',
+   checksum:'ado-pm-direct-browser-capture-v23',
+   up:database=>installPmBrowserCaptureSchema(database)
   }
  ];
 }
