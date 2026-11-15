@@ -10,7 +10,7 @@ import {chatFilesSchema,validateChatFiles,saveChatFiles,readPmChatFileContext,re
 const input=(name,content)=>({name,mimeType:'application/octet-stream',
  data:Buffer.from(content).toString('base64')});
 test('chat file uploads enforce safe extensions, magic bytes and explicit size limits',()=>{
- assert.equal(chatFilesSchema.parse({files:[input('requirements.md','ok')]}).files.length,1);
+ assert.equal(chatFilesSchema.parse([input('requirements.md','ok')]).length,1);
  assert.equal(validateChatFiles([input('requirements.md','ok')])[0].mimeType,'text/markdown');
  assert.throws(()=>validateChatFiles([input('run.exe','binary')]),/Разрешены файлы/);
  assert.throws(()=>validateChatFiles([input('file.pdf','fake pdf')]),/неверный формат/);
