@@ -164,15 +164,15 @@ jobs:
         run: docker compose run --rm --no-deps --entrypoint node codex /opt/codex-runner/browser-smoke.mjs
       - name: Capture actual local Vue site from GitHub test branch
         run: |
-          mkdir -p .qa-screenshots
-          chmod 777 .qa-screenshots
-          docker compose run --rm --no-deps -v "${{ github.workspace }}/.qa-screenshots:/qa-artifacts" \
+          mkdir -p local-preview-screenshots
+          chmod 777 local-preview-screenshots
+          docker compose run --rm --no-deps -v "${{ github.workspace }}/local-preview-screenshots:/qa-artifacts" \
             --entrypoint node codex /opt/codex-runner/local-project-browser-smoke.mjs
       - name: Save real local preview screenshots
         uses: actions/upload-artifact@v4
         with:
           name: local-preview-put-bez-pregrad-${{ github.sha }}
-          path: .qa-screenshots/
+          path: local-preview-screenshots/
           if-no-files-found: error
           retention-days: 14
       - name: Browser diagnostics after failure
