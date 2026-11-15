@@ -15,6 +15,8 @@ import {executeAgentKnowledgeTool,isAgentKnowledgeTool} from './modules/knowledg
 
 import {workflowResponsibility} from './workflow-responsibilities.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from './task-evidence-routing.js';
+import {confirmedEvidenceSourceBlocker} from './task-evidence-blockers.js';
+import {validEvidenceSha} from './task-evidence.js';
 import {workRoles} from './modules/agents/infrastructure/work-assignments.js';
 import {executeAgentWorkTool,isAgentWorkTool} from './modules/agents/infrastructure/agent-work-tools.js';
 import {executePmGoalTool,isPmGoalTool} from './modules/planning/infrastructure/pm-goal-tools.js';
@@ -286,7 +288,7 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
  }
  case 'tasks.read':{
   const {task_id}=z.object({task_id:uuid}).parse(params);
-  const r=await pool.query('SELECT id,title,description,stage,board_status,acceptance_mode,postponed_at,acceptance_feedback,analysis_state,clarification_questions,depends_on_task_id,pr_url,pr_number,git_branch,pr_base_branch,spec_version,spec_review_status,spec_reviewed_commit,test_feedback,updated_at FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]);
+  const r=await pool.query('SELECT id,title,description,stage,board_status,acceptance_mode,postponed_at,acceptance_feedback,analysis_state,clarification_questions,depends_on_task_id,pr_url,pr_number,git_branch,pr_base_branch,spec_version,spec_review_status,spec_reviewed_commit,test_feedback,execution_mode,evidence_source_sha,updated_at FROM tasks WHERE project_id=$1 AND id=$2',[projectId,task_id]);
   if(!r.rowCount)throw rejected('Задача не найдена',404);
   const [conversation,questions,open,answers,repository]=await Promise.all([
    taskConversationEvidence(pool,projectId,task_id),
@@ -307,7 +309,19 @@ export async function executeAgentTool(pool:Pick<Pool,'query'>,session:AgentSess
    pr_number:task.pr_number||null,
    reviewed_commit:task.spec_reviewed_commit||null
   }:null;
-  return {task,git,conversation,work_brief,open_questions:open.rows,answered_questions:questions.rows,owner_answers:answers.rows};
+  const browser_evidence=task.execution_mode==='browser_evidence'&&validEvidenceSha(task.evidence_source_sha)
+   ?await (async()=>{
+     const [run,source_blocker]=await Promise.all([
+      pool.query(`SELECT id,status,source_sha,message,created_at,updated_at FROM task_evidence_runs
+       WHERE project_id=$1 AND task_id=$2 ORDER BY created_at DESC LIMIT 1`,[projectId,task_id]),
+      confirmedEvidenceSourceBlocker(pool,{
+       projectId,taskId:task_id,sourceSha:task.evidence_source_sha
+      })
+     ]);
+     return {source_sha:task.evidence_source_sha,latest_run:run.rows[0]||null,source_blocker};
+    })()
+   :null;
+  return {task,git,conversation,work_brief,open_questions:open.rows,answered_questions:questions.rows,owner_answers:answers.rows,browser_evidence};
  }
  case 'tasks.history':{
   const {task_id,cursor,limit}=z.object({
