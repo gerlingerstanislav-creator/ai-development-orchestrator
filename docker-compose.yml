@@ -97,8 +97,10 @@ services:
     init: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    pids_limit: 128
-    mem_limit: 1g
+    # Chromium needs spare PID/thread headroom when QA and PM capture overlap.
+    # The browser host itself still permits at most two active sessions.
+    pids_limit: 384
+    mem_limit: 1536m
     shm_size: 512mb
     environment:
       QA_WORKSPACES_DIR: /var/lib/ado-qa-workspaces
