@@ -32,6 +32,7 @@ test('old PM link Markdown with spaces and escaped parenthesis resolves protecte
  assert.equal(result.images.length,2);
  assert.deepEqual(result.images.map(x=>x.label),['Desktop, 1440×900','Mobile, 390×844']);
  assert.ok(!result.markdown.includes('/api/projects/'));
+ assert.doesNotMatch(result.markdown,/^\s*[-*+]\s*$/m,'hidden image references must not leave empty list bullets');
 });
 
 test('nonmatching project, external URLs, generic docs and duplicate references remain safe',()=>{
