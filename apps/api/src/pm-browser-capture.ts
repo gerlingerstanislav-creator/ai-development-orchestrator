@@ -2,6 +2,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {validEvidenceSha} from './task-evidence.js';
 import {confirmedEvidenceSourceBlocker} from './task-evidence-blockers.js';
+import {resolveGitHubDocumentCommit} from './github-document-import.js';
 
 type Db=Pick<Pool,'query'>;
 const reject=(message:string,statusCode=409)=>Object.assign(Error(message),{statusCode});
@@ -115,7 +116,7 @@ export async function runPmBrowserCapture(db:Pool,input:{
 }){
  const fetcher=input.fetchImpl||fetch;
  const client=await db.connect(),captureId=randomUUID();
- let source:any,task:any;
+ let source:any,task:any,selectedSha='';
  try{
   await client.query('BEGIN');
   const found=await client.query(`SELECT id,stage,board_status,postponed_at,archived_at,
@@ -134,11 +135,20 @@ export async function runPmBrowserCapture(db:Pool,input:{
   const pin=input.revision==='pinned'?(input.sourceSha||task.evidence_source_sha):null;
   if(input.revision==='pinned'&&!validEvidenceSha(pin))
    throw reject('У задачи нет полного закреплённого SHA. Укажи source_sha или выбери latest',400);
-  if(input.revision==='pinned'){
-   const failure=await confirmedEvidenceSourceBlocker(client,{
-    projectId:input.projectId,taskId:input.taskId,sourceSha:String(pin)});
-   if(failure)throw reject(failure);
-  }
+  const branch=source.target_branch||source.default_branch||'main';
+  const [owner,repository]=String(source.repository).split('/');
+  if(!owner||!repository)throw reject('Некорректный GitHub-репозиторий');
+  // "Current" means actual HEAD as observed through the trusted GitHub
+  // connection, not an invented SHA or a floating ref inside Chromium.
+  selectedSha=input.revision==='latest'
+   ?await resolveGitHubDocumentCommit({owner,repository,branch,path:''},
+      [input.decryptToken(source.secret_encrypted)])
+   :String(pin).toLowerCase();
+  const failure=await confirmedEvidenceSourceBlocker(client,{
+   projectId:input.projectId,taskId:input.taskId,sourceSha:selectedSha});
+  if(failure)throw reject(input.revision==='latest'
+   ?'Ветка GitHub всё ещё указывает на тот же сломанный коммит. '+failure
+   :failure);
   // The Codex MCP request has a bounded timeout; a crashed API process
   // cannot leave a permanent "running" capture that blocks every next turn.
   await client.query(`UPDATE pm_browser_captures SET status='blocked',
@@ -150,11 +160,10 @@ export async function runPmBrowserCapture(db:Pool,input:{
    WHERE task_id=$1 AND project_id=$2 AND status='running' LIMIT 1`,
    [input.taskId,input.projectId]);
   if(active.rowCount)throw reject('ПМ уже снимает скриншоты этой задачи. Дождись результата.');
-  const branch=source.target_branch||source.default_branch||'main';
   await client.query(`INSERT INTO pm_browser_captures(
    id,project_id,task_id,actor_id,repository,branch,revision_mode,requested_sha,status)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running')`,
-   [captureId,input.projectId,input.taskId,input.actorId,source.repository,branch,input.revision,pin]);
+   [captureId,input.projectId,input.taskId,input.actorId,source.repository,branch,input.revision,selectedSha]);
   await client.query(`UPDATE tasks SET board_status='in_progress',updated_at=now()
    WHERE id=$1 AND board_status IN ('backlog','todo')`,[input.taskId]);
   await client.query(`INSERT INTO process_events(
@@ -171,7 +180,7 @@ export async function runPmBrowserCapture(db:Pool,input:{
    body:JSON.stringify({captureId,projectId:input.projectId,taskId:input.taskId,
     repository:source.repository,branch:source.target_branch||source.default_branch||'main',
     token:input.decryptToken(source.secret_encrypted),
-    sourceSha:input.revision==='pinned'?(input.sourceSha||task.evidence_source_sha):null}),
+    sourceSha:selectedSha}),
    signal:AbortSignal.timeout(190000)
   });
   response=await r.json().catch(()=>({}));
