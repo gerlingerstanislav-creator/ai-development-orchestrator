@@ -168,8 +168,11 @@ async function run(s,body){
  }
  if(action==='start'){
   if(s.page)return {ok:true,message:'Browser already started',path:s.path};
-  const active=[...sessions.values()].filter(other=>other!==s&&other.page&&other.browser?.isConnected()).length;
+  if(s.starting)throw Error('Эта локальная браузерная сессия уже запускается');
+  const active=[...sessions.values()].filter(other=>other!==s&&
+   (other.starting||(other.page&&other.browser?.isConnected()))).length;
   if(active>=2)throw Error('Изолированный Chromium занят: одновременно допускается до двух браузерных сессий. Повтори после завершения активной проверки.');
+  s.starting=true;
   try{
    const {port,entry,pages}=await application(s);
    if(s.stopping)throw Error('QA session was stopped during application startup');
@@ -221,7 +224,7 @@ async function run(s,body){
   }catch(error){
    await stop(s);
    throw Error('QA browser start failed: '+String(error.message||error));
-  }
+  }finally{s.starting=false;}
  }
  if(!s.page)throw Error('Start QA browser first: browser-client.mjs start');
  const page=s.page;
