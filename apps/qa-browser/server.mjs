@@ -312,6 +312,8 @@ async function run(s,body){
     await Promise.race([document.fonts?.ready||Promise.resolve(),new Promise(resolve=>setTimeout(resolve,2500))]);
    });
    await page.waitForTimeout(300);
+   cssHeight=await page.evaluate(()=>Math.max(document.documentElement.scrollHeight,document.body?.scrollHeight||0,window.innerHeight));
+   if(cssHeight>12000)throw Error('Страница увеличилась после загрузки: максимальная высота единого скриншота 12000px');
   }
   const filename=viewport.width+'x'+viewport.height+'-'+randomUUID()+'.jpg';
   const target=join(evidence,filename);
