@@ -121,3 +121,29 @@ test('Kanban and task list reveal which specialist is actually working and what 
  assert.match(describeCurrentWork({role:'manager',status:'processing',detail:'План',
   source:'pm'}),/ПМ · Работает/);
 });
+
+test('task modal execution stays collapsed but exposes real screenshot status and age',()=>{
+ const old='2026-01-01T10:00:00Z';
+ const html=renderToStaticMarkup(React.createElement(TaskExecutionPlan,{
+  assignments:[],kickoff:null,stage:'testing',stageLabel:'Тестирование',
+  evidenceRun:{id:'run1',source_sha:'a'.repeat(40),status:'queued',
+   message:'Waiting for Temporal',created_at:old,updated_at:old},
+  busy:false,onRetry:()=>{}
+ }));
+ assert.match(html,/<details class="task-dynamic-plan"/);
+ assert.match(html,/<summary class="task-dynamic-summary"/);
+ assert.match(html,/Скриншоты · в очереди/);
+ assert.match(html,/статус без изменений более 8 мин/);
+ assert.match(html,/Последнее событие/);
+});
+test('acceptance and defer date no longer occupy large permanent task cards',()=>{
+ const taskData=task('18',{stage:'testing',board_status:'in_progress'});
+ const html=renderToStaticMarkup(React.createElement(TaskBoardControls,{
+  task:taskData,busy:false,onAction:async()=>{}
+ }));
+ assert.match(html,/<details class="task-board-policy"/);
+ assert.match(html,/Приёмка: При завершении/);
+ assert.match(html,/Отложить/);
+ assert.doesNotMatch(html,/Отложить до \(необязательно\)/,
+  'date selector is only revealed when user chooses to postpone');
+});

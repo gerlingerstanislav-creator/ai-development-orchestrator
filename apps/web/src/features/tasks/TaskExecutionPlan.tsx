@@ -5,6 +5,10 @@ export type TaskWorkAssignment={
  acceptance:string;status:string;result:string|null;evidence:string|null;
  prerequisites:Array<{id:string;key:string|null;status:string}>;created_at:string;
 };
+export type TaskEvidenceRun={
+ id:string;source_sha:string;status:'queued'|'dispatching'|'running'|'completed'|'blocked'|'failed'|'cancelled';
+ message:string;created_at:string;updated_at:string;
+};
 export type TaskExecutionKickoff={
  id:string;pm_order_id:string|null;status:string;pm_dispatch_attempt:number;
 }|null;
@@ -20,9 +24,9 @@ const roleLabel:Record<string,string>={
 };
 
 export function TaskExecutionPlan({
- assignments,kickoff,stage,stageLabel,busy,onRetry
+ assignments,kickoff,evidenceRun,stage,stageLabel,busy,onRetry
 }:{
- assignments:TaskWorkAssignment[];kickoff:TaskExecutionKickoff;
+ assignments:TaskWorkAssignment[];kickoff:TaskExecutionKickoff;evidenceRun?:TaskEvidenceRun|null;
  stage:string;stageLabel:string;busy:boolean;onRetry:()=>void;
 }){
  const plans=new Map<string,TaskWorkAssignment[]>();
@@ -34,11 +38,34 @@ export function TaskExecutionPlan({
  // Show the latest bounded plan, plus direct delegations not belonging to it.
  const groups=[...plans.values()].slice(-3);
  const planning=kickoff&&['queued','processing'].includes(kickoff.status);
- return <section className="task-dynamic-plan" aria-label="План выполнения задачи">
+ const active=assignments.find(a=>['running','blocked','submitted'].includes(a.status))||assignments.find(a=>a.status==='queued')||assignments.at(-1);
+ const lastRun=evidenceRun;
+ const runLabel:Record<TaskEvidenceRun['status'],string>={
+  queued:'в очереди',dispatching:'запускается',running:'отправлено в Temporal',
+  completed:'готово',blocked:'заблокировано',failed:'ошибка',cancelled:'отменено'
+ };
+ const staleRun=lastRun&&['queued','dispatching','running'].includes(lastRun.status)&&
+  Date.now()-new Date(lastRun.updated_at).getTime()>8*60*1000;
+ const shortSummary=lastRun?'Скриншоты · '+runLabel[lastRun.status]+(staleRun?' · статус без изменений более 8 мин':''):
+  active?(roleLabel[active.role]||active.role)+' · '+(statusLabel[active.status]||active.status):
+  planning?'ПМ составляет план':'Нет активных поручений';
+ return <details className="task-dynamic-plan" aria-label="План выполнения задачи">
+  <summary className="task-dynamic-summary">
+   <strong>План выполнения</strong>
+   <span className="task-dynamic-summary-status" title={shortSummary}>{shortSummary}</span>
+   <span className="task-dynamic-expand-hint">Подробнее</span>
+  </summary>
+  <div className="task-dynamic-expanded">
   <div className="task-dynamic-plan-heading">
    <strong>План выполнения</strong>
    <small>Текущий технический этап: {stageLabel||stage}</small>
   </div>
+  {lastRun&&<div className={'task-evidence-state is-'+lastRun.status} role="status">
+   <strong>Браузерные скриншоты: {runLabel[lastRun.status]}</strong>
+   <small>Ревизия: {lastRun.source_sha.slice(0,12)} · Последнее событие: {new Date(lastRun.updated_at).toLocaleString('ru-RU')}</small>
+   {lastRun.message&&<p>{lastRun.message}</p>}
+   {staleRun&&<small className="task-warning">Статус браузерного запуска не обновлялся больше 8 минут. Это не означает, что процесс остановлен: фактический прогресс смотри в Центре процессов.</small>}
+  </div>}
   {kickoff&&<div className="task-dynamic-kickoff" role="status">
    <span className={'task-plan-dot '+kickoff.status}/>
    <span>{planning?'PM определяет маршрут и доступные инструменты':
@@ -65,5 +92,6 @@ export function TaskExecutionPlan({
   </div>):<p className="muted task-dynamic-plan-empty">{planning?'План появится по мере решений PM.':
    kickoff?'Пока нет отдельных поручений; PM может выполнять действие напрямую или назначить исполнителя.':
    'При запуске задачи PM определит необходимые действия. Для текущего технического workflow смотри историю процессов.'}</p>}
- </section>;
+  </div>
+ </details>;
 }
