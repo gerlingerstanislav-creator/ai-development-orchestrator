@@ -174,13 +174,37 @@ export async function runPmBrowserCapture(db:Pool,input:{
   const images=await readPmCaptureArtifacts(db,input.projectId,input.taskId);
   const artifacts=images.filter(x=>x.capture_id===captureId&&String(x.source_sha).trim()===response.source_sha);
   if(artifacts.length!==2)throw Error('Браузерные снимки отсутствуют в защищённом хранилище');
-  // Preserve the original pinned requirement. A newer capture is explicitly
-  // recorded as a different revision; it must not retroactively "fix" an old QA run.
+  // A new SHA is safe only AFTER a real successful browser capture, not
+  // merely because the PM saw a different branch HEAD.
   const sourceChanged=!!task.evidence_source_sha&&task.evidence_source_sha!==response.source_sha;
-  await db.query(`UPDATE pm_browser_captures
+  const finish=await db.connect();
+  let repinned=false;
+  try{
+   await finish.query('BEGIN');
+   await finish.query(`UPDATE pm_browser_captures
     SET source_sha=$2,status='completed',message=$3,updated_at=now() WHERE id=$1`,
-   [captureId,response.source_sha,'Сохранены два снимка desktop/mobile'+
-    (sourceChanged?'; исходный SHA задания отличается':'')]);
+    [captureId,response.source_sha,'Сохранены два реальных скриншота']);
+   if(sourceChanged&&input.revision==='latest'&&task.execution_mode==='browser_evidence'){
+    const active=await finish.query(`SELECT 1 FROM task_orchestration_owners
+     WHERE project_id=$1 AND task_id=$2 AND state='active'
+     UNION ALL SELECT 1 FROM task_evidence_runs
+     WHERE project_id=$1 AND task_id=$2 AND status IN ('queued','dispatching','running') LIMIT 1`,
+     [input.projectId,input.taskId]);
+    if(!active.rowCount){
+     const changed=await finish.query(`UPDATE tasks SET evidence_source_sha=$3,
+      implementation_commit=$3,updated_at=now() WHERE id=$1 AND project_id=$2
+      AND stage='testing' AND execution_mode='browser_evidence' AND pr_url IS NULL RETURNING id`,
+      [input.taskId,input.projectId,response.source_sha]);
+     repinned=changed.rowCount>0;
+     if(repinned)await finish.query(`INSERT INTO task_events(id,task_id,actor_id,event,detail)
+      VALUES($1,$2,$3,'evidence_sha_updated',$4)`,
+      [randomUUID(),input.taskId,input.actorId,'ПМ выбрал рабочий SHA '+response.source_sha+
+       '; прежний '+task.evidence_source_sha+' сохранён в истории']);
+    }
+   }
+   await finish.query('COMMIT');
+  }catch(error){await finish.query('ROLLBACK').catch(()=>{});throw error;}
+  finally{finish.release();}
   await db.query(`INSERT INTO task_events(id,task_id,actor_id,event,detail)
     VALUES($1,$2,$3,'pm_browser_captured',$4)`,
    [randomUUID(),input.taskId,input.actorId,'ПМ сделал два снимка с '+response.source_sha+
@@ -192,7 +216,9 @@ export async function runPmBrowserCapture(db:Pool,input:{
   return {status:'completed',capture_id:captureId,source_sha:response.source_sha,
    previous_pinned_sha:sourceChanged?task.evidence_source_sha:null,
    screenshots:artifacts.map(x=>({url:x.url,viewport:x.viewport,sha256:x.sha256})),
-   message:sourceChanged?'Снята актуальная версия; старый закреплённый SHA оставлен в истории задачи.':
+   message:sourceChanged?(repinned
+    ?'ПМ выбрал актуальную рабочую версию и обновил SHA задачи, сохранив историю прежней проверки.'
+    :'ПМ снял актуальный сайт, но SHA задачи пока нельзя обновить: есть активный технический процесс.'):
     'ПМ самостоятельно сделал и сохранил два скриншота.'};
  }catch(error){
   const message=String(error instanceof Error?error.message:error).slice(0,1400);
