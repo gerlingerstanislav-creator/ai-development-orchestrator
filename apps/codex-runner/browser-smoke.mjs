@@ -5,7 +5,8 @@ import {spawn} from 'node:child_process';
 import {createTaskPolicy,runnerEnvironment} from './execution-policy.mjs';
 import {mkdir,writeFile,stat,rm} from 'node:fs/promises';
 import {join} from 'node:path';
-import {browserHealth,startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,closeQaBrowserSession} from './browser-gateway.mjs';
+import {browserHealth,startQaBrowserGateway,openQaBrowserSession,getQaBrowserEvidence,getQaScreenshotEvidence,closeQaBrowserSession} from './browser-gateway.mjs';
+import {createPmBrowserCapture} from './pm-browser-capture.mjs';
 import {verifyQaExecution} from './qa-run-evidence.mjs';
 const base=process.env.QA_BROWSER_WORKSPACES_DIR||'/var/lib/ado-qa-workspaces';
 const id=randomUUID(),root=join(base,'ado-qa-'+id),repo=join(root,'repo');
@@ -70,6 +71,50 @@ try{
  assert.ok(audited.caseResults.every(x=>x.result==='passed'&&x.browserVerified));
  assert.equal(audited.verdict,'passed');
  await closeQaBrowserSession(id);
+ // Verify the ACTUAL new PM -> Runner -> authenticated gateway -> isolated
+ // Chromium -> JPEG receipts -> API upload path (not a mocked browser).
+ let pmUploads=0;
+ const sha='b'.repeat(40);
+ const projectId=randomUUID(),taskId=randomUUID(),captureId=randomUUID();
+ const direct=createPmBrowserCapture({
+  command:async(exe,args)=>{
+   if(exe!=='git')throw Error('Unexpected external command: '+exe);
+   if(args[0]==='clone'){
+    const dir=args.at(-1);
+    await mkdir(dir,{recursive:true});
+    await writeFile(join(dir,'index.html'),'<!doctype html><title>PM real browser</title><main>Rendered and ready</main>');
+   }
+   return {stdout:args[0]==='rev-parse'?sha:'',stderr:'',exitCode:0};
+  },
+  isolatedTaskPolicy:async()=>({sandboxArgs:[]}),cliEnv:{},
+  browser:{health:browserHealth,open:openQaBrowserSession,
+   screenshots:getQaScreenshotEvidence,close:closeQaBrowserSession},
+  agentApi:'http://api:3001/internal/agent-tools',runnerSecret:'s'.repeat(48),
+  workspacesRoot:base,
+  fetchImpl:async(url,options)=>{
+   if(url.startsWith('http://127.0.0.1:4311/'))return fetch(url,options);
+   if(url.endsWith('/pm-browser-artifacts')){
+    const body=JSON.parse(options.body);
+    assert.equal(body.projectId,projectId);
+    assert.equal(body.taskId,taskId);
+    assert.equal(body.captureId,captureId);
+    assert.equal(body.sourceSha,sha);
+    assert.equal(body.artifacts.length,2);
+    assert.deepEqual(body.artifacts.map(a=>a.viewport.width),[1440,390]);
+    assert.ok(body.artifacts.every(a=>a.origin==='isolated-local-browser'));
+    assert.notEqual(body.artifacts[0].sha256,body.artifacts[1].sha256);
+    pmUploads++;
+    return {ok:true,json:async()=>({saved:2,artifact_ids:[randomUUID(),randomUUID()]})};
+   }
+   throw Error('Unexpected outgoing request '+url);
+  }
+ });
+ const pmResult=await direct({captureId,projectId,taskId,
+  repository:'local-ci/fixture',branch:'main',token:'x'.repeat(48),sourceSha:null});
+ assert.equal(pmResult.source_sha,sha);
+ assert.equal(pmResult.screenshots_saved,2);
+ assert.equal(pmUploads,1);
+ console.log('PASS: PM captured and verified real desktop/mobile JPEG in isolated Chromium without any delegated agent');
  console.log('PASS: real Chromium verified six QA cases by ID, CSS, mobile/desktop, reload, screenshot, negative assertion and Runner receipts');
 }finally{
  await closeQaBrowserSession(id);

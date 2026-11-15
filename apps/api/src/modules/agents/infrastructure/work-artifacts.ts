@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
+import {readPmCaptureArtifacts} from '../../../pm-browser-capture.js';
 
 type Db=Pick<Pool,'query'>;
 const error=(message:string,statusCode=409)=>Object.assign(new Error(message),{statusCode});
@@ -97,5 +98,8 @@ export async function listWorkArtifacts(db:Db,projectId:string,taskId?:string|nu
   FROM agent_work_artifacts a WHERE a.project_id=$1 AND ${taskId?'a.task_id':'a.goal_id'}=$2
   ORDER BY a.created_at DESC LIMIT 100`,[projectId,taskId||goalId]);
  const scope=taskId?'/tasks/'+taskId:'/goals/'+goalId;
- return {artifacts:r.rows.map(a=>({...a,url:'/api/projects/'+projectId+scope+'/work-artifacts/'+a.id}))};
+ const delegated=r.rows.map(a=>({...a,url:'/api/projects/'+projectId+scope+'/work-artifacts/'+a.id}));
+ const direct=taskId?await readPmCaptureArtifacts(db,projectId,taskId):[];
+ return {artifacts:[...delegated,...direct].sort((a,b)=>
+  Date.parse(String(b.created_at))-Date.parse(String(a.created_at)))};
 }

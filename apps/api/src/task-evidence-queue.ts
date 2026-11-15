@@ -25,6 +25,9 @@ export async function reconcileTaskEvidenceQueue(pool:Pool,temporal:()=>Promise<
     AND NOT EXISTS(SELECT 1 FROM task_agent_notes n WHERE n.task_id=t.id AND n.project_id=t.project_id AND ${PENDING_OWNER_QUESTION_SQL})
     AND NOT EXISTS(SELECT 1 FROM task_evidence_runs r
       WHERE r.task_id=t.id AND r.spec_version=t.spec_version AND r.source_sha=t.evidence_source_sha)
+    AND NOT EXISTS(SELECT 1 FROM pm_browser_captures c
+      WHERE c.task_id=t.id AND c.project_id=t.project_id
+       AND c.status='completed' AND c.source_sha=t.evidence_source_sha)
    ORDER BY t.priority,t.created_at LIMIT 20
    ON CONFLICT DO NOTHING`);
   const queued=await db.query(`SELECT r.id,r.project_id,r.task_id,r.status,r.spec_version,r.source_sha

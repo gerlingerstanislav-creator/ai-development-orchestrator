@@ -33,7 +33,7 @@ async function assign(db,id,taskId,status='queued'){
 }
 test('v22 automatically moves old and newly assigned tasks into In progress with atomic event',async()=>{
  await isolated(async db=>{
-  const migrations=coreSchemaMigrations({analysis:'Аналитика'});
+  const migrations=coreSchemaMigrations({analysis:'Аналитика'}).filter(x=>x.version<=22);
   assert.equal(migrations.at(-1).version,22);
   await runSchemaMigrations(db,migrations.filter(x=>x.version<=21));
   const ids=await seed(db);

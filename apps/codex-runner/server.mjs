@@ -1,6 +1,7 @@
 import {validAgentRequest,assistantRequestError,runnerJobRequestError} from './request-contracts.mjs';
 import {createQaJobRunner} from './qa-job.mjs';
 import {createDelegatedWorkSandbox} from './delegated-work-sandbox.mjs';
+import {createPmBrowserCapture} from './pm-browser-capture.mjs';
 import {createCodexDeviceAuth} from './device-auth.mjs';
 import http from 'node:http';
 import {startCodexProxy,probeAuthEndpoint} from './codex-proxy.mjs';
@@ -394,9 +395,30 @@ const runDelegatedSandbox=createDelegatedWorkSandbox({
  decodeCodex:codexJsonResult,workspacesRoot:process.env.QA_BROWSER_WORKSPACES_DIR
 });
 
+const capturePmBrowser=createPmBrowserCapture({
+ command,isolatedTaskPolicy,cliEnv,agentApi,runnerSecret:jobKey,
+ browser:{health:browserHealth,open:openQaBrowserSession,
+  screenshots:getQaScreenshotEvidence,close:closeQaBrowserSession},
+ workspacesRoot:process.env.QA_BROWSER_WORKSPACES_DIR
+});
+
 http.createServer(async(req,res)=>{
  try {
   if(!authorized(req))return reply(res,403,{error:'Forbidden'});
+  if(req.method==='POST'&&req.url==='/pm-browser-capture'){
+   if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Исполнители Runner заняты'});
+   const data=await readJson(req,65000);
+   activeChatRequests++;
+   try{
+    const result=await capturePmBrowser(data);
+    return reply(res,200,result);
+   }catch(error){
+    // Do not leak GitHub tokens or full remote diagnostics in the response.
+    const detail=String(error?.message||error).replaceAll(String(data.token||''),'[REDACTED]').slice(0,1250);
+    process.stderr.write('[pm-browser-capture] '+detail+'\n');
+    return reply(res,503,{error:detail});
+   }finally{activeChatRequests--;}
+  }
   if(req.method==='POST'&&req.url==='/delegated-work'){
    if(activeChatRequests>=MAX_PARALLEL_CHAT)return reply(res,429,{error:'Все изолированные исполнители заняты'});
    const data=await readJson(req,65000);
