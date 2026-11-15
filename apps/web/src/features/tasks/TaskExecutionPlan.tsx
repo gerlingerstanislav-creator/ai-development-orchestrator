@@ -46,7 +46,7 @@ export function TaskExecutionPlan({
  };
  const staleRun=lastRun&&['queued','dispatching','running'].includes(lastRun.status)&&
   Date.now()-new Date(lastRun.updated_at).getTime()>8*60*1000;
- const shortSummary=lastRun?'Скриншоты · '+runLabel[lastRun.status]+(staleRun?' · нет обновлений более 8 мин':''):
+ const shortSummary=lastRun?'Скриншоты · '+runLabel[lastRun.status]+(staleRun?' · статус без изменений более 8 мин':''):
   active?(roleLabel[active.role]||active.role)+' · '+(statusLabel[active.status]||active.status):
   planning?'ПМ составляет план':'Нет активных поручений';
  return <details className="task-dynamic-plan" aria-label="План выполнения задачи">
@@ -64,7 +64,7 @@ export function TaskExecutionPlan({
    <strong>Браузерные скриншоты: {runLabel[lastRun.status]}</strong>
    <small>Ревизия: {lastRun.source_sha.slice(0,12)} · Последнее событие: {new Date(lastRun.updated_at).toLocaleString('ru-RU')}</small>
    {lastRun.message&&<p>{lastRun.message}</p>}
-   {staleRun&&<small className="task-warning">Нет новых событий больше 8 минут. Проверь процесс в Центре процессов; статус очереди ещё не подтверждает выполнение.</small>}
+   {staleRun&&<small className="task-warning">Статус браузерного запуска не обновлялся больше 8 минут. Это не означает, что процесс остановлен: фактический прогресс смотри в Центре процессов.</small>}
   </div>}
   {kickoff&&<div className="task-dynamic-kickoff" role="status">
    <span className={'task-plan-dot '+kickoff.status}/>
