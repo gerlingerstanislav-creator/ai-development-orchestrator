@@ -7,6 +7,7 @@ import {agentMemorySections} from '../../../agent-memory.js';
 import type {PmWatchReport} from './pm-watch-report.js';
 import {PM_GOAL_POLICY,pmOrderStateFromResults} from '../../../pm-goal-policy.js';
 import {PM_EXECUTION_GUIDANCE} from '../../../pm-execution-guidance.js';
+import {attachPmCaptureImagesToChat} from '../../../pm-browser-capture.js';
 import {platformPromptRules} from '../../../prompt-assembler.mjs';
 import {buildPmConversationContext} from '../domain/pm-conversation-context.js';
 
@@ -206,8 +207,19 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
    if(finished.rowCount){
     // Keep the original question in the main chat when the PM opens a topic.
     // Only the PM's answer is assigned to the new topic; both remain visible in the main timeline.
+    const answerId=randomUUID();
     await client.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status,topic_id,pm_order_id,created_task_id,created_document_id,documentation_reset_requested,owner_question_cleanup_requested) VALUES($1,$2,'assistant',$3,'project','completed',$4,$5,$6,$7,$8,$9)",
-     [randomUUID(),projectId,data.message,effectiveTopic,confirmedOrderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
+     [answerId,projectId,data.message,effectiveTopic,confirmedOrderId,effects.created_task_id,effects.created_document_id,effects.documentation_reset_requested||false,effects.owner_question_cleanup_requested||false]);
+    // The capture result is an audited MCP event from THIS manager session,
+    // not a URL pasted into model text. Attach its genuine images to the exact
+    // reply so existing ChatImageGallery displays them inline and securely.
+    const captures=toolEvents.rows.filter(row=>row.tool==='browser.capture'&&row.result?.status==='completed')
+     .map(row=>row.result?.capture_id).filter((id:unknown):id is string=>
+      typeof id==='string'&&/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id));
+    const captureId=captures.at(-1);
+    if(captureId)await attachPmCaptureImagesToChat(client,{
+     projectId,captureId,messageId:answerId
+    });
    }
    if(confirmedOrderId&&finished.rowCount){
     // The goal can be opened before its order exists. Bind them atomically.
