@@ -7,6 +7,7 @@ import type {Pool} from 'pg';
 import {createHash,randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {chatImagesSchema,validateChatImages,saveChatImages} from './chat-images.js';
+import {chatFilesSchema,validateChatFiles,saveChatFiles} from './chat-files.js';
 import {isProjectManagerOrderAction} from './agent-tools.js';
 
 type PendingTurn={id:string;project_id:string;channel:'project'|'pm-internal';pm_dispatch_attempt:number;pm_order_id:string|null};
@@ -174,20 +175,22 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
    .catch(error=>app.log.error({error},'PM inbox recovery failed'))
    .finally(()=>{recovering=false;});
  };
- app.post('/api/projects/:id/manager/inbox',{bodyLimit:9*1024*1024},async(req:any,reply)=>{
+ app.post('/api/projects/:id/manager/inbox',{bodyLimit:19*1024*1024},async(req:any,reply)=>{
   const {id}=z.object({id:z.string().uuid()}).parse(req.params);
   if(!await access(req,reply,id)||!await requireAdmin(req,reply))return;
-  const {message,replyTo=null,topicId=null,requestId,images}=z.object({
+  const {message,replyTo=null,topicId=null,requestId,images,files}=z.object({
    message:z.string().trim().max(4000),
    images:chatImagesSchema,
+   files:chatFilesSchema,
    replyTo:z.string().uuid().nullable().optional(),
    topicId:z.string().uuid().nullable().optional(),
    requestId:z.string().uuid().optional()
-  }).refine(value=>!!value.message||value.images.length>0,{message:'Добавь сообщение или изображение'}).parse(req.body);
+  }).refine(value=>!!value.message||value.images.length>0||value.files.length>0,{message:'Добавь сообщение, изображение или файл'}).parse(req.body);
   const validatedImages=validateChatImages(images);
+  const validatedFiles=validateChatFiles(files);
   const actorId=uid(req);
   const messageId=randomUUID();
-  const digest=requestId?createHash('sha256').update(JSON.stringify([message,replyTo,topicId,images.map(image=>createHash('sha256').update(image.data).digest('hex'))])).digest('hex'):null;
+  const digest=requestId?createHash('sha256').update(JSON.stringify([message,replyTo,topicId,images.map(image=>createHash('sha256').update(image.data).digest('hex')),files.map(file=>[file.name,createHash('sha256').update(file.data).digest('hex')])])).digest('hex'):null;
   const client=await pool.connect();
   try{
    await client.query('BEGIN');
@@ -225,6 +228,7 @@ export function registerProjectManagerInbox(app:FastifyInstance,deps:RouteDeps){
     VALUES($1,$2,$3,'user',$4,'project','queued',$5,$6,$7,$8,$9)`,
     [messageId,id,actorId,message,replyTo,topicId,orderId,requestId??null,digest]);
    await saveChatImages(client,{projectId:id,actorId,messageId,scope:'assistant'},validatedImages);
+   await saveChatFiles(client,{projectId:id,actorId,messageId,files:validatedFiles});
    if(waiting)await client.query('INSERT INTO project_pm_order_events(id,order_id,kind,detail) VALUES($1,$2,$3,$4)',
     [randomUUID(),orderId,'owner_reply','Владелец ответил на вопрос ПМ']);
    await client.query('COMMIT');
