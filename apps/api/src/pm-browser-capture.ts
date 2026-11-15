@@ -148,11 +148,11 @@ export async function attachPmCaptureImagesToChat(db:Db,input:{
     AND m.role='assistant' AND m.task_id IS NULL AND m.channel='project'
    WHERE c.id=$1 AND c.project_id=$2 AND c.status='completed'
     AND NOT EXISTS(SELECT 1 FROM chat_images existing WHERE existing.assistant_message_id=m.id)
-   ORDER BY a.viewport->>'width' DESC
+   ORDER BY (a.viewport->>'width')::int DESC
    RETURNING id`,[input.captureId,input.projectId,input.messageId]);
- if(inserted.rowCount!==2)
+ if((inserted.rowCount??0)!==2)
   throw reject('Не удалось прикрепить скриншоты к сообщению ПМ');
- return inserted.rowCount;
+ return inserted.rowCount??0;
 }
 
 /** Called by the manager MCP tool, not via work.delegate. Repo and credentials
