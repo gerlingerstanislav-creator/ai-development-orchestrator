@@ -2231,7 +2231,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>
      {savingField&&<small className="muted">Сохранение…</small>}
      {activeTask.type!=='question'&&<TaskBoardControls key={activeTask.id} task={activeTask} busy={boardBusy} onAction={(action,data)=>changeBoard(activeTask,action,data)}/>}
-     <div className="task-top-meta"><span className="task-meta-heading">Теги</span>{activeTask.tags?.length?<div className="task-top-tags">{activeTask.tags.map(tag=><span key={tag}>{tag}</span>)}</div>:<small className="muted">Без тегов</small>}<label className="task-priority-select">Приоритет<select value={activeTask.priority??3} onChange={e=>void updateTaskPriority(activeTask,Number(e.target.value))}>{[1,2,3,4,5].map(n=><option value={n} key={n}>{n} · {n===1?'Критический':n===2?'Высокий':n===3?'Обычный':n===4?'Низкий':'Минимальный'}</option>)}</select></label></div>
+     <div className="task-top-meta">{!!activeTask.tags?.length&&<><span className="task-meta-heading">Теги</span><div className="task-top-tags">{activeTask.tags.map(tag=><span key={tag}>{tag}</span>)}</div></>}<label className="task-priority-select">Приоритет<select value={activeTask.priority??3} onChange={e=>void updateTaskPriority(activeTask,Number(e.target.value))}>{[1,2,3,4,5].map(n=><option value={n} key={n}>{n} · {n===1?'Критический':n===2?'Высокий':n===3?'Обычный':n===4?'Низкий':'Минимальный'}</option>)}</select></label></div>
      <div className="task-editable task-description-editable">
       <div className="task-field-label">Описание / техническое задание</div>
       {editingField==='description'?
