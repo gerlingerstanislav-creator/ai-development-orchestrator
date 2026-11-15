@@ -4,6 +4,7 @@ import {parsePmScreenshotReferences} from '../src/features/chat/pm-screenshot-re
 import React from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {PmMessageContent} from '../src/features/chat/PmMessageContent.tsx';
+import {ChatFileGallery,supportedChatFile} from '../src/ChatFiles.tsx';
 
 const project='c74f1c09-b114-4be8-9237-b34de73c146d';
 const task='63068e41-58e5-4bbb-91ff-f16ec2a413da';
@@ -63,4 +64,19 @@ test('real PM chat body renders two protected thumbnail widgets, not raw Markdow
   source:body,projectId:project,hasAttachments:true
  }));
  assert.doesNotMatch(alreadyAttached,/pm-inline-screenshots/);
+});
+
+test('manager conversation renders reusable private file chips and safe downloads',()=>{
+ assert.equal(supportedChatFile('design.pdf'),true);
+ assert.equal(supportedChatFile('api.zip'),true);
+ assert.equal(supportedChatFile('dangerous.exe'),false);
+ const item={id:'11111111-1111-1111-1111-111111111111',
+  name:'Техническое задание.pdf',mimeType:'application/pdf',size:1024,sha256:'a'.repeat(64)};
+ const markup=renderToStaticMarkup(React.createElement(ChatFileGallery,{
+  files:[item],projectId:project
+ }));
+ assert.match(markup,/chat-file-gallery/);
+ assert.match(markup,/Техническое задание\.pdf/);
+ assert.match(markup,/Скачать/);
+ assert.doesNotMatch(markup,/blob:|data:/,'metadata must never leak attachment bytes');
 });
