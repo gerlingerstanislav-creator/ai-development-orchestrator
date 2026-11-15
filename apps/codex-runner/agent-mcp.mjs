@@ -5,10 +5,10 @@ const base=process.env.ADO_AGENT_API_URL||'http://api:3001/internal/agent-tools'
 const token=process.env.ADO_AGENT_SESSION_TOKEN||'';
 if(!/^[0-9a-f]{64}$/.test(token))throw Error('Missing scoped agent session');
 let tools=null;
-async function request(path,method='GET',body=null){
+async function request(path,method='GET',body=null,timeoutMs=60000){
  const response=await fetch(base+path,{
   method,headers:{'X-Agent-Token':token,'Content-Type':'application/json'},
-  body:body===null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(60000)
+  body:body===null?undefined:JSON.stringify(body),signal:AbortSignal.timeout(timeoutMs)
  });
  const data=await response.json().catch(()=>({}));
  if(!response.ok)throw Error(String(data.error||'Agent API '+response.status).slice(0,900));
@@ -29,7 +29,7 @@ async function handle(message){
   const name=message.params?.name;
   if(typeof name!=='string')throw Error('Missing tool name');
   try{
-   const data=await request('/call','POST',{name,arguments:message.params?.arguments||{}});
+   const data=await request('/call','POST',{name,arguments:message.params?.arguments||{}},name==='browser.capture'?215000:60000);
    return {content:[{type:'text',text:JSON.stringify(data.result)}],isError:false};
   }catch(error){
    return {content:[{type:'text',text:String(error?.message||error).slice(0,900)}],isError:true};
