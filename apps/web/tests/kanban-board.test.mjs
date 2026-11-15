@@ -133,7 +133,7 @@ test('task modal execution stays collapsed but exposes real screenshot status an
  assert.match(html,/<details class="task-dynamic-plan"/);
  assert.match(html,/<summary class="task-dynamic-summary"/);
  assert.match(html,/Скриншоты · в очереди/);
- assert.match(html,/нет обновлений более 8 мин/);
+ assert.match(html,/статус без изменений более 8 мин/);
  assert.match(html,/Последнее событие/);
 });
 test('acceptance and defer date no longer occupy large permanent task cards',()=>{
