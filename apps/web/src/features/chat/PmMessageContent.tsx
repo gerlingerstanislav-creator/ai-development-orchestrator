@@ -19,7 +19,7 @@ export function PmMessageContent({source,projectId,hasAttachments=false,screensh
  return <>
   <DocumentMarkdown source={markdown}/>
   {screenshots.length>0&&<div className="pm-inline-screenshots" aria-label="Полноразмерные скриншоты проекта">
-   {screenshots.map(shot=><SecurePmScreenshot key={shot.id} url={shot.url}
+   {screenshots.map(shot=><SecurePmScreenshot key={shot.id} url={shot.url} fullPage
     label={(shot.label||shot.path)+' · '+shot.width+'×'+shot.height}
     alt={'Полноразмерный скриншот '+(shot.label||shot.path)}/>)}
   </div>}
