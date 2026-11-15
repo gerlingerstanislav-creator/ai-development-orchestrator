@@ -267,6 +267,42 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  });
  // The Runner has verified Chromium receipts and file hashes. No model may
  // submit image bytes through ordinary MCP calls or invent an artifact URL.
+ app.post('/internal/agent-tools/pm-browser-artifacts',{bodyLimit:5*1024*1024},async(req:any,reply)=>{
+  if(!authorizeRunner(req,reply))return;
+  const image=z.object({
+   name:z.string().max(160),mime:z.literal('image/jpeg'),
+   data:z.string().max(450000),sha256:z.string().regex(/^[a-f0-9]{64}$/i),
+   viewport:z.object({width:z.number().int(),height:z.number().int()}).strict(),
+   origin:z.literal('isolated-local-browser')
+  }).strict();
+  const data=z.object({
+   captureId:uuid,projectId:uuid,taskId:uuid,sourceSha:z.string().regex(/^[a-f0-9]{40}$/i),
+   artifacts:z.array(image).length(2)
+  }).strict().safeParse(req.body);
+  if(!data.success)return reply.code(400).send({error:'Некорректные браузерные изображения'});
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const ids=await storePmCaptureImages(client,data.data);
+   await client.query('COMMIT');
+   return {saved:ids.filter(Boolean).length,artifact_ids:ids};
+  }catch(error){
+   await client.query('ROLLBACK').catch(()=>{});
+   return reply.code(409).send({error:String(error instanceof Error?error.message:error).slice(0,600)});
+  }finally{client.release();}
+ });
+ app.get('/api/projects/:id/tasks/:taskId/pm-browser-artifacts/:artifactId',async(req:any,reply)=>{
+  const {id,taskId,artifactId}=z.object({id:uuid,taskId:uuid,artifactId:uuid}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const r=await pool.query(
+   'SELECT data FROM pm_browser_capture_artifacts WHERE project_id=$1 AND task_id=$2 AND id=$3',
+   [id,taskId,artifactId]);
+  if(!r.rowCount)return reply.code(404).send({error:'Скриншот не найден'});
+  reply.header('Content-Type','image/jpeg');
+  reply.header('Cache-Control','private, max-age=3600');
+  reply.header('X-Content-Type-Options','nosniff');
+  return reply.send(r.rows[0].data);
+ });
  app.post('/internal/agent-tools/work-artifacts',{bodyLimit:5*1024*1024},async(req:any,reply)=>{
   if(!authorizeRunner(req,reply))return;
   const image=z.object({
