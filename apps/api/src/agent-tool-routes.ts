@@ -7,6 +7,7 @@ import {executeAgentTool} from './agent-tool-executor.js';
 import {annotatePmToolResult} from './pm-goal-policy.js';
 import {inspectGitHubProjectSource} from './documentation-preparation.js';
 import {storeWorkArtifact} from './modules/agents/infrastructure/work-artifacts.js';
+import {runPmBrowserCapture,storePmCaptureImages} from './pm-browser-capture.js';
 
 const uuid=z.string().uuid();
 const callSchema=z.object({
@@ -25,6 +26,7 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
  pool:Pool;access:(req:any,reply:any,id:string)=>Promise<boolean>;
  requireAdmin:(req:any,reply:any)=>Promise<boolean>;
  runnerSecret?:string;
+ runnerUrl?:string;
  startDocumentationWorkflow:(jobId:string)=>Promise<void>;
  startIterationPlanning?:(runId:string)=>Promise<void>;
  delegateManagerAction?:(session:AgentSession,name:string,args:Record<string,unknown>)=>Promise<unknown>;
