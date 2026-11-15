@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import type {Pool} from 'pg';
 import {validEvidenceSha} from './task-evidence.js';
+import {confirmedEvidenceSourceBlocker} from './task-evidence-blockers.js';
 import {PENDING_OWNER_QUESTION_SQL} from './task-question-gates.js';
 
 type Db=Pick<Pool,'query'>;
@@ -15,6 +16,8 @@ export async function routeTaskToBrowserEvidence(db:Db,args:{
  const {projectId,taskId,actorId,sourceSha}=args;
  if(!validEvidenceSha(sourceSha))throw failure('Укажи полный проверяемый commit SHA',400);
  if(args.reason.trim().length<12)throw failure('Укажи обоснование изменения маршрута',400);
+ const knownFailure=await confirmedEvidenceSourceBlocker(db,{projectId,taskId,sourceSha});
+ if(knownFailure)throw failure(knownFailure);
  const task=(await db.query(`SELECT id,title,description,stage,type,analysis_state,spec_version,pr_url,
   implementation_kind,execution_mode FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE`,
  [taskId,projectId])).rows[0];
@@ -53,6 +56,10 @@ export async function retryTaskBrowserEvidence(db:Db,args:{projectId:string;task
  const task=(await db.query(`SELECT id,stage,execution_mode,implementation_kind,evidence_source_sha,spec_version
   FROM tasks WHERE id=$1 AND project_id=$2 FOR UPDATE`,[args.taskId,args.projectId])).rows[0];
  if(!task)throw failure('Задача не найдена',404);
+ const knownFailure=await confirmedEvidenceSourceBlocker(db,{
+  projectId:args.projectId,taskId:args.taskId,sourceSha:String(task.evidence_source_sha||'')
+ });
+ if(knownFailure)throw failure(knownFailure);
  if(task.stage!=='testing'||task.execution_mode!=='browser_evidence'||task.implementation_kind!=='artifact'||
   !validEvidenceSha(task.evidence_source_sha))throw failure('Нет незавершённой задачи для браузерной проверки');
  if((await db.query("SELECT 1 FROM task_orchestration_owners WHERE task_id=$1 AND state='active' LIMIT 1",[args.taskId])).rowCount||
