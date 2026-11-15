@@ -5,7 +5,7 @@ import Fastify from 'fastify';
 import pg from 'pg';
 import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
-import {chatFilesSchema,validateChatFiles,saveChatFiles,readPmChatFileContext,registerChatFileRoutes} from '../dist/chat-files.js';
+import {chatFilesSchema,validateChatFiles,saveChatFiles,readPmChatFileContext,registerChatFileRoutes,stagePmChatTextFile,publishPmChatFiles} from '../dist/chat-files.js';
 
 const input=(name,content)=>({name,mimeType:'application/octet-stream',
  data:Buffer.from(content).toString('base64')});
@@ -52,6 +52,18 @@ test('chat attachment is persisted, readable only in scoped project, and downloa
  assert.equal(good.rawPayload.toString(),original);
  assert.match(good.headers['content-disposition'],/attachment/);
  assert.equal(good.headers['x-content-type-options'],'nosniff');
+ const session=randomUUID(),answer=randomUUID();
+ await pool.query("INSERT INTO agent_sessions(id,project_id,actor_id,role,token_hash,status,expires_at) VALUES($1,$2,$3,'manager',$4,'running',now()+interval '1 hour')",
+  [session,id.project,id.actor,randomUUID()]);
+ await pool.query("INSERT INTO assistant_messages(id,project_id,role,body,channel,status) VALUES($1,$2,'assistant','Файл прикреплён','project','completed')",[answer,id.project]);
+ const published=await stagePmChatTextFile(pool,{projectId:id.project,actorId:id.actor,
+  sessionId:session,name:'plan.md',content:'# План тестирования\\n- desktop\\n- mobile'});
+ assert.equal(published.status,'queued_for_reply');
+ assert.equal(await publishPmChatFiles(pool,{projectId:id.project,sessionId:session,messageId:answer}),1);
+ const replyFiles=await readPmChatFileContext(pool,id.project,answer);
+ assert.equal(replyFiles.length,1);
+ assert.match(replyFiles[0].content,/mobile/);
+ assert.equal((await pool.query('SELECT count(*)::int AS n FROM chat_files WHERE pending_pm_session_id=$1',[session])).rows[0].n,0);
  const denied=await app.inject({method:'GET',url,headers:{'x-allowed-project':id.other}});
  assert.equal(denied.statusCode,403);
  const mismatched=await app.inject({method:'GET',url:'/api/projects/'+id.other+'/chat-files/'+row.id,
