@@ -22,7 +22,7 @@ export function TaskBoardControls({task,busy,onAction}:Props){
   <div className="task-board-control-top">
    <div className="task-board-control-actions">
     {task.archived_at?
-     <button type="button" className="secondary" disabled={busy} onClick={()=>void onAction('restore')}>Из архива</button>:
+     <button type="button" className="secondary" disabled={busy} onClick={()=>void onAction('restore')}>Восстановить из архива</button>:
      task.postponed_at?
       <button type="button" className="secondary" disabled={busy} onClick={()=>void onAction('resume')}>Вернуть в работу</button>:
       <>
