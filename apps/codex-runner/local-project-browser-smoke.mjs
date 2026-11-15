@@ -30,7 +30,7 @@ async function action(name,props={}){
 async function command(exe,args,options={}){
  const result=await execFile(exe,args,{
   cwd:options.cwd||repo,timeout:options.timeout||110000,
-  maxBuffer:300000,env:process.env
+  maxBuffer:300000,env:{PATH:process.env.PATH,HOME:process.env.HOME,NODE_ENV:'test',npm_config_update_notifier:'false'}
  });
  return (result.stdout||'').trim();
 }
