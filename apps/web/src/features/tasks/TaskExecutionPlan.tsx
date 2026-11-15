@@ -9,6 +9,10 @@ export type TaskEvidenceRun={
  id:string;source_sha:string;status:'queued'|'dispatching'|'running'|'completed'|'blocked'|'failed'|'cancelled';
  message:string;created_at:string;updated_at:string;
 };
+export type PmBrowserCaptureRun={
+ id:string;source_sha:string|null;status:'running'|'completed'|'blocked';
+ message:string;created_at:string;updated_at:string;
+};
 export type TaskExecutionKickoff={
  id:string;pm_order_id:string|null;status:string;pm_dispatch_attempt:number;
 }|null;
@@ -24,9 +28,9 @@ const roleLabel:Record<string,string>={
 };
 
 export function TaskExecutionPlan({
- assignments,kickoff,evidenceRun,stage,stageLabel,busy,onRetry
+ assignments,kickoff,evidenceRun,pmCapture,stage,stageLabel,busy,onRetry
 }:{
- assignments:TaskWorkAssignment[];kickoff:TaskExecutionKickoff;evidenceRun?:TaskEvidenceRun|null;
+ assignments:TaskWorkAssignment[];kickoff:TaskExecutionKickoff;evidenceRun?:TaskEvidenceRun|null;pmCapture?:PmBrowserCaptureRun|null;
  stage:string;stageLabel:string;busy:boolean;onRetry:()=>void;
 }){
  const plans=new Map<string,TaskWorkAssignment[]>();
@@ -46,9 +50,10 @@ export function TaskExecutionPlan({
  };
  const staleRun=lastRun&&['queued','dispatching','running'].includes(lastRun.status)&&
   Date.now()-new Date(lastRun.updated_at).getTime()>8*60*1000;
- const shortSummary=lastRun?'Скриншоты · '+runLabel[lastRun.status]+(staleRun?' · статус без изменений более 8 мин':''):
+ const pmSummary=pmCapture?'Скриншоты ПМ · '+({running:'снимает в Chromium',completed:'готово',blocked:'ошибка'} as const)[pmCapture.status]:null;
+ const shortSummary=pmSummary|| (lastRun?'Скриншоты · '+runLabel[lastRun.status]+(staleRun?' · статус без изменений более 8 мин':''):
   active?(roleLabel[active.role]||active.role)+' · '+(statusLabel[active.status]||active.status):
-  planning?'ПМ составляет план':'Нет активных поручений';
+  planning?'ПМ составляет план':'Нет активных поручений');
  return <details className="task-dynamic-plan" aria-label="План выполнения задачи">
   <summary className="task-dynamic-summary">
    <strong>План выполнения</strong>
@@ -60,6 +65,12 @@ export function TaskExecutionPlan({
    <strong>План выполнения</strong>
    <small>Текущий технический этап: {stageLabel||stage}</small>
   </div>
+  {pmCapture&&<div className={'task-evidence-state is-'+pmCapture.status} role="status">
+   <strong>ПМ · скриншоты: {pmCapture.status==='completed'?'готово':pmCapture.status==='running'?'снимает в Chromium':'не удалось'}</strong>
+   {pmCapture.source_sha&&<small>Ревизия: {pmCapture.source_sha.slice(0,12)}</small>}
+   <small>Последнее событие: {new Date(pmCapture.updated_at).toLocaleString('ru-RU')}</small>
+   {pmCapture.message&&<p>{pmCapture.message}</p>}
+  </div>}
   {lastRun&&<div className={'task-evidence-state is-'+lastRun.status} role="status">
    <strong>Браузерные скриншоты: {runLabel[lastRun.status]}</strong>
    <small>Ревизия: {lastRun.source_sha.slice(0,12)} · Последнее событие: {new Date(lastRun.updated_at).toLocaleString('ru-RU')}</small>
