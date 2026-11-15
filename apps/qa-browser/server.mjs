@@ -168,6 +168,8 @@ async function run(s,body){
  }
  if(action==='start'){
   if(s.page)return {ok:true,message:'Browser already started',path:s.path};
+  const active=[...sessions.values()].filter(other=>other!==s&&other.page&&other.browser?.isConnected()).length;
+  if(active>=2)throw Error('Изолированный Chromium занят: одновременно допускается до двух браузерных сессий. Повтори после завершения активной проверки.');
   try{
    const {port,entry,pages}=await application(s);
    if(s.stopping)throw Error('QA session was stopped during application startup');
@@ -177,26 +179,41 @@ async function run(s,body){
    // Vite/static-server failure is distinguishable from a browser failure.
    const response=await fetch(s.origin+path,{signal:AbortSignal.timeout(7000)});
    if(!response.ok)throw Error('Local application HTTP '+response.status+' at '+path);
-   const browser=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server'],timeout:15000});
-   if(s.stopping){await browser.close().catch(()=>{});throw Error('QA session stopped during Chromium launch');}
-   s.browser=browser;
-   s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
-   s.page=await s.context.newPage();
-   s.pageErrors=[];
-   const browserError=value=>{s.pageErrors.push(String(value).slice(0,320));s.pageErrors=s.pageErrors.slice(-6);};
-   s.page.on('pageerror',error=>browserError(error.message));
-   s.page.on('response',response=>{
-    if(response.status()>=400&&response.url().startsWith(s.origin+'/'))
-     browserError('HTTP '+response.status()+' '+new URL(response.url()).pathname);
-   });
-   // DOMContentLoaded may be indefinitely delayed by third-party scripts
-   // (Chromium is deliberately offline). A committed local navigation is
-   // sufficient to begin real DOM assertions; never fake their result.
-   const navigation=await s.page.goto(s.origin+path,{waitUntil:'commit',timeout:12000});
-   // Give local DOM time to settle without blocking on offline CDN scripts.
-   await s.page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
-   if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
-   await requireRenderedApplication(s);
+   // A Chromium renderer can be killed by a transient PID/memory shortage.
+   // Recover the isolated browser ONCE without rebuilding or masking genuine
+   // JavaScript/build failures such as an empty #app.
+   let pageReady=false;
+   for(let attempt=1;attempt<=2&&!pageReady;attempt++){
+    try{
+     s.browser=await chromium.launch({headless:true,
+      args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server','--disable-background-networking','--disable-extensions'],
+      timeout:15000});
+     if(s.stopping)throw Error('QA session stopped during Chromium launch');
+     s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
+     s.page=await s.context.newPage();
+     s.pageErrors=[];
+     const browserError=value=>{s.pageErrors.push(String(value).slice(0,320));s.pageErrors=s.pageErrors.slice(-6);};
+     s.page.on('pageerror',error=>browserError(error.message));
+     s.page.on('response',response=>{
+      if(response.status()>=400&&response.url().startsWith(s.origin+'/'))
+       browserError('HTTP '+response.status()+' '+new URL(response.url()).pathname);
+     });
+     // Never wait indefinitely for third-party assets: Chromium is offline.
+     const navigation=await s.page.goto(s.origin+path,{waitUntil:'commit',timeout:12000});
+     await s.page.waitForLoadState('domcontentloaded',{timeout:4000}).catch(()=>{});
+     if(navigation&&!navigation.ok())throw Error('Chromium HTTP '+navigation.status()+' at '+path);
+     await requireRenderedApplication(s);
+     pageReady=true;
+    }catch(error){
+     const message=String(error.message||error);
+     const browserCrash=/target page, context or browser has been closed|browsercontext\\.newpage|browser has been closed|browser closed|failed to launch|eagain|enomem/i.test(message);
+     await s.browser?.close().catch(()=>{});
+     s.browser=null;s.context=null;s.page=null;
+     if(!browserCrash||attempt===2)
+      throw Error(browserCrash?'Изолированный Chromium аварийно завершился (попыток: '+attempt+'). Проверь лимиты памяти/PID, другие активные браузерные сессии. '+message:message);
+     await wait(700);
+    }
+   }
    s.path=path;
    return {ok:true,origin:'local QA application',path,availablePages:pages,
     readyState:await s.page.evaluate(()=>document.readyState),
@@ -293,6 +310,7 @@ const server=http.createServer(async(req,res)=>{
  try{
   if(req.method==='GET'&&req.url==='/health'){
    // Exercise Chromium; an installed binary without a launchable browser is not healthy.
+   if([...sessions.values()].some(s=>s.browser?.isConnected()))return send(res,200,{ok:true,browser:'chromium',active:true});
    const b=await chromium.launch({headless:true,args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server'],timeout:12000});
    await b.close();return send(res,200,{ok:true,browser:'chromium'});
   }
