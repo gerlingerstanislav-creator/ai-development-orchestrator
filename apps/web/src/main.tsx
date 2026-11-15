@@ -5,7 +5,7 @@ import {TaskCurrentWork,type CurrentWork} from './features/tasks/TaskCurrentWork
 import {TaskBoardControls} from './features/tasks/TaskBoardControls.js';
 import {TaskExecutionPlan,type TaskWorkAssignment,type TaskExecutionKickoff,type TaskEvidenceRun,type PmBrowserCaptureRun} from './features/tasks/TaskExecutionPlan.js';
 import {TaskPmScreenshotGallery,type PmBrowserArtifact} from './features/tasks/TaskPmScreenshotGallery.js';
-import {PmMessageContent} from './features/chat/PmMessageContent.js';
+import {PmMessageContent,type ProjectCaptureScreenshot} from './features/chat/PmMessageContent.js';
 import {buildTaskTimeline,type ActivityItem} from './features/tasks/task-timeline.js';
 import {kanbanLanes,boardLaneFor,attentionNeeded,type BoardStatus} from './features/tasks/board-model.js';
 import {activeTaskAgentExecutions,latestTaskQa,qaOutcomeLabel,taskHasLiveWork,taskQaIsRunning} from './features/tasks/task-live-state.js';
@@ -81,7 +81,7 @@ type DocVersion={id:string,task_ids:string[],created_at:string};
 type ManagerMessage={images?:ChatImageMeta[];files?:ChatFileMeta[];id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;test_feedback?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
-type AssistantMessage={images?:ChatImageMeta[];files?:ChatFileMeta[];id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;topic_title?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
+type AssistantMessage={images?:ChatImageMeta[];files?:ChatFileMeta[];screenshots?:ProjectCaptureScreenshot[];id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;topic_title?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
 type ProjectChatMode='project'|'documentation';
 type ProjectChatState={
  messages:AssistantMessage[];input:string;pendingId:string|null;jobId:string|null;progress:string;historyLoaded:boolean;
@@ -2095,7 +2095,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
       {m.topic_id&&<small className="pm-message-topic">{m.topic_title||projectTopics.find(x=>x.id===m.topic_id)?.title||'Тема обсуждения'}</small>}
       <span className="assistant-author">{projectChatMode==='documentation'?(m.role==='user'?'Вы → БА':'БА → Вам'):(m.role==='user'?(addressedAgent(m.body)?'Вы → '+addressedAgent(m.body):'Вы → Менеджеру проекта'):(addressedAgent(m.body)?addressedAgent(m.body)+' → Вам':'Менеджер проекта → Вам'))}</span>
       {m.created_at&&<time className="assistant-message-time" dateTime={m.created_at}>{new Date(m.created_at).toLocaleString('ru-RU',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}</time>}
-       {m.role==='assistant'?<div className="pm-chat-markdown"><PmMessageContent source={m.body} projectId={selectedProjectId} hasAttachments={Boolean(m.images?.length)}/></div>:<div>{m.body}</div>}
+       {m.role==='assistant'?<div className="pm-chat-markdown"><PmMessageContent source={m.body} projectId={selectedProjectId} hasAttachments={Boolean(m.images?.length)} screenshots={m.screenshots||[]}/></div>:<div>{m.body}</div>}
        <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
       <ChatFileGallery files={m.files||[]} projectId={selectedProjectId}/>
       {m.role==='user'&&projectChatMode==='project'&&<PmProgressPanel events={pmProgress[m.id]||[]} status={m.status}/>}

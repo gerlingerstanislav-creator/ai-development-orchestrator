@@ -31,6 +31,7 @@ import {installPmGoalSchema,installPmCapabilityProposalSchema} from '../modules/
 import {installUniversalTaskBoardSchema} from '../task-board.js';
 import {installTaskWorkBoardActivation} from '../task-board-activation.js';
 import {installPmBrowserCaptureSchema} from '../pm-browser-capture.js';
+import {installProjectBrowserCaptureSchema} from '../project-browser-capture.js';
 
 /**
  * Append-only, transactional schema history.
@@ -197,6 +198,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:24,name:'private-project-chat-files',
    checksum:'ado-private-project-chat-files-v24',
    up:database=>initChatFiles(database)
+  },
+  {
+   version:25,name:'task-independent-project-browser-screenshots',
+   checksum:'ado-project-browser-captures-v25',
+   up:database=>installProjectBrowserCaptureSchema(database)
   }
  ];
 }

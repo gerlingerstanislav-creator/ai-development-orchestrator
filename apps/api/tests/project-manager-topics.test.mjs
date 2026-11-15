@@ -19,6 +19,8 @@ test('closed PM discussions disappear from sidebar without hiding any messages f
   CREATE TABLE assistant_messages(id uuid PRIMARY KEY,project_id uuid,task_id uuid,role text,body text,channel text DEFAULT 'project',status text DEFAULT 'completed',reply_to uuid,topic_id uuid,pm_request_id uuid,created_task_id uuid,created_document_id uuid,created_at timestamptz DEFAULT now(),documentation_reset_requested boolean DEFAULT false,owner_question_cleanup_requested boolean DEFAULT false);
   CREATE TABLE chat_images(id uuid PRIMARY KEY,project_id uuid,assistant_message_id uuid,name text,mime_type text,created_at timestamptz DEFAULT now());
   CREATE TABLE chat_files(id uuid PRIMARY KEY,project_id uuid,assistant_message_id uuid,name text,mime_type text,size_bytes int,sha256 char(64),created_at timestamptz DEFAULT now());
+  CREATE TABLE project_browser_captures(id uuid PRIMARY KEY,project_id uuid,assistant_message_id uuid,status text);
+  CREATE TABLE project_browser_artifacts(id uuid PRIMARY KEY,project_id uuid,capture_id uuid,name text,page_title text,page_path text,pixel_width int,pixel_height int,sha256 text,created_at timestamptz DEFAULT now());
  `);
  registerAssistantRoutes(app,{pool,uid:()=>randomUUID(),access:async()=>true,requireAdmin:async()=>true,
   codexUrl:'http://localhost:9999',runnerKey:'unused',decryptToken:value=>value,startDocumentationWorkflow:async()=>{}});

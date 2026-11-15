@@ -192,7 +192,9 @@ async function run(s,body){
       args:['--no-sandbox','--disable-dev-shm-usage','--no-proxy-server','--disable-background-networking','--disable-extensions'],
       timeout:15000});
      if(s.stopping)throw Error('QA session stopped during Chromium launch');
-     s.context=await s.browser.newContext({viewport:{width:1280,height:800}});
+     const dpr=Number(body.deviceScaleFactor||1);
+     if(!Number.isFinite(dpr)||dpr<1||dpr>2)throw Error('Invalid device scale factor');
+     s.context=await s.browser.newContext({viewport:{width:1280,height:800},deviceScaleFactor:dpr});
      s.page=await s.context.newPage();
      s.pageErrors=[];
      const browserError=value=>{s.pageErrors.push(String(value).slice(0,320));s.pageErrors=s.pageErrors.slice(-6);};
@@ -218,6 +220,7 @@ async function run(s,body){
     }
    }
    s.path=path;
+   s.pages=pages;
    return {ok:true,origin:'local QA application',path,availablePages:pages,
     readyState:await s.page.evaluate(()=>document.readyState),
     title:await s.page.title(),browser:'Chromium / Playwright'};
@@ -238,6 +241,23 @@ async function run(s,body){
   await requireRenderedApplication(s);
   s.path=path;
   return {ok:true,title:await page.title(),path,readyState:await page.evaluate(()=>document.readyState)};
+ }
+ if(action==='list_pages'){
+  // Read navigation only from the locally rendered app. No crawling external
+  // hosts, no network requests or guessed routes; the Runner decides its limit.
+  const internal=await page.evaluate(()=>{
+   const current=location.origin;
+   return [...new Set([...document.querySelectorAll('a[href]')].flatMap(anchor=>{
+    try{
+     const target=new URL(anchor.getAttribute('href')||'',current);
+     if(target.origin!==current||!/^https?:$/.test(target.protocol))return [];
+     if(new RegExp('^/(?:api|auth|logout|download)(?:/|$)','i').test(target.pathname))return [];
+     return [target.pathname];
+    }catch{return [];}
+   }))].slice(0,40);
+  });
+  const staticPages=(s.pages||[]).map(file=>file==='index.html'?'/':'/'+encodeURIComponent(file));
+  return {ok:true,paths:[...new Set([s.path||'/',...staticPages,...internal])].filter(path=>path.startsWith('/')&&!path.startsWith('//')).slice(0,40)};
  }
  if(action==='viewport'){
   const width=Number(body.width),height=Number(body.height);
@@ -275,11 +295,34 @@ async function run(s,body){
   await mkdir(evidence,{recursive:true,mode:0o700});
   const viewport=page.viewportSize();
   if(!viewport)throw Error('Viewport is unavailable');
+  const fullPage=body.fullPage===true;
+  const quality=fullPage?85:68;
+  let cssHeight=viewport.height;
+  if(fullPage){
+   // Trigger on-scroll lazy loading before rendering one entire document.
+   cssHeight=await page.evaluate(()=>Math.max(
+    document.documentElement.scrollHeight,document.body?.scrollHeight||0,window.innerHeight));
+   if(cssHeight>12000)throw Error('Высота страницы превышает 12000 CSS пикселей; высококачественный единый снимок ограничен для защиты Chromium');
+   await page.evaluate(async()=>{
+    for(let y=0;y<document.documentElement.scrollHeight;y+=Math.max(400,window.innerHeight)){
+     window.scrollTo(0,y);
+     await new Promise(resolve=>setTimeout(resolve,80));
+    }
+    window.scrollTo(0,0);
+    await Promise.race([document.fonts?.ready||Promise.resolve(),new Promise(resolve=>setTimeout(resolve,2500))]);
+   });
+   await page.waitForTimeout(300);
+   cssHeight=await page.evaluate(()=>Math.max(document.documentElement.scrollHeight,document.body?.scrollHeight||0,window.innerHeight));
+   if(cssHeight>12000)throw Error('Страница увеличилась после загрузки: максимальная высота единого скриншота 12000px');
+  }
   const filename=viewport.width+'x'+viewport.height+'-'+randomUUID()+'.jpg';
   const target=join(evidence,filename);
-  await page.screenshot({path:target,type:'jpeg',quality:68,fullPage:false,timeout:20000});
+  await page.screenshot({path:target,type:'jpeg',quality,fullPage,timeout:45000});
   const checksum=createHash('sha256').update(await readFile(target)).digest('hex');
-  return {ok:true,screenshot:'.ado-qa-evidence/'+filename,viewport,sha256:checksum,origin:'isolated-local-browser'};
+  const dpr=Number(await page.evaluate(()=>window.devicePixelRatio));
+  return {ok:true,screenshot:'.ado-qa-evidence/'+filename,viewport,sha256:checksum,origin:'isolated-local-browser',
+   fullPage,pixelWidth:Math.round(viewport.width*dpr),
+   pixelHeight:Math.round(cssHeight*dpr),pagePath:s.path||'/'};
  }
  if(action==='assert'){
   const expression=String(body.expression||'').trim();
@@ -294,7 +337,7 @@ async function run(s,body){
 // infinite loop. The host must expire and tear down that session before the
 // gateway/client deadline; otherwise subsequent QA attempts remain blocked.
 async function boundedRun(s,body){
- const limit=body.action==='start'?65000:Number(process.env.QA_BROWSER_ACTION_TIMEOUT_MS||20000);
+ const limit=body.action==='start'?65000:body.action==='screenshot'&&body.fullPage===true?55000:Number(process.env.QA_BROWSER_ACTION_TIMEOUT_MS||20000);
  let timer,expired=false;
  try{
   return await Promise.race([

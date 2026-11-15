@@ -44,6 +44,7 @@ jobs:
           node --test apps/codex-runner/qa-job.test.mjs
           node --check apps/codex-runner/delegated-work-sandbox.mjs
           node --test apps/codex-runner/delegated-work-sandbox.test.mjs
+          node --test apps/codex-runner/pm-browser-capture.test.mjs
           node --check apps/codex-runner/ci-test-discovery.mjs
           node --check apps/codex-runner/ci-job.mjs
           node --check apps/codex-runner/task-pull-request.mjs
@@ -69,6 +70,7 @@ jobs:
           node --check apps/codex-runner/browser-client.mjs
           node --check apps/codex-runner/browser-gateway.mjs
           node --check apps/codex-runner/local-project-browser-smoke.mjs
+          node --check apps/qa-browser/server.mjs
           node --check apps/codex-runner/qa-completion.mjs
           node --check apps/codex-runner/qa-prompt.mjs
           node --check apps/codex-runner/developer-prompt.mjs

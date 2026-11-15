@@ -41,7 +41,7 @@ export function startQaBrowserGateway(){
    // This must run through the actual Codex sandbox. A healthy Chromium host
    // is insufficient if the sandbox cannot reach the Runner loopback bridge.
    if(body.action==='ping')return reply(res,200,{ok:true,bridge:'connected'});
-   if(!['start','close','restart','goto','viewport','click','fill','count','text','inspect','screenshot','assert'].includes(body.action))
+   if(!['start','close','restart','goto','viewport','click','fill','count','text','inspect','list_pages','screenshot','assert'].includes(body.action))
     return reply(res,400,{ok:false,error:'Unsupported browser operation'});
    const kind=String(body.qaKind||''),id=String(body.qaId||'');
    if(kind||id){

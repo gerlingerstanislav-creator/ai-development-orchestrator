@@ -11,10 +11,11 @@ export type PmBrowserArtifact={
  * Blob URLs are scoped to this component; protected API URLs are never used as
  * raw <img src> because bearer auth is required.
  */
-export function SecurePmScreenshot({url,label,alt}:{url:string;label:string;alt:string}){
+export function SecurePmScreenshot({url,label,alt,fullPage=false}:{url:string;label:string;alt:string;fullPage?:boolean}){
  const [blobUrl,setBlobUrl]=useState('');
  const [error,setError]=useState('');
  const [open,setOpen]=useState(false);
+ const [nativeSize,setNativeSize]=useState(false);
  useEffect(()=>{
   let alive=true,objectUrl='';
   const controller=new AbortController();
@@ -51,13 +52,21 @@ export function SecurePmScreenshot({url,label,alt}:{url:string;label:string;alt:
   return()=>window.removeEventListener('keydown',onKey);
  },[open]);
  return <div className="task-pm-shot">
-  {blobUrl?<button className="pm-screenshot-preview" type="button" onClick={()=>setOpen(true)} title={'Посмотреть '+label} aria-label={'Посмотреть '+label}>
+  {blobUrl?<button className="pm-screenshot-preview" type="button" onClick={()=>{setNativeSize(false);setOpen(true);}} title={'Посмотреть '+label} aria-label={'Посмотреть '+label}>
    <img src={blobUrl} alt={alt}/>
   </button>:<span className="muted">{error||'Загрузка изображения…'}</span>}
   <small>{label}</small>
-  {open&&blobUrl&&<div className="chat-image-lightbox" role="dialog" aria-modal="true" aria-label={'Просмотр '+label} onMouseDown={()=>setOpen(false)}>
+  {open&&blobUrl&&<div className={'chat-image-lightbox'+(fullPage?' pm-full-page-lightbox':'')}
+    role="dialog" aria-modal="true" aria-label={'Просмотр '+label} onMouseDown={()=>setOpen(false)}>
    <button type="button" className="chat-image-lightbox-close" aria-label="Закрыть изображение" onClick={()=>setOpen(false)}><X size={22}/></button>
-   <img src={blobUrl} alt={alt} onMouseDown={event=>event.stopPropagation()}/>
+   {fullPage?<><div className="pm-full-page-toolbar" onMouseDown={event=>event.stopPropagation()}>
+    <span>{label}</span>
+    <button type="button" onClick={()=>setNativeSize(size=>!size)}>
+     {nativeSize?'Уместить изображение':'Оригинальный размер · 100%'}</button>
+   </div>
+   <div className="pm-full-page-scroll" onMouseDown={event=>event.stopPropagation()}>
+    <img src={blobUrl} alt={alt} className={nativeSize?'native-resolution':''}/>
+   </div></>:<img src={blobUrl} alt={alt} onMouseDown={event=>event.stopPropagation()}/>}
   </div>}
  </div>;
 }

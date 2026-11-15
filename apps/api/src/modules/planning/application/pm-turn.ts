@@ -9,6 +9,7 @@ import type {PmWatchReport} from './pm-watch-report.js';
 import {PM_GOAL_POLICY,pmOrderStateFromResults} from '../../../pm-goal-policy.js';
 import {PM_EXECUTION_GUIDANCE} from '../../../pm-execution-guidance.js';
 import {attachPmCaptureImagesToChat} from '../../../pm-browser-capture.js';
+import {attachProjectCaptureToPmReply} from '../../../project-browser-capture.js';
 import {platformPromptRules} from '../../../prompt-assembler.mjs';
 import {buildPmConversationContext} from '../domain/pm-conversation-context.js';
 
@@ -230,6 +231,15 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     if(captureId)await attachPmCaptureImagesToChat(client,{
      projectId,captureId,messageId:answerId
     });
+    // Project screenshots are not task screenshots: attach independently of
+    // task state and preserve the original full-resolution JPEG in evidence.
+    const projectCaptureIds=[...new Set(toolEvents.rows
+     .filter(row=>row.tool==='browser.capture_project'&&row.result?.status==='completed')
+     .map(row=>row.result?.capture_id)
+     .filter((id:unknown):id is string=>typeof id==='string'&&
+      /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id)))];
+    for(const projectCaptureId of projectCaptureIds)
+     await attachProjectCaptureToPmReply(client,{projectId,captureId:projectCaptureId,messageId:answerId});
     // Text files published through the authorized manager tool become
     // attachments of this reply, not a fake Markdown download link.
     await publishPmChatFiles(client,{projectId,sessionId:session.id,messageId:answerId});

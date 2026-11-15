@@ -8,6 +8,7 @@ import {annotatePmToolResult} from './pm-goal-policy.js';
 import {inspectGitHubProjectSource} from './documentation-preparation.js';
 import {storeWorkArtifact} from './modules/agents/infrastructure/work-artifacts.js';
 import {runPmBrowserCapture,storePmCaptureImages} from './pm-browser-capture.js';
+import {runPmProjectBrowserCapture,storeProjectBrowserArtifacts} from './project-browser-capture.js';
 
 const uuid=z.string().uuid();
 const callSchema=z.object({
@@ -126,6 +127,48 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   const grantedTools=await readSessionToolGrants(pool,session);
   const tool=toolsForSession(session.role,session.read_only,grantedTools).find(tool=>tool.name===name);
   if(!tool)return reply.code(403).send({error:'Инструмент недоступен для роли '+session.role});
+  if(name==='browser.capture_project'){
+   if(session.role!=='manager'||session.read_only||!deps.runnerUrl||!deps.decryptToken)
+    return reply.code(403).send({error:'Съёмка проекта доступна только авторизованному ПМ'});
+   const validated=z.object({
+    mode:z.enum(['full_page','all_pages']),reason:z.string().trim().min(8).max(1200),
+    idempotency_key:z.string().min(8).max(120).optional()
+   }).strict().safeParse(args);
+   if(!validated.success)return reply.code(400).send({error:'Неверные параметры съёмки проекта'});
+   const params=validated.data,key=params.idempotency_key||null;
+   const digest=hashSecret(JSON.stringify({name,args}));
+   try{
+    if(key){
+     const cached=await pool.query("SELECT result,arguments FROM agent_tool_events WHERE project_id=$1 AND tool=$2 AND idempotency_key=$3 AND success=true LIMIT 1",
+      [session.project_id,name,key]);
+     if(cached.rowCount){
+      if(cached.rows[0].arguments?.request_digest!==digest)
+       return reply.code(409).send({error:'Ключ повтора уже использован с другими параметрами'});
+      return {result:cached.rows[0].result,cached:true};
+     }
+    }
+    const result=await runPmProjectBrowserCapture(pool,{
+     projectId:session.project_id,actorId:session.actor_id,mode:params.mode,
+     runnerUrl:deps.runnerUrl,runnerSecret:deps.runnerSecret||'',decryptToken:deps.decryptToken
+    });
+    await pool.query('INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success,idempotency_key) '+
+     'VALUES($1,$2,$3,$4,$5,$6,true,$7) ON CONFLICT DO NOTHING',[
+     randomUUID(),session.id,session.project_id,name,
+     JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify(result),key
+    ]);
+    return {result};
+   }catch(error){
+    const message=String(error instanceof Error?error.message:error);
+    await pool.query('INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success) '+
+     'VALUES($1,$2,$3,$4,$5,$6,false)',[
+     randomUUID(),session.id,session.project_id,name,
+     JSON.stringify({...redactArgs(args),request_digest:digest}),
+     JSON.stringify({error:message.slice(0,500)})
+    ]).catch(()=>{});
+    return reply.code(Math.min(599,Math.max(400,Number((error as any).statusCode)||409)))
+     .send({error:message.slice(0,900)});
+   }
+  }
   if(name==='browser.capture'){
    if(session.role!=='manager'||session.read_only||!deps.runnerUrl||!deps.decryptToken)
     return reply.code(403).send({error:'Прямой браузер доступен только авторизованному ПМ'});
@@ -300,6 +343,46 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   if(!r.rowCount)return reply.code(404).send({error:'Скриншот не найден'});
   reply.header('Content-Type','image/jpeg');
   reply.header('Cache-Control','private, max-age=3600');
+  reply.header('X-Content-Type-Options','nosniff');
+  return reply.send(r.rows[0].data);
+ });
+ // The trusted Runner alone may upload screenshot bytes. Project capture
+ // does not use, create, reopen or otherwise mutate a task or board column.
+ app.post('/internal/agent-tools/pm-project-artifacts',{bodyLimit:65*1024*1024},async(req:any,reply)=>{
+  if(!authorizeRunner(req,reply))return;
+  const image=z.object({
+   name:z.string().max(160),mime:z.literal('image/jpeg'),
+   data:z.string().max(16_000_008),sha256:z.string().regex(/^[a-f0-9]{64}$/i),
+   viewport:z.object({width:z.literal(1920),height:z.literal(1080)}).strict(),
+   origin:z.literal('isolated-local-browser'),fullPage:z.literal(true),
+   pagePath:z.string().max(180),title:z.string().max(160),
+   pixelWidth:z.number().int(),pixelHeight:z.number().int()
+  }).strict();
+  const validated=z.object({
+   captureId:uuid,projectId:uuid,sourceSha:z.string().regex(/^[a-f0-9]{40}$/i),
+   mode:z.enum(['full_page','all_pages']),artifacts:z.array(image).min(1).max(8)
+  }).strict().safeParse(req.body);
+  if(!validated.success)return reply.code(400).send({error:'Некорректные полноразмерные снимки проекта'});
+  const client=await pool.connect();
+  try{
+   await client.query('BEGIN');
+   const ids=await storeProjectBrowserArtifacts(client,validated.data);
+   await client.query('COMMIT');
+   return {saved:ids.length,artifact_ids:ids};
+  }catch(error){
+   await client.query('ROLLBACK').catch(()=>{});
+   return reply.code(409).send({error:String(error instanceof Error?error.message:error).slice(0,650)});
+  }finally{client.release();}
+ });
+ app.get('/api/projects/:id/browser-artifacts/:artifactId',async(req:any,reply)=>{
+  const {id,artifactId}=z.object({id:uuid,artifactId:uuid}).parse(req.params);
+  if(!await access(req,reply,id))return;
+  const r=await pool.query('SELECT data FROM project_browser_artifacts WHERE project_id=$1 AND id=$2',
+   [id,artifactId]);
+  if(!r.rowCount)return reply.code(404).send({error:'Скриншот не найден'});
+  reply.header('Content-Type','image/jpeg');
+  reply.header('Content-Disposition','inline');
+  reply.header('Cache-Control','private, no-store');
   reply.header('X-Content-Type-Options','nosniff');
   return reply.send(r.rows[0].data);
  });
