@@ -78,7 +78,7 @@ type DocumentationProposal={id:string;job_id:string;topic_key:string;document_id
 type ProjectRule={id:string,body:string,origin:string,created_at:string};
 type RuleSuggestion={id:string,body:string,task_id:string};
 type DocVersion={id:string,task_ids:string[],created_at:string};
-type ManagerMessage={images?:ChatImageMeta[];id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
+type ManagerMessage={images?:ChatImageMeta[];files?:ChatFileMeta[];id:string;role:'user'|'manager';body:string;status:'queued'|'processing'|'completed'|'failed'|'cancelled';reply_to?:string|null;created_at:string};
 type ManagerRequest={id:string;kind:'qa_visual'|'requirements'|'question'|'analysis_clarifications';source_id:string;payload:any;status:'open'|'waiting';created_at:string;decision:string|null};
 type ManagerSnapshot={messages:ManagerMessage[];requests:ManagerRequest[];task:{id:string;title:string;stage:string;description?:string;test_feedback?:string;analysis_state?:Task['analysis_state'];clarification_questions?:string[];spec_version?:number;spec_review_status?:Task['spec_review_status']};owner:any;latestTest:any;internalNotes:AgentTaskNote[]};
 type AssistantMessage={images?:ChatImageMeta[];files?:ChatFileMeta[];id:string;request_id?:string|null;role:'user'|'assistant';body:string;reply_to?:string|null;topic_id?:string|null;topic_title?:string|null;status?:'queued'|'processing'|'completed'|'failed';created_task_id?:string|null;created_document_id?:string|null;created_at?:string;pending?:boolean;awaitingHistory?:boolean;failed?:boolean;documentation_reset_requested?:boolean;owner_question_cleanup_requested?:boolean};
@@ -420,6 +420,8 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  const [taskPendingId,setTaskPendingId]=useState<string|null>(null);
  const [taskInput,setTaskInput]=useState('');const [taskChatBusy,setTaskChatBusy]=useState(false);
   const [taskImages,setTaskImages]=useState<ChatImageDraft[]>([]);
+ const [taskFiles,setTaskFiles]=useState<ChatFileDraft[]>([]);
+ const taskFileInput=useRef<HTMLInputElement|null>(null);
  const [managerState,setManagerState]=useState<ManagerSnapshot|null>(null);
  const [managerBusy,setManagerBusy]=useState(false);
  const [managerAnswer,setManagerAnswer]=useState('');
@@ -858,7 +860,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   void refresh();const timer=window.setInterval(()=>void refresh(),6000);
   return()=>{alive=false;window.clearInterval(timer);};
  },[selectedProjectId,projectChatOpen]);
- useEffect(()=>{setTaskMessages([]);setTaskInput('');setTaskImages([]);if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
+ useEffect(()=>{setTaskMessages([]);setTaskInput('');setTaskImages([]);setTaskFiles([]);if(selected&&activeTask){void api<AssistantMessage[]>('/projects/'+selected.id+'/tasks/'+activeTask.id+'/assistant/messages').then(setTaskMessages).catch(fail);}},[selected?.id,activeTask?.id]);
  async function signIn(e:React.FormEvent){e.preventDefault();setError('');try{const d=await api<{token:string}>('/login',{method:'POST',body:JSON.stringify({email:login,password})});sessionStorage.setItem(key,d.token);setToken(d.token);}catch(e){fail(e);}}
  async function createProject(e:React.FormEvent){e.preventDefault();setBusy(true);try{const p=await api<Project>('/projects',{method:'POST',body:JSON.stringify({name:form.name,description:form.description})});await loadProjects();navigate(projectUrl(p.id));setShowProject(false);setForm({...form,name:'',description:''});}catch(e){fail(e);}finally{setBusy(false);}}
  async function createTask(e:React.FormEvent){e.preventDefault();if(!selected)return;setBusy(true);try{await api('/projects/'+selected.id+'/tasks',{method:'POST',body:JSON.stringify({title:form.title,description:form.description,type:form.type,parent_id:form.parent_id||null})});await loadProject(selected.id);setShowTask(false);setForm({...form,title:'',description:'',parent_id:''});}catch(e){fail(e);}finally{setBusy(false);}}
@@ -1345,6 +1347,11 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
   try{setTaskImages(await prepareChatImages(files,taskImages));setManagerFeedback('');}
   catch(error){setManagerFeedback(error instanceof Error?error.message:String(error));}
  }
+ async function attachTaskFiles(files:File[]){
+  if(!files.length)return;
+  try{setTaskFiles(await prepareChatFiles(files,taskFiles));setManagerFeedback('');}
+  catch(error){setManagerFeedback(error instanceof Error?error.message:String(error));}
+ }
  async function sendPmMessage(projectId:string,turn:AssistantMessage&{request_id:string}){
   const chatKey=projectChatKey(projectId,'project');
   const updateTurn=(update:(message:AssistantMessage)=>AssistantMessage)=>updateProjectChat(chatKey,chat=>({
@@ -1496,18 +1503,18 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
  }
  async function sendTaskMessage(e:React.FormEvent){
   e.preventDefault();
-  if(!selected||!activeTask||(!taskInput.trim()&&!taskImages.length)||managerSending)return;
-  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim(),images=taskImages;
+  if(!selected||!activeTask||(!taskInput.trim()&&!taskImages.length&&!taskFiles.length)||managerSending)return;
+  const projectId=selected.id,taskId=activeTask.id,message=taskInput.trim()||(taskFiles.length?'Изучи прикреплённые файлы.':''),images=taskImages,files=taskFiles;
   const optimisticId='pending-'+crypto.randomUUID();
   const sentAt=new Date().toISOString();
-  setManagerState(old=>old?{...old,messages:[...old.messages,{id:optimisticId,role:'user',body:message,status:'queued',created_at:sentAt,images}]}:old);
+  setManagerState(old=>old?{...old,messages:[...old.messages,{id:optimisticId,role:'user',body:message,status:'queued',created_at:sentAt,images,files}]}:old);
   setTaskInput('');setManagerFeedback('');setManagerSending(true);
   try{
    const response=await api<{id:string;status:string}>('/projects/'+projectId+'/tasks/'+taskId+'/manager/messages',{
-    method:'POST',body:JSON.stringify({message,images:images.map(image=>({name:image.name,mimeType:image.mimeType,data:image.data}))})
+    method:'POST',body:JSON.stringify({message,images:images.map(image=>({name:image.name,mimeType:image.mimeType,data:image.data})),files:files.map(file=>({name:file.name,mimeType:file.mimeType,data:file.data}))})
    });
    setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,id:response.id}:m)}:old);
-    setTaskImages([]);
+    setTaskImages([]);setTaskFiles([]);
   }catch(error){
    setManagerFeedback(error instanceof Error?error.message:'Сообщение не принято');
    setManagerState(old=>old?{...old,messages:old.messages.map(m=>m.id===optimisticId?{...m,status:'failed'}:m)}:old);
@@ -2342,7 +2349,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
     {deploymentMode==='automatic'&&<button type="button" className="primary" disabled={mergeBusy} onClick={()=>{if(!selected)return;const commit=window.prompt('Точный SHA слитого PR:');if(!commit)return;setMergeBusy(true);void api('/projects/'+selected.id+'/tasks/'+activeTask.id+'/deployment/start',{method:'POST',body:JSON.stringify({confirm:true,commit_sha:commit.trim()})}).then(()=>{setMergeReport('Запрос поставлен в Temporal. Статус доступен в Центре процессов.');}).catch(fail).finally(()=>setMergeBusy(false));}}>Запустить GitHub Actions</button>}</div></div>}
      {activeTask.stage==='documentation'&&<p className="muted">PR уже слит. Задача ожидает обновления проектной документации.</p>}
     </section>
-    <ChatImageDropZone className="task-conversation manager-conversation" onImages={files=>void attachTaskImages(files)} onError={setManagerFeedback}>
+    <ChatImageDropZone className="task-conversation manager-conversation" onImages={files=>void attachTaskImages(files)} onFiles={files=>void attachTaskFiles(files)} onError={setManagerFeedback}>
      <header><MessageCircle size={17}/><strong>Менеджер проекта</strong>
       <small>{decisions.length?'Ожидает вашего решения':activeAgentRuns.length||managerWorking?'Команда работает':'Контролирует процесс'}</small>
      </header>
@@ -2390,6 +2397,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
         {m.role==='manager'?<PmMessageContent source={m.body} projectId={selectedProjectId} hasAttachments={Boolean(m.images?.length)}/>:m.body}
        </div>
         <ChatImageGallery images={m.images||[]} projectId={selectedProjectId} read={api}/>
+        <ChatFileGallery files={m.files||[]} projectId={selectedProjectId}/>
        {m.role==='user'&&['queued','processing'].includes(m.status)&&!m.id.startsWith('pending-')&&
         <button type="button" className="secondary" disabled={managerBusy} onClick={()=>void stopManagerMessage(m.id)}>Прервать ответ ПМ</button>}
        {m.role==='user'&&m.status==='cancelled'&&<small className="muted">Обработка прервана</small>}
@@ -2449,7 +2457,13 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
      </div>}
      {managerFeedback&&<p className="manager-action-error" role="alert">{managerFeedback}</p>}
      {taskImages.length>0&&<ChatImageGallery images={taskImages} projectId={selectedProjectId} read={api} onRemove={id=>setTaskImages(old=>old.filter(image=>image.id!==id))}/>}
+     {taskFiles.length>0&&<ChatFileGallery files={taskFiles} projectId={selectedProjectId} onRemove={id=>setTaskFiles(old=>old.filter(file=>file.id!==id))}/>}
       <form className="assistant-composer" onSubmit={sendTaskMessage}>
+      <input hidden type="file" multiple ref={taskFileInput} accept=".txt,.md,.csv,.json,.yaml,.yml,.pdf,.docx,.xlsx,.pptx,.zip"
+       onChange={event=>{void attachTaskFiles(Array.from(event.currentTarget.files||[]));event.currentTarget.value='';}}/>
+      <button type="button" className="secondary chat-image-picker" aria-label="Прикрепить файл"
+       title="Прикрепить файл к чату задачи" disabled={managerSending||!aiSettings.enabled}
+       onClick={()=>taskFileInput.current?.click()}><Paperclip size={17}/></button>
       <ChatImagePicker disabled={managerSending||!aiSettings.enabled} onFiles={files=>void attachTaskImages(files)}/>
        {mentionMatches(taskInput,stages).length>0&&<div className="agent-mention-menu" role="listbox" aria-label="Выбрать агента">
         {mentionMatches(taskInput,stages).map(option=><button type="button" role="option" aria-selected={false} key={option.alias} onClick={()=>setTaskInput(addMention(taskInput,option.alias))}>
@@ -2458,7 +2472,7 @@ const [collapsedDocs,setCollapsedDocs]=useState<string[]>([]);const [connections
        <textarea rows={2} value={taskInput} onChange={e=>setTaskInput(e.target.value)}
        onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();e.currentTarget.form?.requestSubmit();}}}
        placeholder={analysisClarification?'Ответьте на вопросы аналитика…':'Напишите Менеджеру проекта… (Shift+Enter — новая строка)'} aria-label="Сообщение Менеджеру проекта" />
-      <button className="primary" type="submit" disabled={managerSending||(!taskInput.trim()&&!taskImages.length)||!aiSettings.enabled}><Send size={15}/> Отправить</button>
+      <button className="primary" type="submit" disabled={managerSending||(!taskInput.trim()&&!taskImages.length&&!taskFiles.length)||!aiSettings.enabled}><Send size={15}/> Отправить</button>
      </form>
     </ChatImageDropZone>
    </div>
