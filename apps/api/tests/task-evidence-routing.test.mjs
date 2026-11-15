@@ -6,6 +6,7 @@ import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from '../dist/task-evidence-routing.js';
 import {reconcileTaskEvidenceQueue,finishTaskEvidenceRun} from '../dist/task-evidence-queue.js';
+import {confirmedSourceBuildFailure,confirmedEvidenceSourceBlocker} from '../dist/task-evidence-blockers.js';
 
 const sha='a'.repeat(40);
 test('analyst-approved historical screenshot job skips developer and creates one durable Temporal process',async t=>{
@@ -49,4 +50,46 @@ test('analyst-approved historical screenshot job skips developer and creates one
  assert.equal(retry.status,'queued');
  assert.equal((await pool.query("SELECT count(*)::int n FROM task_evidence_runs WHERE task_id=$1",[task])).rows[0].n,2);
  assert.equal((await pool.query("SELECT pr_url FROM tasks WHERE id=$1",[task])).rows[0].pr_url,null);
+});
+
+test('a verified Vue compilation failure on the same immutable SHA prevents another pointless browser run',async t=>{
+ const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});
+ const schema='evidence_broken_sha_'+randomUUID().replaceAll('-','');
+ await admin.query('CREATE SCHEMA "'+schema+'"');
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema,max:3});
+ t.after(async()=>{await pool.end();await admin.query('DROP SCHEMA "'+schema+'" CASCADE');await admin.end();});
+ await runSchemaMigrations(pool,coreSchemaMigrations({analysis:'Анализ'}));
+ const [user,project,task]=Array.from({length:3},randomUUID);
+ await pool.query("INSERT INTO users(id,email,password_hash) VALUES($1,'broken-sha@example.test','hash')",[user]);
+ await pool.query("INSERT INTO projects(id,name,owner_id,agents_running) VALUES($1,'Screenshots',$2,true)",[project,user]);
+ await pool.query("INSERT INTO tasks(id,project_id,title,description,type,stage) VALUES($1,$2,'Capture screenshots',$3,'task','analysis')",
+  [task,project,'Capture current main page for SHA '+sha]);
+ await pool.query("INSERT INTO task_events(id,task_id,event,detail) VALUES($1,$2,'analysis_completed','Confirmed')",[randomUUID(),task]);
+ await pool.query("UPDATE tasks SET analysis_state='approved' WHERE id=$1",[task]);
+ await pool.query("UPDATE tasks SET stage='development' WHERE id=$1",[task]);
+ await routeTaskToBrowserEvidence(pool,{projectId:project,taskId:task,actorId:user,
+  sourceSha:sha,reason:'Take desktop and mobile screenshots'});
+ const compilerReport={
+  commit:sha,summary:'Some tests succeeded',
+  checks:[{name:'Локальная сборка',result:'failed',details:'Vue compiler error: v-else-if without adjacent v-if in AdminLogin.vue'}],
+  findings:[{description:'Vue component compilation failed'}]
+ };
+ const temporalStarts=[];
+ await pool.query(`INSERT INTO ai_test_runs(id,project_id,task_id,cycle_id,attempt,status,verdict,report)
+  VALUES($1,$2,$3,$4,1,'completed','failed',$5)`,
+  [randomUUID(),project,task,randomUUID(),JSON.stringify(compilerReport)]);
+ assert.equal(confirmedSourceBuildFailure(compilerReport),true);
+ assert.equal(confirmedSourceBuildFailure({...compilerReport,checks:[{name:'Открытие браузера',result:'failed',details:'Timeout'}]}),false);
+ assert.match(await confirmedEvidenceSourceBlocker(pool,{projectId:project,taskId:task,sourceSha:sha}),/ошибка компиляции/);
+ await reconcileTaskEvidenceQueue(pool,async()=>({workflow:{start:async()=>temporalStarts.push(1)}}));
+ assert.deepEqual(temporalStarts,[],'known unbuildable commit must not consume another Codex run');
+ const evidence=(await pool.query('SELECT status,message FROM task_evidence_runs WHERE task_id=$1',[task])).rows;
+ assert.equal(evidence.length,1);
+ assert.equal(evidence[0].status,'blocked');
+ assert.match(evidence[0].message,/закреплённом SHA/);
+ await assert.rejects(retryTaskBrowserEvidence(pool,{projectId:project,taskId:task,actorId:user,
+  reason:'Repeat the same failed attempt again'}),/ошибка компиляции/);
+ await assert.rejects(routeTaskToBrowserEvidence(pool,{projectId:project,taskId:task,actorId:user,
+  sourceSha:sha,reason:'Repeat with the exact same immutable commit'}),/ошибка компиляции/);
+ assert.equal(await confirmedEvidenceSourceBlocker(pool,{projectId:project,taskId:task,sourceSha:'b'.repeat(40)}),null);
 });
