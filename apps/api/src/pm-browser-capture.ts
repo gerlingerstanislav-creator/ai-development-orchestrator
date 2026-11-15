@@ -106,6 +106,55 @@ export async function readPmCaptureArtifacts(db:Db,projectId:string,taskId:strin
  return r.rows.map(row=>({...row,
   url:'/api/projects/'+projectId+'/tasks/'+taskId+'/pm-browser-artifacts/'+row.id}));
 }
+/**
+ * Attach trusted Chromium evidence to the PM's actual chat reply. The user
+ * sees images in the existing authenticated ChatImageGallery rather than only
+ * Markdown links or a separate task tab.
+ *
+ * A screenshot is eligible only if the SAME project has one completed capture
+ * with exactly two verified desktop/mobile receipts on its resolved SHA.
+ * No URLs or bytes supplied by Codex are trusted, and the original task
+ * artifacts remain the canonical evidence.
+ */
+export async function attachPmCaptureImagesToChat(db:Db,input:{
+ projectId:string;captureId:string;messageId:string
+}):Promise<number>{
+ const valid=await db.query(`SELECT a.id,a.viewport,a.source_sha,a.origin,a.mime,
+   c.source_sha AS capture_sha
+   FROM pm_browser_capture_artifacts a
+   JOIN pm_browser_captures c ON c.id=a.capture_id
+    AND c.project_id=a.project_id AND c.task_id=a.task_id
+   WHERE c.id=$1 AND c.project_id=$2 AND c.status='completed'
+   ORDER BY a.created_at,a.id`,[input.captureId,input.projectId]);
+ const shots=valid.rows;
+ if(shots.length!==2||
+  !shots.every((shot:any)=>shot.origin==='isolated-local-browser'&&
+   shot.mime==='image/jpeg'&&String(shot.source_sha).trim()===String(shot.capture_sha).trim())||
+  !shots.some((shot:any)=>Number(shot.viewport?.width)>=900)||
+  !shots.some((shot:any)=>Number(shot.viewport?.width)<=600))
+  throw reject('Невозможно прикрепить неподтверждённые скриншоты ПМ');
+
+ // The insert executes inside the PM reply transaction. Source bytes come
+ // only from validated runner artifacts; the model cannot inject image data.
+ const inserted=await db.query(`INSERT INTO chat_images(
+    id,project_id,task_id,assistant_message_id,manager_message_id,
+    actor_id,name,mime_type,image_data)
+   SELECT gen_random_uuid(),c.project_id,NULL,m.id,NULL,
+    c.actor_id,a.name,a.mime,a.data
+   FROM pm_browser_capture_artifacts a
+   JOIN pm_browser_captures c ON c.id=a.capture_id
+    AND c.project_id=a.project_id AND c.task_id=a.task_id
+   JOIN assistant_messages m ON m.id=$3 AND m.project_id=c.project_id
+    AND m.role='assistant' AND m.task_id IS NULL AND m.channel='project'
+   WHERE c.id=$1 AND c.project_id=$2 AND c.status='completed'
+    AND NOT EXISTS(SELECT 1 FROM chat_images existing WHERE existing.assistant_message_id=m.id)
+   ORDER BY (a.viewport->>'width')::int DESC
+   RETURNING id`,[input.captureId,input.projectId,input.messageId]);
+ if((inserted.rowCount??0)!==2)
+  throw reject('Не удалось прикрепить скриншоты к сообщению ПМ');
+ return inserted.rowCount??0;
+}
+
 /** Called by the manager MCP tool, not via work.delegate. Repo and credentials
  * are read from the existing authenticated GitHub project connection.
  */
