@@ -7,6 +7,7 @@ import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {routeTaskToBrowserEvidence,retryTaskBrowserEvidence} from '../dist/task-evidence-routing.js';
 import {reconcileTaskEvidenceQueue,finishTaskEvidenceRun} from '../dist/task-evidence-queue.js';
 import {confirmedSourceBuildFailure,confirmedEvidenceSourceBlocker} from '../dist/task-evidence-blockers.js';
+import {executeAgentTool} from '../dist/agent-tool-executor.js';
 
 const sha='a'.repeat(40);
 test('analyst-approved historical screenshot job skips developer and creates one durable Temporal process',async t=>{
@@ -87,6 +88,13 @@ test('a verified Vue compilation failure on the same immutable SHA prevents anot
  assert.equal(evidence.length,1);
  assert.equal(evidence[0].status,'blocked');
  assert.match(evidence[0].message,/закреплённом SHA/);
+ const agent=await executeAgentTool(pool,{
+  id:randomUUID(),project_id:project,actor_id:user,role:'manager',status:'running',
+  read_only:false
+ },'tasks.read',{task_id:task},async()=>{});
+ assert.equal(agent.browser_evidence.latest_run.status,'blocked');
+ assert.match(agent.browser_evidence.source_blocker,/ошибка компиляции/);
+
  await assert.rejects(retryTaskBrowserEvidence(pool,{projectId:project,taskId:task,actorId:user,
   reason:'Repeat the same failed attempt again'}),/ошибка компиляции/);
  await assert.rejects(routeTaskToBrowserEvidence(pool,{projectId:project,taskId:task,actorId:user,
