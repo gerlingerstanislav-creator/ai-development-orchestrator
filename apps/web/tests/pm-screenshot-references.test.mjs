@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parsePmScreenshotReferences} from '../src/features/chat/pm-screenshot-references.ts';
+import React from 'react';
+import {renderToStaticMarkup} from 'react-dom/server';
+import {PmMessageContent} from '../src/features/chat/PmMessageContent.tsx';
 
 const project='c74f1c09-b114-4be8-9237-b34de73c146d';
 const task='63068e41-58e5-4bbb-91ff-f16ec2a413da';
@@ -43,4 +46,20 @@ test('nonmatching project, external URLs, generic docs and duplicate references 
   '[Desktop]('+screenshot(desktop)+')\n![Again]('+screenshot(desktop)+')',project);
  assert.deepEqual(duplicate.images.map(x=>x.artifactId),[desktop]);
  assert.doesNotMatch(duplicate.markdown,/pm-browser-artifacts/);
+});
+
+test('real PM chat body renders two protected thumbnail widgets, not raw Markdown paths',()=>{
+ const body='Снимки в чате:\n\n'+
+  '![Desktop]\('+screenshot(desktop)+')\n\n'+
+  '[Mobile]\( '+screenshot(mobile)+' )';
+ const html=renderToStaticMarkup(React.createElement(PmMessageContent,{
+  source:body,projectId:project
+ }));
+ assert.match(html,/pm-inline-screenshots/);
+ assert.equal((html.match(/class="task-pm-shot"/g)||[]).length,2);
+ assert.doesNotMatch(html,/pm-browser-artifacts/);
+ const alreadyAttached=renderToStaticMarkup(React.createElement(PmMessageContent,{
+  source:body,projectId:project,hasAttachments:true
+ }));
+ assert.doesNotMatch(alreadyAttached,/pm-inline-screenshots/);
 });
