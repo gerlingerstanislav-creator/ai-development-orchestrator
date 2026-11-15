@@ -26,7 +26,7 @@ const filenamePattern=/^[^/\\\x00-\x1f\x7f]{1,180}$/;
 export const chatFileSchema=z.object({
  name:z.string().trim().min(1).max(180),
  mimeType:z.string().max(140),
- data:z.string().min(16).max(Math.ceil(MAX_CHAT_FILE_BYTES*4/3)+16)
+ data:z.string().min(4).max(Math.ceil(MAX_CHAT_FILE_BYTES*4/3)+16)
 }).strict();
 export const chatFilesSchema=z.array(chatFileSchema).max(MAX_CHAT_FILES).default([]);
 export type ChatFileInput=z.infer<typeof chatFileSchema>;
@@ -92,7 +92,7 @@ export async function readPmChatFileContext(db:Pick<Pool,'query'>,projectId:stri
  return r.rows.map((row:any)=>{
   const name=String(row.name),bytes=row.file_data as Buffer;
   const ext=extension(name),readable=textExtensions.has(ext);
-  const content=readable?utf8.decode(bytes.subarray(0,12000)):'';
+  const content=readable?new TextDecoder().decode(bytes.subarray(0,12000)):'';
   return {name,mimeType:String(row.mime_type),size:Number(row.size_bytes),readable,content};
  });
 }
