@@ -139,6 +139,13 @@ export async function runPmBrowserCapture(db:Pool,input:{
     projectId:input.projectId,taskId:input.taskId,sourceSha:String(pin)});
    if(failure)throw reject(failure);
   }
+  // The Codex MCP request has a bounded timeout; a crashed API process
+  // cannot leave a permanent "running" capture that blocks every next turn.
+  await client.query(`UPDATE pm_browser_captures SET status='blocked',
+   message='Предыдущий браузерный запуск прерван, время ожидания истекло',
+   updated_at=now()
+   WHERE task_id=$1 AND project_id=$2 AND status='running'
+    AND updated_at<now()-interval '6 minutes'`,[input.taskId,input.projectId]);
   const active=await client.query(`SELECT id FROM pm_browser_captures
    WHERE task_id=$1 AND project_id=$2 AND status='running' LIMIT 1`,
    [input.taskId,input.projectId]);
