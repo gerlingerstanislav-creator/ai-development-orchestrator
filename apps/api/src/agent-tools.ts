@@ -8,7 +8,7 @@ export {agentToolCatalog} from './modules/agents/domain/tool-catalog.js';
 export const hashSecret=(text:string)=>createHash('sha256').update(text).digest('hex');
 // Orders track successful mutations, not reads or routine agent telemetry.
 // Catalog metadata keeps future tools classified without keyword heuristics.
-const pmNonOrderTools=new Set(['pm.orders.update','processes.report','memory.record','instructions.propose','goals.link','goals.update','goals.complete','chat.images.attach_capture','chat.files.publish']);
+const pmNonOrderTools=new Set(['pm.orders.update','processes.report','memory.record','instructions.propose','goals.link','goals.update','goals.complete','browser.capture_project','chat.images.attach_capture','chat.files.publish']);
 export function isProjectManagerOrderAction(name:string){
  const tool=agentToolCatalog.find(entry=>entry.name===name);
  return !!tool&&!tool.annotations.readOnlyHint&&!pmNonOrderTools.has(name);
