@@ -251,7 +251,7 @@ async function run(s,body){
     try{
      const target=new URL(anchor.getAttribute('href')||'',current);
      if(target.origin!==current||!/^https?:$/.test(target.protocol))return [];
-     if(/^\\/(api|auth|logout|download)(\\/|$)/i.test(target.pathname))return [];
+     if(new RegExp('^/(?:api|auth|logout|download)(?:/|$)','i').test(target.pathname))return [];
      return [target.pathname];
     }catch{return [];}
    }))].slice(0,40);
