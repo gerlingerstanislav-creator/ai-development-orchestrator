@@ -195,7 +195,7 @@ export async function runPmBrowserCapture(db:Pool,input:{
       implementation_commit=$3,updated_at=now() WHERE id=$1 AND project_id=$2
       AND stage='testing' AND execution_mode='browser_evidence' AND pr_url IS NULL RETURNING id`,
       [input.taskId,input.projectId,response.source_sha]);
-     repinned=changed.rowCount>0;
+     repinned=(changed.rowCount??0)>0;
      if(repinned)await finish.query(`INSERT INTO task_events(id,task_id,actor_id,event,detail)
       VALUES($1,$2,$3,'evidence_sha_updated',$4)`,
       [randomUUID(),input.taskId,input.actorId,'ПМ выбрал рабочий SHA '+response.source_sha+
