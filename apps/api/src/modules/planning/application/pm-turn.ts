@@ -298,7 +298,11 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
   if(!retryable)throw Object.assign(new Error(message.slice(0,650)),{nonRetryable:true});
   throw error;
  }finally{
-  if(sessionId)await finishAgentSession(pool,sessionId).catch(()=>{});
+  if(sessionId){
+   // A failed/cancelled turn must not retain orphaned document bytes.
+   await pool.query('DELETE FROM chat_files WHERE pending_pm_session_id=$1',[sessionId]).catch(()=>{});
+   await finishAgentSession(pool,sessionId).catch(()=>{});
+  }
  }
  return watchers;
 }
