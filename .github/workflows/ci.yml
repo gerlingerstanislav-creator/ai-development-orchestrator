@@ -78,6 +78,7 @@ jobs:
           node --test apps/codex-runner/job-scheduler.test.mjs apps/codex-runner/agent-context.test.mjs apps/codex-runner/browser-gateway.test.mjs apps/codex-runner/development-outcome.test.mjs apps/codex-runner/qa-run-evidence.test.mjs apps/codex-runner/qa-completion.test.mjs apps/codex-runner/prompt-assembler.test.mjs apps/codex-runner/task-branch-history.test.mjs
           # All API suites, including newly added ones, run sequentially to prevent PostgreSQL fixture races.
           node --test --test-concurrency=1 apps/api/tests/*.test.mjs
+          node --import tsx --test apps/web/tests/pm-screenshot-references.test.mjs
           node --import tsx --test apps/web/tests/api-client.test.mjs
           node --import tsx --test apps/web/tests/feature-boundaries.test.mjs
           node --import tsx --test apps/web/tests/project-sidebar.test.mjs
