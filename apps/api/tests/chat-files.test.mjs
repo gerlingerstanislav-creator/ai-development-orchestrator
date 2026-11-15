@@ -58,3 +58,27 @@ test('chat attachment is persisted, readable only in scoped project, and downloa
   headers:{'x-allowed-project':id.other}});
  assert.equal(mismatched.statusCode,404);
 });
+
+test('task manager and project PM share the attachment store without mixing their message IDs',async t=>{
+ const admin=new pg.Pool({connectionString:process.env.DATABASE_URL});
+ const schema='task_chat_files_'+randomUUID().replaceAll('-','');
+ await admin.query('CREATE SCHEMA "'+schema+'"');
+ const pool=new pg.Pool({connectionString:process.env.DATABASE_URL,options:'-c search_path='+schema,max:3});
+ t.after(async()=>{await pool.end();await admin.query('DROP SCHEMA "'+schema+'" CASCADE');await admin.end();});
+ await runSchemaMigrations(pool,coreSchemaMigrations({analysis:'Анализ'}));
+ const ids={user:randomUUID(),project:randomUUID(),task:randomUUID(),manager:randomUUID()};
+ await pool.query("INSERT INTO users(id,email,password_hash) VALUES($1,'task-chat-files@example.test','hash')",[ids.user]);
+ await pool.query("INSERT INTO projects(id,name,owner_id) VALUES($1,'Task chat files',$2)",[ids.project,ids.user]);
+ await pool.query("INSERT INTO tasks(id,project_id,title,stage) VALUES($1,$2,'Task',$3)",[ids.task,ids.project,'backlog']);
+ await pool.query("INSERT INTO manager_messages(id,project_id,task_id,actor_id,role,body,status) VALUES($1,$2,$3,$4,'user','See attached spec','queued')",[ids.manager,ids.project,ids.task,ids.user]);
+ await saveChatFiles(pool,{projectId:ids.project,taskId:ids.task,actorId:ids.user,
+  messageId:ids.manager,scope:'manager',files:validateChatFiles([input('spec.md','# Acceptance\n- Screenshot works')])});
+ const rows=await pool.query('SELECT id,assistant_message_id,manager_message_id,task_id FROM chat_files WHERE project_id=$1',[ids.project]);
+ assert.equal(rows.rowCount,1);
+ assert.equal(rows.rows[0].assistant_message_id,null);
+ assert.equal(rows.rows[0].manager_message_id,ids.manager);
+ assert.equal(rows.rows[0].task_id,ids.task);
+ const context=await readPmChatFileContext(pool,ids.project,ids.manager,'manager');
+ assert.match(context[0].content,/Screenshot works/);
+ assert.deepEqual(await readPmChatFileContext(pool,ids.project,ids.manager,'assistant'),[]);
+});
