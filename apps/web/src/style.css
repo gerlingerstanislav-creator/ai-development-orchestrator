@@ -1484,3 +1484,40 @@ body:has(.tasks-page){overflow:hidden}
 .task-current-work.compact{display:inline-flex;margin:0 6px;vertical-align:middle;max-width:230px}
 .task-current-work.compact .task-current-work-label span{white-space:nowrap;display:block;text-overflow:ellipsis}
 .task-current-work>small{font-size:9px;color:#8291a3}
+
+/* Task dialog: actions stay one compact line; optional settings remain hidden. */
+.task-modal-overlay .task-board-controls{border:0;border-bottom:1px solid #e7ebf0;border-radius:0;background:transparent;padding:2px 0 9px;margin:0 0 6px;gap:4px}
+.task-modal-overlay .task-board-control-top{align-items:center;gap:8px}
+.task-modal-overlay .task-board-control-actions{gap:6px;align-items:center}
+.task-modal-overlay .task-board-control-actions button{padding:4px 9px;min-height:27px;font-size:10px}
+.task-modal-overlay .task-board-policy{margin-left:auto;max-width:100%;font-size:10px;color:#68758b}
+.task-modal-overlay .task-board-policy summary{cursor:pointer;list-style-position:inside;padding:3px;white-space:nowrap}
+.task-modal-overlay .task-board-policy label{margin:5px 0 0;min-width:200px;display:flex;flex-direction:column;gap:4px}
+.task-modal-overlay .task-board-policy select{font-size:11px;min-height:30px}
+.task-modal-overlay .task-postpone-dialog{display:flex;align-items:flex-end;flex-wrap:wrap;gap:7px;padding:8px;border:1px solid #e0e5ed;border-radius:7px}
+.task-modal-overlay .task-postpone-dialog label{margin:0;display:flex;flex-direction:column;gap:4px}
+.task-modal-overlay .task-postpone-dialog input{min-height:29px;font-size:11px}
+.task-modal-overlay .task-board-rework{border:0;padding:1px 0 0;margin:0;font-size:10px}
+.task-modal-overlay .task-board-rework summary{padding:3px 0}
+.task-modal-overlay .task-details .task-top-meta{margin:0 0 7px;min-height:0;padding:2px 0 4px;gap:7px}
+.task-modal-overlay .task-details .task-top-meta:has(.task-priority-select:only-child){justify-content:flex-end}
+.task-modal-overlay .task-details .task-priority-select{font-size:10px;gap:6px}
+.task-modal-overlay .task-details .task-priority-select select{min-height:28px;padding:4px 9px;font-size:11px}
+/* The plan is a one-row expandable disclosure rather than a permanent panel. */
+.task-modal-overlay .task-dynamic-plan{display:block;flex:0 0 auto;max-height:45vh;overflow:hidden;padding:0 12px;background:#fafbfe;border-top:1px solid #e6e9f0}
+.task-modal-overlay .task-dynamic-plan[open]{overflow-y:auto;overflow-x:hidden}
+.task-modal-overlay .task-dynamic-summary{display:flex;align-items:center;gap:10px;min-width:0;min-height:32px;padding:5px 1px;cursor:pointer;font-size:11px;list-style-position:inside}
+.task-modal-overlay .task-dynamic-summary strong{font-size:11px;white-space:nowrap}
+.task-modal-overlay .task-dynamic-summary-status{color:#65748a;font-size:10px;min-width:0;text-overflow:ellipsis;white-space:nowrap;overflow:hidden}
+.task-modal-overlay .task-dynamic-expand-hint{margin-left:auto;color:#8291a4;font-size:10px;white-space:nowrap}
+.task-modal-overlay .task-dynamic-expanded{border-top:1px solid #e7ebf0;padding:7px 0 8px;display:flex;flex-direction:column;gap:6px}
+.task-modal-overlay .task-dynamic-plan-group{padding:3px 0 5px;gap:6px}
+.task-modal-overlay .task-dynamic-step{flex-basis:190px;padding:7px}
+.task-modal-overlay .task-evidence-state{display:flex;flex-direction:column;gap:3px;max-width:100%;font-size:11px}
+.task-modal-overlay .task-evidence-state strong{font-size:11px}
+.task-modal-overlay .task-evidence-state small{font-size:10px;color:#728197}
+.task-modal-overlay .task-evidence-state p{font-size:11px;line-height:1.4;margin:3px 0;overflow-wrap:anywhere}
+.task-modal-overlay .task-evidence-state.is-blocked p,.task-modal-overlay .task-evidence-state.is-failed p{color:#9b493a}
+.task-modal-overlay .task-technical-workflow{padding:4px 12px}
+.task-modal-overlay .task-technical-workflow>summary{font-size:10px}
+@media(max-width:850px){.task-modal-overlay .task-dynamic-summary{flex-wrap:wrap;gap:6px}.task-modal-overlay .task-dynamic-expand-hint{display:none}}
