@@ -126,6 +126,48 @@ export function registerAgentToolRoutes(app:FastifyInstance, deps:{
   const grantedTools=await readSessionToolGrants(pool,session);
   const tool=toolsForSession(session.role,session.read_only,grantedTools).find(tool=>tool.name===name);
   if(!tool)return reply.code(403).send({error:'Инструмент недоступен для роли '+session.role});
+  if(name==='browser.capture'){
+   if(session.role!=='manager'||session.read_only||!deps.runnerUrl||!deps.decryptToken)
+    return reply.code(403).send({error:'Прямой браузер доступен только авторизованному ПМ'});
+   const validated=z.object({
+    task_id:uuid,revision:z.enum(['latest','pinned']),
+    source_sha:z.string().regex(/^[a-f0-9]{40}$/i).optional(),
+    reason:z.string().trim().min(12).max(1600),
+    idempotency_key:z.string().min(8).max(120).optional()
+   }).strict().safeParse(args);
+   if(!validated.success)return reply.code(400).send({error:'Некорректные аргументы browser.capture'});
+   const params=validated.data,key=params.idempotency_key||null;
+   const digest=hashSecret(JSON.stringify({name,args}));
+   try{
+    if(key){
+     const cached=await pool.query("SELECT result,arguments FROM agent_tool_events WHERE project_id=$1 AND tool=$2 AND idempotency_key=$3 AND success=true LIMIT 1",
+      [session.project_id,name,key]);
+     if(cached.rowCount){
+      if(cached.rows[0].arguments?.request_digest!==digest)
+       return reply.code(409).send({error:'Ключ идемпотентности уже использован с другими аргументами'});
+      return {result:cached.rows[0].result,cached:true};
+     }
+    }
+    const result=await runPmBrowserCapture(pool,{
+     projectId:session.project_id,taskId:params.task_id,actorId:session.actor_id,
+     revision:params.revision,sourceSha:params.source_sha,reason:params.reason,
+     runnerUrl:deps.runnerUrl,runnerSecret:deps.runnerSecret||'',decryptToken:deps.decryptToken
+    });
+    await pool.query(`INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success,idempotency_key)
+      VALUES($1,$2,$3,$4,$5,$6,true,$7) ON CONFLICT DO NOTHING`,
+     [randomUUID(),session.id,session.project_id,name,
+      JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify(result),key]);
+    return {result};
+   }catch(error){
+    const message=String(error instanceof Error?error.message:error);
+    await pool.query(`INSERT INTO agent_tool_events(id,session_id,project_id,tool,arguments,result,success)
+      VALUES($1,$2,$3,$4,$5,$6,false)`,
+     [randomUUID(),session.id,session.project_id,name,
+      JSON.stringify({...redactArgs(args),request_digest:digest}),JSON.stringify({error:message.slice(0,450)})]).catch(()=>{});
+    return reply.code(Math.min(599,Math.max(400,Number((error as any).statusCode)||409)))
+      .send({error:message.slice(0,900)});
+   }
+  }
   const key=!session.read_only&&typeof args.idempotency_key==='string'&&args.idempotency_key.length>=8&&args.idempotency_key.length<=120?args.idempotency_key:null;
   const digest=hashSecret(JSON.stringify({name,args}));
   const mutating=!tool.annotations.readOnlyHint;
