@@ -2,7 +2,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {composeAgentPrompt,recordAgentPrompt} from '../../../agent-prompt.js';
 import {createAgentSession,finishAgentSession,agentSessionEffects} from '../../../agent-tools.js';
 import {readChatImages} from '../../../chat-images.js';
-import {readPmChatFileContext} from '../../../chat-files.js';
+import {readPmChatFileContext,publishPmChatFiles} from '../../../chat-files.js';
 import {conversationInstructions,resolveRoleAiSettings} from '../../../project-team.js';
 import {agentMemorySections} from '../../../agent-memory.js';
 import type {PmWatchReport} from './pm-watch-report.js';
@@ -223,13 +223,16 @@ async function executeProjectManagerInbox(pool:Pool,projectId:string,messageId:s
     // The capture result is an audited MCP event from THIS manager session,
     // not a URL pasted into model text. Attach its genuine images to the exact
     // reply so existing ChatImageGallery displays them inline and securely.
-    const captures=toolEvents.rows.filter(row=>row.tool==='browser.capture'&&row.result?.status==='completed')
+    const captures=toolEvents.rows.filter(row=>['browser.capture','chat.images.attach_capture'].includes(row.tool)&&row.result?.status==='completed')
      .map(row=>row.result?.capture_id).filter((id:unknown):id is string=>
       typeof id==='string'&&/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(id));
     const captureId=captures.at(-1);
     if(captureId)await attachPmCaptureImagesToChat(client,{
      projectId,captureId,messageId:answerId
     });
+    // Text files published through the authorized manager tool become
+    // attachments of this reply, not a fake Markdown download link.
+    await publishPmChatFiles(client,{projectId,sessionId:session.id,messageId:answerId});
    }
    if(confirmedOrderId&&finished.rowCount){
     // The goal can be opened before its order exists. Bind them atomically.
