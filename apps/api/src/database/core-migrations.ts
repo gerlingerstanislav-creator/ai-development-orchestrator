@@ -10,6 +10,7 @@ import {initProjectManagerInbox} from '../project-manager-inbox.js';
 import {installMergeBatchSchema} from '../merge-batch.js';
 import {initProjectManagerSchema} from '../project-manager.js';
 import {initChatImages} from '../chat-images.js';
+import {initChatFiles} from '../chat-files.js';
 import {initTaskCancellationSchema} from '../task-cancellation.js';
 import {installDiagnosticStorageSchema} from '../diagnostics.js';
 import {initAgentToolsSchema} from '../agent-tools.js';
@@ -191,6 +192,11 @@ export function coreSchemaMigrations(stageDescriptions:Record<string,string>):re
    version:23,name:'pm-direct-browser-capture',
    checksum:'ado-pm-direct-browser-capture-v23',
    up:database=>installPmBrowserCaptureSchema(database)
+  },
+  {
+   version:24,name:'private-project-chat-files',
+   checksum:'ado-private-project-chat-files-v24',
+   up:database=>initChatFiles(database)
   }
  ];
 }

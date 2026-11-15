@@ -7,6 +7,7 @@ import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
 import {storePmCaptureImages,readPmCaptureArtifacts,attachPmCaptureImagesToChat} from '../dist/pm-browser-capture.js';
 import {completeNonCodeTask} from '../dist/task-noncode-completion.js';
 import {toolsForRole} from '../dist/agent-tools.js';
+import {executeAgentTool} from '../dist/agent-tool-executor.js';
 
 const sha='f'.repeat(40);
 const image=(width,height)=>{
@@ -69,6 +70,23 @@ test('v23 stores two real same-SHA Chromium receipts, refuses tampering and perm
   assert.equal(out.verified_screenshots.length,2);
   assert.equal(out.verified_assignments,0);
   assert.equal(out.board_status,'acceptance');
+ });
+});
+test('manager can attach a completed existing capture without launching Chromium again',async()=>{
+ await isolated(async db=>{
+  const id=await seed(db);
+  await upload(db,id,[image(1440,900),image(390,844)]);
+  await db.query("UPDATE pm_browser_captures SET status='completed',source_sha=$2 WHERE id=$1",[id.capture,sha]);
+  const session={id:randomUUID(),project_id:id.project,actor_id:id.user,role:'manager',status:'running'};
+  const result=await executeAgentTool(db,session,'chat.images.attach_capture',{capture_id:id.capture},async()=>{});
+  assert.equal(result.status,'completed');
+  assert.equal(result.capture_id,id.capture);
+  assert.equal(result.attachments,2);
+  assert.ok(toolsForRole('manager').some(tool=>tool.name==='chat.images.attach_capture'));
+  assert.ok(toolsForRole('manager').some(tool=>tool.name==='chat.files.publish'));
+  assert.ok(!toolsForRole('analyst').some(tool=>tool.name==='chat.files.publish'));
+  await assert.rejects(executeAgentTool(db,{...session,role:'analyst'},'chat.images.attach_capture',{capture_id:id.capture},async()=>{}),/недоступны/);
+  await assert.rejects(executeAgentTool(db,session,'chat.images.attach_capture',{capture_id:randomUUID()},async()=>{}),/Нет завершённой/);
  });
 });
 test('direct screenshot evidence cannot complete a task with a real code PR',async()=>{

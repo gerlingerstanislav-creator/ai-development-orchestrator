@@ -16,7 +16,7 @@ const callSchema=z.object({
 });
 function redactArgs(args:Record<string,unknown>){
  const safe=JSON.parse(JSON.stringify(args));
- for(const key of ['body','instructions','description','question','text'])
+ for(const key of ['body','instructions','description','question','text','content'])
   if(typeof safe[key]==='string')safe[key]={size:Buffer.byteLength(safe[key]),sha256:hashSecret(safe[key])};
  if(Array.isArray(safe.operations))
   safe.operations=safe.operations.map((op:any)=>({...op,body:typeof op.body==='string'?{size:Buffer.byteLength(op.body),sha256:hashSecret(op.body)}:undefined}));

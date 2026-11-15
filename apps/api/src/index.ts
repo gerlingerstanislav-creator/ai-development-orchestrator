@@ -29,6 +29,7 @@ import {registerMergeOperationsRoutes} from './modules/execution/api/merge-opera
 import {registerAutomaticDeploymentRoutes} from './deployment-automation.js';
 import { registerAssistantRoutes } from './assistant.js';
 import {registerChatImageRoutes} from './chat-images.js';
+import {registerChatFileRoutes} from './chat-files.js';
 import {registerProjectIterationRoutes} from './project-iterations.js';
 import {resolveRoleAiSettings} from './project-team.js';
 import {registerAgentToolRoutes} from './agent-tool-routes.js';
@@ -100,6 +101,7 @@ async function access(req:any,reply:any,projectId:string) {
 }
 app.get('/api/health',async()=>({ok:true}));
 registerChatImageRoutes(app,{pool,access});
+registerChatFileRoutes(app,{pool,access});
 registerDiagnosticRoutes(app,{pool,access});
 const codexUrl=process.env.CODEX_RUNNER_URL||'http://codex:4300';
 registerCodexAdminRoutes({app,pool,runnerUrl:codexUrl,runnerSecret:()=>runnerKey,adminEmail:configuredAdminEmail,requireAdmin});

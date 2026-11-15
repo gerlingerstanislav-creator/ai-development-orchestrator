@@ -89,15 +89,22 @@ export function ChatImageGallery({images,projectId,read,onRemove}:{images:ChatIm
   </div>)}
  </div>;
 }
-export function ChatImageDropZone({children,onImages,onError,className=''}:{
- children:ReactNode;onImages:(files:File[])=>void;onError:(message:string)=>void;className?:string
+export function ChatImageDropZone({children,onImages,onFiles,onError,className=''}:{
+ children:ReactNode;onImages:(files:File[])=>void;onFiles?:(files:File[])=>void;
+ onError:(message:string)=>void;className?:string
 }){
  const [dragging,setDragging]=useState(false);
+ const dispatch=(files:File[])=>{
+  const pictures=files.filter(file=>imageFormats.includes(file.type));
+  const documents=files.filter(file=>!imageFormats.includes(file.type));
+  if(pictures.length)onImages(pictures);
+  if(documents.length){if(onFiles)onFiles(documents);else onError('Для файлов используй чат ПМ.');}
+ };
  return <div className={'chat-image-dropzone '+className+(dragging?' dragging':'')}
   onDragOver={event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();setDragging(true);}}}
   onDragLeave={event=>{if(!event.currentTarget.contains(event.relatedTarget as Node))setDragging(false);}}
-  onDrop={event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();setDragging(false);const files=droppedImages(event);if(files.length)onImages(files);else onError('Перетащи изображение PNG, JPEG или WebP.');}}}
-  onPaste={event=>{const files=pastedImages(event);if(files.length){event.preventDefault();onImages(files);}}}>
+  onDrop={event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();setDragging(false);const files=droppedImages(event);if(files.length)dispatch(files);else onError('Перетащи файл или изображение.');}}}
+  onPaste={event=>{const files=Array.from(event.clipboardData.items).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter((file):file is File=>!!file);if(files.length){event.preventDefault();dispatch(files);}}}>
   {children}
   {dragging&&<div className="chat-image-drop-overlay">Отпусти, чтобы прикрепить изображение</div>}
  </div>;
