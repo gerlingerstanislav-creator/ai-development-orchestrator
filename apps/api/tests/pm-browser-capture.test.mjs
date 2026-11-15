@@ -4,7 +4,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import pg from 'pg';
 import {coreSchemaMigrations} from '../dist/database/core-migrations.js';
 import {runSchemaMigrations} from '../dist/database/schema-migrations.js';
-import {storePmCaptureImages,readPmCaptureArtifacts} from '../dist/pm-browser-capture.js';
+import {storePmCaptureImages,readPmCaptureArtifacts,attachPmCaptureImagesToChat} from '../dist/pm-browser-capture.js';
 import {completeNonCodeTask} from '../dist/task-noncode-completion.js';
 import {toolsForRole} from '../dist/agent-tools.js';
 
@@ -82,5 +82,39 @@ test('direct screenshot evidence cannot complete a task with a real code PR',asy
    summary:'Отчёт об изображениях не отменяет обязательную QA',
    evidence:'Подлинные изображения не являются проверкой изменённого кода'
   }),e=>e.statusCode===409);
+ });
+});
+
+test('completed PM capture appears as two actual chat image attachments, never just model-written links',async()=>{
+ await isolated(async db=>{
+  const id=await seed(db),messageId=randomUUID();
+  await db.query(`INSERT INTO assistant_messages(id,project_id,role,body,channel,status)
+   VALUES($1,$2,'assistant','Два проверенных снимка локального preview','project','completed')`,
+   [messageId,id.project]);
+  await upload(db,id,[image(1440,900),image(390,844)]);
+  // A failed or still-running capture cannot be attached as a trusted image.
+  await assert.rejects(attachPmCaptureImagesToChat(db,{
+   projectId:id.project,captureId:id.capture,messageId
+  }),/неподтверждённые/);
+  await db.query("UPDATE pm_browser_captures SET status='completed',source_sha=$2 WHERE id=$1",[id.capture,sha]);
+  assert.equal(await attachPmCaptureImagesToChat(db,{
+   projectId:id.project,captureId:id.capture,messageId
+  }),2);
+  // Same query shape as GET /assistant/messages: existing UI already uses
+  // ChatImageGallery, which loads each authenticated image by its ID.
+  const saved=await db.query(`SELECT ci.id,ci.name,ci.mime_type,ci.image_data,
+    ci.assistant_message_id,ci.task_id
+   FROM chat_images ci WHERE ci.assistant_message_id=$1 ORDER BY ci.created_at,ci.id`,[messageId]);
+  assert.equal(saved.rowCount,2);
+  assert.ok(saved.rows.every(row=>row.mime_type==='image/jpeg'&&
+   row.assistant_message_id===messageId&&row.task_id===null&&
+   createHash('sha256').update(row.image_data).digest('hex').length===64));
+  assert.deepEqual(saved.rows.map(row=>Number(row.name.split('x')[0])).sort((a,b)=>a-b),[390,1440]);
+  // No cross-project attachment, and no accepting another message's ID.
+  await assert.rejects(attachPmCaptureImagesToChat(db,{
+   projectId:randomUUID(),captureId:id.capture,messageId:randomUUID()
+  }),/неподтверждённые/);
+  const unchanged=await db.query('SELECT count(*)::int n FROM chat_images WHERE assistant_message_id=$1',[messageId]);
+  assert.equal(unchanged.rows[0].n,2);
  });
 });
